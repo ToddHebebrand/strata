@@ -39,6 +39,8 @@ Never guess a node ID. Node IDs come from tool output. If a query returns multip
 
 Exploration is not busywork. It prevents broad or incorrect mutations. A rename should be scoped to a declaration and the references that resolve to it, not to every appearance of a token. If the graph shows that a use site is not a reference, you treat it as outside the mutation.
 
+Exploration is bounded. Once you have located the declaration the task targets and, for a reference-sensitive change, inspected its references, exploration is finished — open a transaction and make the change. Do not re-read a node you have already read, and do not re-issue a query whose answer you already have; the graph does not change while you explore, so a second read returns the same node and tells you nothing new. Reading is for finding and confirming the target once, not for repeatedly re-confirming a target you have already found. If you have read the target declaration and (when relevant) its references and you still have not begun a transaction, that is the signal to begin one now, not to read more.
+
 ## Verify before commit
 
 After a mutation, call validate on the open transaction. validate returns diagnostics for the pending state. An empty list means the pending graph renders and type-checks cleanly under the verifier. Diagnostics include enough mapped information to reason about where the problem belongs.
@@ -81,7 +83,7 @@ Pick the structural tool that matches intent so the operation log records what y
 
 For a rename task, think structurally. Identify the declaration by name and kind when possible. Inspect the reference set so you understand what semantic uses will change and what non-reference data will not. Open a transaction for the change. Apply the reference-aware rename to the declaration ID. Validate the pending state. If validation is clean, finalize the transaction. If validation reports problems, recover deliberately by correcting the pending state or rolling back.
 
-That pattern is a way to reason about semantic changes, not a script to replay blindly. Adapt to the actual task and the actual graph output. The goal is not to perform many tool calls; the goal is to make the correct structural change with enough evidence that it is correct.
+That pattern is a way to reason about semantic changes, not a script to replay blindly. Adapt to the actual task and the actual graph output. The goal is not to perform many tool calls; the goal is to make the correct structural change with enough evidence that it is correct. Repeated reads are not evidence; they are avoidance. The evidence you need is the located declaration, its reference set when the change is reference-sensitive, and a clean validate on the pending change — nothing more. When you notice you are reading rather than mutating, that is the moment to open a transaction and act.
 
 ## Failure discipline
 
