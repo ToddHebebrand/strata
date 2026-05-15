@@ -32,6 +32,48 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — Phase 3 SDK session integration shape pending live confirmation (D3)
+
+**Context:** Phase 3 BS-B asks whether the SDK runs headless with only custom in-process tools and `tools: []`, and whether tool results compose with our transaction model. Task 4 cleared the tool loop at the handler layer with no model; Task 5 adds the live one-tool session probe.
+
+**Considered:** trust BS4 (schema-only) and build the full orchestrator directly; or probe a minimal one-tool session first.
+
+**Decided:** probe-first. `packages/agent/src/session.ts` implements a single-yield async-generator prompt and `collectSession(...)` over the public `query(...)` API. `packages/agent/tests/sessionSmoke.test.ts` registers an in-process `createSdkMcpServer` with one `ping` tool, runs with `tools: []`, `allowedTools: ["mcp__probe__ping"]`, `bypassPermissions` + `allowDangerouslySkipPermissions`, `maxTurns`, and an `abortController`. Result: pending-live-confirmation — this environment has no API key, so the live SDK probe is skipped until the operator runs it with `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`.
+
+**Why:** The session/loop is the part BS4 did not exercise. Probing one tool isolates "the SDK headless loop composes" from "our eight tools / system prompt are right" before the full orchestrator. The no-key surface remains covered by Task 4's direct handler test; BS-B live confirmation is not claimed from a skipped test.
+
+**Design-doc impact:** none — confirms the intended integration shape in code, with live confirmation pending.
+
+**Revisit when:** the keyed Task 5 probe runs, an SDK upgrade changes `query`/`Options.tools`/MCP server handling, or the full Task 10 session reveals loop behavior the one-tool probe did not.
+
+## 2026-05-15 — `read_node` added to @strata/store for the Phase 3 agent
+
+**Context:** Phase 3's `read_node` tool needs "a node plus optional shallow children". `@strata/store` exposed `findNodeById` and `listChildren` separately; the agent must not reach into store internals.
+
+**Considered:** (a) compose `findNodeById`+`listChildren` inside `packages/agent`; (b) add a public `readNode`/`read_node` to `@strata/store`.
+
+**Decided:** (b). `packages/store/src/read_node.ts` exports `readNode(db, id, { includeChildren? })` (alias `read_node`) returning `{ node, children? }`.
+
+**Why:** Keeps the dependency edge clean (`agent -> store` public surface only) and matches the spec's note that this helper belongs in `store`, not in `agent`. Minimal: one level of children, no recursion (Open Question 1 — widen only if agent behavior shows it's needed).
+
+**Design-doc impact:** none — additive public API on an existing package.
+
+**Revisit when:** the agent's transcript shows it repeatedly needs deeper traversal than one child level (then it becomes a logged tool-widening decision per Open Question 1).
+
+## 2026-05-15 — T03 scoring extracted to `@strata/verify`
+
+**Context:** Phase 3 needs the agent path and the programmatic `cli t03` path to score against identical logic so the agent cannot be given a weaker or vacuous check. The scoring block was inlined inside `runT03`, and Plan Amendment 1 moved the shared scorer boundary from `@strata/cli` to `@strata/verify`.
+
+**Considered:** (a) duplicate the regex/operation checks in the agent test; (b) extract the post-commit scoring into `@strata/cli`; (c) extract it into `@strata/verify` and export it through the verify barrel.
+
+**Decided:** (c). `packages/verify/src/t03Criteria.ts` exports `evaluateT03Criteria(db, batch, srcRoot, input)` and `emptyT03Criteria()`, re-exported from `@strata/verify`. `runT03` keeps driving the rename + post-commit re-validate itself and passes `commitReturnedOk`/`validateAfterCommitClean`/`renameTxId` in; the regex/operation-row scoring moved behavior-preservingly.
+
+**Why:** `@strata/verify` already owns validation and depends on the store/render surface the scorer needs, while both `@strata/cli` and the Phase 3 agent can consume it without creating an `agent -> cli` dependency or a fragile deep `dist/` import. The 4th `input` arg keeps the function pure while letting each caller feed in its own commit outcome.
+
+**Design-doc impact:** none — refactor only; `RunT03Result` shape unchanged, existing `t03.test.ts` unchanged and green.
+
+**Revisit when:** T03 grows additional criteria, or Phase 4 creates a dedicated `@strata/bench` package that should own benchmark-acceptance logic.
+
 ## 2026-05-15 — Phase 1 verticalizes around `rename_symbol`
 
 **Context:** Phase 1 completed Tasks 10-14 after the substrate pieces from Tasks 0-9 were already green. The design doc's Phase 1 remains broader than this run's implemented mutation surface.

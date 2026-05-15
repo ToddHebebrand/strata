@@ -28,6 +28,12 @@ export {
   type LoadedModule,
   type NodeRow
 } from "./nodes";
+export {
+  readNode,
+  read_node,
+  type ReadNodeOptions,
+  type ReadNodeResult
+} from "./read_node";
 export { rename_symbol, renameSymbol } from "./rename";
 export { openDb, type Db } from "./schema";
 export {

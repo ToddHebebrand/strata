@@ -1,0 +1,201 @@
+import {
+  createSdkMcpServer,
+  tool,
+  type McpSdkServerConfigWithInstance,
+  type SdkMcpToolDefinition
+} from "@anthropic-ai/claude-agent-sdk";
+import {
+  begin,
+  find_declarations,
+  get_references,
+  read_node,
+  rename_symbol,
+  rollback,
+  type Db,
+  type DeclarationKind,
+  type TxHandle
+} from "@strata/store";
+import { commit, validate } from "@strata/verify";
+import { z } from "zod/v4";
+
+/** A stable Strata graph node ID (sha1-derived, 16 hex). */
+export const nodeIdSchema = z
+  .string()
+  .min(1)
+  .describe("Stable Strata graph node ID.");
+
+/**
+ * The handle returned by begin_transaction. The agent must hold this and
+ * pass it back to rename_symbol / validate / commit_transaction /
+ * rollback_transaction. Shape mirrors @strata/store's TxHandle
+ * ({ id, actor }) and packages/cli/src/commands/sdkSmoke.ts.
+ */
+export const txHandleSchema = z
+  .object({
+    id: z.string().min(1).describe("Open transaction ID."),
+    actor: z.string().min(1).describe("Actor that opened the transaction.")
+  })
+  .describe("Strata transaction handle from begin_transaction.");
+
+/** A verify diagnostic, mirroring @strata/verify's Diagnostic. */
+export const diagnosticSchema = z.object({
+  nodeId: nodeIdSchema.nullable(),
+  modulePath: z.string().nullable(),
+  message: z.string(),
+  code: z.number().int()
+});
+
+export interface StrataSessionContext {
+  db: Db;
+  actor: string;
+}
+
+function textResult(value: unknown) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(value) }]
+  };
+}
+
+const declarationKindSchema = z
+  .enum(["interface", "type-alias", "class", "function", "variable"])
+  .describe("Declaration kind to filter by.");
+
+/**
+ * Build the eight Strata tools bound to one shared session context. Every
+ * handler closes over ctx, so a TxHandle returned by begin_transaction is
+ * usable by later rename_symbol/validate/commit_transaction calls.
+ */
+export function createStrataTools(
+  ctx: StrataSessionContext
+): SdkMcpToolDefinition<any>[] {
+  const findDeclarationsTool = tool(
+    "find_declarations",
+    "Find declaration nodes by name and/or kind. Read-only. This is your entry point: locate the declaration you intend to operate on. Returns an array of { id, kind, payload }; the id is the stable node ID you pass to rename_symbol.",
+    {
+      name: z.string().optional().describe("Declaration name to match."),
+      kind: declarationKindSchema.optional()
+    },
+    async (args) =>
+      textResult(
+        find_declarations(ctx.db, {
+          name: args.name,
+          kind: args.kind as DeclarationKind | undefined
+        }).map((n) => ({ id: n.id, kind: n.kind, payload: n.payload }))
+      )
+  );
+
+  const getReferencesTool = tool(
+    "get_references",
+    "List every reference edge pointing at a declaration node. Read-only. Use this to inspect the full reference set before mutating. String literals that merely spell the same word are not references and will not appear here.",
+    { declaration_id: nodeIdSchema },
+    async (args) => textResult(get_references(ctx.db, args.declaration_id))
+  );
+
+  const readNodeTool = tool(
+    "read_node",
+    "Read one node by ID, optionally with its direct children. Read-only. Use it to inspect a declaration or reference before acting. Do not guess node IDs; obtain them from find_declarations or get_references.",
+    {
+      node_id: nodeIdSchema,
+      include_children: z
+        .boolean()
+        .optional()
+        .describe("Include the node's direct children, one level.")
+    },
+    async (args) =>
+      textResult(
+        read_node(ctx.db, args.node_id, {
+          includeChildren: args.include_children
+        }) ?? null
+      )
+  );
+
+  const beginTransactionTool = tool(
+    "begin_transaction",
+    "Open a transaction. Mutations require an open transaction. Returns a transaction handle { id, actor }; hold it and pass it to rename_symbol, validate, commit_transaction, and rollback_transaction.",
+    {},
+    async () => textResult(begin(ctx.db, ctx.actor))
+  );
+
+  const renameSymbolTool = tool(
+    "rename_symbol",
+    "Rename a declaration and every reference to it in one structural operation. Requires an open transaction. Mutates the transaction overlay only; nothing is final until commit_transaction. Unrelated string literals are never touched.",
+    {
+      tx: txHandleSchema,
+      declaration_id: nodeIdSchema,
+      new_name: z.string().min(1).describe("The new identifier name.")
+    },
+    async (args) => {
+      rename_symbol(
+        ctx.db,
+        args.tx as TxHandle,
+        args.declaration_id,
+        args.new_name
+      );
+      return textResult({ ok: true });
+    }
+  );
+
+  const validateTool = tool(
+    "validate",
+    "Type-check the transaction's pending state and return diagnostics. Returns [] when clean. Call this after a mutation and before commit_transaction.",
+    { tx: txHandleSchema },
+    async (args) => textResult(validate(ctx.db, args.tx as TxHandle))
+  );
+
+  const commitTransactionTool = tool(
+    "commit_transaction",
+    "Validate and finalize the transaction. If diagnostics exist it refuses to finalize and returns { ok: false, diagnostics }. On a clean validate it finalizes and returns { ok: true }.",
+    { tx: txHandleSchema },
+    async (args) => textResult(commit(ctx.db, args.tx as TxHandle))
+  );
+
+  const rollbackTransactionTool = tool(
+    "rollback_transaction",
+    "Discard all pending changes in the transaction and close it. Use this to recover from a failed validate before trying a different approach.",
+    { tx: txHandleSchema },
+    async (args) => {
+      rollback(ctx.db, args.tx as TxHandle);
+      return textResult({ ok: true });
+    }
+  );
+
+  return [
+    findDeclarationsTool,
+    getReferencesTool,
+    readNodeTool,
+    beginTransactionTool,
+    renameSymbolTool,
+    validateTool,
+    commitTransactionTool,
+    rollbackTransactionTool
+  ];
+}
+
+export const STRATA_TOOL_NAMES = [
+  "find_declarations",
+  "get_references",
+  "read_node",
+  "begin_transaction",
+  "rename_symbol",
+  "validate",
+  "commit_transaction",
+  "rollback_transaction"
+] as const;
+
+/** The MCP server name. Tools are addressed as mcp__strata__<name>. */
+export const STRATA_SERVER_NAME = "strata" as const;
+
+/** Fully-qualified tool names as the model sees them. */
+export const STRATA_QUALIFIED_TOOL_NAMES = STRATA_TOOL_NAMES.map(
+  (n) => `mcp__${STRATA_SERVER_NAME}__${n}`
+);
+
+export function createStrataToolServer(
+  ctx: StrataSessionContext
+): McpSdkServerConfigWithInstance {
+  return createSdkMcpServer({
+    name: STRATA_SERVER_NAME,
+    version: "0.0.0",
+    tools: createStrataTools(ctx)
+  });
+}
