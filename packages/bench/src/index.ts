@@ -41,3 +41,36 @@ export {
   type BaselineSession,
   type BaselineToolEvent as BaselineSessionToolEvent
 } from "./session";
+export {
+  extractSubstrateMetrics,
+  runSubstrateTrial,
+  type ExtractSubstrateInput,
+  type RunSubstrateTrialParams
+} from "./configs/substrate";
+export {
+  BASELINE_TOOLS,
+  baselinePrompt,
+  materializeCorpus,
+  runBaselineTrial,
+  scoreBaselineTrial,
+  type MaterializeCorpusOptions,
+  type RunBaselineTrialParams,
+  type ScoreBaselineTrialInput
+} from "./configs/baseline";
+export {
+  buildReport,
+  renderMarkdown,
+  type BenchmarkReport
+} from "./report";
+export {
+  runBenchmark,
+  type RunBenchmarkParams,
+  type RunBenchmarkResult
+} from "./runner";
+export {
+  renderStoreToDir,
+  tscNoEmit,
+  vitestRun,
+  type QualityResult
+} from "./quality";
+export { defaultSubstrateResultQuality } from "./configs/substrate";

@@ -1,0 +1,206 @@
+import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { T03_PROMPT } from "@strata/agent";
+import { collectBaselineSession } from "../session";
+import { countBaselineRetries } from "../retry";
+import {
+  readModuleMap,
+  isSharedSuccess,
+  scoreBaselineWorkingTree,
+  type SharedCriteria
+} from "../score";
+import { tscNoEmit, vitestRun } from "../quality";
+import type { TrialMetrics } from "../metrics";
+
+export const BASELINE_TOOLS = [
+  "Read",
+  "Write",
+  "Edit",
+  "Glob",
+  "Grep",
+  "Bash"
+] as const;
+
+export interface MaterializeCorpusOptions {
+  /**
+   * Live baseline runs initialize a temporary git repository so Claude Code's
+   * normal file tooling sees a repository-shaped workspace. Unit tests pass
+   * false so this implementation session never runs git.
+   */
+  initGit?: boolean;
+}
+
+/** Materialize a fresh recursive copy of the corpus in an OS temp dir. */
+export function materializeCorpus(
+  corpusRoot: string,
+  options: MaterializeCorpusOptions = {}
+): { root: string; srcRoot: string } {
+  const root = mkdtempSync(path.join(tmpdir(), "strata-bench-baseline-"));
+  cpSync(corpusRoot, root, { recursive: true });
+
+  if (options.initGit !== false) {
+    const init = spawnSync("git", ["init"], {
+      cwd: root,
+      encoding: "utf8"
+    });
+    if (init.status !== 0) {
+      throw new Error(
+        `git init failed in baseline temp tree: ${init.stderr || init.stdout}`
+      );
+    }
+  }
+
+  return { root, srcRoot: path.join(root, "src") };
+}
+
+export interface ScoreBaselineTrialInput {
+  srcRoot: string;
+  commitReturnedOk: boolean;
+  validateAfterCommitClean: boolean;
+}
+
+/** Pure: ten shared criteria from the post-edit working tree. */
+export function scoreBaselineTrial(
+  input: ScoreBaselineTrialInput
+): SharedCriteria {
+  return scoreBaselineWorkingTree(input);
+}
+
+/**
+ * The task text is the exact T03_PROMPT string used by the substrate, with
+ * only the irreducible file-world context prepended.
+ */
+export function baselinePrompt(workingTreeRoot: string): string {
+  return (
+    `The TypeScript codebase is on disk at ${workingTreeRoot} ` +
+    `(sources under ${path.join(workingTreeRoot, "src")}). ` +
+    "You may read, edit, and run `tsc --noEmit` and the test suite freely.\n\n" +
+    T03_PROMPT
+  );
+}
+
+export interface RunBaselineTrialParams {
+  trial: number;
+  corpusRoot: string;
+  model: string;
+  maxTurns: number;
+  wallTimeMs: number;
+  keepArtifacts?: boolean;
+  /** Injected so tests never call the SDK or run process probes. */
+  validateWorkingTree?: (srcRoot: string) => Promise<{
+    tscClean: boolean;
+    vitestPassed: boolean;
+    anyFileModified: boolean;
+  }>;
+}
+
+/**
+ * One live baseline trial. This intentionally gives the baseline normal file
+ * tools and a real writable temp tree, while excluding Strata tools and
+ * ambient MCP/settings sources. examples/medium has no own deps or vitest
+ * suite, so materialization is a recursive copy plus git init, with no install.
+ */
+export async function runBaselineTrial(
+  params: RunBaselineTrialParams
+): Promise<TrialMetrics> {
+  const { root, srcRoot } = materializeCorpus(params.corpusRoot);
+  const beforeModules = readModuleMap(srcRoot);
+  const startedAt = Date.now();
+  const abortController = new AbortController();
+  const timer = setTimeout(() => abortController.abort(), params.wallTimeMs);
+
+  try {
+    const options: Options = {
+      cwd: root,
+      tools: [...BASELINE_TOOLS],
+      systemPrompt: { type: "preset", preset: "claude_code" },
+      permissionMode: "bypassPermissions",
+      allowDangerouslySkipPermissions: true,
+      model: params.model,
+      maxTurns: params.maxTurns,
+      abortController,
+      mcpServers: {},
+      strictMcpConfig: true,
+      settingSources: []
+    };
+
+    const session = await collectBaselineSession(
+      query({
+        prompt: baselinePrompt(root),
+        options
+      })
+    );
+    const harnessWallTimeMs = Date.now() - startedAt;
+    const probe = params.validateWorkingTree
+      ? await params.validateWorkingTree(srcRoot)
+      : await defaultValidateWorkingTree(root, srcRoot, beforeModules);
+    const commitReturnedOk =
+      session.terminalReason === "success" && probe.anyFileModified;
+    const validateAfterCommitClean = probe.tscClean;
+    const criteria = scoreBaselineWorkingTree({
+      srcRoot,
+      commitReturnedOk,
+      validateAfterCommitClean
+    });
+    const result = session.result;
+
+    return {
+      config: "baseline",
+      trial: params.trial,
+      totalTokens:
+        (result?.usage.inputTokens ?? 0) + (result?.usage.outputTokens ?? 0),
+      inputTokens: result?.usage.inputTokens ?? 0,
+      outputTokens: result?.usage.outputTokens ?? 0,
+      cacheReadInputTokens: result?.usage.cacheReadInputTokens ?? 0,
+      cacheCreationInputTokens: result?.usage.cacheCreationInputTokens ?? 0,
+      wallTimeMs: result?.durationMs ?? 0,
+      harnessWallTimeMs,
+      toolInvocations: session.toolInvocations,
+      failuresRetries: countBaselineRetries(
+        session.toolEvents.map((event) => ({
+          tool: event.tool,
+          path: event.path,
+          command: event.command,
+          exitCode: event.exitCode
+        }))
+      ),
+      totalCostUsd: result?.totalCostUsd ?? 0,
+      success: isSharedSuccess(criteria),
+      resultQuality: {
+        tscClean: probe.tscClean,
+        vitestPassed: probe.vitestPassed
+      },
+      terminalReason: session.terminalReason,
+      operationRowAppended: null
+    };
+  } finally {
+    clearTimeout(timer);
+    abortController.abort();
+    if (!params.keepArtifacts) {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+}
+
+async function defaultValidateWorkingTree(
+  treeRoot: string,
+  srcRoot: string,
+  beforeModules: Map<string, string>
+): Promise<{
+  tscClean: boolean;
+  vitestPassed: boolean;
+  anyFileModified: boolean;
+}> {
+  const afterModules = readModuleMap(srcRoot);
+  const anyFileModified =
+    beforeModules.size !== afterModules.size ||
+    [...afterModules.entries()].some(
+      ([key, text]) => beforeModules.get(key) !== text
+    );
+  const { tscClean } = tscNoEmit(treeRoot);
+  const { vitestPassed } = vitestRun(treeRoot);
+  return { tscClean, vitestPassed, anyFileModified };
+}

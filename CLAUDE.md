@@ -88,12 +88,23 @@ pnpm --filter @strata/agent build
 ANTHROPIC_API_KEY=... pnpm --filter @strata/agent record:t03-fixture
 ```
 
+**Phase 4 T03 benchmark (operator-only, key-gated, NOT a CI test):**
+```bash
+ANTHROPIC_API_KEY=... pnpm --filter @strata/bench bench:t03 -- --trials=3
+```
+
+Defaults: N=3, model `claude-sonnet-4-6`, maxTurns 25, wall-time 240s. A round is `2 * N` live model runs and writes JSON + Markdown under `packages/bench/results/`. Use `--trials=0` for a dry-run that prints projected spend and writes nothing; use `--trials=5` only as an explicit budgeted operator choice; use `--keep-artifacts` to keep baseline temp trees for post-mortem. `pnpm -r test` never runs this and needs no key.
+
 The agent has no filesystem/bash tools (`tools: []`); its only callable
 tools are the eight `mcp__strata__*` structural tools. Replay mode currently
 uses a clearly labeled synthetic placeholder fixture until the operator
 replaces it with a successful keyed live recording.
 
-The benchmark harness is not implemented yet; it arrives in Phase 4.
+The benchmark harness lives in `packages/bench` as a leaf package. It compares
+the existing Strata substrate (`runAgentT03`, reused as-is) against a
+file-tools Claude Code baseline on a temp copy of `examples/medium`, scores
+both through the shared `@strata/verify` T03 text criteria, and reports
+distributions rather than bare means.
 
 ## Working style for this repo
 

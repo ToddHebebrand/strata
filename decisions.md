@@ -32,6 +32,34 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — Phase 4 verticalizes on the T03 substrate-vs-baseline benchmark (D5); BS-Bench-A/C/D operator-pending
+
+**Context:** `@strata/bench` now runs the substrate (`runAgentT03`, reused as-is) and a file-tools baseline (temp copy of `examples/medium`) N trials each on T03, scores both through the shared `evaluateT03TextCriteria` core (BS-Bench-B gate green key-free), aggregates distributions, and writes artifacts via the operator-only key-gated `bench:t03` script. `strata-design.md` Phase 4 remains broader (10 tasks); this is the verticalized T03-only slice the spec settled.
+
+**Considered:** n/a — verticalization is settled by the approved spec; this is the build record plus the bail-signal observation status.
+
+**Decided / Observed:** Deferred: no API key in this environment; the live round is an operator action via `ANTHROPIC_API_KEY=... pnpm --filter @strata/bench bench:t03 -- --trials=3`. All harness logic (scorer-equivalence BS-Bench-B gate, metrics/distribution math, retry counter, report, temp-tree materialization, and resultQuality probes) is green key-free. BS-Bench-A (whether the baseline can complete T03 with file tools), BS-Bench-C (actual per-round/per-run cost), and BS-Bench-D (whether distributions overlap or separate at N=3-5) are explicitly operator-pending and must be recorded from round one regardless of outcome. Runner module-system guard form used: CommonJS `require.main === module` with `__dirname` because `tsconfig.base.json` is `module: "CommonJS"`. Baseline SDK form used: `tools: ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]`, `systemPrompt: { type: "preset", preset: "claude_code" }`, `settingSources: []`, `strictMcpConfig: true`, `mcpServers: {}`.
+
+**Why:** BS-Bench-A/C/D are measurement findings recorded from the real live round, never inferred from skipped logic. The substrate path was not modified; `runAgentT03` remains the substrate. The CommonJS guard preserves script-only execution without using `import.meta`, and the baseline SDK options make the contrast file-tools-yes / Strata-tools-no / ambient-MCP-no.
+
+**Design-doc impact:** none — `strata-design.md` Phase 4 remains the broader target; this records the implemented verticalized slice and the operator-pending live round.
+
+**Revisit when:** the operator completes the keyed live round (record actual BS-Bench-A/C/D observations as a new newest-first entry if this deferred form was already committed), N is raised as a budgeted operator decision, or Phase 4.5 widens to a second task.
+
+## 2026-05-15 — Baseline temp-checkout = recursive copy plus git init; file tools pinned (D4, Open Question 3)
+
+**Context:** Phase 4's baseline needs an isolated, writable, real `.ts` tree with the corpus tsconfig/package.json and working `tsc --noEmit`. Open Question 3 left clone-vs-copy and corpus-deps handling to implementation.
+
+**Considered:** `git clone --depth=1 file://`; recursive copy + `git init`; recursive copy only.
+
+**Decided:** Recursive `cpSync(corpusRoot, tmp, { recursive: true })` into an OS temp dir, then `git init` in that temp tree for live operator runs. The baseline needs no repo history; `examples/medium` is a no-emit corpus with no own vitest suite and no runtime deps, so no `pnpm install`/symlink is required. Unit tests pass `initGit: false` so key-free tests do not run git. The SDK tool surface is the explicit allow-list `["Read", "Write", "Edit", "Glob", "Grep", "Bash"]` with `systemPrompt: { type: "preset", preset: "claude_code" }`, `settingSources: []`, `strictMcpConfig: true`, and no Strata MCP server.
+
+**Why:** Copy is the minimal mechanism that gives an isolated writable real tree; `git init` gives Claude Code a repository-shaped workspace without depending on repository history. Pinning the tool list keeps the fairness invariant auditable: same model, same task prompt, same success bar; vary substrate vs. files, not ambient MCP servers.
+
+**Design-doc impact:** none — implements spec § "Baseline config" / Open Question 3.
+
+**Revisit when:** the corpus gains its own runtime deps or vitest suite, an SDK upgrade changes `Options.tools`/`systemPrompt` semantics, or the operator live run shows Claude Code requires different plain-file-tool scoping.
+
 ## 2026-05-15 — Symmetric T03 retry/failure counting rule shipped as specified (D3, Open Question 1)
 
 **Context:** `docs/benchmarks.md` Open Questions flags that "retry" is undefined for the file baseline, so the metric is meaningless without a concrete rule. The Phase 4 spec proposed a symmetric definition.
