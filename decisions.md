@@ -32,6 +32,23 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — Agent hermetic isolation: `LSP` disallowed + `strictMcpConfig`/`settingSources` required
+
+**Context:** Phase 3 live BS-A run. With `tools: []` (documented as "disable all built-in tools"), the runtime invariant guard still tripped — first on an injected `LSP` tool, then (after fixing that) on `mcp__claude_ai_Breeze__*` tools leaking in from the operator's `~/.claude.json`. Both violate the CLAUDE.md invariant that the agent's only tools are the in-process Strata ones and its world is the node graph, not files. The bail-signal guard caught this; it was NOT relaxed.
+
+**Considered:**
+- Relax the runtime guard to allow `LSP` / ambient MCP tools — rejected: papers over a real invariant violation and would invalidate the benchmark (an `LSP` tool inspects real files; Breeze tools perform arbitrary RMM actions).
+- Whack-a-mole add every ambient tool to a banned list — rejected: not hermetic, brittle.
+- Use the SDK's own hard-removal/isolation mechanisms — chosen.
+
+**Decided:** In `runLiveSession` options: (1) add `"LSP"` to `BANNED_BUILTINS` (fed to `disallowedTools`, the SDK's documented "removed from the model's context and cannot be used" path) — `tools: []` does not strip `LSP` in `@anthropic-ai/claude-agent-sdk@0.2.118`; (2) set `strictMcpConfig: true` — in the underlying Claude CLI this means "use only the explicitly-passed MCP servers, ignore all other sources"; without it the SDK inherits `~/.claude.json` servers (Breeze); (3) set `settingSources: []` explicitly (documented default when omitted, set to make hermetic intent unambiguous). After these, the strict guard passes live and the agent completes T03 through only the 8 Strata tools.
+
+**Why:** Enforces the invariant via the SDK's own mechanisms rather than weakening the check. Documents two installed-SDK-vs-docs gaps (the Phase 3 spec already flagged this class of risk): `tools: []` does not cover `LSP`; `strictMcpConfig`'s type doc says "strict validation" but its operative effect is MCP source isolation.
+
+**Design-doc impact:** none — confirms strata-design.md § "The Agent" ("no file tools ... entire world is the node graph") is enforceable on this SDK with explicit isolation options.
+
+**Revisit when:** upgrading `@anthropic-ai/claude-agent-sdk` (re-verify `tools: []`/LSP/`strictMcpConfig` behavior — these are version-observed, not type-guaranteed), or if a future SDK injects another ambient tool the guard catches.
+
 ## 2026-05-15 — Phase 3 verticalizes on agent-drives-T03 (D5)
 
 **Context:** Phase 3 now has `@strata/agent` wrapping the existing store/verify spine as eight in-process SDK tools, a static worldview prompt, session logging, a headless `query()` live path configured with `tools: []`, and a deterministic replay path that passes all 11 shared `evaluateT03Criteria` checks. The design doc's Phase 3 remains broader than this slice.

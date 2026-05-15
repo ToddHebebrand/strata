@@ -105,6 +105,12 @@ export interface AgentT03Result {
   transcript: ReplayStep[];
 }
 
+// Passed to the SDK's `disallowedTools` ("removed from the model's context
+// and cannot be used"). `tools: []` is documented to disable all built-ins,
+// but SDK 0.2.118 still injects `LSP` (a language-server tool that can
+// inspect real files) — which violates the CLAUDE.md invariant that the
+// agent's world is the node graph, not files. Disallowing it explicitly is
+// the SDK's documented hard-removal path, not a guard relaxation.
 const BANNED_BUILTINS = [
   "Read",
   "Write",
@@ -116,7 +122,8 @@ const BANNED_BUILTINS = [
   "Grep",
   "LS",
   "WebFetch",
-  "WebSearch"
+  "WebSearch",
+  "LSP"
 ];
 
 export const T03_PROMPT =
@@ -366,6 +373,15 @@ async function runLiveSession(deps: {
 
   const options: Options = {
     mcpServers: { [STRATA_SERVER_NAME]: server },
+    // strictMcpConfig: in the underlying Claude CLI this means "use ONLY the
+    // MCP servers passed here, ignore all other sources" — without it the
+    // SDK inherits ambient servers from ~/.claude.json (e.g. Breeze RMM),
+    // which would break the CLAUDE.md invariant that the agent's only tools
+    // are the in-process Strata ones. settingSources: [] is explicit
+    // filesystem-settings isolation (the documented default when omitted,
+    // set here to make the hermetic intent unambiguous).
+    strictMcpConfig: true,
+    settingSources: [],
     allowedTools: [...STRATA_QUALIFIED_TOOL_NAMES],
     tools: [],
     disallowedTools: BANNED_BUILTINS,
