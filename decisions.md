@@ -32,6 +32,27 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — First T03 benchmark round: substrate beats file-based baseline on every metric (BS-Bench-A/C/D resolved)
+
+**Context:** First keyed live benchmark round (operator-run, `bench:t03`), `claude-sonnet-4-6`, validation N=1 then distribution N=3 per config. Same verbatim T03 prompt, same model, same 10-criterion shared bar, same success scoring core for both configs. Resolves the operator-pending bail signals from the D5 entry below.
+
+**Result (N=3, both configs 3/3 success, 0 retries, tsc+vitest clean 3/3):**
+- Total tokens — substrate raw [1201, 1270, 1473] (mean 1315) vs baseline [4450, 4514, 4682] (mean 4549). Distributions **disjoint** (substrate max 1473 < baseline min 4450), ~3.5x fewer.
+- Wall time — substrate 24.6–30.3s vs baseline 57.4–59.4s. Disjoint, ~2.2x faster.
+- Tool/edit invocations — substrate 7–11 vs baseline 25–27. Disjoint, ~3x fewer.
+- Cost/run — substrate ~$0.038 vs baseline ~$0.184, ~4.9x cheaper. Round spend: $0.26 (N=1) + $0.67 (N=3) = $0.93 total.
+
+**Bail signals:**
+- **BS-Bench-A — cleared.** The file-based baseline completed T03 successfully 3/3; the comparison is meaningful (a baseline that couldn't do the task would have made the numbers vacuous).
+- **BS-Bench-C — cleared.** $0.93 for the full validation+distribution round; no cost explosion. N capped at 5, dry-run available.
+- **BS-Bench-D — did NOT fire.** Distributions are cleanly separated, not swamped by variance. Had they overlapped at N=3 the report and this entry would record "no separable signal" — they do not. The report and this entry explicitly frame N=3 as an observed separation, **not** a statistical-significance claim; larger N is future work.
+
+**Why this matters:** This is the core thesis of strata-design.md ("AI coding agents are bottlenecked by the file abstraction… a structural substrate makes agents fundamentally more efficient") demonstrated empirically on a real task: same model, same task, same success criteria, materially less work to the right answer, with no quality regression.
+
+**Design-doc impact:** none — this is the evidence the design predicted. Feeds the eventual Phase 5 write-up. Raw per-round artifacts under `packages/bench/results/` are gitignored by intent (reproducible, cost-bearing, operator-run); this entry is the durable record of the finding.
+
+**Revisit when:** the benchmark broadens past T03 (needs Phase 1.5 tools) or runs at larger N / multiple models — re-measure; a single-task N=3 separation is a strong directional result, not the final word.
+
 ## 2026-05-15 — Phase 4 verticalizes on the T03 substrate-vs-baseline benchmark (D5); BS-Bench-A/C/D operator-pending
 
 **Context:** `@strata/bench` now runs the substrate (`runAgentT03`, reused as-is) and a file-tools baseline (temp copy of `examples/medium`) N trials each on T03, scores both through the shared `evaluateT03TextCriteria` core (BS-Bench-B gate green key-free), aggregates distributions, and writes artifacts via the operator-only key-gated `bench:t03` script. `strata-design.md` Phase 4 remains broader (10 tasks); this is the verticalized T03-only slice the spec settled.
