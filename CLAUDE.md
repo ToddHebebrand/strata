@@ -72,6 +72,27 @@ BS4 SDK schema smoke:
 node packages/cli/dist/cli.js sdk-smoke
 ```
 
+**Phase 3 agent (key-free deterministic replay of T03):**
+```bash
+pnpm --filter @strata/agent test -- replay
+```
+
+**Phase 3 agent (live T03 run — requires ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN):**
+```bash
+ANTHROPIC_API_KEY=... pnpm --filter @strata/agent test -- agentT03
+```
+
+**Phase 3 agent (regenerate replay fixture from a keyed live run):**
+```bash
+pnpm --filter @strata/agent build
+ANTHROPIC_API_KEY=... pnpm --filter @strata/agent record:t03-fixture
+```
+
+The agent has no filesystem/bash tools (`tools: []`); its only callable
+tools are the eight `mcp__strata__*` structural tools. Replay mode currently
+uses a clearly labeled synthetic placeholder fixture until the operator
+replaces it with a successful keyed live recording.
+
 The benchmark harness is not implemented yet; it arrives in Phase 4.
 
 ## Working style for this repo

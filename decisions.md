@@ -32,6 +32,48 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — Phase 3 verticalizes on agent-drives-T03 (D5)
+
+**Context:** Phase 3 now has `@strata/agent` wrapping the existing store/verify spine as eight in-process SDK tools, a static worldview prompt, session logging, a headless `query()` live path configured with `tools: []`, and a deterministic replay path that passes all 11 shared `evaluateT03Criteria` checks. The design doc's Phase 3 remains broader than this slice.
+
+**Considered:** broaden to the full benchmark harness, more tools, and the Claude Code baseline now; or ship the single agent-drives-T03 vertical slice and broaden in Phase 3.5/4.
+
+**Decided:** single vertical slice. Phase 3 verticalizes on the proven `rename_symbol` T03 spine with no filesystem tools. Broadening to more tasks, more tools, and baseline comparison is Phase 3.5/4.
+
+**Why:** Verticalizing isolates agent/SDK-integration risk from substrate risk. The substrate was already green for T03, so this run focuses on whether a Strata-only tool loop can drive the same outcome. The no-key replay path proves the substrate outcome deterministically. BS-A and the live half of BS-B are not claimed from skipped tests; they remain operator-pending keyed runs. BS-C cost capture wiring exists in the session log and will be populated by the operator's keyed run.
+
+**Design-doc impact:** none — `strata-design.md` Phase 3 remains the target; this records the implemented first slice.
+
+**Revisit when:** the operator completes the keyed live acceptance, Phase 3.5 adds a second tool/task, or Phase 4 builds the baseline comparison.
+
+## 2026-05-15 — Phase 3 acceptance determinism: recorded-transcript replay (D4)
+
+**Context:** The agent T03 acceptance test calls a live model, but CI must be deterministic and key-free.
+
+**Considered:** key-gated live-only with a retry budget; or record a live transcript and replay the tool-call sequence through the real handlers so the store outcome is a pure function of the sequence.
+
+**Decided:** Use replay. `runAgentT03` supports a replay path that re-executes `{ tool, args }` steps through the real Strata handlers and substitutes `"$TX"` with a fresh transaction handle. The committed fixture at `packages/agent/tests/fixtures/agent-t03-transcript.jsonl` is clearly labeled as a synthetic placeholder because this environment has no key; it keeps key-free CI exercising the full replay path and all 11 criteria. The operator replaces it with a real keyed live recording using `pnpm --filter @strata/agent build && ANTHROPIC_API_KEY=... pnpm --filter @strata/agent record:t03-fixture`.
+
+**Why:** Replay keeps CI deterministic without secrets while a real live run remains the source of truth once recorded. The store outcome is a pure function of the recorded tool-call sequence, so replay is a faithful substrate-outcome reproduction, not a mock. The current placeholder is not represented as a real agent run; live confirmation remains operator-pending.
+
+**Design-doc impact:** none — implements spec § "Acceptance test" / Open Question 2.
+
+**Revisit when:** the SDK changes how tool calls are surfaced, the T03 corpus changes, or the operator regenerates the placeholder from a successful live run.
+
+## 2026-05-15 — Phase 3 agent drives T03 live: BS-A / BS-C observation
+
+**Context:** Phase 3 Task 10 wires the headless agent against the verbatim T03 prompt with only the eight Strata tools and `tools: []`.
+
+**Considered:** n/a — this is a bail-signal observation entry, not a design choice.
+
+**Decided / Observed:** Deferred in this environment: no Anthropic API key or Claude Code OAuth token is available, so the live BS-A run is an operator action. The live half of BS-B is likewise pending keyed confirmation from the SDK session. The CI proof for substrate outcome is the replay path added in Task 11. BS-C: token, cost, and wall-time numbers are pending the operator live run, but the session log now captures `SDKResultMessage` usage, per-model usage, total cost, and duration fields.
+
+**Why:** BS-A is the substrate-agent-fit signal; BS-C is a primary Phase 4 cost signal. Both must be recorded from a real live run, not inferred from skipped tests.
+
+**Design-doc impact:** none.
+
+**Revisit when:** the operator runs the keyed live acceptance, the prompt is iterated again, the tool set is widened, or Phase 4 benchmarking begins.
+
 ## 2026-05-15 — Phase 3 SDK session integration shape pending live confirmation (D3)
 
 **Context:** Phase 3 BS-B asks whether the SDK runs headless with only custom in-process tools and `tools: []`, and whether tool results compose with our transaction model. Task 4 cleared the tool loop at the handler layer with no model; Task 5 adds the live one-tool session probe.

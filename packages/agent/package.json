@@ -13,6 +13,7 @@
   },
   "scripts": {
     "build": "tsc -b",
+    "record:t03-fixture": "node scripts/record-t03-fixture.mjs",
     "test": "vitest run"
   },
   "dependencies": {

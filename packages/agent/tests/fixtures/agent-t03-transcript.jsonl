@@ -1,0 +1,9 @@
+{"type":"session_start","ts":0,"model":"synthetic-placeholder","maxTurns":25,"task":"T03","actor":"agent-t03"}
+{"type":"assistant_text","ts":0,"turn":0,"text":"SYNTHETIC PLACEHOLDER FIXTURE. This is hand-authored because this environment has no Anthropic API key. Replace it with a keyed live recording using normalizeTranscriptForFixture before treating it as a real agent transcript."}
+{"type":"tool_call","ts":0,"tool":"find_declarations","args":{"name":"User","kind":"interface"},"result_summary":"synthetic placeholder","ok":true,"error":null,"durationMs":0,"turn":0}
+{"type":"tool_call","ts":0,"tool":"get_references","args":{"declaration_id":"5073ecfb56151b41"},"result_summary":"synthetic placeholder","ok":true,"error":null,"durationMs":0,"turn":1}
+{"type":"tool_call","ts":0,"tool":"begin_transaction","args":{},"result_summary":"synthetic placeholder","ok":true,"error":null,"durationMs":0,"turn":2}
+{"type":"tool_call","ts":0,"tool":"rename_symbol","args":{"tx":"$TX","declaration_id":"5073ecfb56151b41","new_name":"Account"},"result_summary":"synthetic placeholder","ok":true,"error":null,"durationMs":0,"turn":3}
+{"type":"tool_call","ts":0,"tool":"validate","args":{"tx":"$TX"},"result_summary":"synthetic placeholder","ok":true,"error":null,"durationMs":0,"turn":4}
+{"type":"tool_call","ts":0,"tool":"commit_transaction","args":{"tx":"$TX"},"result_summary":"synthetic placeholder","ok":true,"error":null,"durationMs":0,"turn":5}
+{"type":"result","ts":0,"subtype":"synthetic_placeholder","numTurns":0,"durationMs":0,"durationApiMs":0,"totalCostUsd":0,"usage":{"inputTokens":0,"outputTokens":0,"cacheReadInputTokens":0,"cacheCreationInputTokens":0},"modelUsage":{},"errors":["placeholder fixture; operator must regenerate from keyed live run"]}
