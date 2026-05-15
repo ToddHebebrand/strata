@@ -32,6 +32,21 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — R3 log-based classification: the Phase 1.5 failure has THREE distinct causes, not one
+
+**Context:** Fixed the `--keep-artifacts` -> `logPath` instrumentation gap in `packages/bench/src/configs/substrate.ts` (when `keepArtifacts` and no explicit `logPath`, derive a discoverable `results/logs/<task>-substrate-trial<N>-<stamp>.jsonl`; 170+2 tests stay green, no test files edited). A cheap targeted keyed round (T01/T05/T08, N=1, $0.48) then persisted real substrate transcripts, enabling the spec-mandated log-based R3 classification instead of aggregate inference.
+
+**Transcript evidence (substrate side):**
+- **T05 (one-line bugfix, the inverted control): pure BS15-E exploration/decision thrash.** 23 tool calls, ZERO mutation calls, 1 `begin_transaction`, 1 `validate`; 14 `read_node` (11 consecutive) + 5 `find_declarations`. The agent never attempted the fix — it loops on cheap read-only structural tools and never commits to acting. The file baseline did this in 5 tools / 16s.
+- **T01 (add_parameter): tool-illegibility + thrash.** 34 calls: `begin_transaction`->`add_parameter`->`replace_body`x3->rollback->`begin_transaction`->`replace_body`x3->`add_parameter`, never a clean `validate`. The agent does not trust/understand `add_parameter`'s callsite fan-out, falls back to hand-patching with `replace_body`, loops and rolls back.
+- **T08 (change_return_type): NOT thrash — a deeper correctness-gate gap.** Clean 15-call run: `begin_transaction`->`change_return_type`->`replace_body`x2->`validate`->`commit_transaction`, terminal success. The agent confidently committed; tsc-clean `validate` passed; but the corpus vitest fails. The substrate's commit gate (tsc-clean) is weaker than the task's real success criterion, so the agent commits confidently wrong with no signal.
+
+**Conclusion:** The Phase 1.5 negative is not a single fundamental substrate failure. It decomposes into: (a) **agent navigation/decision discipline** (T05 thrash) — likely system-prompt-tunable (explore-then-act budget; the cheap structural read tools enable infinite stalling); (b) **tool legibility** (T01) — `add_parameter`'s callsite-fan-out semantics aren't conveyed well enough for the agent to wield it instead of hand-patching; tool-description + prompt work, medium; (c) **commit-gate weakness** (T08) — the most significant: `validate` (tsc-clean) is not the task's success criterion, so confident-but-wrong commits pass. This is a loop/design question (the agent likely needs task-acceptance/test signal in-loop, not just tsc), not a tool bug. Rename (T03) works because it is a single unambiguous operation with one path and no decisions; the expanded toolset introduces choices the current prompt+tool-descriptions+commit-gate do not equip the agent to make.
+
+**Design-doc impact:** none to architecture; this refines the prior honest-negative entry with mechanism. It identifies that strata-design.md's "validate before commit" gate is necessary but not sufficient for task correctness — a real finding for any future agent-loop design.
+
+**Revisit when:** the operator decides the next lever (prompt/tool-description rework for a,b; commit-gate/in-loop-test redesign for c) vs. accepting the scoped result and writing up. The classification, not more benchmark runs, is what should drive that decision.
+
 ## 2026-05-15 — Phase 1.5 re-validation: harness now valid; T03 win replicates; new tools are NOT agent-effective (honest negative)
 
 **Context:** Post-remediation operator re-validation, `claude-sonnet-4-6`, N=1 (8 runs $0.76) + a targeted T01/T05/T08 round ($0.43). The remediation (R1/R2/R3) is confirmed working: scoring is symmetric and valid (both configs `tsc clean 1/1` everywhere; T03 baseline passes again exactly as in the valid Phase 4 round — proving the harness is fair, not rigged).

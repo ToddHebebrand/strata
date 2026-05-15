@@ -142,6 +142,10 @@ export interface RunSubstrateTrialParams {
   maxTurns: number;
   wallTimeMs: number;
   logPath?: string;
+  /** When true (and no explicit logPath), the session JSON-lines
+   * transcript is written to a discoverable file under results/logs/
+   * so the R3 timeout classification can read it. */
+  keepArtifacts?: boolean;
   resultQuality?: (
     result: AgentT03Result | AgentTaskResult
   ) => Promise<{ tscClean: boolean; vitestPassed: boolean }>;
@@ -209,6 +213,16 @@ export async function runSubstrateTaskTrial(
   params: RunSubstrateTrialParams
 ): Promise<TrialMetrics> {
   const startedAt = Date.now();
+  let effectiveLogPath = params.logPath;
+  if (!effectiveLogPath && params.keepArtifacts) {
+    const logsDir = path.join(repoRootFromHere(), "packages/bench/results/logs");
+    mkdirSync(logsDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    effectiveLogPath = path.join(
+      logsDir,
+      `${taskId}-substrate-trial${params.trial}-${stamp}.jsonl`
+    );
+  }
   const result =
     taskId === "T03"
       ? await runAgentT03({
@@ -216,7 +230,7 @@ export async function runSubstrateTaskTrial(
           model: params.model,
           maxTurns: params.maxTurns,
           wallTimeMs: params.wallTimeMs,
-          logPath: params.logPath
+          logPath: effectiveLogPath
         })
       : await runAgentTask({
           taskId,
@@ -224,7 +238,7 @@ export async function runSubstrateTaskTrial(
           model: params.model,
           maxTurns: params.maxTurns,
           wallTimeMs: params.wallTimeMs,
-          logPath: params.logPath
+          logPath: effectiveLogPath
         });
   const harnessWallTimeMs = Date.now() - startedAt;
   const resultQualityProbe =
