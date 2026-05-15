@@ -1,5 +1,5 @@
 {
-  "name": "@strata/render",
+  "name": "@strata/verify",
   "version": "0.0.0",
   "private": true,
   "main": "dist/index.js",
@@ -16,11 +16,13 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@strata/store": "workspace:*"
+    "@strata/render": "workspace:*",
+    "@strata/store": "workspace:*",
+    "typescript": "^5.8.3"
   },
   "devDependencies": {
+    "@strata/ingest": "workspace:*",
     "@types/node": "^22.15.29",
-    "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   }
 }

@@ -6,6 +6,7 @@ import { ingest } from "@strata/ingest";
 import { render } from "@strata/render";
 import { insertNodes, loadModule, openDb } from "@strata/store";
 import ts from "typescript";
+import { runIngestBatch } from "./commands/ingestBatch";
 
 interface RoundtripResult {
   ok: boolean;
@@ -13,15 +14,25 @@ interface RoundtripResult {
 }
 
 function main(argv: string[]): number {
-  const [command, inputPath] = argv;
+  const [command, inputPath, dbPath] = argv;
 
-  if (command !== "roundtrip" || !inputPath) {
-    console.error("Usage: strata roundtrip <input.ts>");
+  if (command === "roundtrip" && inputPath) {
+    const result = roundtrip(inputPath);
+    return result.ok ? 0 : 1;
+  }
+
+  if (command === "ingest-batch" && inputPath && dbPath) {
+    const result = runIngestBatch({ rootDir: inputPath, dbPath });
+    return result.ok ? 0 : 1;
+  }
+
+  if (command === "ingest-batch") {
+    console.error("Usage: strata ingest-batch <rootDir> <dbPath>");
     return 1;
   }
 
-  const result = roundtrip(inputPath);
-  return result.ok ? 0 : 1;
+  console.error("Usage: strata roundtrip <input.ts> | ingest-batch <rootDir> <dbPath>");
+  return 1;
 }
 
 function roundtrip(inputPath: string): RoundtripResult {
