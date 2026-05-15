@@ -32,6 +32,48 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — Symmetric T03 retry/failure counting rule shipped as specified (D3, Open Question 1)
+
+**Context:** `docs/benchmarks.md` Open Questions flags that "retry" is undefined for the file baseline, so the metric is meaningless without a concrete rule. The Phase 4 spec proposed a symmetric definition.
+
+**Considered:** count every failed tool call (over-counts a single self-correction as 3); count only explicit substrate commit blocks (no file analog); the spec's "failed verification + subsequent mutation = one self-correction" rule.
+
+**Decided:** Shipped the spec's rule. Substrate retry = a `validate` returning diagnostics OR `commit_transaction` `{ ok:false }`, followed by a further mutating tool call (`rename_symbol`/`begin_transaction`/`rollback_transaction`). Baseline retry = a `tsc`/`vitest`/test Bash run exiting non-zero OR a re-edit of an already-edited file, followed by a further `Edit`/`Write`. A failed check with no subsequent mutation is NOT a retry.
+
+**Why:** Symmetric on each side's native verify/edit primitives, derivable from each config's session log with no extra instrumentation, resilient to differing tool vocabularies. The worked example (one failed validate -> rollback -> corrected rename) counts as ONE, matching the spec's stated intent.
+
+**Design-doc impact:** none — resolves `benchmarks.md` Open Question; the rule is reported alongside the metric so a reader can audit it.
+
+**Revisit when:** the first live round's logs (operator, Task 9) show mis-classification — a corrected rule is then logged as a NEW newest-first entry, never silently retuned.
+
+## 2026-05-15 — @strata/bench created; T03 scorer core stays in @strata/verify (D2)
+
+**Context:** Phase 4's harness needs a package. `strata-design.md` § "Project layout" reserves `packages/bench`. The shared scorer core (D1) could nominally live in `bench`.
+
+**Considered:** (a) put `evaluateT03TextCriteria` in `bench`; (b) keep it in `@strata/verify` and have `bench` import it from the verify barrel.
+
+**Decided:** (b). `packages/bench` (`@strata/bench`) depends on `@strata/agent`/`@strata/verify`/`@strata/ingest`/`@strata/render`/`@strata/store` + the SDK + zod, NOT `@strata/cli`. The scorer core stays in `@strata/verify`.
+
+**Why:** (a) cycles: `verify`'s own `evaluateT03Criteria` needs the core, and `agent`->`verify`, `bench`->`agent`/`verify`. Keeping it in `verify` keeps the graph acyclic (`bench` -> `agent` -> ... -> `verify`; `bench` -> `verify`) and lets `bench` reach the core via the barrel with no `cli` edge and no deep `dist/` import. The scorer core must NOT be relocated to `bench` later.
+
+**Design-doc impact:** none — additive package on the reserved `packages/bench` slot.
+
+**Revisit when:** a non-T03 benchmark task is added (the harness generalizes; the T03 scorer does not move).
+
+## 2026-05-15 — T03 text-criteria core extracted (evaluateT03TextCriteria) in @strata/verify (D1)
+
+**Context:** Phase 4 needs the substrate and the file-based baseline to score the nine text-derived T03 criteria through identical logic, or the comparison is invalid (BS-Bench-B). The nine criteria were inlined inside `evaluateT03Criteria`, coupled to `db`/`batch`.
+
+**Considered:** (a) duplicate the regexes in the bench baseline adapter; (b) extract a pure `Map<modulePath,text>`-taking core in `@strata/verify` that `evaluateT03Criteria` delegates to and the baseline adapter also calls; (c) move the scorer into the new `@strata/bench`.
+
+**Decided:** (b). `packages/verify/src/t03Criteria.ts` now exports `evaluateT03TextCriteria(modules)` (the nine text criteria, regexes verbatim) and `T03TextCriteria`. `evaluateT03Criteria` keeps its signature, builds the rendered-text Map from `db`/`batch` exactly as before, delegates the nine, and adds `commitReturnedOk`/`validateAfterCommitClean`/`operationRowAppended` unchanged.
+
+**Why:** A single pure core called by both adapters makes "T03 succeeded" mean exactly the same thing for substrate and baseline. (c) was rejected: it would cycle (`verify` needs the core; `agent`->`verify`; `bench`->`agent`/`verify`). The core MUST stay in `@strata/verify` — moving it to `bench` later would reintroduce the cycle; do not "tidy" it there.
+
+**Design-doc impact:** none — refactor only; `evaluateT03Criteria` signature/behavior unchanged, `cli` `t03.test.ts` and `agent` `replay.test.ts` green unchanged.
+
+**Revisit when:** T03 grows criteria, or a fourth caller needs the core.
+
 ## 2026-05-15 — Agent hermetic isolation: `LSP` disallowed + `strictMcpConfig`/`settingSources` required
 
 **Context:** Phase 3 live BS-A run. With `tools: []` (documented as "disable all built-in tools"), the runtime invariant guard still tripped — first on an injected `LSP` tool, then (after fixing that) on `mcp__claude_ai_Breeze__*` tools leaking in from the operator's `~/.claude.json`. Both violate the CLAUDE.md invariant that the agent's only tools are the in-process Strata ones and its world is the node graph, not files. The bail-signal guard caught this; it was NOT relaxed.

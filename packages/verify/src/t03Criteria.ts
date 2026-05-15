@@ -16,68 +16,45 @@ export interface T03Criteria {
   operationRowAppended: boolean;
 }
 
-export interface T03CriteriaInput {
-  /** Result of the agent/programmatic commit: did commit return ok? */
-  commitReturnedOk: boolean;
-  /** Result of a post-commit re-validate on a throwaway tx: zero diagnostics? */
-  validateAfterCommitClean: boolean;
-  /** The tx id whose single operation row must be the RenameSymbol row. */
-  renameTxId: string;
-}
-
-export interface T03Batch {
-  modules: { path: string; moduleId: string }[];
-}
-
-interface OperationRow {
-  tx_id: string;
-  kind: string;
-  params_json: string;
-  affected_node_ids_json: string;
-}
-
 /**
- * Pure post-commit scoring for T03. The caller drives the rename and the
- * post-commit re-validate (programmatic command or agent session); this
- * function only inspects the resulting store state.
+ * The nine text-derived T03 criteria — a PURE function of the final
+ * TypeScript text of each module, keyed by POSIX path relative to the
+ * corpus src/ root. Both Phase 4 configs feed this identical function:
+ * the substrate renders committed store modules to text; the baseline
+ * reads post-edit .ts files off its temp working tree. The scorer cannot
+ * tell which produced the text. Regexes are verbatim from the original
+ * evaluateT03Criteria — none rewritten.
  */
-export function evaluateT03Criteria(
-  db: Db,
-  batch: T03Batch,
-  srcRoot: string,
-  input: T03CriteriaInput
-): T03Criteria {
-  const renderedBySuffix = new Map<string, string>();
-  for (const module of batch.modules) {
-    renderedBySuffix.set(
-      toPosix(path.relative(srcRoot, module.path)),
-      renderModule(db, module.moduleId)
-    );
-  }
+export type T03TextCriteria = Pick<
+  T03Criteria,
+  | "importRenamed"
+  | "typeAnnotationRenamed"
+  | "genericPromiseRenamed"
+  | "namespaceImportRenamed"
+  | "auditLiteralUntouched"
+  | "auditLiteralOnlyRemainingUser"
+  | "indexReExportRenamed"
+  | "jsdocReferencesRenamed"
+>;
 
-  const auditText = mustGet(renderedBySuffix, "server/audit.ts");
-  const indexText = mustGet(renderedBySuffix, "index.ts");
-  const greetText = mustGet(renderedBySuffix, "users/greet.ts");
-  const legacyText = mustGet(renderedBySuffix, "users/legacy.ts");
-  const listText = mustGet(renderedBySuffix, "users/list.ts");
-  const serializerText = mustGet(renderedBySuffix, "users/serializer.ts");
-  const repoText = mustGet(renderedBySuffix, "users/repo.ts");
-  const userText = mustGet(renderedBySuffix, "types/user.ts");
+export function evaluateT03TextCriteria(
+  modules: Map<string, string>
+): T03TextCriteria {
+  const auditText = mustGet(modules, "server/audit.ts");
+  const indexText = mustGet(modules, "index.ts");
+  const greetText = mustGet(modules, "users/greet.ts");
+  const legacyText = mustGet(modules, "users/legacy.ts");
+  const listText = mustGet(modules, "users/list.ts");
+  const serializerText = mustGet(modules, "users/serializer.ts");
+  const repoText = mustGet(modules, "users/repo.ts");
+  const userText = mustGet(modules, "types/user.ts");
 
-  const remainingUserOccurrences = [...renderedBySuffix.values()]
+  const remainingUserOccurrences = [...modules.values()]
     .flatMap((text) => text.match(/\bUser\b/g) ?? [])
     .length;
   const auditUserOccurrences = (auditText.match(/\bUser\b/g) ?? []).length;
-  const operations = db
-    .prepare(
-      `SELECT tx_id, kind, params_json, affected_node_ids_json
-         FROM operations`
-    )
-    .all() as OperationRow[];
 
   return {
-    commitReturnedOk: input.commitReturnedOk === true,
-    validateAfterCommitClean: input.validateAfterCommitClean === true,
     importRenamed:
       /import type \{\s*Account\s*\} from "\.\.\/types\/user\.ts";/.test(
         greetText
@@ -109,7 +86,62 @@ export function evaluateT03Criteria(
       /@param \{Account\} user/.test(greetText) &&
       /@param \{Account\} u/.test(legacyText) &&
       !/@param \{User\}/.test(greetText) &&
-      !/@param \{User\}/.test(legacyText),
+      !/@param \{User\}/.test(legacyText)
+  };
+}
+
+export interface T03CriteriaInput {
+  /** Result of the agent/programmatic commit: did commit return ok? */
+  commitReturnedOk: boolean;
+  /** Result of a post-commit re-validate on a throwaway tx: zero diagnostics? */
+  validateAfterCommitClean: boolean;
+  /** The tx id whose single operation row must be the RenameSymbol row. */
+  renameTxId: string;
+}
+
+export interface T03Batch {
+  modules: { path: string; moduleId: string }[];
+}
+
+interface OperationRow {
+  tx_id: string;
+  kind: string;
+  params_json: string;
+  affected_node_ids_json: string;
+}
+
+/**
+ * Substrate post-commit scoring for T03. Builds the rendered-text Map from
+ * committed store state, delegates the nine text criteria to
+ * evaluateT03TextCriteria, and adds the two substrate-driven fields plus
+ * the substrate-only operationRowAppended. Signature and behavior unchanged.
+ */
+export function evaluateT03Criteria(
+  db: Db,
+  batch: T03Batch,
+  srcRoot: string,
+  input: T03CriteriaInput
+): T03Criteria {
+  const renderedBySuffix = new Map<string, string>();
+  for (const module of batch.modules) {
+    renderedBySuffix.set(
+      toPosix(path.relative(srcRoot, module.path)),
+      renderModule(db, module.moduleId)
+    );
+  }
+
+  const text = evaluateT03TextCriteria(renderedBySuffix);
+  const operations = db
+    .prepare(
+      `SELECT tx_id, kind, params_json, affected_node_ids_json
+         FROM operations`
+    )
+    .all() as OperationRow[];
+
+  return {
+    commitReturnedOk: input.commitReturnedOk === true,
+    validateAfterCommitClean: input.validateAfterCommitClean === true,
+    ...text,
     operationRowAppended: operationLogged(operations, input.renameTxId)
   };
 }
