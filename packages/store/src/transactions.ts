@@ -14,8 +14,16 @@ export interface PendingOp {
   reasoning: string | null;
 }
 
+export interface TextSpanEdit {
+  start: number;
+  end: number;
+  oldText: string;
+  newText: string;
+}
+
 export interface TxOverlay {
   identifierMutations: Map<string, { text: string }>;
+  textSpanMutations: Map<string, TextSpanEdit[]>;
   pendingOps: PendingOp[];
   status: "open" | "committed" | "rolled_back";
 }
@@ -30,6 +38,7 @@ export function begin(db: Db, actor: string): TxHandle {
   ).run(id, Date.now(), actor);
   overlays.set(id, {
     identifierMutations: new Map(),
+    textSpanMutations: new Map(),
     pendingOps: [],
     status: "open"
   });
@@ -53,6 +62,17 @@ export function queueIdentifierUpdate(
   newText: string
 ): void {
   getOverlay(tx).identifierMutations.set(identifierId, { text: newText });
+}
+
+export function queueTextSpanEdit(
+  tx: TxHandle,
+  statementId: string,
+  edit: TextSpanEdit
+): void {
+  const overlay = getOverlay(tx);
+  const list = overlay.textSpanMutations.get(statementId) ?? [];
+  list.push(edit);
+  overlay.textSpanMutations.set(statementId, list);
 }
 
 export function queuePendingOp(tx: TxHandle, op: PendingOp): void {
@@ -100,6 +120,33 @@ export function commitWithoutValidate(db: Db, tx: TxHandle): void {
         JSON.stringify({ text: mutation.text, offset: current.offset }),
         identifierId
       );
+    }
+
+    for (const [statementId, edits] of overlay.textSpanMutations) {
+      const row = readIdentifier.get(statementId) as
+        | { payload: string }
+        | undefined;
+      if (!row) {
+        continue;
+      }
+
+      const sorted = [...edits].sort((left, right) => right.start - left.start);
+      let payload = row.payload;
+      for (const edit of sorted) {
+        const actual = payload.slice(edit.start, edit.start + edit.oldText.length);
+        if (
+          actual !== edit.oldText ||
+          edit.end !== edit.start + edit.oldText.length
+        ) {
+          throw new Error(
+            `commit text-span oldText mismatch on ${statementId} at ` +
+              `[${edit.start},${edit.end})`
+          );
+        }
+        payload =
+          payload.slice(0, edit.start) + edit.newText + payload.slice(edit.end);
+      }
+      updateIdentifier.run(payload, statementId);
     }
 
     const ts = Date.now();

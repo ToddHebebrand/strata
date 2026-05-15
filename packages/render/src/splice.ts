@@ -1,37 +1,51 @@
+import type { TextSpanEdit } from "@strata/store";
+
+export type { TextSpanEdit } from "@strata/store";
+
 export interface IdentifierMutation {
   offset: number;
   oldText: string;
   newText: string;
 }
 
+export function identifierMutationToSpan(
+  mutation: IdentifierMutation
+): TextSpanEdit {
+  return {
+    start: mutation.offset,
+    end: mutation.offset + mutation.oldText.length,
+    oldText: mutation.oldText,
+    newText: mutation.newText
+  };
+}
+
 export function spliceStatement(
   payload: string,
-  mutations: IdentifierMutation[]
+  mutations: Array<TextSpanEdit | IdentifierMutation>
 ): string {
   if (mutations.length === 0) {
     return payload;
   }
 
-  const sorted = [...mutations].sort((left, right) => right.offset - left.offset);
+  const sorted = mutations
+    .map((mutation) =>
+      "offset" in mutation ? identifierMutationToSpan(mutation) : mutation
+    )
+    .sort((left, right) => right.start - left.start);
   let out = payload;
 
-  for (const mutation of sorted) {
-    const actual = out.slice(
-      mutation.offset,
-      mutation.offset + mutation.oldText.length
-    );
-    if (actual !== mutation.oldText) {
+  for (const edit of sorted) {
+    const actual = out.slice(edit.start, edit.start + edit.oldText.length);
+    if (actual !== edit.oldText || edit.end !== edit.start + edit.oldText.length) {
       throw new Error(
-        `oldText mismatch at offset ${mutation.offset}: expected ${JSON.stringify(
-          mutation.oldText
+        `oldText mismatch at [${edit.start},${edit.end}): expected ${JSON.stringify(
+          edit.oldText
         )}, got ${JSON.stringify(actual)}`
       );
     }
 
     out =
-      out.slice(0, mutation.offset) +
-      mutation.newText +
-      out.slice(mutation.offset + mutation.oldText.length);
+      out.slice(0, edit.start) + edit.newText + out.slice(edit.end);
   }
 
   return out;

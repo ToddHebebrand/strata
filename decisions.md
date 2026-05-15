@@ -32,6 +32,34 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — On-demand re-parse span location, no ingest lowering (Phase 1.5 D7, Open Question 1)
+
+**Context:** The three tools must locate parameter-list / return-type / body spans inside a function declaration on the current statement-raw-text + identifier-child model.
+
+**Considered:** (a) extend ingest to lower parameters/bodies/return-types into structured nodes; (b) locate spans on demand by re-parsing the statement's own stored raw payload with `ts.createSourceFile` + public `getChildren`.
+
+**Decided:** (b). `packages/store/src/spanReparse.ts` exports `locateSpan(payload, "params"|"returnType"|"body")`. The payload IS `statement.getFullText`, so re-parsed offsets are payload offsets directly; absent return type / empty param list return a zero-width insertion span. Public TS APIs only (`createSourceFile`, `getChildren`, `getStart`/`getEnd`); no internal properties, no `forEachChild`+`.jsDoc` (BS1 discipline).
+
+**Why:** Exact and schema-free; structured lowering is deferred Phase 2 work and not needed for the three tasks. One source of truth so the tools don't each hand-roll re-parse.
+
+**Design-doc impact:** none — additive store helper.
+
+**Revisit when:** a tool needs structured nodes rather than a text span (BS15-A — stop and surface).
+
+## 2026-05-15 — textSpanMutations overlay + generalized spliceStatement (Phase 1.5 D6, Open Question 1)
+
+**Context:** Phase 1.5's three tools edit non-identifier regions (parameter list, return type, body) of a statement's raw payload. Phase 1's overlay was identifier-text only.
+
+**Considered:** (a) structured AST-node lowering of params/bodies/return-types; (b) generalize the existing text-splice mechanism to arbitrary text spans, with identifier mutation as the degenerate case.
+
+**Decided:** (b). `TxOverlay` gains `textSpanMutations: Map<statementId, TextSpanEdit[]>` where `TextSpanEdit = { start, end, oldText, newText }`; `IdentifierMutation` is the degenerate span. `spliceStatement`, render, and `commitWithoutValidate`/`materializeStatementPayloads` apply text-span edits with the same descending-offset, oldText-checked algorithm Phase 1 used; identifier offsets reshift by the net text-span delta. `TextSpanEdit` is owned by `@strata/store`; `render` consumes it (keeps `render → store` one-directional, no cycle).
+
+**Why:** The statement payload is verbatim source, so a span edit on it is exact and needs no schema change; the splice already did descending-offset oldText-checked edits. Structured lowering is real Phase 2 work and unnecessary (per-tool argued in the spec crux). Behavior-preserving for `rename_symbol`: every pre-existing rename/agent/replay/T03 test stays green unchanged (the regression net).
+
+**Design-doc impact:** none — additive overlay generalization; supersedes the Phase 1 "Transaction overlay stores identifier text mutations in memory" entry's narrowness (text-span is the superset).
+
+**Revisit when:** a tool needs structured parameter/body/return-type node lowering rather than text-span edits (that is BS15-A — stop and surface, do not half-lower).
+
 ## 2026-05-15 — First T03 benchmark round: substrate beats file-based baseline on every metric (BS-Bench-A/C/D resolved)
 
 **Context:** First keyed live benchmark round (operator-run, `bench:t03`), `claude-sonnet-4-6`, validation N=1 then distribution N=3 per config. Same verbatim T03 prompt, same model, same 10-criterion shared bar, same success scoring core for both configs. Resolves the operator-pending bail signals from the D5 entry below.

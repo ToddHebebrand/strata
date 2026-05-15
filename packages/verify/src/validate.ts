@@ -33,7 +33,8 @@ export function validate(db: Db, tx: TxHandle): Diagnostic[] {
       loaded.module,
       loaded.children,
       {
-        identifierMutations: overlay.identifierMutations
+        identifierMutations: overlay.identifierMutations,
+        textSpanMutations: overlay.textSpanMutations
       }
     );
     renderedFiles.set(normalizeFileName(module.payload), text);
@@ -107,6 +108,9 @@ function materializeStatementPayloads(db: Db, tx: TxHandle): void {
       affectedStatementIds.add(row.parent_id);
     }
   }
+  for (const statementId of overlay.textSpanMutations.keys()) {
+    affectedStatementIds.add(statementId);
+  }
 
   const updateNode = db.prepare(`UPDATE nodes SET payload = ? WHERE id = ?`);
   const flush = db.transaction(() => {
@@ -136,7 +140,8 @@ function materializeStatementPayloads(db: Db, tx: TxHandle): void {
         })
         .filter((mutation) => mutation !== null);
 
-      if (mutations.length === 0) {
+      const spanEdits = overlay.textSpanMutations.get(statementId) ?? [];
+      if (mutations.length === 0 && spanEdits.length === 0) {
         continue;
       }
 
@@ -149,7 +154,10 @@ function materializeStatementPayloads(db: Db, tx: TxHandle): void {
           payload: ""
         },
         [statement, ...identifiers],
-        { identifierMutations: overlay.identifierMutations }
+        {
+          identifierMutations: overlay.identifierMutations,
+          textSpanMutations: overlay.textSpanMutations
+        }
       ).text;
       updateNode.run(rendered, statementId);
 
@@ -159,20 +167,34 @@ function materializeStatementPayloads(db: Db, tx: TxHandle): void {
           delta: mutation.newText.length - mutation.oldText.length
         }))
         .sort((left, right) => left.offset - right.offset);
+      const spanDeltas = spanEdits
+        .map((edit) => ({
+          start: edit.start,
+          delta: edit.newText.length - (edit.end - edit.start)
+        }))
+        .sort((left, right) => left.start - right.start);
 
       for (const identifier of identifiers) {
         const payload = JSON.parse(identifier.payload) as {
           text: string;
           offset: number;
         };
-        const shift = deltas.reduce(
+        const idShift = deltas.reduce(
           (total, delta) => total + (delta.offset < payload.offset ? delta.delta : 0),
+          0
+        );
+        const spanShift = spanDeltas.reduce(
+          (total, delta) =>
+            total + (delta.start <= payload.offset ? delta.delta : 0),
           0
         );
         const updatedText =
           overlay.identifierMutations.get(identifier.id)?.text ?? payload.text;
         updateNode.run(
-          JSON.stringify({ text: updatedText, offset: payload.offset + shift }),
+          JSON.stringify({
+            text: updatedText,
+            offset: payload.offset + idShift + spanShift
+          }),
           identifier.id
         );
       }
@@ -180,6 +202,7 @@ function materializeStatementPayloads(db: Db, tx: TxHandle): void {
   });
 
   flush();
+  overlay.textSpanMutations.clear();
 }
 
 function mapDiagnostic(

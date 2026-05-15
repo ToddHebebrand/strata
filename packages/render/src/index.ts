@@ -1,5 +1,9 @@
 import type { NodeRow } from "@strata/store";
-import { spliceStatement, type IdentifierMutation } from "./splice";
+import {
+  identifierMutationToSpan,
+  spliceStatement,
+  type TextSpanEdit
+} from "./splice";
 
 export interface SourceMapEntry {
   renderedStart: number;
@@ -9,6 +13,7 @@ export interface SourceMapEntry {
 
 export interface RenderOverlay {
   identifierMutations: Map<string, { text: string }>;
+  textSpanMutations?: Map<string, TextSpanEdit[]>;
 }
 
 export interface RenderResult {
@@ -44,11 +49,12 @@ export function renderWithSourceMap(
   let cursor = 0;
 
   for (const node of topLevel) {
-    const mutations = mutationsForNode(
+    const edits = editsForNode(
+      node.id,
       identifiersByParent.get(node.id) ?? [],
       overlay
     );
-    const text = spliceStatement(node.payload, mutations);
+    const text = spliceStatement(node.payload, edits);
     const renderedStart = cursor;
     cursor += text.length;
     parts.push(text);
@@ -58,15 +64,16 @@ export function renderWithSourceMap(
   return { text: parts.join(""), sourceMap };
 }
 
-function mutationsForNode(
+function editsForNode(
+  statementId: string,
   identifiers: NodeRow[],
   overlay: RenderOverlay | undefined
-): IdentifierMutation[] {
+): TextSpanEdit[] {
   if (!overlay) {
     return [];
   }
 
-  const mutations: IdentifierMutation[] = [];
+  const edits: TextSpanEdit[] = [];
   for (const identifier of identifiers) {
     const updated = overlay.identifierMutations.get(identifier.id);
     if (!updated) {
@@ -77,12 +84,15 @@ function mutationsForNode(
       text: string;
       offset: number;
     };
-    mutations.push({
-      offset: payload.offset,
-      oldText: payload.text,
-      newText: updated.text
-    });
+    edits.push(
+      identifierMutationToSpan({
+        offset: payload.offset,
+        oldText: payload.text,
+        newText: updated.text
+      })
+    );
   }
 
-  return mutations;
+  edits.push(...(overlay.textSpanMutations?.get(statementId) ?? []));
+  return edits;
 }

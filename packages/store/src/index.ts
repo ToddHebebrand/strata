@@ -36,15 +36,18 @@ export {
 } from "./read_node";
 export { rename_symbol, renameSymbol } from "./rename";
 export { openDb, type Db } from "./schema";
+export { locateSpan, type Span, type SpanKind } from "./spanReparse";
 export {
   begin,
   commitWithoutValidate,
   getOverlay,
   queueIdentifierUpdate,
+  queueTextSpanEdit,
   queuePendingOp,
   rollback,
   startupRecoverOpenTransactions,
   type PendingOp,
+  type TextSpanEdit,
   type TxHandle,
   type TxOverlay
 } from "./transactions";
