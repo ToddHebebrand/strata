@@ -32,6 +32,23 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — Phase 1.5 N=1 validation round caught an invalid 4-task harness; remediation before any N=3
+
+**Context:** First keyed 4-task live round, N=1 validation (8 runs, $0.73), `claude-sonnet-4-6`. Run as a cheap gate before the N=3 distribution. It did its job: results were NOT a clean pattern and diagnosis found the harness invalid, not the substrate beaten.
+
+**What the round showed:** substrate T03 ✓ and T08 ✓ (rename + change_return_type work end-to-end via the agent); substrate T01 and T05 hit `error_wall_time`; baseline 0/1 on ALL four tasks including T03 (which the baseline passed cleanly 3/3 in the Phase 4 round).
+
+**Root causes (three, distinct):**
+1. **Seed-clean invariant broken (Pass 3 fixture defect).** `examples/medium/tests/format.test.ts` is written against the post-`add_parameter` signature (asserts a 2nd param; calls with 2 args). On the unmodified seed `formatTimestamp` takes 1 arg, so `tsc --noEmit` over the whole seed corpus is NOT clean (2 diagnostics). Runtime fail-before/pass-after is correct for a test-based criterion, but it must not make the seed fail typecheck.
+2. **Substrate/baseline tsc-scope asymmetry (scorer non-equivalence).** `quality.ts` tsc's the baseline's whole temp tree (incl `tests/format.test.ts` → fails → baseline `tscClean:false` on every task → baseline 0/1 across the board, incl T03). The substrate re-derives quality from only its rendered changed modules — a different file set. The two configs are typecheck-judged over different scopes, violating the BS15-C/BS-Bench-B identical-core integrity property the methodology depends on.
+3. **Substrate timeouts on T01/T05** (`error_wall_time`, 17–22 tool calls before the wall) — independent of scoring. Wall-time too tight for the harder tools, and/or BS15-E (tool-selection thrashing at the 11-tool surface), and/or tool ergonomics. Needs its own diagnosis; may be an honest "substrate struggles here" result.
+
+**Decided:** Do NOT run N=3 on an invalid harness; do NOT hack the fixture green. Remediate all three (operator-approved "fix all 3 properly"): (1) exclude `tests/` from the corpus tsconfig so "tscClean" means "src compiles" with vitest as the separate test-based success signal, restoring the seed-clean invariant; (2) make substrate AND baseline score/tsc the identical file scope (restore scorer equivalence); (3) raise/parameterize wall-time for the harder tools and re-diagnose the T01/T05 timeouts (BS15-E). Then re-run N=1 validation, then N=3. Remediation goes through the spec→plan→Codex machine.
+
+**Design-doc impact:** none — confirms the validation-before-distribution discipline and the scorer-equivalence requirement; corrects an implementation regression, not the design.
+
+**Revisit when:** the remediated N=1 re-validation either clears (proceed to N=3) or surfaces a genuine substrate limitation on T01/T05 (report honestly, do not massage).
+
 ## 2026-05-15 — Bench task abstraction; T03 path preserved unchanged (Phase 1.5 Task 12 / D14)
 
 **Context:** The Phase 4 harness was T03-specific (`task:"T03"`, hard-wired scorer/report). The four-task pattern needs T01/T05/T08 beside T03 without rewriting the proven path.
