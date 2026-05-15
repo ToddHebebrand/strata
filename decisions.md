@@ -32,7 +32,23 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
-## 2026-05-15 — Phase 1.5R remediation complete key-free; operator re-validation N=1 next (DR-docs)
+## 2026-05-15 — Phase 1.5 re-validation: harness now valid; T03 win replicates; new tools are NOT agent-effective (honest negative)
+
+**Context:** Post-remediation operator re-validation, `claude-sonnet-4-6`, N=1 (8 runs $0.76) + a targeted T01/T05/T08 round ($0.43). The remediation (R1/R2/R3) is confirmed working: scoring is symmetric and valid (both configs `tsc clean 1/1` everywhere; T03 baseline passes again exactly as in the valid Phase 4 round — proving the harness is fair, not rigged).
+
+**Result (N=1, indicative not a significance claim — and N=3 deliberately NOT run because the pattern does not hold):**
+- **T03 (rename): the Phase-1 win replicates under the now-valid harness.** Both succeed; substrate ~2.9x fewer tokens (1359 vs 3910), ~1.8x faster (30.6s vs 56.4s), 0 vs 2 retries. Robust.
+- **T01 (add_parameter):** substrate `error_wall_time`; at the raised 420s/40t budget it did MORE tool calls (33) than the prior 240s round (22) and still failed. More budget produced more work, not success → by the R3 anti-inflate clause this is NOT budget-bound; do not raise further.
+- **T05 (the reasoning control):** baseline succeeds trivially (5 tools, 16s); substrate `error_wall_time` at 12 tool calls / 300s. The control is INVERTED — the substrate loses where the file baseline trivially wins. The strongest possible evidence the gap is the substrate, not a rigged comparison.
+- **T08 (change_return_type):** substrate terminated "success" but the corpus vitest fails (0/1); it passed pre-remediation — that earlier "win" was a scoring artifact the symmetric scorer correctly destroyed.
+
+**Decided / concluded:** Phase 1's `rename_symbol` substrate advantage is real and replicable. Phase 1.5's tool expansion (`add_parameter`, `change_return_type`, `replace_body`) does NOT generalize that advantage: the tools pass 170 unit tests but the agent cannot effectively wield them on real tasks. Do NOT run N=3 (would spend ~$3 confirming a non-pattern). Do NOT inflate budgets (forbidden by BS-R3; more budget already produced more thrash, not success).
+
+**Instrumentation gap (a real harness defect, recorded per "log the failure too"):** the R3 spec required operator timeout classification from the session log, but `--keep-artifacts` does not actually persist a readable per-tool transcript — `substrate.ts` takes a `logPath?` and the runner threads a `keepArtifacts` boolean, but nothing converts the boolean into a concrete written log and trial records carry no `sessionLog`. So the precise budget-bound-vs-BS15E-thrash-vs-tool-ergonomics label cannot be log-classified as the protocol demands; the conclusion above is drawn from aggregates (terminal reasons, tool counts vs. budget, the inverted control), which is strong but not the spec-mandated method.
+
+**Design-doc impact:** none to the architecture; this is an empirical finding about agent-effectiveness of the new tools + a harness instrumentation defect. The strata-design.md thesis stands on T03; it is NOT demonstrated for the broader tool set.
+
+**Revisit when:** the keepArtifacts->logPath wiring is fixed and a cheap targeted round captures real transcripts → then classify (thrash vs ergonomics) to guide tool/prompt rework; that rework, not a benchmark re-run, is the next lever for the Phase 1.5 tools.
 
 **Context:** Phase 1.5R's three fixes (R1 seed-clean, R2 scorer/quality scope equivalence, R3 per-task budget + classification protocol) are implemented and green key-free.
 
