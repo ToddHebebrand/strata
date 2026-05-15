@@ -1,5 +1,17 @@
 export { nodeId } from "./ids";
 export {
+  appendOperations,
+  listOperationsByTx,
+  type OperationRow
+} from "./operations";
+export {
+  getReferenceFrom,
+  getReferencesByTo,
+  insertReferences,
+  type Reference,
+  type ReferenceKind
+} from "./references";
+export {
   findNodeById,
   insertNodes,
   listChildren,

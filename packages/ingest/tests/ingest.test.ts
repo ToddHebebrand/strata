@@ -23,17 +23,19 @@ describe("ingest", () => {
     ].join("\n");
 
     const result = ingest(source, "sample.ts");
+    const renderableChildren = result.children.filter((node) => node.kind !== "Identifier");
 
     expect(result.module.kind).toBe("Module");
     expect(result.module.parentId).toBeNull();
-    expect(result.children).toHaveLength(4);
-    expect(result.children.map((node) => node.kind)).toEqual([
+    expect(renderableChildren).toHaveLength(4);
+    expect(renderableChildren.map((node) => node.kind)).toEqual([
       "ImportDeclaration",
       "InterfaceDeclaration",
       "FunctionDeclaration",
       "EndOfFileTrivia"
     ]);
-    expect(result.children.every((node) => node.parentId === result.module.id)).toBe(true);
+    expect(renderableChildren.every((node) => node.parentId === result.module.id)).toBe(true);
+    expect(result.children.some((node) => node.kind === "Identifier")).toBe(true);
   });
 
   it("preserves file-leading, statement, and EOF comments through render", () => {

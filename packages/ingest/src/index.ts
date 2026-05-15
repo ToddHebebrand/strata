@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { nodeId, type NodeRow } from "@strata/store";
 import ts from "typescript";
-import type { NodeRow } from "@strata/store";
+import { emitIdentifiers } from "./identifiers";
 
 export interface IngestResult {
   module: NodeRow;
@@ -16,39 +16,41 @@ export function ingest(sourceText: string, modulePath: string): IngestResult {
     ts.ScriptKind.TS
   );
 
+  const moduleNodeId = nodeId(modulePath, [], "Module");
   const module: NodeRow = {
-    id: newId(),
+    id: moduleNodeId,
     kind: "Module",
     parentId: null,
     childIndex: null,
     payload: modulePath
   };
 
-  const statementNodes = sourceFile.statements.map((statement, index): NodeRow => {
-    return {
-      id: newId(),
-      kind: ts.SyntaxKind[statement.kind],
-      parentId: module.id,
+  const children: NodeRow[] = [];
+
+  sourceFile.statements.forEach((statement, index) => {
+    const kind = ts.SyntaxKind[statement.kind];
+    children.push({
+      id: nodeId(modulePath, [index], kind),
+      kind,
+      parentId: moduleNodeId,
       childIndex: index,
       payload: statement.getFullText(sourceFile)
-    };
+    });
+    children.push(...emitIdentifiers(sourceFile, statement, modulePath, [index]));
   });
 
-  const endOfFileTrivia: NodeRow = {
-    id: newId(),
+  const eofIndex = sourceFile.statements.length;
+  children.push({
+    id: nodeId(modulePath, [eofIndex], "EndOfFileTrivia"),
     kind: "EndOfFileTrivia",
-    parentId: module.id,
-    childIndex: sourceFile.statements.length,
+    parentId: moduleNodeId,
+    childIndex: eofIndex,
     payload: sourceFile.endOfFileToken.getFullText(sourceFile)
-  };
-
-  const children = [...statementNodes, endOfFileTrivia];
+  });
 
   return { module, children };
 }
 
-function newId(): string {
-  return randomUUID();
-}
-
+export { emitIdentifiers } from "./identifiers";
+export { ingestBatch, type IngestBatchInput, type IngestBatchResult } from "./batch";
 export type { NodeRow };
