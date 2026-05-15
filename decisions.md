@@ -32,7 +32,21 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
-## 2026-05-15 — R3 log-based classification: the Phase 1.5 failure has THREE distinct causes, not one
+## 2026-05-15 — Phase 1.5-P: prompt/description tuning is INSUFFICIENT (BS-P-B terminal); the gap is not prompt-closeable
+
+**Context:** Operator re-validation after the P1 (explore-then-act prompt discipline) + P2 (rewritten `add_parameter` description) pass. Keyed N=1 with `--keep-artifacts` over T03/T01/T05/T08 ($1.12). Classification from the persisted substrate transcripts, as the protocol requires.
+
+**Results (log-classified, not inferred):**
+- **BS-P-A PASS — T03 did not regress.** Substrate 1/1, baseline 1/1, exactly as before. The prompt/description changes are safe on the proven, replicated win.
+- **P1 ineffective (T05).** Transcript: `find_declarations`×14, `read_node`×9, one `begin_transaction`, ZERO mutations, wall-timeout — the *same* pure exploration thrash as the pre-P1 run. The general explore-then-act discipline paragraph did not change the agent's behavior at all.
+- **P2 ineffective (T01).** Transcript: `begin_transaction`→`add_parameter`→`replace_body`×3→rollback→`begin_transaction`→`add_parameter`→`replace_body`×2→commit→`begin_transaction`→`replace_body`→commit. The agent still hand-patches callsites with `replace_body` despite the rewritten description *explicitly forbidding exactly that*. It committed this round (N=1 variance, criteria still 0/1) via the same wrong behavior.
+- **T08 flipped to 1/1 at N=1** — treated as model variance per the spec's "a changed T08 is not an improvement claim", not a fix; the commit-gate gap is unaddressed by design this pass.
+
+**Decided / concluded (BS-P-B terminal — do NOT iterate the prompt further):** The Phase 1.5 multi-decision-task failures are **not prompt- or description-tunable**. A fair, general (non-scripted) rework of both the navigation discipline and the most-misused tool's description left agent behavior byte-for-byte unchanged on the failing tasks. The agent ignores explicit worldview discipline and an explicit prohibition for these tasks, while following the same style of guidance perfectly for the single-operation rename (T03). The honest synthesis across Phases 1/1.5: **the file-abstraction-removal advantage is real, robust, and replicated for atomic single-operation structural edits (rename: wins every harness iteration and survives the prompt change), but does not generalize to multi-step agent-driven refactors, and that gap is NOT closeable by prompt engineering.** The remaining real levers are deeper (commit-gate/in-loop-acceptance redesign — implicated in T01 and T08 — or a model-capability limit at an 11-tool multi-decision surface), not more tuning.
+
+**Design-doc impact:** none to architecture. Empirically sharpens strata-design.md's thesis: the substrate efficiency claim is demonstrated for atomic operations and is an open question for multi-step refactors; prompt engineering is shown insufficient to bridge it.
+
+**Revisit when:** a future effort takes on the deferred commit-gate/loop redesign as a deliberate research item, or evaluates a stronger model at this tool surface. Not by another prompt pass.
 
 **Context:** Fixed the `--keep-artifacts` -> `logPath` instrumentation gap in `packages/bench/src/configs/substrate.ts` (when `keepArtifacts` and no explicit `logPath`, derive a discoverable `results/logs/<task>-substrate-trial<N>-<stamp>.jsonl`; 170+2 tests stay green, no test files edited). A cheap targeted keyed round (T01/T05/T08, N=1, $0.48) then persisted real substrate transcripts, enabling the spec-mandated log-based R3 classification instead of aggregate inference.
 
