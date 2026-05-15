@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -33,6 +33,10 @@ export interface MaterializeCorpusOptions {
   initGit?: boolean;
 }
 
+function repoRootFromHere(): string {
+  return path.resolve(__dirname, "../../../..");
+}
+
 /** Materialize a fresh recursive copy of the corpus in an OS temp dir. */
 export function materializeCorpus(
   corpusRoot: string,
@@ -40,6 +44,15 @@ export function materializeCorpus(
 ): { root: string; srcRoot: string } {
   const root = mkdtempSync(path.join(tmpdir(), "strata-bench-baseline-"));
   cpSync(corpusRoot, root, { recursive: true });
+
+  const repoNodeModules = path.join(repoRootFromHere(), "node_modules");
+  const tmpNodeModules = path.join(root, "node_modules");
+  if (existsSync(tmpNodeModules)) {
+    rmSync(tmpNodeModules, { recursive: true, force: true });
+  }
+  if (existsSync(repoNodeModules)) {
+    symlinkSync(repoNodeModules, tmpNodeModules, "dir");
+  }
 
   if (options.initGit !== false) {
     const init = spawnSync("git", ["init"], {

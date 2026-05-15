@@ -4,8 +4,10 @@ import { getReferencesByTo } from "./references";
 import type { Db } from "./schema";
 
 export interface Callsite {
+  referenceNodeId: string;
   statementId: string;
   argListInsertOffset: number;
+  argumentInsertionOffsets: number[];
   existingArgCount: number;
 }
 
@@ -103,9 +105,13 @@ export function resolveCallsites(
 
     const call = enclosingCallWhoseCalleeIs(identifier);
     if (call) {
+      const argumentInsertionOffsets = argumentInsertOffsets(call, sf);
       callsites.push({
+        referenceNodeId: reference.fromNodeId,
         statementId: statement.id,
-        argListInsertOffset: argumentInsertOffset(call, sf),
+        argListInsertOffset:
+          argumentInsertionOffsets[argumentInsertionOffsets.length - 1]!,
+        argumentInsertionOffsets,
         existingArgCount: call.arguments.length
       });
       continue;
@@ -178,11 +184,18 @@ function enclosingCallWhoseCalleeIs(
   return undefined;
 }
 
-function argumentInsertOffset(call: ts.CallExpression, sf: ts.SourceFile): number {
-  if (call.arguments.length > 0) {
-    return call.arguments[call.arguments.length - 1]!.getEnd();
+function argumentInsertOffsets(
+  call: ts.CallExpression,
+  sf: ts.SourceFile
+): number[] {
+  if (call.arguments.length === 0) {
+    return [findToken(call, sf, ts.SyntaxKind.OpenParenToken).getEnd()];
   }
-  return findToken(call, sf, ts.SyntaxKind.OpenParenToken).getEnd();
+
+  return [
+    call.arguments[0]!.getStart(sf),
+    ...call.arguments.map((argument) => argument.getEnd())
+  ];
 }
 
 function classifyNonCallReference(

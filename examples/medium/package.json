@@ -3,5 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "In-memory key-value store with TTL, eviction, and a tiny CLI. Used as an end-to-end example for Strata's ingest/render pipeline."
+  "description": "In-memory key-value store with TTL, eviction, and a tiny CLI. Used as an end-to-end example for Strata's ingest/render pipeline.",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  }
 }

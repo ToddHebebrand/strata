@@ -32,6 +32,72 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — T05 control scorer core in @strata/verify; symmetric anti-cheat (Phase 1.5 D12 — T05, BS15-C/BS15-D)
+
+**Context:** T05 is the reasoning control: parity is the credibility anchor. Its criteria include the anti-cheat "test file byte-identical to seed", which MUST be applied identically for both configs or the control is invalid.
+
+**Decided:** `packages/verify/src/t05Criteria.ts` mirrors `t03Criteria.ts`: pure core (half-open comparison present, closed interval gone, test file byte-identical), with `seedTestText` passed in explicitly and never file-read inside the core. The substrate wrapper renders committed source modules and feeds the seed test under `T05_TEST_KEY`; the baseline adapter will feed its post-edit test text under the same key. Substrate-only `operationRowAppended` = ReplaceBody. Core stays in verify (no cycle).
+
+**Why:** T05 must be expressible by BOTH configs as a localized body edit with no reference-graph advantage to the substrate (`replace_body` confers none of the fan-out leverage that wins T01/T03/T08). The passed-in seed text makes the anti-cheat provably symmetric (BS15-D), and the BS15-C key-free equivalence test feeds file text and rendered store text through one core.
+
+**Design-doc impact:** none.
+
+**Revisit when:** the live round shows T05 gave the substrate a structural advantage or handicapped the baseline (BS15-D — stop and surface; do not tune T05 to manufacture parity or a win).
+
+## 2026-05-15 — T08 per-task scorer core in @strata/verify; BS15-C did NOT fire for T08 (Phase 1.5 D12 — T08)
+
+**Context:** T08 (return-type narrowing) needs one provably-identical pure core for both configs.
+
+**Considered / Decided:** Same as D12-T01: `packages/verify/src/t08Criteria.ts` mirrors `t03Criteria.ts`; pure text core (literal-union return type, no `as string` on `getRole` results, caller guards intact), substrate wrapper renders committed store modules and adds substrate-only `operationRowAppended` (ChangeReturnType). Core stays in verify (no cycle).
+
+**Why:** BS15-C key-free equivalence feeds file text and rendered store text through one core and asserts identical text booleans. T08's number is portable across substrate and baseline only because the scorer has no config-specific branch.
+
+**Design-doc impact:** none.
+
+**Revisit when:** render canonicalization diverges from baseline whitespace for a semantically-identical T08 result (BS15-C fires — do not ship T08's number, do not fork the scorer).
+
+## 2026-05-15 — T01 per-task scorer core in @strata/verify; BS15-C did NOT fire for T01 (Phase 1.5 D12 — T01)
+
+**Context:** T01 needs substrate and baseline scored by one provably-identical pure core (BS-Bench-B / BS15-C discipline), the T03 pattern.
+
+**Considered:** (a) duplicate regexes in the bench adapter; (b) one pure `evaluateT01TextCriteria(Map)` core in @strata/verify fed by substrate-render and baseline-file adapters; (c) move it to bench.
+
+**Decided:** (b). `packages/verify/src/t01Criteria.ts` mirrors `t03Criteria.ts`: pure text core (timezone signature/default, server `"UTC"` callsites, UI `"local"` direct callsite, HOF reference not mis-edited), and `evaluateT01Criteria` renders committed store modules then delegates to the same core while adding substrate-only `operationRowAppended` (AddParameter). Core stays in verify (no cycle).
+
+**Why:** "T01 succeeded" means byte-identically the same for both configs. The BS15-C key-free equivalence test feeds file text and rendered store text through the same core and asserts identical text booleans, gating T01's number.
+
+**Design-doc impact:** none — additive scorer core mirroring D1.
+
+**Revisit when:** render canonicalization diverges from baseline whitespace for a semantically-identical T01 result (BS15-C fires — do not ship T01's number, do not fork the scorer).
+
+## 2026-05-15 — examples/medium gains a runnable offline vitest suite; baseline temp-tree resolves vitest via node_modules symlink (Phase 1.5 D11, Open Question 2 / BS15-D gate)
+
+**Context:** T01/T05 success criteria are `pnpm vitest run`. examples/medium had no src/lib, no tests, no vitest dep; `materializeCorpus` copied without installing; the implementer cannot reach the registry. This is exactly the "Revisit when: the corpus gains its own vitest suite" condition the 2026-05-15 "Baseline temp-checkout" entry named.
+
+**Considered:** (a) `pnpm install` into the temp tree (needs registry and is operator-only); (b) symlink the repo-root node_modules into the temp tree (vitest + typescript already on disk via pnpm); (c) symlink only vitest/.pnpm/typescript/@types.
+
+**Decided:** (b). Added `src/lib/{format,dateRange,permissions}.ts`, `src/server/events.ts`, `src/ui/timeline.ts`, `tests/{format,dateRange}.test.ts`, `vitest.config.ts`, a `package.json` test script + documentary vitest devDep, and `tests/**` in the corpus tsconfig include. `materializeCorpus` removes any copied corpus `node_modules` cache and symlinks the repo-root `node_modules` into the temp tree after the recursive copy, so the baseline's `pnpm vitest run` resolves offline with ZERO registry at run time. The seed deliberately fails the new signal (`dateRange` closed-interval bug, and T01's missing parameter is caught by the corpus typecheck/type-level test), so the suite is not vacuous. Existing T03 modules are left byte-identical.
+
+**Why:** The deps already exist on disk; resolution is the only gap. No `pnpm install`, no registry, no per-trial dependency cost. The whole-node_modules symlink did not need the narrower fallback in this environment.
+
+**Design-doc impact:** none — implements spec § Fixtures + Open Question 2; supersedes the "Baseline temp-checkout" entry's "no install/symlink required" clause (the corpus now has a vitest suite, exactly its named Revisit condition).
+
+**Revisit when:** the corpus gains real runtime (non-dev) deps, an SDK/vitest upgrade changes resolution, or the live baseline shows the symlink form needs to be the narrow (c) variant.
+
+## 2026-05-15 — add_parameter shipped (Phase 1.5 D10 — tool)
+
+**Context:** With BS15-B cleared by the callsite-resolution probe, the tool now fans an argument out to resolved direct callsites.
+
+**Considered:** n/a — settled by spec; build record.
+
+**Decided:** `packages/store/src/addParameter.ts` follows the spine: validate name/type/default via public-API parse; declaration edit inserts `name: type[ = default]` at the clamped position as a zero-width text-span edit; each direct callsite from `resolveCallsites` gets a zero-width arg-slot edit at the matching argument position (slot value = the parameter default if any else `undefined`); one `AddParameter` op row records affected = [declaration, ...callsiteStatements]. HOF/aliased reference identifiers are NOT edited, so the compiler flags arity/type breaks honestly rather than the tool silently mis-editing them.
+
+**Why:** Clean spine extension for the declaration edit; the callsite fan-out reuses the BS15-B-cleared resolver and stays reference-graph based, not text search. The tool's deterministic guarantee is "every resolvable direct callsite gets an argument slot"; the semantic value remains the caller's per-site decision.
+
+**Design-doc impact:** none — implements spec § tool specs / `add_parameter`.
+
+**Revisit when:** a live T01 round shows a callsite shape the resolver misses (re-probe before assuming a wall — BS15-B discipline).
+
 ## 2026-05-15 — add_parameter callsite resolution probed; BS15-B did NOT fire (Phase 1.5 D10 — probe)
 
 **Context:** BS15-B: the genuine-new-work risk of Phase 1.5. `node_references` resolves reference identifiers, not enclosing CallExpression argument lists.
