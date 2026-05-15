@@ -5,26 +5,19 @@ import {
   type AgentT03Result,
   type SessionLogEvent
 } from "@strata/agent";
-import { ingestBatch } from "@strata/ingest";
 import {
-  begin,
-  find_declarations,
-  insertNodes,
-  insertReferences,
-  openDb,
-  rename_symbol
-} from "@strata/store";
-import { commit } from "@strata/verify";
-import {
+  cpSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
-  readFileSync,
-  readdirSync,
-  statSync
+  rmSync,
+  symlinkSync,
+  writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { countSubstrateRetries } from "../retry";
-import { renderStoreToDir, tscNoEmit, vitestRun } from "../quality";
+import { tscNoEmitSrc, vitestRun } from "../quality";
 import type { TrialMetrics } from "../metrics";
 import type { BenchTaskId } from "../tasks";
 
@@ -150,66 +143,55 @@ export interface RunSubstrateTrialParams {
   wallTimeMs: number;
   logPath?: string;
   resultQuality?: (
-    result: AgentT03Result
+    result: AgentT03Result | AgentTaskResult
   ) => Promise<{ tscClean: boolean; vitestPassed: boolean }>;
 }
 
-function collectTsFiles(rootDir: string): { path: string; text: string }[] {
-  const out: { path: string; text: string }[] = [];
-
-  function walk(dir: string): void {
-    for (const entry of readdirSync(dir).sort()) {
-      const abs = path.join(dir, entry);
-      if (statSync(abs).isDirectory()) {
-        walk(abs);
-      } else if (entry.endsWith(".ts")) {
-        out.push({ path: abs, text: readFileSync(abs, "utf8") });
-      }
-    }
-  }
-
-  walk(rootDir);
-  return out;
+function repoRootFromHere(): string {
+  return path.resolve(__dirname, "../../../..");
 }
 
-/**
- * Default substrate resultQuality. runAgentT03 closes its in-memory DB before
- * returning, so this re-derives the deterministic programmatic T03 rename and
- * renders it to a temp tree. This is not the success path; success is still
- * the ten shared criteria from the agent run.
- */
-export function defaultSubstrateResultQuality(
+async function substrateQualityFromRendered(
+  rendered: Map<string, string> | undefined,
   corpusRoot: string
-): () => Promise<{ tscClean: boolean; vitestPassed: boolean }> {
-  return async () => {
-    const srcRoot = path.join(corpusRoot, "src");
-    const batch = ingestBatch(collectTsFiles(srcRoot));
-    const db = openDb(":memory:");
+): Promise<{ tscClean: boolean; vitestPassed: boolean }> {
+  if (!rendered || rendered.size === 0) {
+    return { tscClean: false, vitestPassed: false };
+  }
 
-    try {
-      insertNodes(db, batch.allNodes);
-      insertReferences(db, batch.references);
-      const decl = find_declarations(db, {
-        name: "User",
-        kind: "interface"
-      })[0];
-      if (!decl) {
-        return { tscClean: false, vitestPassed: false };
-      }
-      const tx = begin(db, "bench-result-quality");
-      rename_symbol(db, tx, decl.id, "Account");
-      if (!commit(db, tx).ok) {
-        return { tscClean: false, vitestPassed: false };
-      }
-      const outRoot = mkdtempSync(path.join(tmpdir(), "strata-rq-"));
-      renderStoreToDir(db, batch, srcRoot, outRoot, corpusRoot);
-      const { tscClean } = tscNoEmit(outRoot);
-      const { vitestPassed } = vitestRun(outRoot);
-      return { tscClean, vitestPassed };
-    } finally {
-      db.close();
+  const outRoot = mkdtempSync(path.join(tmpdir(), "strata-rq-"));
+  try {
+    const outSrc = path.join(outRoot, "src");
+    for (const [rel, text] of rendered) {
+      const dest = path.join(outSrc, rel);
+      mkdirSync(path.dirname(dest), { recursive: true });
+      writeFileSync(dest, text);
     }
-  };
+
+    for (const file of ["tsconfig.json", "package.json", "vitest.config.ts"]) {
+      const from = path.join(corpusRoot, file);
+      if (existsSync(from)) {
+        cpSync(from, path.join(outRoot, file));
+      }
+    }
+
+    const seedTests = path.join(corpusRoot, "tests");
+    if (existsSync(seedTests)) {
+      cpSync(seedTests, path.join(outRoot, "tests"), { recursive: true });
+    }
+
+    const repoNodeModules = path.join(repoRootFromHere(), "node_modules");
+    const tmpNodeModules = path.join(outRoot, "node_modules");
+    if (existsSync(repoNodeModules)) {
+      symlinkSync(repoNodeModules, tmpNodeModules, "dir");
+    }
+
+    const { tscClean } = tscNoEmitSrc(outRoot);
+    const { vitestPassed } = vitestRun(outRoot);
+    return { tscClean, vitestPassed };
+  } finally {
+    rmSync(outRoot, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -248,10 +230,8 @@ export async function runSubstrateTaskTrial(
   const resultQualityProbe =
     params.resultQuality ??
     ((_: AgentT03Result | AgentTaskResult) =>
-      taskId === "T03"
-        ? defaultSubstrateResultQuality(params.corpusRoot)()
-        : Promise.resolve(criteriaQuality(result)));
-  const resultQuality = await resultQualityProbe(result as AgentT03Result);
+      substrateQualityFromRendered(result.rendered, params.corpusRoot));
+  const resultQuality = await resultQualityProbe(result);
 
   return extractSubstrateMetrics({
     trial: params.trial,
@@ -260,12 +240,4 @@ export async function runSubstrateTaskTrial(
     harnessWallTimeMs,
     resultQuality
   });
-}
-
-function criteriaQuality(
-  result: AgentT03Result | AgentTaskResult
-): { tscClean: boolean; vitestPassed: boolean } {
-  const criteria = result.criteria as unknown as Record<string, boolean>;
-  const clean = criteria.validateAfterCommitClean === true;
-  return { tscClean: clean, vitestPassed: clean };
 }

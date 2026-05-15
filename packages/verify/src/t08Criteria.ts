@@ -56,7 +56,7 @@ export function evaluateT08Criteria(
   batch: T08Batch,
   srcRoot: string,
   input: T08CriteriaInput
-): T08Criteria {
+): T08Criteria & { rendered: Map<string, string> } {
   const rendered = new Map<string, string>();
   for (const module of batch.modules) {
     rendered.set(
@@ -69,7 +69,7 @@ export function evaluateT08Criteria(
     .prepare(`SELECT tx_id, kind FROM operations`)
     .all() as OperationRow[];
 
-  return {
+  return withRendered({
     commitReturnedOk: input.commitReturnedOk === true,
     validateAfterCommitClean: input.validateAfterCommitClean === true,
     ...text,
@@ -77,12 +77,23 @@ export function evaluateT08Criteria(
       (operation) =>
         operation.tx_id === input.txId && operation.kind === "ChangeReturnType"
     )
-  };
+  }, rendered);
 }
 
 function renderModule(db: Db, moduleId: string): string {
   const loaded = loadModule(db, moduleId);
   return renderWithSourceMap(loaded.module, loaded.children).text;
+}
+
+function withRendered<T extends object>(
+  criteria: T,
+  rendered: Map<string, string>
+): T & { rendered: Map<string, string> } {
+  Object.defineProperty(criteria, "rendered", {
+    value: rendered,
+    enumerable: false
+  });
+  return criteria as T & { rendered: Map<string, string> };
 }
 
 function mustGet(map: Map<string, string>, key: string): string {

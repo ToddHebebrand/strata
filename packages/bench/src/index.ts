@@ -73,13 +73,22 @@ export {
   type SuiteReport
 } from "./report";
 export {
+  DEFAULT_PER_TASK_BUDGET,
+  parseTaskBudget,
+  resolveTaskBudget,
   runBenchmark,
+  type PerTaskBudget,
   type RunBenchmarkParams,
-  type RunBenchmarkResult
+  type RunBenchmarkResult,
+  type TaskBudget
 } from "./runner";
 export {
   renderStoreToDir,
+  resolveCorpusTsconfigInclude,
+  resolveTscProgramRootNames,
+  assertSrcOnlyScope,
   tscNoEmit,
+  tscNoEmitSrc,
   vitestRun,
   type QualityResult
 } from "./quality";
@@ -90,4 +99,3 @@ export {
   type BenchTaskId,
   type BenchTaskRunParams
 } from "./tasks";
-export { defaultSubstrateResultQuality } from "./configs/substrate";

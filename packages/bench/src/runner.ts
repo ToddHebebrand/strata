@@ -11,6 +11,62 @@ import {
 } from "./report";
 import { ALL_TASK_IDS, BENCH_TASKS, type BenchTaskId } from "./tasks";
 
+export interface TaskBudget {
+  maxTurns?: number;
+  wallTimeMs?: number;
+}
+
+export type PerTaskBudget = Partial<Record<BenchTaskId, TaskBudget>>;
+
+export const DEFAULT_PER_TASK_BUDGET: PerTaskBudget = {
+  T01: { maxTurns: 40, wallTimeMs: 420000 },
+  T05: { maxTurns: 40, wallTimeMs: 300000 }
+};
+
+export function resolveTaskBudget(
+  taskId: BenchTaskId,
+  globalMaxTurns: number,
+  globalWallTimeMs: number,
+  perTask: PerTaskBudget
+): { maxTurns: number; wallTimeMs: number } {
+  const override = perTask[taskId];
+  return {
+    maxTurns: override?.maxTurns ?? globalMaxTurns,
+    wallTimeMs: override?.wallTimeMs ?? globalWallTimeMs
+  };
+}
+
+export function parseTaskBudget(value: string): PerTaskBudget {
+  const out: PerTaskBudget = {};
+  for (const group of value
+    .split(";")
+    .map((entry) => entry.trim())
+    .filter(Boolean)) {
+    const [taskRaw, kvRaw] = group.split(":");
+    const taskId = (taskRaw ?? "").trim() as BenchTaskId;
+    if (!ALL_TASK_IDS.includes(taskId)) {
+      throw new Error(`--task-budget unknown task id: ${taskRaw}`);
+    }
+
+    const budget: TaskBudget = {};
+    for (const kv of (kvRaw ?? "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)) {
+      const [key, rawValue] = kv.split("=");
+      const n = Number(rawValue);
+      if (!Number.isFinite(n)) {
+        throw new Error(`--task-budget bad number for ${key}: ${rawValue}`);
+      }
+      if (key === "maxTurns") budget.maxTurns = n;
+      else if (key === "wallMs") budget.wallTimeMs = n;
+      else throw new Error(`--task-budget unknown key: ${key}`);
+    }
+    out[taskId] = budget;
+  }
+  return out;
+}
+
 export interface RunBenchmarkParams {
   task?: "T03";
   tasks?: BenchTaskId[];
@@ -30,6 +86,7 @@ export interface RunBenchmarkParams {
     taskId: BenchTaskId,
     trial: number
   ) => Promise<TrialMetrics>;
+  perTaskBudget?: PerTaskBudget;
   keepArtifacts?: boolean;
 }
 
@@ -52,11 +109,23 @@ export async function runBenchmark(
 
   const taskIds = params.tasks ?? [params.task ?? "T03"];
   const projectedRuns = taskIds.length * 2 * params.trials;
+  const perTaskForLog = params.perTaskBudget ?? DEFAULT_PER_TASK_BUDGET;
+  const budgetLine = taskIds
+    .map((id) => {
+      const budget = resolveTaskBudget(
+        id,
+        params.maxTurns,
+        params.wallTimeMs,
+        perTaskForLog
+      );
+      return `${id}:${budget.maxTurns}t/${budget.wallTimeMs}ms`;
+    })
+    .join(" ");
   console.log(
     `[bench] tasks=${taskIds.join(",")} model=${params.model} N=${params.trials} ` +
-      `=> ${projectedRuns} live runs. Per-run cost band: unknown until the ` +
-      `first live round establishes baseline cost; BS-Bench-C is evaluated ` +
-      `from round one actuals.`
+      `=> ${projectedRuns} live runs. Per-task budget: ${budgetLine}. ` +
+      `Worst-case per-round cost scales with the largest per-task wall; ` +
+      `BS-Bench-C is evaluated from round one actuals.`
   );
 
   if (params.trials === 0) {
@@ -79,6 +148,12 @@ export async function runBenchmark(
     if (!task) {
       throw new Error(`Unknown benchmark task: ${taskId}`);
     }
+    const budget = resolveTaskBudget(
+      taskId,
+      params.maxTurns,
+      params.wallTimeMs,
+      params.perTaskBudget ?? DEFAULT_PER_TASK_BUDGET
+    );
     const substrate: TrialMetrics[] = [];
     const baseline: TrialMetrics[] = [];
     for (let trial = 1; trial <= params.trials; trial++) {
@@ -101,8 +176,8 @@ export async function runBenchmark(
               trial,
               corpusRoot: params.corpusRoot,
               model: params.model,
-              maxTurns: params.maxTurns,
-              wallTimeMs: params.wallTimeMs,
+              maxTurns: budget.maxTurns,
+              wallTimeMs: budget.wallTimeMs,
               keepArtifacts: params.keepArtifacts
             })
       );
@@ -113,8 +188,8 @@ export async function runBenchmark(
               trial,
               corpusRoot: params.corpusRoot,
               model: params.model,
-              maxTurns: params.maxTurns,
-              wallTimeMs: params.wallTimeMs,
+              maxTurns: budget.maxTurns,
+              wallTimeMs: budget.wallTimeMs,
               keepArtifacts: params.keepArtifacts
             })
       );
@@ -200,6 +275,10 @@ async function main(): Promise<void> {
   const trials = Number(getArg(args, "--trials", "3"));
   const model = getArg(args, "--model", "claude-sonnet-4-6");
   const tasks = parseTasks(getArg(args, "--tasks", ALL_TASK_IDS.join(",")));
+  const taskBudgetArg = getArg(args, "--task-budget", "");
+  const perTaskBudget = taskBudgetArg
+    ? parseTaskBudget(taskBudgetArg)
+    : DEFAULT_PER_TASK_BUDGET;
   const corpusRoot = path.resolve(__dirname, "../../../examples/medium");
   const outDir = path.resolve(__dirname, "../results");
 
@@ -221,6 +300,7 @@ async function main(): Promise<void> {
     maxTurns: Number(getArg(args, "--max-turns", "25")),
     wallTimeMs: Number(getArg(args, "--wall-ms", "240000")),
     outDir,
+    perTaskBudget,
     keepArtifacts: args.includes("--keep-artifacts")
   });
 }

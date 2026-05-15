@@ -2,12 +2,14 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   statSync,
   writeFileSync
 } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
+import ts from "typescript";
 import { renderWithSourceMap } from "@strata/render";
 import { loadModule, type Db } from "@strata/store";
 
@@ -66,6 +68,55 @@ export function tscNoEmit(treeRoot: string): { tscClean: boolean } {
     { cwd: treeRoot, encoding: "utf8" }
   );
   return { tscClean: result.status === 0 };
+}
+
+export function resolveCorpusTsconfigInclude(treeRoot: string): string[] {
+  const tsconfigPath = path.join(treeRoot, "tsconfig.json");
+  const parsed = JSON.parse(readFileSync(tsconfigPath, "utf8")) as {
+    include?: string[];
+  };
+  return parsed.include ?? [];
+}
+
+export function resolveTscProgramRootNames(treeRoot: string): string[] {
+  const tsconfigPath = path.join(treeRoot, "tsconfig.json");
+  const read = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+  if (read.error) {
+    throw new Error(
+      ts.flattenDiagnosticMessageText(read.error.messageText, "\n")
+    );
+  }
+  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, treeRoot);
+  return parsed.fileNames
+    .map((fileName) => path.relative(treeRoot, fileName).replaceAll("\\", "/"))
+    .sort();
+}
+
+export function assertSrcOnlyScope(treeRoot: string): void {
+  const include = resolveCorpusTsconfigInclude(treeRoot);
+  const hasTests = include.some((glob) => glob.includes("tests/"));
+  const rootNames = resolveTscProgramRootNames(treeRoot);
+  const hasTestRoot = rootNames.some(
+    (rootName) => rootName.startsWith("tests/") || rootName.includes("/tests/")
+  );
+  const isSrcOnly =
+    include.length > 0 &&
+    include.every((glob) => glob.startsWith("src/")) &&
+    !hasTests &&
+    !hasTestRoot;
+  if (!isSrcOnly) {
+    throw new Error(
+      `tscNoEmitSrc requires a src-only tsconfig include; got ` +
+        `${JSON.stringify(include)} with rootNames ` +
+        `${JSON.stringify(rootNames)}. tests/** must be excluded from the ` +
+        `typecheck scope.`
+    );
+  }
+}
+
+export function tscNoEmitSrc(treeRoot: string): { tscClean: boolean } {
+  assertSrcOnlyScope(treeRoot);
+  return tscNoEmit(treeRoot);
 }
 
 function hasVitestFiles(treeRoot: string): boolean {

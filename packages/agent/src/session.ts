@@ -109,6 +109,8 @@ export interface AgentT03Result {
   log: SessionLog;
   /** The captured tool-call sequence, replayable as a fixture. */
   transcript: ReplayStep[];
+  /** Rendered committed src text scored by the criteria wrapper. */
+  rendered?: Map<string, string>;
 }
 
 export type BenchTaskId = "T01" | "T03" | "T05" | "T08";
@@ -125,6 +127,7 @@ export interface AgentTaskResult {
   terminalReason: TerminalReason;
   log: SessionLog;
   transcript: ReplayStep[];
+  rendered?: Map<string, string>;
 }
 
 export interface RunAgentTaskParams extends RunAgentT03Params {
@@ -240,7 +243,7 @@ type ScoreFromCommitted<C extends TaskCriteria> = (
   batch: ReturnType<typeof ingestBatch>,
   srcRoot: string,
   input: ScoreInput
-) => C;
+) => C & { rendered?: Map<string, string> };
 
 async function runAgentForPrompt<C extends TaskCriteria>(params: {
   runParams: RunAgentT03Params;
@@ -254,6 +257,7 @@ async function runAgentForPrompt<C extends TaskCriteria>(params: {
   terminalReason: TerminalReason;
   log: SessionLog;
   transcript: ReplayStep[];
+  rendered?: Map<string, string>;
 }> {
   const { runParams } = params;
   const srcRoot = path.join(runParams.corpusRoot, "src");
@@ -276,6 +280,7 @@ async function runAgentForPrompt<C extends TaskCriteria>(params: {
       ts: Date.now(),
       model: runParams.model,
       maxTurns: runParams.maxTurns,
+      wallTimeMs: runParams.wallTimeMs,
       task: params.taskId,
       actor: ctx.actor
     });
@@ -359,7 +364,7 @@ async function runAgentForPrompt<C extends TaskCriteria>(params: {
     const postCommitDiagnostics = validate(db, checkTx);
     rollback(db, checkTx);
 
-    const criteria = liveTx
+    const scored = liveTx
       ? params.scoreFromCommitted(db, batch, srcRoot, {
           commitReturnedOk: lastCommitOk,
           validateAfterCommitClean: postCommitDiagnostics.length === 0,
@@ -367,7 +372,21 @@ async function runAgentForPrompt<C extends TaskCriteria>(params: {
         })
       : params.emptyCriteria();
 
-    return { criteria, terminalReason, log, transcript };
+    const rendered =
+      scored !== null &&
+      typeof scored === "object" &&
+      "rendered" in scored &&
+      scored.rendered instanceof Map
+        ? scored.rendered
+        : undefined;
+
+    return {
+      criteria: scored as C,
+      terminalReason,
+      log,
+      transcript,
+      rendered
+    };
   } finally {
     db.close();
   }

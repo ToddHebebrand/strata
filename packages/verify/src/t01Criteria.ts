@@ -64,14 +64,14 @@ export function evaluateT01Criteria(
   batch: T01Batch,
   srcRoot: string,
   input: T01CriteriaInput
-): T01Criteria {
+): T01Criteria & { rendered: Map<string, string> } {
   const rendered = renderedModules(db, batch, srcRoot);
   const text = evaluateT01TextCriteria(rendered);
   const operations = db
     .prepare(`SELECT tx_id, kind FROM operations`)
     .all() as OperationRow[];
 
-  return {
+  return withRendered({
     commitReturnedOk: input.commitReturnedOk === true,
     validateAfterCommitClean: input.validateAfterCommitClean === true,
     ...text,
@@ -79,7 +79,7 @@ export function evaluateT01Criteria(
       (operation) =>
         operation.tx_id === input.txId && operation.kind === "AddParameter"
     )
-  };
+  }, rendered);
 }
 
 function renderedModules(
@@ -97,6 +97,17 @@ function renderedModules(
 function renderModule(db: Db, moduleId: string): string {
   const loaded = loadModule(db, moduleId);
   return renderWithSourceMap(loaded.module, loaded.children).text;
+}
+
+function withRendered<T extends object>(
+  criteria: T,
+  rendered: Map<string, string>
+): T & { rendered: Map<string, string> } {
+  Object.defineProperty(criteria, "rendered", {
+    value: rendered,
+    enumerable: false
+  });
+  return criteria as T & { rendered: Map<string, string> };
 }
 
 function allFormatCallsHaveSecondArg(text: string, expected: string): boolean {

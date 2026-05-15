@@ -32,6 +32,90 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — Phase 1.5R remediation complete key-free; operator re-validation N=1 next (DR-docs)
+
+**Context:** Phase 1.5R's three fixes (R1 seed-clean, R2 scorer/quality scope equivalence, R3 per-task budget + classification protocol) are implemented and green key-free.
+
+**Decided / Observed:** Acceptance holds before any operator live round: (1) unmodified seed src is `tsc --noEmit` clean under the post-R1 src-only corpus tsconfig; `tests/` remains present, in `vitest.config.ts` include, and a real fail-before signal. (2) `scopeEquivalence.test.ts` passes for all four tasks × correct/half-done/seed: substrate-side pure core and baseline-side `scoreTaskSharedCriteria` return byte-identical text booleans, and tsc scope is `["src/**/*.ts"]` with no `tests/`. (3) Per-task `maxTurns`/`wallTimeMs` are first-class in `runner.ts` and threaded unchanged into the session; T03/T08 remain 25t/240000ms by default, while T01/T05 carry the artifact-derived higher defaults; the projected-spend line prints the per-task ceiling. (4) `pnpm -r build` and `pnpm -r test` are green key-free: existing 152 passing + 2 skipped baseline held, plus 18 passing cases in the two allowed new bench test files. The genuine T03 regression guards are byte-unchanged. No BS-R1/R2/R3 fired during implementation.
+
+**Why:** Only a valid harness may produce a number anyone should believe; the N=1→N=3 validation-before-distribution discipline is unchanged.
+
+**Design-doc impact:** none.
+
+**Revisit when:** the operator runs the keyed re-validation N=1; record its DR-round entry regardless of outcome.
+
+## 2026-05-15 — R3: per-task maxTurns/wallTimeMs first-class + --task-budget + timeout-classification protocol (Phase 1.5R DR3)
+
+**Context:** Phase 1.5R remediation. Substrate T01 timed out at 22 tool calls and T05 at 17 under the 240,000 ms global wall. Budgets were single global values; the structurally bigger tasks need justified per-task budgets plus a protocol that classifies timeouts rather than inferring them.
+
+**Considered:** (a) raise the single global budget; (b) make maxTurns/wallTimeMs per-task overridable with artifact-derived defaults for T01/T05, T03/T08 untouched, plus operator-recorded classification.
+
+**Decided:** (b). `runner.ts` now has `PerTaskBudget`, `DEFAULT_PER_TASK_BUDGET` (T01 40t/420000ms, T05 40t/300000ms; T03/T08 no override and therefore global 25t/240000ms), `resolveTaskBudget`, `parseTaskBudget`, and `--task-budget=T01:maxTurns=40,wallMs=420000;T05:maxTurns=40,wallMs=300000`. The projected-spend line prints resolved per-task budgets. `SessionLog` `session_start` now records `wallTimeMs` alongside `maxTurns` so operator timeout classification has the configured budget in the log.
+
+**Timeout-classification protocol (operator-recorded, never auto-inferred):** every substrate `error_wall_time`/`error_max_turns` is classified from the session log into exactly one bucket and recorded as `T0N: <bucket> — <one-sentence evidence>`: (1) budget-bound, monotonic progress; one bounded logged raise and one re-run only; (2) BS15-E thrashing, wrong-tool loops or oscillation; surface the tool-selection finding, do not inflate; (3) genuine tool-ergonomics failure, right tool cannot express the task; surface the substrate limitation. A second bucket-1 timeout at the raised budget escalates to bucket 3.
+
+**Why:** Quantified, bounded, honest. T03/T08 budgets are unperturbed, while T01/T05 get room justified by the failing artifact without opening an inflate-until-green loop.
+
+**Design-doc impact:** none — additive runner plumbing; the session budget contract is unchanged.
+
+**Revisit when:** the re-validation round's classified evidence shows T01/T05 need a different shape of help than one bounded raise; that is the honest BS15-E finding, not a third raise.
+
+## 2026-05-15 — R2c: scopeEquivalence.test.ts proves substrate==baseline byte-identical over the identical src-only scope (Phase 1.5R DR2c, BS-R2 gate)
+
+**Context:** Phase 1.5R remediation. The methodology requires the BS-Bench-B/BS15-C identical-core property: "did the task succeed" must be the same question for substrate and baseline, over the identical scope, through one pure core.
+
+**Considered:** n/a — this is the key-free gate and bail-signal observation.
+
+**Decided / Observed:** Added `packages/bench/tests/scopeEquivalence.test.ts`: per task (T01/T03/T05/T08) × state (correct/half-done/seed), the substrate-side pure `evaluateT0NTextCriteria` core and the baseline-side `readModuleMap`→`scoreTaskSharedCriteria` path return byte-identical text-criteria booleans on the same logical post-edit Map. The test also asserts the materialized corpus tsconfig scope is exactly `["src/**/*.ts"]` while `tests/` remains present, and that `tscNoEmitSrc` fails loudly if `tests/` is reintroduced. BS-R2 did not fire; no byte-frozen existing test was edited.
+
+**Why:** A non-equivalent scorer invalidates every number. This proves equivalence key-free before any operator live round, exactly as D1/D2/D12 require.
+
+**Design-doc impact:** none — restores and gates the identical-core integrity property.
+
+**Revisit when:** render canonicalization diverges from baseline whitespace for a semantically-identical result on any task (BS-R2 fires — do not ship that task's number, do not fork the core).
+
+## 2026-05-15 — R2b: evaluateT0NCriteria returns the rendered Map additively; substrate resultQuality unified to the baseline's two probes (Phase 1.5R DR2b)
+
+**Context:** Phase 1.5R remediation. The substrate `resultQuality` was not scope-equivalent: T03 re-derived a deterministic rename and T01/T05/T08 mirrored `validateAfterCommitClean`, while the baseline ran `tscNoEmit` and `vitestRun` over its edited temp tree. `runAgentForPrompt` closes its in-memory DB before returning, so resultQuality needs the final rendered text before closure.
+
+**Considered:** (a) re-derive each task deterministically; (b) have the per-task `evaluateT0NCriteria` wrapper additively expose the rendered `Map<modulePath,text>` it already builds, then materialize that exact Map to a scratch corpus-shaped tree and run the same probes as baseline.
+
+**Decided:** (b). `evaluateT0{1,3,5,8}Criteria` now returns `T0NCriteria & { rendered: Map<string,string> }`; the property is non-enumerable so existing boolean `Object.entries(criteria)` regression guards stay unchanged. `AgentT03Result`/`AgentTaskResult` carry optional `rendered`. `substrate.ts` now uses one quality path for every task: materialize `result.rendered` as `src/`, copy post-R1 `tsconfig.json`, `package.json`, `vitest.config.ts`, and seed `tests/`, symlink repo `node_modules`, then run `tscNoEmitSrc` and `vitestRun`.
+
+**Why:** Substrate quality is now measured on the exact text the shared per-task core scored, using the same src-only typecheck and real vitest signal as the baseline. BS-R2 did not fire at this step; no byte-frozen tests were edited.
+
+**Design-doc impact:** none — restores the scorer-equivalence requirement D1/D2/D12 already mandate.
+
+**Revisit when:** a future task's committed output cannot be expressed as a rendered src Map; that would be a BS-R2 finding for that task's quality sub-metric.
+
+## 2026-05-15 — R2a: src-scoped tscNoEmitSrc with an explicit scope guard; baseline points at it (Phase 1.5R DR2a)
+
+**Context:** Phase 1.5R remediation. Pre-fix the baseline typechecked its whole temp tree through the corpus tsconfig while the substrate typechecked rendered src only. Post-R1 the tsconfig is src-only, but a future re-add of `tests/**` would silently re-break equivalence unless the quality path asserts the scope.
+
+**Considered:** (a) rely on R1 alone; (b) add an explicit `tscNoEmitSrc` wrapper that asserts the resolved corpus `include` is src-only before delegating to the unchanged `tscNoEmit`.
+
+**Decided:** (b). `quality.ts` now exports `resolveCorpusTsconfigInclude`, `assertSrcOnlyScope`, and `tscNoEmitSrc`. The baseline `defaultValidateWorkingTree` uses `tscNoEmitSrc`; the original `tscNoEmit` remains unchanged for compatibility and existing regression guards.
+
+**Why:** The src-only typecheck invariant is now enforced where the quality probe runs, so a future `tests/` glob fails loudly instead of producing a non-equivalent benchmark number.
+
+**Design-doc impact:** none — additive helper enforcing the existing scorer-equivalence requirement.
+
+**Revisit when:** the corpus legitimately needs a non-`src/`-prefixed production glob; broaden the assertion while retaining the explicit `tests/` exclusion.
+
+## 2026-05-15 — R1: corpus typecheck scope is src-only; vitest is the test-based signal (Phase 1.5R DR1)
+
+**Context:** Phase 1.5R remediation. The N=1 round surfaced that `examples/medium/tests/format.test.ts` is written against the post-`add_parameter` signature, so `tsc --noEmit` over a scope including `tests/` fails on the unmodified seed and breaks the seed-clean invariant.
+
+**Considered:** (a) edit/delete the post-signature assertions to make the seed clean (BS-R1: weakens T01's bar); (b) exclude `tests/` from the corpus typecheck scope while keeping it in the vitest scope so the test-based signal remains fail-before/pass-after.
+
+**Decided:** (b). `examples/medium/tsconfig.json` `include` is now `["src/**/*.ts"]`. `compilerOptions`, `vitest.config.ts`, `tests/`, and all `src/` fixtures are unchanged. "The corpus compiles" (`tscClean`) now means "src compiles"; the task test signal runs under vitest. Key-free acceptance: unmodified seed src is `tsc --noEmit` clean, while `tests/` stays on disk, in the vitest include, and remains a real fail-before signal.
+
+**Why:** Restores the seed-clean invariant without weakening a task criterion. T01's post-task signature is still required by `evaluateT01TextCriteria` and by `tests/format.test.ts` running under vitest. BS-R1 did not fire.
+
+**Design-doc impact:** none — corrects an implementation regression and confirms validation-before-distribution discipline.
+
+**Revisit when:** the corpus gains a non-test src module that legitimately must be excluded, or a future task genuinely requires `tests/` in the typecheck scope (would reopen BS-R1).
+
 ## 2026-05-15 — Phase 1.5 N=1 validation round caught an invalid 4-task harness; remediation before any N=3
 
 **Context:** First keyed 4-task live round, N=1 validation (8 runs, $0.73), `claude-sonnet-4-6`. Run as a cheap gate before the N=3 distribution. It did its job: results were NOT a clean pattern and diagnosis found the harness invalid, not the substrate beaten.

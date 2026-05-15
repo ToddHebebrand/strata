@@ -20,7 +20,7 @@ import {
   scoreBaselineWorkingTree,
   type SharedCriteria
 } from "../score";
-import { tscNoEmit, vitestRun } from "../quality";
+import { tscNoEmitSrc, vitestRun } from "../quality";
 import type { TrialMetrics } from "../metrics";
 import type { BenchTaskId } from "../tasks";
 
@@ -263,7 +263,7 @@ async function defaultValidateWorkingTree(
     [...afterModules.entries()].some(
       ([key, text]) => beforeModules.get(key) !== text
     );
-  const { tscClean } = tscNoEmit(treeRoot);
+  const { tscClean } = tscNoEmitSrc(treeRoot);
   const { vitestPassed } = vitestRun(treeRoot);
   return { tscClean, vitestPassed, anyFileModified };
 }

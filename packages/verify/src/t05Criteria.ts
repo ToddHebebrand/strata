@@ -54,7 +54,7 @@ export function evaluateT05Criteria(
   batch: T05Batch,
   srcRoot: string,
   input: T05CriteriaInput
-): T05Criteria {
+): T05Criteria & { rendered: Map<string, string> } {
   const rendered = new Map<string, string>();
   for (const module of batch.modules) {
     rendered.set(
@@ -62,14 +62,15 @@ export function evaluateT05Criteria(
       renderModule(db, module.moduleId)
     );
   }
-  rendered.set(T05_TEST_KEY, input.seedTestText);
+  const scored = new Map(rendered);
+  scored.set(T05_TEST_KEY, input.seedTestText);
 
-  const text = evaluateT05TextCriteria(rendered, input.seedTestText);
+  const text = evaluateT05TextCriteria(scored, input.seedTestText);
   const operations = db
     .prepare(`SELECT tx_id, kind FROM operations`)
     .all() as OperationRow[];
 
-  return {
+  return withRendered({
     commitReturnedOk: input.commitReturnedOk === true,
     validateAfterCommitClean: input.validateAfterCommitClean === true,
     ...text,
@@ -77,12 +78,23 @@ export function evaluateT05Criteria(
       (operation) =>
         operation.tx_id === input.txId && operation.kind === "ReplaceBody"
     )
-  };
+  }, rendered);
 }
 
 function renderModule(db: Db, moduleId: string): string {
   const loaded = loadModule(db, moduleId);
   return renderWithSourceMap(loaded.module, loaded.children).text;
+}
+
+function withRendered<T extends object>(
+  criteria: T,
+  rendered: Map<string, string>
+): T & { rendered: Map<string, string> } {
+  Object.defineProperty(criteria, "rendered", {
+    value: rendered,
+    enumerable: false
+  });
+  return criteria as T & { rendered: Map<string, string> };
 }
 
 function mustGet(map: Map<string, string>, key: string): string {

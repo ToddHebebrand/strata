@@ -121,7 +121,7 @@ export function evaluateT03Criteria(
   batch: T03Batch,
   srcRoot: string,
   input: T03CriteriaInput
-): T03Criteria {
+): T03Criteria & { rendered: Map<string, string> } {
   const renderedBySuffix = new Map<string, string>();
   for (const module of batch.modules) {
     renderedBySuffix.set(
@@ -138,12 +138,12 @@ export function evaluateT03Criteria(
     )
     .all() as OperationRow[];
 
-  return {
+  return withRendered({
     commitReturnedOk: input.commitReturnedOk === true,
     validateAfterCommitClean: input.validateAfterCommitClean === true,
     ...text,
     operationRowAppended: operationLogged(operations, input.renameTxId)
-  };
+  }, renderedBySuffix);
 }
 
 export function emptyT03Criteria(): T03Criteria {
@@ -165,6 +165,17 @@ export function emptyT03Criteria(): T03Criteria {
 function renderModule(db: Db, moduleId: string): string {
   const loaded = loadModule(db, moduleId);
   return renderWithSourceMap(loaded.module, loaded.children).text;
+}
+
+function withRendered<T extends object>(
+  criteria: T,
+  rendered: Map<string, string>
+): T & { rendered: Map<string, string> } {
+  Object.defineProperty(criteria, "rendered", {
+    value: rendered,
+    enumerable: false
+  });
+  return criteria as T & { rendered: Map<string, string> };
 }
 
 function operationLogged(operations: OperationRow[], txId: string): boolean {

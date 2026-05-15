@@ -95,6 +95,13 @@ ANTHROPIC_API_KEY=... pnpm --filter @strata/bench bench:t03 -- --trials=3
 
 Defaults: N=3, model `claude-sonnet-4-6`, maxTurns 25, wall-time 240s. A round is `2 * N` live model runs and writes JSON + Markdown under `packages/bench/results/`. Use `--trials=0` for a dry-run that prints projected spend and writes nothing; use `--trials=5` only as an explicit budgeted operator choice; use `--keep-artifacts` to keep baseline temp trees for post-mortem. `pnpm -r test` never runs this and needs no key.
 
+**Phase 1.5R four-task re-validation (operator-only, key-gated, per-task budget form):**
+```bash
+ANTHROPIC_API_KEY=... pnpm --filter @strata/bench bench -- --trials=1 --task-budget=T01:maxTurns=40,wallMs=420000;T05:maxTurns=40,wallMs=300000
+```
+
+Omit `--task-budget` to use the artifact-derived defaults (`T01` 40t/420000ms, `T05` 40t/300000ms); `T03` and `T08` stay at the global 25t/240000ms unless explicitly overridden.
+
 The agent has no filesystem/bash tools (`tools: []`); its only callable
 tools are the eight `mcp__strata__*` structural tools. Replay mode currently
 uses a clearly labeled synthetic placeholder fixture until the operator
