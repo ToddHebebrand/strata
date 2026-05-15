@@ -1,0 +1,25 @@
+{
+  "name": "@strata/cli",
+  "version": "0.0.0",
+  "private": true,
+  "main": "dist/cli.js",
+  "types": "dist/cli.d.ts",
+  "bin": {
+    "strata": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run",
+    "roundtrip": "node dist/cli.js roundtrip"
+  },
+  "dependencies": {
+    "@strata/ingest": "workspace:*",
+    "@strata/render": "workspace:*",
+    "@strata/store": "workspace:*",
+    "typescript": "^5.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "vitest": "^3.2.4"
+  }
+}
