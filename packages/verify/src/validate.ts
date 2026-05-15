@@ -40,7 +40,7 @@ export function validate(db: Db, tx: TxHandle): Diagnostic[] {
     sourceMaps.set(normalizeFileName(module.payload), sourceMap);
   }
 
-  const options = loadCompilerOptions();
+  const options = loadCompilerOptions([...renderedFiles.keys()]);
   const host = ts.createCompilerHost(options, true);
   const originalGetSourceFile = host.getSourceFile.bind(host);
 
@@ -286,8 +286,8 @@ function rowToNode(row: unknown): NodeRow {
   };
 }
 
-function loadCompilerOptions(): ts.CompilerOptions {
-  const configPath = findTsconfigBase();
+function loadCompilerOptions(rootNames: string[]): ts.CompilerOptions {
+  const configPath = findNearestTsconfig(rootNames) ?? findTsconfigBase();
   const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
   if (configFile.error) {
     throw new Error(formatTsDiagnostic(configFile.error));
@@ -309,6 +309,26 @@ function loadCompilerOptions(): ts.CompilerOptions {
     noEmit: true,
     skipLibCheck: true
   };
+}
+
+function findNearestTsconfig(rootNames: string[]): string | undefined {
+  for (const rootName of rootNames) {
+    let dir = path.dirname(rootName);
+    while (true) {
+      const candidate = path.join(dir, "tsconfig.json");
+      if (ts.sys.fileExists(candidate)) {
+        return candidate;
+      }
+
+      const parent = path.dirname(dir);
+      if (parent === dir) {
+        break;
+      }
+      dir = parent;
+    }
+  }
+
+  return undefined;
 }
 
 function findTsconfigBase(): string {

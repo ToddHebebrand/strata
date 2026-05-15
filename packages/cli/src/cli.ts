@@ -7,6 +7,9 @@ import { render } from "@strata/render";
 import { insertNodes, loadModule, openDb } from "@strata/store";
 import ts from "typescript";
 import { runIngestBatch } from "./commands/ingestBatch";
+import { runRename } from "./commands/rename";
+import { describeSdkToolSchema } from "./commands/sdkSmoke";
+import { runT03 } from "./commands/t03";
 
 interface RoundtripResult {
   ok: boolean;
@@ -31,7 +34,47 @@ function main(argv: string[]): number {
     return 1;
   }
 
-  console.error("Usage: strata roundtrip <input.ts> | ingest-batch <rootDir> <dbPath>");
+  if (command === "rename" && inputPath && dbPath) {
+    const newName = argv[3];
+    if (!newName) {
+      console.error("Usage: strata rename <dbPath> <declarationId> <newName>");
+      return 1;
+    }
+    const result = runRename({
+      dbPath: inputPath,
+      declarationId: dbPath,
+      newName
+    });
+    console.log(JSON.stringify(result, null, 2));
+    return result.ok ? 0 : 1;
+  }
+
+  if (command === "rename") {
+    console.error("Usage: strata rename <dbPath> <declarationId> <newName>");
+    return 1;
+  }
+
+  if (command === "t03" && inputPath) {
+    const result = runT03({ corpusRoot: inputPath });
+    console.log(JSON.stringify(result, null, 2));
+    return result.commitOk && Object.values(result.criteria).every(Boolean)
+      ? 0
+      : 1;
+  }
+
+  if (command === "t03") {
+    console.error("Usage: strata t03 <examples/medium dir>");
+    return 1;
+  }
+
+  if (command === "sdk-smoke") {
+    console.log(JSON.stringify(describeSdkToolSchema(), null, 2));
+    return 0;
+  }
+
+  console.error(
+    "Usage: strata roundtrip <input.ts> | ingest-batch <rootDir> <dbPath> | rename <dbPath> <declarationId> <newName> | t03 <examples/medium dir> | sdk-smoke"
+  );
   return 1;
 }
 

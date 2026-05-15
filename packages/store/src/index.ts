@@ -28,6 +28,7 @@ export {
   type LoadedModule,
   type NodeRow
 } from "./nodes";
+export { rename_symbol, renameSymbol } from "./rename";
 export { openDb, type Db } from "./schema";
 export {
   begin,

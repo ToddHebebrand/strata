@@ -24,3 +24,4 @@ export {
   type StoreEvent,
   type StoreStats,
 } from "./types.ts";
+export type { User } from "./types/user.ts";

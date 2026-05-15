@@ -39,16 +39,40 @@ Resist scope creep into multi-language, human-compat, FUSE, git integration, or 
 
 ## Tooling commands
 
-Phase 0 uses a pnpm workspace with package-local TypeScript builds and Vitest tests.
+The monorepo uses pnpm workspaces with package-local TypeScript builds and Vitest tests.
 
 - Install dependencies: `pnpm install`
 - Build all packages: `pnpm -r build`
 - Test all packages: `pnpm -r test`
 - Test one package: `pnpm --filter @strata/<package> test`
-- Run the Phase 0 round-trip CLI: `node packages/cli/dist/cli.js roundtrip examples/phase0-sample.ts`
-- Run via the package script after building: `pnpm --filter @strata/cli roundtrip -- ../../examples/phase0-sample.ts`
 
-The benchmark harness is not implemented in Phase 0.
+Phase 0 round-trip CLI:
+```bash
+pnpm --filter @strata/cli build
+node packages/cli/dist/cli.js roundtrip examples/phase0-sample.ts
+```
+
+Phase 1 batch ingest, which populates a Strata DB from a directory tree:
+```bash
+node packages/cli/dist/cli.js ingest-batch <rootDir> <dbPath>
+```
+
+Phase 1 rename smoke, which validates and commits through `@strata/verify`:
+```bash
+node packages/cli/dist/cli.js rename <dbPath> <declarationId> <newName>
+```
+
+Phase 1 T03 acceptance, the hero rename benchmark:
+```bash
+node packages/cli/dist/cli.js t03 examples/medium
+```
+
+BS4 SDK schema smoke:
+```bash
+node packages/cli/dist/cli.js sdk-smoke
+```
+
+The benchmark harness is not implemented yet; it arrives in Phase 4.
 
 ## Working style for this repo
 

@@ -32,6 +32,68 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — Phase 1 verticalizes around `rename_symbol`
+
+**Context:** Phase 1 completed Tasks 10-14 after the substrate pieces from Tasks 0-9 were already green. The design doc's Phase 1 remains broader than this run's implemented mutation surface.
+
+**Considered:**
+- Implement the whole Phase 1 mutation set now.
+- Ship the single `rename_symbol` vertical slice with the infrastructure it forced, then broaden later.
+
+**Decided:** Phase 1 ships as the `rename_symbol` vertical slice: identifier-level ingest, TypeChecker references, transactions, operation log, render splicing, `@strata/verify` validate-before-commit, CLI smoke commands, and the T03 acceptance path.
+
+**Why:** The T03 path exercises the load-bearing substrate without prematurely designing every mutation. The stable-ID, overlay, JSDoc traversal, source-map, validation, and SDK-schema decisions have all been tested against the same hero operation.
+
+**Design-doc impact:** none for now. `strata-design.md` still describes the broader target; this records the implemented Phase 1 slice.
+
+**Revisit when:** Phase 1.5 adds the second structural mutation and tests whether the same transaction/reference/render spine generalizes.
+
+## 2026-05-15 — BS4 cleared with SDK Zod tool schemas
+
+**Context:** Phase 1 Task 12 probed whether `@anthropic-ai/claude-agent-sdk` can express the future Strata tool shapes before Phase 3 agent work starts.
+
+**Considered:**
+- A hand-written JSON-schema-shaped smoke object only.
+- A smoke harness that also type-checks against the SDK's real `tool(...)` / `SdkMcpToolDefinition` API.
+
+**Decided:** Use the SDK's typed `tool(...)` surface with explicit Zod schemas for `TxHandle`, `NodeId`, and `Diagnostic[]`, plus a serializable `sdk-smoke` command output for inspection.
+
+**Why:** The installed SDK exposes `tool` and accepts Zod raw-shape schemas. The smoke harness type-checks and runs, so BS4 is cleared without inventing a custom schema representation.
+
+**Design-doc impact:** none — this confirms the planned Phase 3 SDK direction remains viable.
+
+**Revisit when:** Phase 3 adds the real agent tool registry, or an SDK upgrade changes `SdkMcpToolDefinition` / `tool(...)`.
+
+## 2026-05-15 — Validate uses the nearest corpus tsconfig before root defaults
+
+**Context:** Phase 1 Task 11 T03 initially failed validation before any rename-specific check: `examples/medium` imports `.ts` extensions and uses `import.meta` / top-level await, but `@strata/verify` was compiling rendered files with the monorepo `tsconfig.base.json` CommonJS defaults.
+
+**Considered:**
+- Keep using only `tsconfig.base.json` and special-case T03.
+- Load the nearest `tsconfig.json` from the rendered module paths, falling back to `tsconfig.base.json` when no corpus config exists.
+
+**Decided:** `@strata/verify` now loads the nearest corpus `tsconfig.json` for rendered module roots and falls back to `tsconfig.base.json`.
+
+**Why:** The corpus already compiles cleanly under its own `examples/medium/tsconfig.json`; validation should check rendered output under the same compiler options as the corpus, not unrelated package defaults. This was an implementation bug, not a TypeChecker resolution wall.
+
+**Design-doc impact:** supersedes the earlier Phase 0 assumption that one root base config is enough for verification.
+
+**Revisit when:** validation spans multiple package roots with incompatible configs.
+
+## 2026-05-15 — BS2 T03 timing recorded below total-run threshold
+
+**Context:** Phase 1 Task 11 timed the built T03 path: ingest `examples/medium`, rename `User` to `Account`, validate through `@strata/verify`, commit, and assert acceptance criteria.
+
+**Considered:** Stop if the run exceeded the plan's total-run timing note or if a single-module ingest / affected-node transaction clearly crossed the BS2 thresholds.
+
+**Decided:** Continue. The final built command reported `wallTimeMs = 511.3`; `/usr/bin/time -p` reported `real 0.69`, `user 1.21`, `sys 0.06`.
+
+**Why:** The full command is well below the plan's 5s T03 total-run note, and no single 2k-LOC ingest or ~50-node transaction threshold was clearly exceeded by this fixture.
+
+**Design-doc impact:** none.
+
+**Revisit when:** T03 grows to the intended ~15 modules / ~40 type positions, or validate timing becomes agent-loop visible.
+
 ## 2026-05-15 — Render source maps are per-module statement spans
 
 **Context:** Phase 1 Task 9 moved validation into the new `@strata/verify` package and maps TypeScript diagnostics from rendered files back to graph nodes.

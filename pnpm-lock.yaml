@@ -20,6 +20,9 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@22.19.19)
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
   packages/cli:
     dependencies:
@@ -32,6 +35,9 @@ importers:
       '@strata/store':
         specifier: workspace:*
         version: link:../store
+      '@strata/verify':
+        specifier: workspace:*
+        version: link:../verify
       typescript:
         specifier: ^5.8.3
         version: 5.9.3
