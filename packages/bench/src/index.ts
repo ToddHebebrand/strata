@@ -1,7 +1,8 @@
 /**
  * @strata/bench — the Phase 4 T03 benchmark harness: substrate
- * (runAgentT03) vs. file-based baseline, N trials each, scored through
- * one provably-equivalent text-criteria core, reported as distributions.
+ * (runAgentTask/runAgentT03) vs. file-based baseline, N trials each,
+ * scored through provably-equivalent text-criteria cores and reported as
+ * distributions.
  *
  * The shared T03 scorer core intentionally stays in @strata/verify and is
  * imported through that package's barrel. Moving it here would create a
@@ -23,11 +24,15 @@ export {
 } from "./metrics";
 export {
   isSharedSuccess,
+  isTaskSharedSuccess,
   readModuleMap,
+  scoreBaselineTask,
   scoreBaselineWorkingTree,
   scoreSharedCriteria,
+  scoreTaskSharedCriteria,
   type ScoreInput,
-  type SharedCriteria
+  type SharedCriteria,
+  type TaskSharedCriteria
 } from "./score";
 export {
   countBaselineRetries,
@@ -43,6 +48,7 @@ export {
 } from "./session";
 export {
   extractSubstrateMetrics,
+  runSubstrateTaskTrial,
   runSubstrateTrial,
   type ExtractSubstrateInput,
   type RunSubstrateTrialParams
@@ -51,6 +57,7 @@ export {
   BASELINE_TOOLS,
   baselinePrompt,
   materializeCorpus,
+  runBaselineTaskTrial,
   runBaselineTrial,
   scoreBaselineTrial,
   type MaterializeCorpusOptions,
@@ -59,8 +66,11 @@ export {
 } from "./configs/baseline";
 export {
   buildReport,
+  buildSuiteReport,
   renderMarkdown,
-  type BenchmarkReport
+  renderSuiteMarkdown,
+  type BenchmarkReport,
+  type SuiteReport
 } from "./report";
 export {
   runBenchmark,
@@ -73,4 +83,11 @@ export {
   vitestRun,
   type QualityResult
 } from "./quality";
+export {
+  ALL_TASK_IDS,
+  BENCH_TASKS,
+  type BenchTask,
+  type BenchTaskId,
+  type BenchTaskRunParams
+} from "./tasks";
 export { defaultSubstrateResultQuality } from "./configs/substrate";

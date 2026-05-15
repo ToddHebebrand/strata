@@ -18,9 +18,15 @@ import {
 } from "@strata/store";
 import {
   emptyT03Criteria,
+  evaluateT01Criteria,
   evaluateT03Criteria,
+  evaluateT05Criteria,
+  evaluateT08Criteria,
   validate,
-  type T03Criteria
+  type T01Criteria,
+  type T03Criteria,
+  type T05Criteria,
+  type T08Criteria
 } from "@strata/verify";
 import { SessionLog } from "./log";
 import { STRATA_SYSTEM_PROMPT } from "./prompt";
@@ -105,6 +111,28 @@ export interface AgentT03Result {
   transcript: ReplayStep[];
 }
 
+export type BenchTaskId = "T01" | "T03" | "T05" | "T08";
+
+export type TaskCriteria =
+  | T01Criteria
+  | T03Criteria
+  | T05Criteria
+  | T08Criteria;
+
+export interface AgentTaskResult {
+  taskId: BenchTaskId;
+  criteria: TaskCriteria;
+  terminalReason: TerminalReason;
+  log: SessionLog;
+  transcript: ReplayStep[];
+}
+
+export interface RunAgentTaskParams extends RunAgentT03Params {
+  taskId: BenchTaskId;
+  /** Byte-exact seed tests/dateRange.test.ts; required for T05 scoring. */
+  seedTestText?: string;
+}
+
 // Passed to the SDK's `disallowedTools` ("removed from the model's context
 // and cannot be used"). `tools: []` is documented to disable all built-ins,
 // but SDK 0.2.118 still injects `LSP` (a language-server tool that can
@@ -132,6 +160,35 @@ export const T03_PROMPT =
   "re-exports and JSDoc. Leave unrelated string literals with the value " +
   '`"User"` (such as audit log discriminators) untouched. The full test ' +
   "suite must pass.";
+
+export const T01_PROMPT =
+  "Add a `timezone: string` parameter to `formatTimestamp` (after the " +
+  'existing `ts` parameter). It should default to `"UTC"`. Update every ' +
+  "callsite to pass the appropriate timezone: callsites inside modules " +
+  'under `src/server/` should pass `"UTC"`; callsites under `src/ui/` ' +
+  'should pass `"local"`. All other callsites should be left to take the ' +
+  "default. The tests in `tests/format.test.ts` must pass.";
+
+export const T05_PROMPT =
+  "The test `tests/dateRange.test.ts` is failing. Investigate, fix the " +
+  "underlying bug, and make the test suite pass without weakening any " +
+  "assertion. Do not modify the test file.";
+
+export const T08_PROMPT =
+  'Change the return type of `getRole` to `"admin" | "editor" | ' +
+  '"viewer"`. Update the function body so the literal type is preserved ' +
+  "(use `as const` or explicit annotation, not `as` casts that erase " +
+  "information). Update every caller that benefits from the narrower type " +
+  "- for example, replace any exhaustive `if (role === ...)` guards with " +
+  "`switch` statements where appropriate, and remove any `as` casts that " +
+  "are now redundant. The test suite must pass.";
+
+export const TASK_PROMPTS: Record<BenchTaskId, string> = {
+  T01: T01_PROMPT,
+  T03: T03_PROMPT,
+  T05: T05_PROMPT,
+  T08: T08_PROMPT
+};
 
 function collectTsFiles(rootDir: string): { path: string; text: string }[] {
   const out: { path: string; text: string }[] = [];
@@ -172,13 +229,37 @@ function substituteTx(args: unknown, tx: TxHandle | undefined): unknown {
   return args;
 }
 
-export async function runAgentT03(
-  params: RunAgentT03Params
-): Promise<AgentT03Result> {
-  const srcRoot = path.join(params.corpusRoot, "src");
+interface ScoreInput {
+  commitReturnedOk: boolean;
+  validateAfterCommitClean: boolean;
+  txId: string;
+}
+
+type ScoreFromCommitted<C extends TaskCriteria> = (
+  db: Db,
+  batch: ReturnType<typeof ingestBatch>,
+  srcRoot: string,
+  input: ScoreInput
+) => C;
+
+async function runAgentForPrompt<C extends TaskCriteria>(params: {
+  runParams: RunAgentT03Params;
+  taskId: BenchTaskId;
+  actor: string;
+  prompt: string;
+  emptyCriteria: () => C;
+  scoreFromCommitted: ScoreFromCommitted<C>;
+}): Promise<{
+  criteria: C;
+  terminalReason: TerminalReason;
+  log: SessionLog;
+  transcript: ReplayStep[];
+}> {
+  const { runParams } = params;
+  const srcRoot = path.join(runParams.corpusRoot, "src");
   const batch = ingestBatch(collectTsFiles(srcRoot));
   const db = openDb(":memory:");
-  const log = new SessionLog(params.logPath);
+  const log = new SessionLog(runParams.logPath);
   const transcript: ReplayStep[] = [];
   let terminalReason: TerminalReason = "error_other";
 
@@ -186,16 +267,16 @@ export async function runAgentT03(
     insertNodes(db, batch.allNodes);
     insertReferences(db, batch.references);
 
-    const ctx: StrataSessionContext = { db, actor: "agent-t03" };
+    const ctx: StrataSessionContext = { db, actor: params.actor };
     const tools = createStrataTools(ctx);
     const byName = new Map(tools.map((definition) => [definition.name, definition]));
 
     log.append({
       type: "session_start",
       ts: Date.now(),
-      model: params.model,
-      maxTurns: params.maxTurns,
-      task: "T03",
+      model: runParams.model,
+      maxTurns: runParams.maxTurns,
+      task: params.taskId,
       actor: ctx.actor
     });
 
@@ -256,15 +337,16 @@ export async function runAgentT03(
       return parsed;
     }
 
-    if (params.replayTranscript) {
+    if (runParams.replayTranscript) {
       let turn = 0;
-      for (const step of params.replayTranscript) {
+      for (const step of runParams.replayTranscript) {
         await runStep(step.tool, step.args, turn++);
       }
       terminalReason = "replay_complete";
     } else {
       terminalReason = await runLiveSession({
-        params,
+        params: runParams,
+        prompt: params.prompt,
         ctx,
         log,
         transcript,
@@ -278,17 +360,121 @@ export async function runAgentT03(
     rollback(db, checkTx);
 
     const criteria = liveTx
-      ? evaluateT03Criteria(db, batch, srcRoot, {
+      ? params.scoreFromCommitted(db, batch, srcRoot, {
           commitReturnedOk: lastCommitOk,
           validateAfterCommitClean: postCommitDiagnostics.length === 0,
-          renameTxId: liveTx.id
+          txId: liveTx.id
         })
-      : emptyT03Criteria();
+      : params.emptyCriteria();
 
     return { criteria, terminalReason, log, transcript };
   } finally {
     db.close();
   }
+}
+
+export async function runAgentT03(
+  params: RunAgentT03Params
+): Promise<AgentT03Result> {
+  return runAgentForPrompt({
+    runParams: params,
+    taskId: "T03",
+    actor: "agent-t03",
+    prompt: T03_PROMPT,
+    emptyCriteria: emptyT03Criteria,
+    scoreFromCommitted: (db, batch, srcRoot, input) =>
+      evaluateT03Criteria(db, batch, srcRoot, {
+        commitReturnedOk: input.commitReturnedOk,
+        validateAfterCommitClean: input.validateAfterCommitClean,
+        renameTxId: input.txId
+      })
+  });
+}
+
+export async function runAgentTask(
+  params: RunAgentTaskParams
+): Promise<AgentTaskResult> {
+  if (params.taskId === "T03") {
+    const result = await runAgentT03(params);
+    return { taskId: "T03", ...result };
+  }
+
+  const taskId = params.taskId as Exclude<BenchTaskId, "T03">;
+  const prompt = TASK_PROMPTS[taskId];
+  const actor = `agent-${taskId.toLowerCase()}`;
+  const seedTestText =
+    params.seedTestText ??
+    (taskId === "T05"
+      ? readFileSync(
+          path.join(params.corpusRoot, "tests", "dateRange.test.ts"),
+          "utf8"
+        )
+      : undefined);
+
+  const result = await runAgentForPrompt({
+    runParams: params,
+    taskId,
+    actor,
+    prompt,
+    emptyCriteria: () => emptyTaskCriteria(taskId),
+    scoreFromCommitted: (db, batch, srcRoot, input) => {
+      if (taskId === "T01") {
+        return evaluateT01Criteria(db, batch, srcRoot, {
+          commitReturnedOk: input.commitReturnedOk,
+          validateAfterCommitClean: input.validateAfterCommitClean,
+          txId: input.txId
+        });
+      }
+      if (taskId === "T05") {
+        return evaluateT05Criteria(db, batch, srcRoot, {
+          commitReturnedOk: input.commitReturnedOk,
+          validateAfterCommitClean: input.validateAfterCommitClean,
+          txId: input.txId,
+          seedTestText: seedTestText ?? ""
+        });
+      }
+      return evaluateT08Criteria(db, batch, srcRoot, {
+        commitReturnedOk: input.commitReturnedOk,
+        validateAfterCommitClean: input.validateAfterCommitClean,
+        txId: input.txId
+      });
+    }
+  });
+
+  return { taskId, ...result };
+}
+
+function emptyTaskCriteria(taskId: Exclude<BenchTaskId, "T03">): TaskCriteria {
+  if (taskId === "T01") {
+    return {
+      commitReturnedOk: false,
+      validateAfterCommitClean: false,
+      signatureHasTimezone: false,
+      defaultIsUtcString: false,
+      serverCallsitesUtc: false,
+      uiCallsitesLocalOrDefault: false,
+      hofCallsiteNotMisedited: false,
+      operationRowAppended: false
+    };
+  }
+  if (taskId === "T05") {
+    return {
+      commitReturnedOk: false,
+      validateAfterCommitClean: false,
+      comparisonIsHalfOpen: false,
+      noClosedIntervalRemains: false,
+      testFileByteIdentical: false,
+      operationRowAppended: false
+    };
+  }
+  return {
+    commitReturnedOk: false,
+    validateAfterCommitClean: false,
+    returnTypeIsLiteralUnion: false,
+    noAsStringCastOnResult: false,
+    callersTypecheckUnderNarrowType: false,
+    operationRowAppended: false
+  };
 }
 
 /**
@@ -356,6 +542,7 @@ export function normalizeTranscriptForFixture(
 
 async function runLiveSession(deps: {
   params: RunAgentT03Params;
+  prompt?: string;
   ctx: StrataSessionContext;
   log: SessionLog;
   transcript: ReplayStep[];
@@ -405,7 +592,7 @@ async function runLiveSession(deps: {
 
   try {
     for await (const message of query({
-      prompt: singlePrompt(T03_PROMPT),
+      prompt: singlePrompt(deps.prompt ?? T03_PROMPT),
       options
     })) {
       if (message.type === "system" && message.subtype === "init") {

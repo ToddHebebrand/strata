@@ -1,5 +1,7 @@
 import {
+  runAgentTask,
   runAgentT03,
+  type AgentTaskResult,
   type AgentT03Result,
   type SessionLogEvent
 } from "@strata/agent";
@@ -24,6 +26,7 @@ import path from "node:path";
 import { countSubstrateRetries } from "../retry";
 import { renderStoreToDir, tscNoEmit, vitestRun } from "../quality";
 import type { TrialMetrics } from "../metrics";
+import type { BenchTaskId } from "../tasks";
 
 /** The ten shared criteria. operationRowAppended is substrate-only. */
 const SHARED_KEYS = [
@@ -39,6 +42,33 @@ const SHARED_KEYS = [
   "jsdocReferencesRenamed"
 ] as const;
 
+const SHARED_KEYS_BY_TASK: Record<BenchTaskId, readonly string[]> = {
+  T01: [
+    "commitReturnedOk",
+    "validateAfterCommitClean",
+    "signatureHasTimezone",
+    "defaultIsUtcString",
+    "serverCallsitesUtc",
+    "uiCallsitesLocalOrDefault",
+    "hofCallsiteNotMisedited"
+  ],
+  T03: SHARED_KEYS,
+  T05: [
+    "commitReturnedOk",
+    "validateAfterCommitClean",
+    "comparisonIsHalfOpen",
+    "noClosedIntervalRemains",
+    "testFileByteIdentical"
+  ],
+  T08: [
+    "commitReturnedOk",
+    "validateAfterCommitClean",
+    "returnTypeIsLiteralUnion",
+    "noAsStringCastOnResult",
+    "callersTypecheckUnderNarrowType"
+  ]
+};
+
 function findResultEvent(
   events: readonly SessionLogEvent[]
 ): Extract<SessionLogEvent, { type: "result" }> | undefined {
@@ -50,7 +80,8 @@ function findResultEvent(
 
 export interface ExtractSubstrateInput {
   trial: number;
-  result: AgentT03Result;
+  result: AgentT03Result | AgentTaskResult;
+  taskId?: BenchTaskId;
   harnessWallTimeMs: number;
   resultQuality: { tscClean: boolean; vitestPassed: boolean };
 }
@@ -64,6 +95,8 @@ export function extractSubstrateMetrics(
   input: ExtractSubstrateInput
 ): TrialMetrics {
   const { result } = input;
+  const taskId = input.taskId ?? ("taskId" in result ? result.taskId : "T03");
+  const criteria = result.criteria as unknown as Record<string, boolean>;
   const resultEvent = findResultEvent(result.log.events);
   const usage = resultEvent?.usage ?? {
     inputTokens: 0,
@@ -99,13 +132,13 @@ export function extractSubstrateMetrics(
     toolInvocations: toolCalls.length,
     failuresRetries: countSubstrateRetries(retryEvents),
     totalCostUsd: resultEvent?.totalCostUsd ?? 0,
-    success: SHARED_KEYS.every((key) => result.criteria[key] === true),
+    success: SHARED_KEYS_BY_TASK[taskId].every((key) => criteria[key] === true),
     resultQuality: input.resultQuality,
     terminalReason:
       result.terminalReason === "replay_complete"
         ? "error_other"
         : result.terminalReason,
-    operationRowAppended: result.criteria.operationRowAppended
+    operationRowAppended: criteria.operationRowAppended === true
   };
 }
 
@@ -186,24 +219,53 @@ export function defaultSubstrateResultQuality(
 export async function runSubstrateTrial(
   params: RunSubstrateTrialParams
 ): Promise<TrialMetrics> {
+  return runSubstrateTaskTrial("T03", params);
+}
+
+export async function runSubstrateTaskTrial(
+  taskId: BenchTaskId,
+  params: RunSubstrateTrialParams
+): Promise<TrialMetrics> {
   const startedAt = Date.now();
-  const result = await runAgentT03({
-    corpusRoot: params.corpusRoot,
-    model: params.model,
-    maxTurns: params.maxTurns,
-    wallTimeMs: params.wallTimeMs,
-    logPath: params.logPath
-  });
+  const result =
+    taskId === "T03"
+      ? await runAgentT03({
+          corpusRoot: params.corpusRoot,
+          model: params.model,
+          maxTurns: params.maxTurns,
+          wallTimeMs: params.wallTimeMs,
+          logPath: params.logPath
+        })
+      : await runAgentTask({
+          taskId,
+          corpusRoot: params.corpusRoot,
+          model: params.model,
+          maxTurns: params.maxTurns,
+          wallTimeMs: params.wallTimeMs,
+          logPath: params.logPath
+        });
   const harnessWallTimeMs = Date.now() - startedAt;
   const resultQualityProbe =
     params.resultQuality ??
-    ((_: AgentT03Result) => defaultSubstrateResultQuality(params.corpusRoot)());
-  const resultQuality = await resultQualityProbe(result);
+    ((_: AgentT03Result | AgentTaskResult) =>
+      taskId === "T03"
+        ? defaultSubstrateResultQuality(params.corpusRoot)()
+        : Promise.resolve(criteriaQuality(result)));
+  const resultQuality = await resultQualityProbe(result as AgentT03Result);
 
   return extractSubstrateMetrics({
     trial: params.trial,
     result,
+    taskId,
     harnessWallTimeMs,
     resultQuality
   });
+}
+
+function criteriaQuality(
+  result: AgentT03Result | AgentTaskResult
+): { tscClean: boolean; vitestPassed: boolean } {
+  const criteria = result.criteria as unknown as Record<string, boolean>;
+  const clean = criteria.validateAfterCommitClean === true;
+  return { tscClean: clean, vitestPassed: clean };
 }

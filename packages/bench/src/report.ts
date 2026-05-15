@@ -1,7 +1,8 @@
 import { aggregate, type ConfigAggregate, type TrialMetrics } from "./metrics";
+import type { BenchTaskId } from "./tasks";
 
 export interface BenchmarkReport {
-  task: "T03";
+  task: string;
   model: string;
   n: number;
   generatedAt: string;
@@ -22,7 +23,7 @@ const RETRY_RULE =
   "commit_transaction:false; baseline: non-zero tsc/test run or re-edit of " +
   "an already-edited file).";
 
-function overlaps(a: number[], b: number[]): boolean {
+export function overlaps(a: number[], b: number[]): boolean {
   if (a.length === 0 || b.length === 0) {
     return true;
   }
@@ -34,7 +35,7 @@ function overlaps(a: number[], b: number[]): boolean {
 }
 
 export function buildReport(input: {
-  task: "T03";
+  task: string;
   model: string;
   n: number;
   substrate: TrialMetrics[];
@@ -67,6 +68,65 @@ export function buildReport(input: {
     comparisonNote,
     retryRule: RETRY_RULE,
     costNote: `Round cost is ${2 * input.n} live runs (2 configs x N).`
+  };
+}
+
+export interface SuiteReport {
+  model: string;
+  n: number;
+  generatedAt: string;
+  perTask: Record<string, BenchmarkReport>;
+  patternHolds: boolean;
+  patternNote: string;
+  totalCostUsd: number;
+}
+
+const STRUCTURAL: BenchTaskId[] = ["T01", "T03", "T08"];
+const CONTROL: BenchTaskId = "T05";
+
+export function buildSuiteReport(input: {
+  model: string;
+  n: number;
+  perTask: Record<
+    string,
+    { substrate: TrialMetrics[]; baseline: TrialMetrics[] }
+  >;
+  totalCostUsd: number;
+}): SuiteReport {
+  const perTask: Record<string, BenchmarkReport> = {};
+  for (const [id, runs] of Object.entries(input.perTask)) {
+    perTask[id] = buildReport({
+      task: id,
+      model: input.model,
+      n: input.n,
+      substrate: runs.substrate,
+      baseline: runs.baseline,
+      totalCostUsd:
+        runs.substrate.reduce((sum, trial) => sum + trial.totalCostUsd, 0) +
+        runs.baseline.reduce((sum, trial) => sum + trial.totalCostUsd, 0)
+    });
+  }
+
+  const separates = (id: string): boolean =>
+    perTask[id] !== undefined &&
+    !overlaps(
+      perTask[id].substrate.totalTokens.values,
+      perTask[id].baseline.totalTokens.values
+    );
+  const structuralSeparate = STRUCTURAL.every((id) => separates(id));
+  const controlSeparates = separates(CONTROL);
+
+  return {
+    model: input.model,
+    n: input.n,
+    generatedAt: new Date().toISOString(),
+    perTask,
+    patternHolds: structuralSeparate && !controlSeparates,
+    patternNote:
+      "The pattern holds iff the structural tasks (T01,T03,T08) separate AND " +
+      "the control (T05) does not; overlapping structural tasks or a " +
+      "separated control are reported as stated, not massaged.",
+    totalCostUsd: input.totalCostUsd
   };
 }
 
@@ -128,5 +188,31 @@ export function renderMarkdown(report: BenchmarkReport): string {
     lines.push("");
   }
 
+  return lines.join("\n");
+}
+
+export function renderSuiteMarkdown(report: SuiteReport): string {
+  const lines: string[] = [];
+  lines.push("# Phase 1.5 four-task benchmark - substrate vs. baseline");
+  lines.push("");
+  lines.push(
+    `Model: \`${report.model}\` · N per config: ${report.n} · generated ${report.generatedAt}`
+  );
+  lines.push(`Round total cost: $${report.totalCostUsd.toFixed(2)}`);
+  lines.push("");
+
+  for (const [id, taskReport] of Object.entries(report.perTask)) {
+    lines.push(`## ${id}`);
+    lines.push(renderMarkdown(taskReport).split("\n").slice(2).join("\n"));
+    lines.push("");
+  }
+
+  lines.push("## cross-task pattern");
+  lines.push(report.patternNote);
+  lines.push(
+    `Observed: pattern ${report.patternHolds ? "HOLDS" : "does NOT hold"} ` +
+      "at this N (an observed separation, not a significance claim)."
+  );
+  lines.push("");
   return lines.join("\n");
 }

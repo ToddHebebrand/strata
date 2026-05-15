@@ -5,11 +5,14 @@ import {
   type SdkMcpToolDefinition
 } from "@anthropic-ai/claude-agent-sdk";
 import {
+  add_parameter,
   begin,
+  change_return_type,
   find_declarations,
   get_references,
   read_node,
   rename_symbol,
+  replace_body,
   rollback,
   type Db,
   type DeclarationKind,
@@ -61,9 +64,9 @@ const declarationKindSchema = z
   .describe("Declaration kind to filter by.");
 
 /**
- * Build the eight Strata tools bound to one shared session context. Every
+ * Build the Strata tools bound to one shared session context. Every
  * handler closes over ctx, so a TxHandle returned by begin_transaction is
- * usable by later rename_symbol/validate/commit_transaction calls.
+ * usable by later mutation/validate/commit_transaction calls.
  */
 export function createStrataTools(
   ctx: StrataSessionContext
@@ -135,6 +138,73 @@ export function createStrataTools(
     }
   );
 
+  const addParameterTool = tool(
+    "add_parameter",
+    "Add a parameter to a function declaration and insert a corresponding argument at every callsite the reference graph can resolve. Requires an open transaction; mutates the transaction overlay only. You supply the parameter name, type, position, and optional default. Callsites are found through the reference graph, not text search: unrelated identifiers that merely share the name are never touched, and a reference used in a position that is not a direct call is left for validate to report rather than silently mis-edited.",
+    {
+      tx: txHandleSchema,
+      function_id: nodeIdSchema,
+      name: z.string().min(1).describe("New parameter identifier."),
+      type: z.string().min(1).describe("New parameter TypeScript type."),
+      position: z
+        .number()
+        .int()
+        .min(0)
+        .describe("Zero-based position among the existing parameters."),
+      default: z.string().optional().describe("Optional default value expression.")
+    },
+    async (args) => {
+      add_parameter(
+        ctx.db,
+        args.tx as TxHandle,
+        args.function_id,
+        args.name,
+        args.type,
+        args.position,
+        args.default
+      );
+      return textResult({ ok: true });
+    }
+  );
+
+  const changeReturnTypeTool = tool(
+    "change_return_type",
+    "Change a function declaration's return-type annotation, or add one if absent. Requires an open transaction; mutates the overlay only. This edits the declared return type only; it does not rewrite the function body or callers. After changing a return type, use validate to see which return statements or callers the compiler now objects to, then make those structural changes deliberately.",
+    {
+      tx: txHandleSchema,
+      function_id: nodeIdSchema,
+      new_type: z.string().min(1).describe("The new return type.")
+    },
+    async (args) => {
+      change_return_type(
+        ctx.db,
+        args.tx as TxHandle,
+        args.function_id,
+        args.new_type
+      );
+      return textResult({ ok: true });
+    }
+  );
+
+  const replaceBodyTool = tool(
+    "replace_body",
+    "Replace a function declaration's entire body with new code you provide, including the surrounding braces. Requires an open transaction; mutates the overlay only. This is the low-level tool for body logic changes that are not a rename, a parameter change, or a return-type change. It does not analyze the new body's references; rely on validate to confirm the new body type-checks before you commit.",
+    {
+      tx: txHandleSchema,
+      function_id: nodeIdSchema,
+      new_body: z.string().min(2).describe("New body including its { } braces.")
+    },
+    async (args) => {
+      replace_body(
+        ctx.db,
+        args.tx as TxHandle,
+        args.function_id,
+        args.new_body
+      );
+      return textResult({ ok: true });
+    }
+  );
+
   const validateTool = tool(
     "validate",
     "Type-check the transaction's pending state and return diagnostics. Returns [] when clean. Call this after a mutation and before commit_transaction.",
@@ -165,6 +235,9 @@ export function createStrataTools(
     readNodeTool,
     beginTransactionTool,
     renameSymbolTool,
+    addParameterTool,
+    changeReturnTypeTool,
+    replaceBodyTool,
     validateTool,
     commitTransactionTool,
     rollbackTransactionTool
@@ -177,6 +250,9 @@ export const STRATA_TOOL_NAMES = [
   "read_node",
   "begin_transaction",
   "rename_symbol",
+  "add_parameter",
+  "change_return_type",
+  "replace_body",
   "validate",
   "commit_transaction",
   "rollback_transaction"

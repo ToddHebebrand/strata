@@ -32,6 +32,42 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — Bench task abstraction; T03 path preserved unchanged (Phase 1.5 Task 12 / D14)
+
+**Context:** The Phase 4 harness was T03-specific (`task:"T03"`, hard-wired scorer/report). The four-task pattern needs T01/T05/T08 beside T03 without rewriting the proven path.
+
+**Decided:** Added `BenchTask` (`packages/bench/src/tasks/`, one module per task), generalized `runner.ts` to loop a `--tasks` list (default all four), kept `bench:t03` as `--tasks=T03`, and added `bench` for the four-task default. Per-task baseline/substrate runners delegate to the matching `@strata/verify` per-task core through `scoreBaselineTask` / `runAgentTask`; T05 threads seed and post-edit test text symmetrically for the byte-identical anti-cheat. The report gained `buildSuiteReport`/`renderSuiteMarkdown`: per-task distributions plus a cross-task pattern section stating the claim and falsifier (structural tasks separate and T05 does not, else report honestly). Existing `buildReport`, `runSubstrateTrial`, `runBaselineTrial`, and `runAgentT03` signatures are preserved for the Phase 4 T03 path.
+
+**Why:** Generalize the harness without forking the T03 regression path. Scorer cores stay in `@strata/verify` to preserve the acyclic package graph and config-equivalent scoring discipline.
+
+**Design-doc impact:** none — additive generalization on the reserved bench slot.
+
+**Revisit when:** a fifth task is added (add a task module and verify core; the runner does not change) or the live round shows a per-task scorer is not config-portable (BS15-C — do not ship that task's number).
+
+## 2026-05-15 — Agent surface 8 -> 11; minimal prompt additions; BS15-E framing (Phase 1.5 Task 11 / D13)
+
+**Context:** The three new mutation tools must be agent-visible. Going 8->11 may degrade tool selection (BS15-E).
+
+**Decided:** Registered `add_parameter`, `change_return_type`, and `replace_body` in `tools.ts` over the shared `{ db, actor }` context, with zod shapes reusing `nodeIdSchema`/`txHandleSchema`, and added all three to `STRATA_TOOL_NAMES`/qualified tool names for the runtime guard. Prompt changes are minimal: one plain-English sentence per new tool plus a "Choosing the right mutation" paragraph. The single worked pattern stays rename and key-free tests assert no benchmark-specific prompt recipes. The obsolete pre-existing tool-surface count assertion was updated 8->11; T03 behavior tests were not changed.
+
+**Why:** Mechanical registration; the hermetic isolation contract is unchanged. BS15-E is an empirical live-round question, not something inferred from no-key tests. Wrong-tool paths must not be scored as substrate wins and task-specific recipes must not be added to hide tool-selection confusion.
+
+**Design-doc impact:** takes the mutation-tool count to four (rename + the three), inside `strata-design.md` Phase 1 "5-7" target.
+
+**Revisit when:** the live round shows the agent cannot reliably select the right mutation tool after honest prompt iteration (BS15-E — surface as the tool-granularity finding; do not paper over).
+
+## 2026-05-15 — Agent session generalized to per-task entry points; T03 path preserved (Phase 1.5 Task 10)
+
+**Context:** Phase 4's substrate path is `runAgentT03`/`T03_PROMPT`, T03-specific. The four-task benchmark needs T01/T05/T08 substrate runs without forking the proven T03 loop.
+
+**Decided:** Extracted the `runAgentT03` body into an internal `runAgentForPrompt(params, prompt, scoreFn)`; `runAgentT03` now delegates to it with public signature/return unchanged. Added `TASK_PROMPTS` and `runAgentTask(taskId, ...)` selecting prompt plus the matching `@strata/verify` per-task scorer. `runLiveSession`'s prompt is parameterized and defaults to `T03_PROMPT`. Hermetic Options are reused unchanged.
+
+**Why:** One session loop, zero intended behavior change for T03, and no live call added. Replay/synthetic tests remain the key-free guard; the existing T03 replay and live-test path stay the regression net.
+
+**Design-doc impact:** none — additive generalization.
+
+**Revisit when:** a fifth task is added (extend `TASK_PROMPTS` and a scorer; the loop does not change).
+
 ## 2026-05-15 — T05 control scorer core in @strata/verify; symmetric anti-cheat (Phase 1.5 D12 — T05, BS15-C/BS15-D)
 
 **Context:** T05 is the reasoning control: parity is the credibility anchor. Its criteria include the anti-cheat "test file byte-identical to seed", which MUST be applied identically for both configs or the control is invalid.

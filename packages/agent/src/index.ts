@@ -12,11 +12,20 @@ export {
   loadTranscriptFixture,
   normalizeTranscriptForFixture,
   runAgentT03,
+  runAgentTask,
   singlePrompt,
+  T01_PROMPT,
   T03_PROMPT,
+  T05_PROMPT,
+  T08_PROMPT,
+  TASK_PROMPTS,
   type AgentT03Result,
+  type AgentTaskResult,
+  type BenchTaskId,
   type ReplayStep,
   type RunAgentT03Params,
+  type RunAgentTaskParams,
+  type TaskCriteria,
   type TerminalReason
 } from "./session";
 export {

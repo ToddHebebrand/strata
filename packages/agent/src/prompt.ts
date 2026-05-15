@@ -59,6 +59,12 @@ begin_transaction opens a transaction and returns the transaction handle. Keep t
 
 rename_symbol renames one declaration and every resolved reference to it as a structural operation. It requires a transaction handle, a declaration ID, and the new identifier text. It mutates pending transaction state only.
 
+add_parameter adds a parameter to a function declaration and inserts a corresponding argument at every callsite the reference graph resolves. It requires a transaction handle. References used as plain values rather than direct calls are reported by validate as arity mismatches, not silently edited.
+
+change_return_type changes or adds a function declaration's return-type annotation only. It requires a transaction handle. It does not rewrite the body or callers; use validate to see what the compiler now objects to and change those deliberately.
+
+replace_body replaces a function declaration's whole body with text you provide, including its braces. It requires a transaction handle. It is the low-level tool for body logic changes that are not a rename, parameter, or return-type change; it does not analyze the new body's references, so rely on validate.
+
 validate type-checks the pending transaction state and returns diagnostics, or an empty list when clean. It requires the transaction handle.
 
 commit_transaction validates and finalizes the transaction. It requires the transaction handle. On success it closes the transaction and records the operation history. On failure it returns diagnostics and leaves the transaction uncommitted.
@@ -66,6 +72,10 @@ commit_transaction validates and finalizes the transaction. It requires the tran
 rollback_transaction discards the pending changes and closes the transaction. Use it when validation shows the current attempt should not be finalized or when you cannot proceed safely.
 
 The ordering dependencies are real. Mutating or validating requires a transaction handle. Reference-aware mutation requires the declaration ID of the declaration to change. Both should come from earlier tool output, not from memory or invention.
+
+## Choosing the right mutation
+
+Pick the structural tool that matches intent so the operation log records what you meant: rename_symbol for changing a symbol's name; add_parameter for adding a parameter and fanning the argument to callsites; change_return_type for the declared return type; replace_body only when the change is genuinely body logic that none of the others express. Prefer the specific structural tool over replace_body when the change is a rename, a parameter change, or a return-type change. Do not encode task-specific recipes; reason from the actual graph each time.
 
 ## One worked pattern (rename)
 

@@ -5,7 +5,7 @@ export interface SessionStartEvent {
   ts: number;
   model: string;
   maxTurns: number;
-  task: "T03";
+  task: "T01" | "T03" | "T05" | "T08";
   actor: string;
 }
 

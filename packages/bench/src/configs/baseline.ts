@@ -1,19 +1,28 @@
-import { cpSync, existsSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
-import { T03_PROMPT } from "@strata/agent";
+import { T03_PROMPT, TASK_PROMPTS } from "@strata/agent";
 import { collectBaselineSession } from "../session";
 import { countBaselineRetries } from "../retry";
 import {
   readModuleMap,
   isSharedSuccess,
+  scoreBaselineTask,
   scoreBaselineWorkingTree,
   type SharedCriteria
 } from "../score";
 import { tscNoEmit, vitestRun } from "../quality";
 import type { TrialMetrics } from "../metrics";
+import type { BenchTaskId } from "../tasks";
 
 export const BASELINE_TOOLS = [
   "Read",
@@ -86,12 +95,15 @@ export function scoreBaselineTrial(
  * The task text is the exact T03_PROMPT string used by the substrate, with
  * only the irreducible file-world context prepended.
  */
-export function baselinePrompt(workingTreeRoot: string): string {
+export function baselinePrompt(
+  workingTreeRoot: string,
+  prompt: string = T03_PROMPT
+): string {
   return (
     `The TypeScript codebase is on disk at ${workingTreeRoot} ` +
     `(sources under ${path.join(workingTreeRoot, "src")}). ` +
     "You may read, edit, and run `tsc --noEmit` and the test suite freely.\n\n" +
-    T03_PROMPT
+    prompt
   );
 }
 
@@ -110,6 +122,10 @@ export interface RunBaselineTrialParams {
   }>;
 }
 
+export interface RunBaselineTaskTrialParams extends RunBaselineTrialParams {
+  taskId?: BenchTaskId;
+}
+
 /**
  * One live baseline trial. This intentionally gives the baseline normal file
  * tools and a real writable temp tree, while excluding Strata tools and
@@ -119,8 +135,19 @@ export interface RunBaselineTrialParams {
 export async function runBaselineTrial(
   params: RunBaselineTrialParams
 ): Promise<TrialMetrics> {
+  return runBaselineTaskTrial("T03", params);
+}
+
+export async function runBaselineTaskTrial(
+  taskId: BenchTaskId,
+  params: RunBaselineTrialParams
+): Promise<TrialMetrics> {
   const { root, srcRoot } = materializeCorpus(params.corpusRoot);
   const beforeModules = readModuleMap(srcRoot);
+  const seedTestText =
+    taskId === "T05"
+      ? readFileSync(path.join(root, "tests", "dateRange.test.ts"), "utf8")
+      : undefined;
   const startedAt = Date.now();
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), params.wallTimeMs);
@@ -142,7 +169,7 @@ export async function runBaselineTrial(
 
     const session = await collectBaselineSession(
       query({
-        prompt: baselinePrompt(root),
+        prompt: baselinePrompt(root, TASK_PROMPTS[taskId]),
         options
       })
     );
@@ -153,11 +180,34 @@ export async function runBaselineTrial(
     const commitReturnedOk =
       session.terminalReason === "success" && probe.anyFileModified;
     const validateAfterCommitClean = probe.tscClean;
-    const criteria = scoreBaselineWorkingTree({
-      srcRoot,
-      commitReturnedOk,
-      validateAfterCommitClean
-    });
+    const criteriaResult =
+      taskId === "T03"
+        ? {
+            criteria: scoreBaselineWorkingTree({
+              srcRoot,
+              commitReturnedOk,
+              validateAfterCommitClean
+            }),
+            success: false
+          }
+        : scoreBaselineTask({
+            taskId,
+            srcRoot,
+            commitReturnedOk,
+            validateAfterCommitClean,
+            seedTestText,
+            testFileText:
+              taskId === "T05"
+                ? readFileSync(
+                    path.join(root, "tests", "dateRange.test.ts"),
+                    "utf8"
+                  )
+                : undefined
+          });
+    const success =
+      taskId === "T03"
+        ? isSharedSuccess(criteriaResult.criteria as SharedCriteria)
+        : criteriaResult.success;
     const result = session.result;
 
     return {
@@ -181,7 +231,7 @@ export async function runBaselineTrial(
         }))
       ),
       totalCostUsd: result?.totalCostUsd ?? 0,
-      success: isSharedSuccess(criteria),
+      success,
       resultQuality: {
         tscClean: probe.tscClean,
         vitestPassed: probe.vitestPassed
