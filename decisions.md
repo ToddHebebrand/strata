@@ -32,6 +32,22 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — Stable node IDs use path plus structural child path
+
+**Context:** Phase 1 Task 1 needs deterministic node IDs before identifier-level ingest and rename operations can preserve identity across non-structural mutations.
+
+**Considered:**
+- Path + structural-position hash: `modulePath`, dot-joined child index path, and node kind.
+- Content-anchored IDs based on source text or syntax-node content.
+
+**Decided:** Use `sha1(modulePath + ":" + childIndexPath + ":" + kind)`, truncated to 16 hex characters, implemented as the single `nodeId()` helper in `@strata/store`.
+
+**Why:** This is deterministic across re-ingest of unchanged files and stable across Phase 1 rename mutations, which only change identifier text and do not alter parent/child shape. Content anchoring would better survive statement insertion, but it is more work than Phase 1's rename slice needs.
+
+**Design-doc impact:** none yet — this resolves a Phase 1 plan-level open choice without changing the design direction.
+
+**Revisit when:** operations need identity stability across structural edits such as inserted statements or moved declarations.
+
 ## 2026-05-14 — EOF trivia stored as a sibling `EndOfFileTrivia` node, not on the module
 
 **Context:** Phase 0 ingest review found trailing trivia (comments/whitespace between the last statement's end and EOF) was silently dropped because `sourceFile.statements` doesn't include the `endOfFileToken`. A real codebase with a trailing footer comment would round-trip lossy without ingest noticing.
@@ -60,7 +76,7 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 **Revisit when:** multi-file verification is needed (Phase 2). The current implementation only type-checks the single rendered file; Phase 2 will need program-level verification across all rendered modules.
 
-
+## 2026-05-14 — Use TypeScript Compiler API for parse + print in Phase 0 (drop tree-sitter and Prettier)
 
 **Context:** Phase 0 bootstrap. The design doc specifies `tree-sitter-typescript` for parsing and `prettier` for canonical rendering, with the TS compiler API reserved for type-checking in `verify`.
 
@@ -76,4 +92,3 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 **Design-doc impact:** Supersedes the Tech stack § "Parser" recommendation and the Render § "prettier" line *for Phase 0*. Will revisit at Phase 1 boundary; if expression-level lowering reveals TS-printer output to be inadequate, reopen.
 
 **Revisit when:** (a) we need richer formatting control than `ts.createPrinter()` provides; (b) ingest perf becomes a bottleneck (swc); (c) we need incremental reparse for live editing (tree-sitter).
-

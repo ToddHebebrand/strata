@@ -1,0 +1,20 @@
+import Database from "better-sqlite3";
+
+export type Db = Database.Database;
+
+export function openDb(path: string): Db {
+  const db = new Database(path);
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS nodes (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      parent_id TEXT,
+      child_index INTEGER,
+      payload TEXT
+    );
+    CREATE INDEX IF NOT EXISTS nodes_parent_kind_idx ON nodes(parent_id, kind);
+  `);
+
+  return db;
+}
