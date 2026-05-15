@@ -32,6 +32,48 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-15 — add_parameter callsite resolution probed; BS15-B did NOT fire (Phase 1.5 D10 — probe)
+
+**Context:** BS15-B: the genuine-new-work risk of Phase 1.5. `node_references` resolves reference identifiers, not enclosing CallExpression argument lists.
+
+**Considered:** (a) accept BS15-B as a substrate wall; (b) investigate whether re-parsing the referring statement + walking up from the reference identifier to its enclosing call (callee === that identifier) reliably resolves callsites, with HOF/aliased uses correctly classified as non-argument arity-risk sites.
+
+**Decided / Observed:** (b). `packages/store/src/callsites.ts` `resolveCallsites(db, functionId)` resolves direct and template-literal callsites and correctly classifies `.map(formatTimestamp)` and `const f = formatTimestamp` as `nonCallReferences` (compiler-flagged arity breaks, never silently mis-edited). The probe fixture produced counts `{ resolvedDirectCallsites: 2, arityRiskReferences: 2, unresolvedReferences: 0 }`; import-specifier references are ignored as import edges, not callsites or arity-risk sites. Public TS APIs only (BS1 discipline). The substrate's reference-integrity pitch holds for callsite fan-out on the T01 stress shapes tested here.
+
+**Why:** A missed callsite must not be papered over with text search — that abandons the substrate's whole argument. The probe is isolated and early so a fired signal stops the phase before the tool is built.
+
+**Design-doc impact:** none — confirms the spec crux's add_parameter feasibility argument held in implementation.
+
+**Revisit when:** the T01 corpus or live round surfaces a callsite shape (e.g. re-exported-then-called, decorator) the walk-up misses — re-probe before assuming a wall, same as BS1.
+
+## 2026-05-15 — replace_body shipped; input is validated body text, not structured AST (Phase 1.5 D9, Open Question 3)
+
+**Context:** Phase 1 stores bodies as raw text and renders canonically; `replace_body` needs an input shape.
+
+**Considered:** (a) structured AST body input + a body-construction API + structured render path; (b) validated `{ ... }` body text the tool syntactically pre-checks.
+
+**Decided:** (b). `packages/store/src/replaceBody.ts` takes a body string including braces, wraps it as `function __probe__() <body>` + `ts.createSourceFile`, requires one `ts.Block` consuming the whole text and zero compiler syntactic diagnostics through the public `ts.createProgram` API, then queues one whole-body `textSpanMutation` + one `ReplaceBody` op row (params: function_id + new_body_len; the literal body is recoverable from the post-commit payload). Interior identifiers of the new body are NOT lowered/re-resolved into `node_references` — the same limitation Phase 1 documented; validate-before-commit is the safety net (a body referencing something undefined fails tsc and commit blocks). Identical-body / non-FunctionDeclaration / no-body are no-op/throw.
+
+**Why:** Matches the storage model; (a) is the deferred Phase 2 lowering and out of scope. T05's fix is a single-statement comparison flip with no new cross-module references, so the interior-reference caveat does not bite the control.
+
+**Design-doc impact:** none — implements spec § tool specs / `replace_body` + Open Question 3.
+
+**Revisit when:** a task needs interior-reference integrity after `replace_body` (logged Phase 2 decision; would be BS15-A if T05 needed it — it does not).
+
+## 2026-05-15 — change_return_type shipped on the rename spine (Phase 1.5 D8)
+
+**Context:** Phase 1.5's lowest-risk tool: change a function declaration's return-type annotation.
+
+**Considered:** n/a — settled by spec; this records the build shape.
+
+**Decided:** `packages/store/src/changeReturnType.ts` follows the `rename.ts` spine: declaration lookup → `locateSpan(payload,"returnType")` → one `textSpanMutation` (replace existing annotation, or insert `: T` after the param list `)` when absent) → one `ChangeReturnType` op row. Identical-type and non-FunctionDeclaration are no-op/throw, mirroring `rename_symbol`. The tool edits ONLY the annotation; caller repair is agent reasoning (T08 framing), not a tool fan-out. Type validity is a public-API syntactic pre-check (wrap + `ts.createSourceFile` + compiler syntactic diagnostics through `ts.createProgram`), not a hand-rolled grammar or internal parser diagnostics.
+
+**Why:** Clean spine extension on the Task 1 overlay + Task 2 locator; no lowering (BS15-A did not fire for this tool).
+
+**Design-doc impact:** none — implements spec § tool specs / `change_return_type`.
+
+**Revisit when:** a task needs the tool to also repair callers (it does not — that is agent reasoning per spec/T08).
+
 ## 2026-05-15 — On-demand re-parse span location, no ingest lowering (Phase 1.5 D7, Open Question 1)
 
 **Context:** The three tools must locate parameter-list / return-type / body spans inside a function declaration on the current statement-raw-text + identifier-child model.

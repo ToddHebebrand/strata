@@ -29,11 +29,21 @@ export {
   type NodeRow
 } from "./nodes";
 export {
+  resolveCallsites,
+  type Callsite,
+  type CallsiteResolution,
+  type CallsiteResolutionCounts,
+  type NonCallReference,
+  type UnresolvedReference
+} from "./callsites";
+export {
   readNode,
   read_node,
   type ReadNodeOptions,
   type ReadNodeResult
 } from "./read_node";
+export { change_return_type, changeReturnType } from "./changeReturnType";
+export { replace_body, replaceBody } from "./replaceBody";
 export { rename_symbol, renameSymbol } from "./rename";
 export { openDb, type Db } from "./schema";
 export { locateSpan, type Span, type SpanKind } from "./spanReparse";
