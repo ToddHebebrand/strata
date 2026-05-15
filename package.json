@@ -11,6 +11,7 @@
     "test": "pnpm -r test"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.2.118",
     "@types/node": "^22.15.29",
     "typescript": "^5.8.3",
     "vitest": "^3.2.4"
