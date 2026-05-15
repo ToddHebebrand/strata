@@ -4,3 +4,6 @@ dist/
 .strata.db
 .strata.db-*
 *.out.ts
+.env
+.env.*
+!.env.example
