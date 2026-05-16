@@ -18,10 +18,32 @@ export type T08TextCriteria = Pick<
   | "callersTypecheckUnderNarrowType"
 >;
 
+/**
+ * The text of the `describeRole` caller only (declaration through end of
+ * module). `callersTypecheckUnderNarrowType` is about how the *caller*
+ * consumes the narrowed return type, so it must be scoped to the caller:
+ * a coincidental `role === "admin"` inside `getRole`'s own body must not
+ * satisfy it (the pre-2026-05-16 whole-module scan did, a false positive),
+ * and the equally type-safe `switch (role) { case "admin": }` form must be
+ * accepted, not just `if (role === "admin")` (the whole-module scan
+ * rejected it, a false negative — see decisions.md 2026-05-16 T08 entry).
+ */
+function describeRoleRegion(permissions: string): string {
+  const i = permissions.search(/function\s+describeRole\b/);
+  return i === -1 ? "" : permissions.slice(i);
+}
+
 export function evaluateT08TextCriteria(
   modules: Map<string, string>
 ): T08TextCriteria {
   const permissions = mustGet(modules, "lib/permissions.ts");
+  const caller = describeRoleRegion(permissions);
+  const bindsNarrowedResultWithoutCast =
+    /const\s+role\s*=\s*getRole\(\s*userId\s*\)\s*;/.test(caller) &&
+    !/getRole\([^)]*\)\s*as\s+\w/.test(caller);
+  const discriminates = (member: string): boolean =>
+    new RegExp(`role\\s*===\\s*"${member}"`).test(caller) ||
+    new RegExp(`case\\s+"${member}"\\s*:`).test(caller);
   return {
     returnTypeIsLiteralUnion:
       /function\s+getRole\s*\([^)]*\)\s*:\s*"admin"\s*\|\s*"editor"\s*\|\s*"viewer"/.test(
@@ -30,9 +52,9 @@ export function evaluateT08TextCriteria(
     noAsStringCastOnResult:
       !/getRole\([^)]*\)\s*as\s+string\b/.test(permissions),
     callersTypecheckUnderNarrowType:
-      /const\s+role\s*=\s*getRole\(\s*userId\s*\)\s*;/.test(permissions) &&
-      /role\s*===\s*"admin"/.test(permissions) &&
-      /role\s*===\s*"editor"/.test(permissions)
+      bindsNarrowedResultWithoutCast &&
+      discriminates("admin") &&
+      discriminates("editor")
   };
 }
 

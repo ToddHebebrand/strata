@@ -65,6 +65,58 @@ describe("evaluateT08TextCriteria", () => {
     expect(evaluateT08TextCriteria(modules).noAsStringCastOnResult).toBe(false);
   });
 
+  it("accepts a switch-form caller (intent: any type-safe consumption, not just if-chains)", () => {
+    // Behaviorally identical to correctModules() but describeRole uses an
+    // exhaustive `switch (role)` instead of `if (role === ...)`. This is the
+    // T08 N=3 trial-1 shape: tsc-clean, vitest-passing, committed, correct.
+    const modules = new Map<string, string>([
+      [
+        "lib/permissions.ts",
+        'const ROLES: Record<string, "admin" | "editor" | "viewer"> = {\n' +
+          '  u1: "admin",\n  u2: "editor"\n};\n\n' +
+          'export function getRole(userId: string): "admin" | "editor" | "viewer" {\n' +
+          "  const raw = ROLES[userId];\n" +
+          '  if (raw === "admin" || raw === "editor") return raw;\n' +
+          '  return "viewer";\n}\n\n' +
+          "export function describeRole(userId: string): string {\n" +
+          "  const role = getRole(userId);\n" +
+          "  switch (role) {\n" +
+          '    case "admin":  return "Administrator";\n' +
+          '    case "editor": return "Editor";\n' +
+          '    default:       return "Viewer";\n' +
+          "  }\n}\n"
+      ]
+    ]);
+    expect(
+      evaluateT08TextCriteria(modules).callersTypecheckUnderNarrowType
+    ).toBe(true);
+  });
+
+  it("is NOT satisfied by a coincidental role === match outside describeRole", () => {
+    // describeRole binds cleanly but does NOT discriminate the narrowed
+    // union at all (just returns it); getRole's body coincidentally contains
+    // `role === "admin"` / `role === "editor"`. The OLD whole-module scan
+    // returns true off getRole's body — a false positive. The criterion
+    // must target the CALLER: this must be false.
+    const modules = new Map<string, string>([
+      [
+        "lib/permissions.ts",
+        'const ROLES: Record<string, "admin" | "editor" | "viewer"> = {\n' +
+          '  u1: "admin",\n  u2: "editor"\n};\n\n' +
+          'export function getRole(userId: string): "admin" | "editor" | "viewer" {\n' +
+          "  const role = ROLES[userId];\n" +
+          '  if (role === "admin" || role === "editor") return role;\n' +
+          '  return "viewer";\n}\n\n' +
+          "export function describeRole(userId: string): string {\n" +
+          "  const role = getRole(userId);\n" +
+          "  return role;\n}\n"
+      ]
+    ]);
+    expect(
+      evaluateT08TextCriteria(modules).callersTypecheckUnderNarrowType
+    ).toBe(false);
+  });
+
   it("BS15-C: identical booleans across file text and rendered store text", () => {
     const fileForm = correctModules();
     const inputs = [...fileForm.entries()].map(([rel, text]) => ({
