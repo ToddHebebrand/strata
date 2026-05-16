@@ -16,7 +16,7 @@ On a reference-aware **rename** across a real multi-module TypeScript codebase �
 
 Disjoint distributions, ~3.5× fewer tokens, ~2.2× faster, both 3/3 success with identical output quality. Observed separation at N=3 (not a significance claim), and it is robust — it survived a fully adversarially-validated harness and a prompt change.
 
-**Honest scope:** this win is demonstrated for *atomic single-operation* edits (rename). It does **not** yet generalize to multi-step refactors (`add_parameter`/`change_return_type`/a bugfix): those tools pass 170 unit tests but the agent cannot yet effectively wield them, and prompt engineering was *proven insufficient* to bridge the gap. The full, honest story — including the diagnosed boundary and the named next research direction — is in **[`docs/RESULTS.md`](docs/RESULTS.md)**.
+**Honest scope:** this win is demonstrated for *atomic single-operation* edits (rename). It does **not** yet generalize to multi-step refactors (`add_parameter`/`change_return_type`/a bugfix): the tools pass the unit suite but the agent cannot yet effectively wield them, and prompt engineering was *proven insufficient* to bridge the gap. The one deeper lever that diagnosis named — gating commit on the real test suite, not just type-checking — **has since been implemented** (key-free green, 176 passing; the agent gate and benchmark scorer are now one shared function); whether it moves the boundary is a pending operator-run keyed measurement, not yet a claim. The full, honest story — the diagnosed boundary, the built lever, and what remains unmeasured — is in **[`docs/RESULTS.md`](docs/RESULTS.md)**.
 
 ## Architecture
 
@@ -52,7 +52,7 @@ pnpm --filter @strata/bench bench -- --trials=3 --tasks=T03
 
 ## Status
 
-Research artifact. TypeScript only. Phases 0–1.5 complete. The thesis is demonstrated for atomic structural edits and bounded honestly for multi-step ones. Not production-grade; not multi-language; not multi-client. The next research lever is documented in `docs/RESULTS.md` (gate agent commits on behavioral test-acceptance, not just type-checking).
+Research artifact. TypeScript only. Phases 0–1.5 complete. The thesis is demonstrated for atomic structural edits and bounded honestly for multi-step ones. Not production-grade; not multi-language; not multi-client. The next research lever (gate agent commits on behavioral test-acceptance, not just type-checking) has been **implemented and is green key-free** as of 2026-05-16; its keyed benchmark validation — T01/T05/T08 with T03 as the regression guard — is the pending operator step, with the outcome to be logged in `decisions.md` whatever it is. Details in `docs/RESULTS.md`.
 
 ## License
 

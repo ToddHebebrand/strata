@@ -1,6 +1,6 @@
 # Strata — Results
 
-*The complete, honest story. Status: 2026-05-15. Authoritative decision trail: [`decisions.md`](../decisions.md). Architecture: [`strata-design.md`](../strata-design.md).*
+*The complete, honest story. Status: 2026-05-16. Authoritative decision trail: [`decisions.md`](../decisions.md). Architecture: [`strata-design.md`](../strata-design.md).*
 
 ## The thesis
 
@@ -59,19 +59,22 @@ A fair, general system-prompt + tool-description rework (explore-then-act discip
 - **The negative is also bounded.** "Not agent-effective" was shown for three tools on this corpus/model; it is diagnosed, not merely observed, but it is not proof of an impossibility.
 - **TypeScript only**; the substrate leans on the TS Compiler API (a Rust port would need its own resolver — a known, logged consideration, not undertaken).
 
-## The clear next research direction
+## The named next lever — now implemented, pending keyed validation (2026-05-16)
 
-The boundary has one substantive remaining lever, named precisely so a successor can pick it up: **the agent loop must gate commit on behavioral task-acceptance (run the tests), not just `tsc`-clean.** This single gap underlies both T08 and (post-prompt-fix) T01. It is a loop/architecture redesign — a new research arc, not a prompt pass — and it, not more tuning, is where the multi-step generalization question should be reopened. A second open lever: evaluate a stronger model at the 11-tool multi-decision surface.
+The boundary's one substantive lever — **the agent loop must gate commit on behavioral task-acceptance (run the tests), not just `tsc`-clean** — has now been built. The on-disk render+tsc+test runner was lowered into `@strata/verify` so the agent's commit gate and the benchmark scorer are *one shared function by construction*; `commit_transaction` now refuses a change that type-checks but fails the corpus test suite, returning the failing tests to the agent the same way type errors already are — on live runs only, leaving the proven T03 path and the (now 176) key-free tests byte-unchanged. The build record — including an attempted error-swallowing deviation that was caught and rejected, then fixed properly — is logged in [`decisions.md`](../decisions.md) (2026-05-16); the spec and task plan are under [`docs/specs/`](specs/2026-05-16-behavioral-commit-gate-design.md) and [`docs/superpowers/plans/`](superpowers/plans/2026-05-16-behavioral-commit-gate.md).
+
+This is the *buildable* deliverable only. **Whether it closes the boundary is not yet measured** — that requires the operator's keyed re-run (T01/T05/T08 with T03 as the regression guard). The honest prior expectation stands: this directly attacks T08 and the post-prompt T01 confident-wrong commit, but a commit-time gate cannot rescue T05, where the agent never reaches commit. That round's result will be logged in `decisions.md` whatever it is, under bail signals BG-1..BG-4. A second lever remains untouched and open: evaluate a stronger model at the 11-tool multi-decision surface.
 
 ## What is reproducible
 
 ```
-pnpm install && pnpm -r build && pnpm -r test     # 170 passing, 2 key-gated skipped
+pnpm install && pnpm -r build && pnpm -r test     # 176 passing, 2 key-gated skipped
 node packages/cli/dist/cli.js roundtrip <file.ts>  # Phase 0
 node packages/cli/dist/cli.js t03 ./examples/medium # Phase 1 acceptance (programmatic)
 # Live agent + benchmark (needs ANTHROPIC_API_KEY; writes gitignored results/):
 pnpm --filter @strata/bench bench -- --trials=0      # dry-run, cost projection
 pnpm --filter @strata/bench bench -- --trials=3 --tasks=T03
+pnpm --filter @strata/bench bench -- --trials=1 --tasks=T01,T05,T08,T03  # behavioral-gate re-run (operator)
 ```
 
 The two key-gated agent tests are reproduced key-free in CI via a committed real transcript fixture. Raw benchmark artifacts are gitignored by design (reproducible, cost-bearing, operator-run); the durable findings live in [`decisions.md`](../decisions.md).
@@ -82,4 +85,4 @@ A 5–10 minute demo video (per `strata-design.md` § Phase 5) is the one artifa
 
 ## Bottom line
 
-Strata demonstrates, under adversarial scrutiny, that removing the file abstraction makes an agent measurably more efficient at an atomic structural edit — fewer tokens, less time, fewer steps, no quality loss. It also demonstrates, with equal rigor, that this advantage does not yet generalize to multi-step refactors, that the cheap (prompt) fix does not work, and exactly which deeper lever remains. A proven win, a precisely-bounded scope, a diagnosed boundary, and a falsified easy answer — that is the result.
+Strata demonstrates, under adversarial scrutiny, that removing the file abstraction makes an agent measurably more efficient at an atomic structural edit — fewer tokens, less time, fewer steps, no quality loss. It also demonstrates, with equal rigor, that this advantage does not yet generalize to multi-step refactors, that the cheap (prompt) fix does not work, and exactly which deeper lever remains. A proven win, a precisely-bounded scope, a diagnosed boundary, and a falsified easy answer — that is the result. The one deeper lever that diagnosis named has since been built and is green key-free; whether it moves the boundary is the next measurement, not a claim made here.
