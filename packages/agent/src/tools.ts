@@ -18,7 +18,12 @@ import {
   type DeclarationKind,
   type TxHandle
 } from "@strata/store";
-import { commit, validate } from "@strata/verify";
+import {
+  commit,
+  commitWithBehavioralGate,
+  validate,
+  type AcceptanceContext
+} from "@strata/verify";
 import { z } from "zod/v4";
 
 /** A stable Strata graph node ID (sha1-derived, 16 hex). */
@@ -51,6 +56,12 @@ export const diagnosticSchema = z.object({
 export interface StrataSessionContext {
   db: Db;
   actor: string;
+  /**
+   * When set, commit_transaction enforces the behavioral gate (corpus tests
+   * must pass, not just tsc). Left undefined for replay/key-free runs so the
+   * deterministic tsc-only commit() path is preserved.
+   */
+  acceptance?: AcceptanceContext;
 }
 
 function textResult(value: unknown) {
@@ -214,9 +225,14 @@ export function createStrataTools(
 
   const commitTransactionTool = tool(
     "commit_transaction",
-    "Validate and finalize the transaction. If diagnostics exist it refuses to finalize and returns { ok: false, diagnostics }. On a clean validate it finalizes and returns { ok: true }.",
+    "Finalize the transaction. It finalizes ONLY if the transaction both type-checks AND the project's real test suite passes. If the type-checker reports errors it returns { ok: false, diagnostics }. If the code type-checks but the tests fail it returns { ok: false, testFailures } with the failing test output - the change is NOT finalized; fix the behavior and try again. On a clean type-check with passing tests it finalizes and returns { ok: true }. Type-clean is not done; the tests passing is done.",
     { tx: txHandleSchema },
-    async (args) => textResult(commit(ctx.db, args.tx as TxHandle))
+    async (args) =>
+      textResult(
+        ctx.acceptance
+          ? commitWithBehavioralGate(ctx.db, args.tx as TxHandle, ctx.acceptance)
+          : commit(ctx.db, args.tx as TxHandle)
+      )
   );
 
   const rollbackTransactionTool = tool(

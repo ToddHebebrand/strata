@@ -271,7 +271,15 @@ async function runAgentForPrompt<C extends TaskCriteria>(params: {
     insertNodes(db, batch.allNodes);
     insertReferences(db, batch.references);
 
-    const ctx: StrataSessionContext = { db, actor: params.actor };
+    const ctx: StrataSessionContext = {
+      db,
+      actor: params.actor,
+      // Replay/key-free runs keep the deterministic tsc-only commit() path;
+      // only live (model-driven) runs enforce the behavioral gate.
+      acceptance: runParams.replayTranscript
+        ? undefined
+        : { corpusRoot: runParams.corpusRoot, srcRoot }
+    };
     const tools = createStrataTools(ctx);
     const byName = new Map(tools.map((definition) => [definition.name, definition]));
 
