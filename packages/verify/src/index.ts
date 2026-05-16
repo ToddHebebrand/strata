@@ -50,3 +50,7 @@ export {
   type QualityResult,
   type CorpusAcceptanceResult
 } from "./corpusRun";
+export {
+  TASK_BEHAVIORAL_FIXTURES,
+  behavioralFixturesForTask
+} from "./taskBehavioralFixtures";
