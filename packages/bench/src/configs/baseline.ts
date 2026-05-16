@@ -20,7 +20,7 @@ import {
   scoreBaselineWorkingTree,
   type SharedCriteria
 } from "../score";
-import { tscNoEmitSrc, vitestRun } from "../quality";
+import { tscNoEmitSrc, vitestRun, behavioralFixturesForTask } from "../quality";
 import type { TrialMetrics } from "../metrics";
 import type { BenchTaskId } from "../tasks";
 
@@ -176,7 +176,7 @@ export async function runBaselineTaskTrial(
     const harnessWallTimeMs = Date.now() - startedAt;
     const probe = params.validateWorkingTree
       ? await params.validateWorkingTree(srcRoot)
-      : await defaultValidateWorkingTree(root, srcRoot, beforeModules);
+      : await defaultValidateWorkingTree(root, srcRoot, beforeModules, behavioralFixturesForTask(taskId));
     const commitReturnedOk =
       session.terminalReason === "success" && probe.anyFileModified;
     const validateAfterCommitClean = probe.tscClean;
@@ -251,7 +251,8 @@ export async function runBaselineTaskTrial(
 async function defaultValidateWorkingTree(
   treeRoot: string,
   srcRoot: string,
-  beforeModules: Map<string, string>
+  beforeModules: Map<string, string>,
+  fixtures: readonly string[]
 ): Promise<{
   tscClean: boolean;
   vitestPassed: boolean;
@@ -264,6 +265,6 @@ async function defaultValidateWorkingTree(
       ([key, text]) => beforeModules.get(key) !== text
     );
   const { tscClean } = tscNoEmitSrc(treeRoot);
-  const { vitestPassed } = vitestRun(treeRoot);
+  const { vitestPassed } = vitestRun(treeRoot, fixtures);
   return { tscClean, vitestPassed, anyFileModified };
 }
