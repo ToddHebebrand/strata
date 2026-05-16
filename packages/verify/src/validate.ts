@@ -22,7 +22,13 @@ export type CommitResult =
   | { ok: true }
   | { ok: false; diagnostics: Diagnostic[] };
 
-export function validate(db: Db, tx: TxHandle): Diagnostic[] {
+export function renderPendingModules(
+  db: Db,
+  tx: TxHandle
+): {
+  renderedFiles: Map<string, string>;
+  sourceMaps: Map<string, SourceMapEntry[]>;
+} {
   const overlay = getOverlay(tx);
   const renderedFiles = new Map<string, string>();
   const sourceMaps = new Map<string, SourceMapEntry[]>();
@@ -40,6 +46,12 @@ export function validate(db: Db, tx: TxHandle): Diagnostic[] {
     renderedFiles.set(normalizeFileName(module.payload), text);
     sourceMaps.set(normalizeFileName(module.payload), sourceMap);
   }
+
+  return { renderedFiles, sourceMaps };
+}
+
+export function validate(db: Db, tx: TxHandle): Diagnostic[] {
+  const { renderedFiles, sourceMaps } = renderPendingModules(db, tx);
 
   const options = loadCompilerOptions([...renderedFiles.keys()]);
   const host = ts.createCompilerHost(options, true);
