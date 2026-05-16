@@ -32,6 +32,20 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-16 — Gate-scope build: AcceptanceContext carries the resolved fixture list, not taskId
+
+**Context:** Implementing the task-scoped gate (spec `docs/superpowers/specs/2026-05-16-gate-scope-redesign-design.md`). The spec's prose says `commitWithBehavioralGate` resolves `behavioralFixturesForTask(ctx.taskId)`.
+
+**Considered:** (a) literal spec — `AcceptanceContext` carries `taskId`, the verify gate calls the resolver; (b) callers resolve and pass `AcceptanceContext.behavioralFixtures: readonly string[]`.
+
+**Decided:** (b). The single authority (`behavioralFixturesForTask` in `@strata/verify`) and the gate==scorer guarantee are unchanged — both the live gate (session.ts) and the bench scorer (substrate/baseline) resolve through that one function. Carrying the resolved list keeps the verify gate decoupled from benchmark task identity and lets the gate unit tests exercise arbitrary fixture lists (`["tests/a.test.ts"]`, `[]`) directly.
+
+**Why:** Same intent and invariants as the spec; strictly better seam (testability + no task-vocabulary coupling in the gate). Recorded because it diverges from the spec's literal wording per the project's build-time-divergence discipline.
+
+**Design-doc impact:** none to architecture; refines the spec's internal call-site only. Spec intent (single authority, fail-loud, additive scoping, gate==scorer) fully preserved.
+
+**Revisit when:** a non-bench caller needs the gate and cannot resolve a fixture list itself.
+
 ## 2026-05-16 — Keyed behavioral-gate re-run: BG-4 TRIGGERED — the whole-suite gate scope is invalid on the shared multi-task corpus (STOP)
 
 **Context:** The operator-keyed re-run mandated by the prior entry's "Revisit when" and `docs/RESULTS.md` — `pnpm --filter @strata/bench bench -- --trials=1 --tasks=T01,T05,T08,T03 --keep-artifacts`, `claude-sonnet-4-6`, N=1, round cost $1.52. Classified from the persisted substrate transcripts (`packages/bench/results/logs/*-2026-05-16T18-*.jsonl`), as the spec requires — not aggregate inference. Artifact: `packages/bench/results/phase15-four-task-2026-05-16T18-42-04-563Z.{json,md}`.
