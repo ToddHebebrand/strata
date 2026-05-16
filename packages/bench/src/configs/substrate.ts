@@ -17,7 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { countSubstrateRetries } from "../retry";
-import { tscNoEmitSrc, vitestRun } from "../quality";
+import { tscNoEmitSrc, vitestRun, behavioralFixturesForTask } from "../quality";
 import type { TrialMetrics } from "../metrics";
 import type { BenchTaskId } from "../tasks";
 
@@ -157,7 +157,8 @@ function repoRootFromHere(): string {
 
 async function substrateQualityFromRendered(
   rendered: Map<string, string> | undefined,
-  corpusRoot: string
+  corpusRoot: string,
+  fixtures: readonly string[]
 ): Promise<{ tscClean: boolean; vitestPassed: boolean }> {
   if (!rendered || rendered.size === 0) {
     return { tscClean: false, vitestPassed: false };
@@ -191,7 +192,7 @@ async function substrateQualityFromRendered(
     }
 
     const { tscClean } = tscNoEmitSrc(outRoot);
-    const { vitestPassed } = vitestRun(outRoot);
+    const { vitestPassed } = vitestRun(outRoot, fixtures);
     return { tscClean, vitestPassed };
   } finally {
     rmSync(outRoot, { recursive: true, force: true });
@@ -244,7 +245,11 @@ export async function runSubstrateTaskTrial(
   const resultQualityProbe =
     params.resultQuality ??
     ((_: AgentT03Result | AgentTaskResult) =>
-      substrateQualityFromRendered(result.rendered, params.corpusRoot));
+      substrateQualityFromRendered(
+        result.rendered,
+        params.corpusRoot,
+        behavioralFixturesForTask(taskId)
+      ));
   const resultQuality = await resultQualityProbe(result);
 
   return extractSubstrateMetrics({

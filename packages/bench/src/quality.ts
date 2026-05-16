@@ -14,6 +14,7 @@ export {
   tscNoEmitSrc,
   vitestRun,
   runCorpusAcceptance,
+  behavioralFixturesForTask,
   type QualityResult,
   type CorpusAcceptanceResult
 } from "@strata/verify";
