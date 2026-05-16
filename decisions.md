@@ -32,6 +32,37 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-16 — Keyed behavioral-gate re-run: BG-4 TRIGGERED — the whole-suite gate scope is invalid on the shared multi-task corpus (STOP)
+
+**Context:** The operator-keyed re-run mandated by the prior entry's "Revisit when" and `docs/RESULTS.md` — `pnpm --filter @strata/bench bench -- --trials=1 --tasks=T01,T05,T08,T03 --keep-artifacts`, `claude-sonnet-4-6`, N=1, round cost $1.52. Classified from the persisted substrate transcripts (`packages/bench/results/logs/*-2026-05-16T18-*.jsonl`), as the spec requires — not aggregate inference. Artifact: `packages/bench/results/phase15-four-task-2026-05-16T18-42-04-563Z.{json,md}`.
+
+**Considered:** (a) read the aggregate `successCount`/`vitestPassed` and proceed; (b) classify the transcripts against bail signals BG-1..BG-4 before drawing any conclusion.
+
+**Decided:** (b), and the classification surfaced a gate **design defect**, not a result. **Recorded as a STOP per spec § Bail signals; the gate was not patched and the round was not re-run — that is an operator design decision, logged here per "record the failure too".**
+
+**Root cause (source- + transcript-verified):**
+- `runCorpusAcceptance` in `@strata/verify/src/corpusRun.ts` runs the **entire** corpus vitest suite (`vitestRun` → `vitest run`, no task scoping/filter/`testNamePattern`).
+- The shared seed `examples/medium` deliberately ships a **failing** test — `tests/dateRange.test.ts` `describe("isWithinRange (T05 - half-open interval)")` against the buggy closed-interval seed `src/lib/dateRange.ts` (`date <= end`). That failing test **is the T05 task's own fail-before fixture**, i.e. one of the four benchmark tasks lives, pre-fix, in the shared corpus the gate runs in full.
+- Therefore the behavioral gate is **structurally unsatisfiable for every non-T05 task by the correct task change alone.** Every first `commit_transaction` on T01/T03/T08 is rejected with the *identical, unrelated* `dateRange.test.ts` failure. The only way to `{ok:true}` is to **also fix the T05 bug**.
+
+**Transcript evidence (substrate side, dispositive):**
+- **T03 (regression guard):** `find_declarations → get_references → begin_transaction → rename_symbol → validate → commit_transaction{ok:false: dateRange…isWithinRange}` → **second transaction** `begin_transaction → rename_symbol → replace_body → validate → commit_transaction{ok:true}`. The `replace_body` is the agent fixing the unrelated T05 bug to land its rename. The proven **atomic single-transaction rename is gone**: 12 tools / 2176 tok / 44.8 s vs the proven 7–11 / 1201–1473 / 24–30 s.
+- **T08:** agent verbatim — *"The test expects a half-open [start, end) interval but the body uses <= (closed). I need to fix isWithinRange in the same transaction."* It fixed T05's bug as collateral to land T08. Reported `failuresRetries=0` despite a visible `commit_transaction{ok:false}`→fix→`{ok:true}` self-correction (secondary instrumentation gap: the gate rejection is not counted by the retry rule).
+- **T01:** 46 tools, 327 s (near the 420 s budget), three transactions, repeated gate rejections; `successCount=0`, `operationRowAppendedCount=0` — never converged. `vitestPassed=1` is a **scorer false-positive**: with nothing of T01 committed, the rendered tree ≈ seed, and the suite still fails on T05 — the 1 reflects a late incidental T05 touch, not a T01 success.
+- **T05:** trivially `1/1` — the gate's whole-suite requirement *is* exactly its own task. Its prior "never reaches commit" thrash did not recur here, but this round cannot attribute that to the gate vs. model variance because the task and the gate are now the same thing.
+
+**Bail-signal classification:**
+- **BG-1 (flaky gate):** not triggered — deterministic (identical failure every run).
+- **BG-2 (gate cost):** secondary — full render+tsc+vitest per commit attempt, ~2 attempts/task; per-invocation within the "seconds" tolerance, noted not blocking.
+- **BG-3 (scorer relocation divergence):** not triggered — key-free `scopeEquivalence`/regression stayed green (`pnpm -r test` = 176 passing / 2 key-gated skipped). The *relocation* is behavior-preserving; the defect is the gate's **runtime scope**, a distinct axis from BG-3.
+- **BG-4 (T03 regression):** **TRIGGERED.** T03 moved on every axis (tokens +~48%, +1 tool over the proven max, ~30→45 s) and, decisively, its **operation semantics changed** — the atomic rename now requires a second transaction repairing an unrelated seed bug to pass the gate. Spec: "any movement is a stop-and-diagnose, not a proceed."
+
+**Conclusion:** The behavioral-commit-gate *concept* is not refuted, but the gate **as built is invalid against this shared multi-task corpus**: it conflates "did the agent's task succeed" with "does the whole corpus — including other tasks' deliberately-failing fail-before fixtures — pass." A change that type-checks and passes *its own* task's tests is still rejected because a *different* benchmark task's fixture is, correctly and by design, still red. This both breaks the T03 regression guard (BG-4) and contaminates the scorer for T03/T08 (their `vitestPassed=1` reflects the agent incidentally fixing T05). The `docs/RESULTS.md` "named next lever — now implemented, pending keyed validation" question is answered: **as-built, on this corpus, it does not validate.**
+
+**Design-doc impact:** none to `strata-design.md`. Sharpens the prior entry: the agent finish line and the scorer finish line are now one function *by construction* — but when that one function is whole-corpus and the corpus co-locates multiple tasks' fail-before fixtures, the shared finish line is unreachable per-task. The "validate-before-commit" gate must be **task-scoped** to be a valid behavioral signal.
+
+**Revisit when:** the operator chooses the gate-scope fix and re-runs. Options to weigh (not decided here): (a) the gate runs only the test files/names in scope for the active task (task metadata already names its fixture); (b) the benchmark corpus is per-task isolated so a task's gate never sees another task's fail-before fixture; (c) the gate asserts "no test regressed vs. the pre-change baseline" rather than "all green," so a pre-existing unrelated red is tolerated. Each is a substantive design change requiring its own spec/decision entry and a fresh keyed round with T03 re-established as the regression guard *before* any further generalization claim.
+
 ## 2026-05-16 — Behavioral commit gate: corpus runner lowered into @strata/verify; agent gate == scorer
 
 **Context:** RESULTS.md named the next research lever — gate agent commit on behavioral task-acceptance, not just tsc-clean (underlies T08 and post-prompt T01). Spec: `docs/specs/2026-05-16-behavioral-commit-gate-design.md`; plan: `docs/superpowers/plans/2026-05-16-behavioral-commit-gate.md`.
