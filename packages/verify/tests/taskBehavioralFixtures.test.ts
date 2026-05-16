@@ -22,6 +22,9 @@ describe("behavioralFixturesForTask", () => {
 
   it("is fail-loud on an unknown task id (never silently whole-suite/empty)", () => {
     expect(() => behavioralFixturesForTask("T99")).toThrow(/unknown task id/i);
+    expect(() => behavioralFixturesForTask("T99")).toThrow(
+      /Registered ids:.*T01.*T03.*T05.*T08/
+    );
   });
 
   it("exposes the map as the single source of truth", () => {
