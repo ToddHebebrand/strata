@@ -23,6 +23,7 @@ import {
   evaluateT05Criteria,
   evaluateT08Criteria,
   validate,
+  behavioralFixturesForTask,
   type T01Criteria,
   type T03Criteria,
   type T05Criteria,
@@ -278,7 +279,11 @@ async function runAgentForPrompt<C extends TaskCriteria>(params: {
       // only live (model-driven) runs enforce the behavioral gate.
       acceptance: runParams.replayTranscript
         ? undefined
-        : { corpusRoot: runParams.corpusRoot, srcRoot }
+        : {
+            corpusRoot: runParams.corpusRoot,
+            srcRoot,
+            behavioralFixtures: behavioralFixturesForTask(params.taskId)
+          }
     };
     const tools = createStrataTools(ctx);
     const byName = new Map(tools.map((definition) => [definition.name, definition]));
