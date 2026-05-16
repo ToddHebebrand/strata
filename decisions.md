@@ -32,6 +32,25 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-16 — Behavioral commit gate: corpus runner lowered into @strata/verify; agent gate == scorer
+
+**Context:** RESULTS.md named the next research lever — gate agent commit on behavioral task-acceptance, not just tsc-clean (underlies T08 and post-prompt T01). Spec: `docs/specs/2026-05-16-behavioral-commit-gate-design.md`; plan: `docs/superpowers/plans/2026-05-16-behavioral-commit-gate.md`.
+
+**Considered:** (a) new `run_tests` agent tool the loop must call; (b) hard-gate inside the commit path reusing the existing validate-before-commit machinery; (c) both.
+
+**Decided:** (b). The on-disk render+tsc+vitest runner (`renderStoreToDir`, `tsc*`, `vitestRun`, scope guards, `QualityResult`) moved from `@strata/bench` down into `@strata/verify` (`corpusRun.ts`); `@strata/bench/src/quality.ts` is now a thin re-export. New `runCorpusAcceptance` (captures subprocess output) and `commitWithBehavioralGate` (validate-as-today → corpus acceptance → finalize). The agent's `commit_transaction` calls the gate only for live runs (`acceptance` undefined in replay), so the 170 key-free tests and replay determinism are unchanged (post-change `pnpm -r test` = 176 passing / 2 key-gated skipped: the prior 170 + 6 new @strata/verify gate tests).
+
+**Why:** Acyclic (`bench → agent → verify`); the agent finish line and the scorer finish line become one function by construction, removing the diagnosed confident-wrong commit. Additive: `commit()`/`validate()` signatures and behavior untouched.
+
+**Execution findings (recorded per "record the failure too"):**
+1. **Plan test-fixture defect, fixed.** The plan's `behavioralGate.test.ts` fixture created an empty on-disk `src/` while the source lived only in the in-memory store, so `validate()`'s `loadCompilerOptions`/`ts.parseJsonConfigFileContent` threw "No inputs were found in config file" against the `include: ["src/**/*.ts"]` glob. An implementer first masked this with a blanket `try/catch` around `validate()` in production code; that deviation was rejected (silent-failure anti-pattern, and unnecessary — the real corpus `examples/medium` is always on disk). Correct fix: the fixture now writes the seed `.ts` to disk before constructing the store, mirroring production; `commitWithBehavioralGate` is exactly as designed with no error-swallowing.
+2. **Latent design assumption, documented not changed.** The gate is keyed on `runParams.replayTranscript` being absent as the proxy for "a live model is driving." This holds for every current caller (the only non-replay path reaching `runAgentForPrompt` is the genuine live benchmark + the key-gated `agentT03` test). A future deterministic non-replay caller would silently engage the corpus runner; flagged here for any such future caller's author.
+3. **Pre-existing pipeline assumption, noted.** `commitWithBehavioralGate`'s abs→corpus-`src`-relative path mapping (shared with the pre-existing `renderStoreToDir`/scorer) assumes all modules live under `srcRoot`; a module outside `srcRoot` would write outside the scratch `src/` tree. Not a regression (pre-existing pipeline-wide), out of scope here, recorded for completeness.
+
+**Design-doc impact:** none to architecture; sharpens strata-design.md's "validate before commit" gate — necessary but not sufficient; behavioral acceptance is now the agent's finish line for live runs.
+
+**Revisit when:** the operator's keyed re-run (T01/T05/T08 with T03 as the regression guard) reports its finding — recorded as a new newest-first entry whatever the outcome, including "gate works but T05 still thrashes", per the spec's bail signals BG-1..BG-4.
+
 ## 2026-05-15 — Phase 1.5-P: prompt/description tuning is INSUFFICIENT (BS-P-B terminal); the gap is not prompt-closeable
 
 **Context:** Operator re-validation after the P1 (explore-then-act prompt discipline) + P2 (rewritten `add_parameter` description) pass. Keyed N=1 with `--keep-artifacts` over T03/T01/T05/T08 ($1.12). Classification from the persisted substrate transcripts, as the protocol requires.
