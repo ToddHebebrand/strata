@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runCorpusAcceptance } from "../src/index";
+import { runCorpusAcceptance, vitestRun } from "../src/index";
 
 const created: string[] = [];
 
@@ -75,5 +75,65 @@ describe("runCorpusAcceptance", () => {
     expect(result.tscClean).toBe(false);
     expect(result.vitestPassed).toBe(false);
     expect(result.failureOutput).toContain("no modules rendered");
+  });
+});
+
+describe("vitestRun scoping (additive)", () => {
+  function tmpTree(): string {
+    const root = mkdtempSync(path.join(tmpdir(), "strata-vrun-"));
+    mkdirSync(path.join(root, "tests"), { recursive: true });
+    writeFileSync(
+      path.join(root, "vitest.config.ts"),
+      'import { defineConfig } from "vitest/config";\n' +
+        'export default defineConfig({ test: { include: ["tests/**/*.test.ts"] } });\n'
+    );
+    writeFileSync(
+      path.join(root, "tests", "pass.test.ts"),
+      'import { expect, it } from "vitest";\nit("p", () => expect(1).toBe(1));\n'
+    );
+    writeFileSync(
+      path.join(root, "tests", "fail.test.ts"),
+      'import { expect, it } from "vitest";\nit("f", () => expect(1).toBe(2));\n'
+    );
+    return root;
+  }
+
+  it("empty fixture list skips vitest entirely (tsc-only task)", () => {
+    const root = tmpTree();
+    try {
+      expect(vitestRun(root, []).vitestPassed).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("runs only the named fixture, ignoring an unrelated red file", () => {
+    const root = tmpTree();
+    try {
+      expect(vitestRun(root, ["tests/pass.test.ts"]).vitestPassed).toBe(true);
+      expect(vitestRun(root, ["tests/fail.test.ts"]).vitestPassed).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("is fail-loud (not silent green) when a named fixture is missing", () => {
+    const root = tmpTree();
+    try {
+      const r = vitestRun(root, ["tests/nope.test.ts"]);
+      expect(r.vitestPassed).toBe(false);
+      expect(r.output).toMatch(/not found/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("undefined fixtures preserves whole-suite behaviour (BG-3)", () => {
+    const root = tmpTree();
+    try {
+      expect(vitestRun(root).vitestPassed).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

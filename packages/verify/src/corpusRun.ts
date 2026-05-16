@@ -160,16 +160,36 @@ function hasVitestFiles(treeRoot: string): boolean {
   return walk(treeRoot);
 }
 
-export function vitestRun(treeRoot: string): {
+export function vitestRun(
+  treeRoot: string,
+  fixtures?: readonly string[]
+): {
   vitestPassed: boolean;
   output: string;
 } {
+  if (fixtures !== undefined) {
+    if (fixtures.length === 0) {
+      return { vitestPassed: true, output: "" };
+    }
+    const missing = fixtures.filter(
+      (f) => !existsSync(path.join(treeRoot, f))
+    );
+    if (missing.length > 0) {
+      return {
+        vitestPassed: false,
+        output: `vitestRun: scoped fixture(s) not found: ${missing.join(", ")}`
+      };
+    }
+  }
+
   if (!hasVitestFiles(treeRoot)) {
     return { vitestPassed: true, output: "" };
   }
 
   const vitestBin = require.resolve("vitest/vitest.mjs");
-  const result = spawnSync(process.execPath, [vitestBin, "run"], {
+  const args =
+    fixtures && fixtures.length > 0 ? ["run", ...fixtures] : ["run"];
+  const result = spawnSync(process.execPath, [vitestBin, ...args], {
     cwd: treeRoot,
     encoding: "utf8"
   });
