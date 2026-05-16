@@ -29,3 +29,15 @@ export {
   type T08CriteriaInput,
   type T08TextCriteria
 } from "./t08Criteria";
+export {
+  renderStoreToDir,
+  resolveCorpusTsconfigInclude,
+  resolveTscProgramRootNames,
+  assertSrcOnlyScope,
+  tscNoEmit,
+  tscNoEmitSrc,
+  vitestRun,
+  runCorpusAcceptance,
+  type QualityResult,
+  type CorpusAcceptanceResult
+} from "./corpusRun";
