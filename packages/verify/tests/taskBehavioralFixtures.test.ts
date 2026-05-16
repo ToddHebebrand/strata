@@ -5,12 +5,18 @@ import {
 } from "../src/index";
 
 describe("behavioralFixturesForTask", () => {
-  it("maps T01 and T05 to their own fixture, T03/T08 to none", () => {
+  it("maps T01 to its fixture", () => {
     expect(behavioralFixturesForTask("T01")).toEqual(["tests/format.test.ts"]);
+  });
+  it("maps T05 to its fixture", () => {
     expect(behavioralFixturesForTask("T05")).toEqual([
       "tests/dateRange.test.ts"
     ]);
+  });
+  it("maps T03 to no fixtures (tsc+text criteria fully constrain it)", () => {
     expect(behavioralFixturesForTask("T03")).toEqual([]);
+  });
+  it("maps T08 to no fixtures (tsc+text criteria fully constrain it)", () => {
     expect(behavioralFixturesForTask("T08")).toEqual([]);
   });
 

@@ -9,25 +9,25 @@
  * mode — tsc + text criteria fully constrain them — so they map to []. Only
  * T01 and T05 ship a real behavioral fixture.
  */
-export const TASK_BEHAVIORAL_FIXTURES: Record<string, readonly string[]> = {
+export const TASK_BEHAVIORAL_FIXTURES = {
   T01: ["tests/format.test.ts"],
   T03: [],
   T05: ["tests/dateRange.test.ts"],
   T08: []
-};
+} as const satisfies Record<string, readonly string[]>;
 
 /**
  * Resolve a task's behavioral fixture list. Fail-loud on an unknown id: a
  * new task MUST register here deliberately and is never silently treated as
  * whole-suite or as empty (that silent default is exactly the BG-4 defect).
  */
-export function behavioralFixturesForTask(
-  taskId: string
-): readonly string[] {
-  if (!Object.prototype.hasOwnProperty.call(TASK_BEHAVIORAL_FIXTURES, taskId)) {
+export function behavioralFixturesForTask(taskId: string): readonly string[] {
+  const map = TASK_BEHAVIORAL_FIXTURES as Record<string, readonly string[]>;
+  if (!Object.prototype.hasOwnProperty.call(map, taskId)) {
     throw new Error(
-      `behavioralFixturesForTask: unknown task id: ${taskId}`
+      `behavioralFixturesForTask: unknown task id "${taskId}". ` +
+        `Registered ids: ${Object.keys(TASK_BEHAVIORAL_FIXTURES).join(", ")}`
     );
   }
-  return TASK_BEHAVIORAL_FIXTURES[taskId];
+  return map[taskId];
 }
