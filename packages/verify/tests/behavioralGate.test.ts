@@ -69,7 +69,8 @@ describe("commitWithBehavioralGate", () => {
     const tx = begin(db, "test");
     const result = commitWithBehavioralGate(db, tx, {
       corpusRoot: root,
-      srcRoot
+      srcRoot,
+      behavioralFixtures: ["tests/a.test.ts"]
     });
     expect(result.ok).toBe(false);
     if (result.ok === false && "testFailures" in result) {
@@ -99,9 +100,36 @@ describe("commitWithBehavioralGate", () => {
     const tx = begin(db, "test");
     const result = commitWithBehavioralGate(db, tx, {
       corpusRoot: root,
-      srcRoot
+      srcRoot,
+      behavioralFixtures: ["tests/a.test.ts"]
     });
     expect(result.ok).toBe(true);
+    db.close();
+  });
+
+  it("[] behavioralFixtures: tsc-only commit ignores an unrelated red test", () => {
+    const root = makeCorpus(
+      'import { describe, expect, it } from "vitest";\n' +
+        'import { greet } from "../src/g";\n' +
+        'describe("g", () => { it("greets", () => { expect(greet("x")).toBe("NOPE"); }); });\n'
+    );
+    const srcRoot = path.join(root, "src");
+    const gSource =
+      'export function greet(n: string): string { return "hi " + n; }\n';
+    writeFileSync(path.join(srcRoot, "g.ts"), gSource);
+    const batch = ingestBatch([
+      { path: path.join(srcRoot, "g.ts"), text: gSource }
+    ]);
+    const db = openDb(":memory:");
+    insertNodes(db, batch.allNodes);
+    insertReferences(db, batch.references);
+    const tx = begin(db, "test");
+    const result = commitWithBehavioralGate(db, tx, {
+      corpusRoot: root,
+      srcRoot,
+      behavioralFixtures: []
+    });
+    expect(result.ok).toBe(true); // BG-4 mechanism gone at the gate level
     db.close();
   });
 });

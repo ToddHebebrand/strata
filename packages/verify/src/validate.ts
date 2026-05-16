@@ -111,6 +111,12 @@ export function commit(db: Db, tx: TxHandle): CommitResult {
 export interface AcceptanceContext {
   corpusRoot: string;
   srcRoot: string;
+  /**
+   * The task's resolved behavioral fixture list (callers resolve via
+   * behavioralFixturesForTask). [] => tsc-only. Never undefined here: a
+   * live gate is always task-scoped (decisions.md 2026-05-16 / BG-4).
+   */
+  behavioralFixtures: readonly string[];
 }
 
 export type GatedCommitResult =
@@ -143,7 +149,11 @@ export function commitWithBehavioralGate(
     renderedSrc.set(rel, text);
   }
 
-  const result = runCorpusAcceptance(renderedSrc, acceptance.corpusRoot);
+  const result = runCorpusAcceptance(
+    renderedSrc,
+    acceptance.corpusRoot,
+    acceptance.behavioralFixtures
+  );
   if (!result.tscClean || !result.vitestPassed) {
     return { ok: false, testFailures: result.failureOutput };
   }
