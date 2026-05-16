@@ -187,8 +187,7 @@ export function vitestRun(
   }
 
   const vitestBin = require.resolve("vitest/vitest.mjs");
-  const args =
-    fixtures && fixtures.length > 0 ? ["run", ...fixtures] : ["run"];
+  const args = fixtures ? ["run", ...fixtures] : ["run"];
   const result = spawnSync(process.execPath, [vitestBin, ...args], {
     cwd: treeRoot,
     encoding: "utf8"

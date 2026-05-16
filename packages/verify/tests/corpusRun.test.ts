@@ -101,6 +101,7 @@ describe("vitestRun scoping (additive)", () => {
   it("empty fixture list skips vitest entirely (tsc-only task)", () => {
     const root = tmpTree();
     try {
+      // fail.test.ts is red, but [] means 'no behavioral assertion'.
       expect(vitestRun(root, []).vitestPassed).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -131,6 +132,7 @@ describe("vitestRun scoping (additive)", () => {
   it("undefined fixtures preserves whole-suite behaviour (BG-3)", () => {
     const root = tmpTree();
     try {
+      // whole suite includes fail.test.ts -> red, exactly as today.
       expect(vitestRun(root).vitestPassed).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
