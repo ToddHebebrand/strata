@@ -1,4 +1,13 @@
-export { commit, validate, type CommitResult, type Diagnostic } from "./validate";
+export {
+  commit,
+  validate,
+  renderPendingModules,
+  commitWithBehavioralGate,
+  type CommitResult,
+  type Diagnostic,
+  type AcceptanceContext,
+  type GatedCommitResult
+} from "./validate";
 export {
   evaluateT01Criteria,
   evaluateT01TextCriteria,

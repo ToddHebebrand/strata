@@ -1,5 +1,6 @@
 import path from "node:path";
 import { renderWithSourceMap, type SourceMapEntry } from "@strata/render";
+import { runCorpusAcceptance } from "./corpusRun";
 import {
   commitWithoutValidate,
   getOverlay,
@@ -100,6 +101,51 @@ export function commit(db: Db, tx: TxHandle): CommitResult {
   const diagnostics = validate(db, tx);
   if (diagnostics.length > 0) {
     return { ok: false, diagnostics };
+  }
+
+  materializeStatementPayloads(db, tx);
+  commitWithoutValidate(db, tx);
+  return { ok: true };
+}
+
+export interface AcceptanceContext {
+  corpusRoot: string;
+  srcRoot: string;
+}
+
+export type GatedCommitResult =
+  | { ok: true }
+  | { ok: false; diagnostics: Diagnostic[] }
+  | { ok: false; testFailures: string };
+
+/**
+ * Commit gate that finalizes only when the transaction both type-checks
+ * (as commit() requires today) AND the corpus's real test suite passes.
+ * A compiles-but-behaviorally-wrong change is refused with the failing
+ * test output, handed back the same way type diagnostics are.
+ */
+export function commitWithBehavioralGate(
+  db: Db,
+  tx: TxHandle,
+  acceptance: AcceptanceContext
+): GatedCommitResult {
+  const diagnostics = validate(db, tx);
+  if (diagnostics.length > 0) {
+    return { ok: false, diagnostics };
+  }
+
+  const { renderedFiles } = renderPendingModules(db, tx);
+  const renderedSrc = new Map<string, string>();
+  for (const [absPath, text] of renderedFiles) {
+    const rel = path
+      .relative(acceptance.srcRoot, absPath)
+      .replaceAll("\\", "/");
+    renderedSrc.set(rel, text);
+  }
+
+  const result = runCorpusAcceptance(renderedSrc, acceptance.corpusRoot);
+  if (!result.tscClean || !result.vitestPassed) {
+    return { ok: false, testFailures: result.failureOutput };
   }
 
   materializeStatementPayloads(db, tx);
