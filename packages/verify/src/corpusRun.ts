@@ -206,7 +206,8 @@ export function vitestRun(
  */
 export function runCorpusAcceptance(
   renderedSrc: Map<string, string>,
-  corpusRoot: string
+  corpusRoot: string,
+  fixtures?: readonly string[]
 ): CorpusAcceptanceResult {
   if (renderedSrc.size === 0) {
     return {
@@ -244,7 +245,7 @@ export function runCorpusAcceptance(
     }
 
     const tsc = tscNoEmitSrc(outRoot);
-    const vitest = vitestRun(outRoot);
+    const vitest = vitestRun(outRoot, fixtures);
     const failureOutput =
       tsc.tscClean && vitest.vitestPassed
         ? ""

@@ -139,3 +139,43 @@ describe("vitestRun scoping (additive)", () => {
     }
   });
 });
+
+describe("runCorpusAcceptance scoping", () => {
+  it("[] => vitest skipped, tsc-only; an unrelated seed red does NOT block", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "strata-acc-"));
+    try {
+      mkdirSync(path.join(root, "tests"), { recursive: true });
+      writeFileSync(
+        path.join(root, "vitest.config.ts"),
+        'import { defineConfig } from "vitest/config";\n' +
+          'export default defineConfig({ test: { include: ["tests/**/*.test.ts"] } });\n'
+      );
+      writeFileSync(
+        path.join(root, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            target: "ES2022",
+            module: "ESNext",
+            moduleResolution: "Bundler",
+            strict: true,
+            noEmit: true,
+            skipLibCheck: true
+          },
+          include: ["src/**/*.ts"]
+        })
+      );
+      writeFileSync(
+        path.join(root, "tests", "other.test.ts"),
+        'import { expect, it } from "vitest";\nit("x", () => expect(1).toBe(2));\n'
+      );
+      const rendered = new Map<string, string>([
+        ["a.ts", "export const a: number = 1;\n"]
+      ]);
+      const r = runCorpusAcceptance(rendered, root, []);
+      expect(r.tscClean).toBe(true);
+      expect(r.vitestPassed).toBe(true); // the BG-4 mechanism is gone
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
