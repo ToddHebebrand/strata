@@ -173,7 +173,7 @@ describe("runCorpusAcceptance scoping", () => {
       ]);
       const r = runCorpusAcceptance(rendered, root, []);
       expect(r.tscClean).toBe(true);
-      expect(r.vitestPassed).toBe(true); // the BG-4 mechanism is gone
+      expect(r.vitestPassed).toBe(true); // [] means no behavioral assertion; seed red is irrelevant
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
