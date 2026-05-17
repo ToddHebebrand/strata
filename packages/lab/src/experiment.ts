@@ -50,8 +50,11 @@ export function makeLabScorer(task: "HD" | "trap"): RunAgentLabParams["score"] {
  *
  * Defensive: if db is falsy or no modules exist, returns new Map() so
  * the unit test (which passes undefined db) does not throw.
+ *
+ * Exported for direct testing of the key-format contract: the instrument's
+ * correctness depends on `src/`-prefixed posix keys feeding `scopeOf`.
  */
-function renderCommittedSrc(db: Db, srcRoot: string): Map<string, string> {
+export function renderCommittedSrc(db: Db, srcRoot: string): Map<string, string> {
   if (!db) {
     return new Map();
   }

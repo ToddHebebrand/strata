@@ -2,11 +2,10 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { ingestBatch } from "@strata/ingest";
-import { listModules, loadModule, insertNodes, insertReferences, openDb } from "@strata/store";
-import { renderWithSourceMap } from "@strata/render";
+import { insertNodes, insertReferences, openDb } from "@strata/store";
 import { scopeOf } from "../src/tasks/callsites";
 import type { LabExperiment } from "../src/experiment";
-import { makeLabScorer } from "../src/experiment";
+import { makeLabScorer, renderCommittedSrc } from "../src/experiment";
 
 describe("experiment interface", () => {
   it("makeLabScorer adapts the HD oracle into a LabCriteria scorer", () => {
@@ -52,61 +51,41 @@ function collectTsFiles(dir: string): { path: string; text: string }[] {
   return out;
 }
 
-/**
- * Build the rendered map the same way renderCommittedSrc does: listModules,
- * loadModule, renderWithSourceMap — then relativize to corpusRoot so keys
- * are "src/"-prefixed. This mirrors experiment.ts internals directly and
- * proves the key format is correct for scopeOf().
- */
-function buildRenderedKeys(db: ReturnType<typeof openDb>, corpusRoot: string): string[] {
-  const modules = listModules(db);
-  const corpusRootPosix = corpusRoot.replaceAll("\\", "/");
-  const keys: string[] = [];
-  for (const mod of modules) {
-    const loaded = loadModule(db, mod.id);
-    void renderWithSourceMap(loaded.module, loaded.children).text;
-    // Replicate the key logic in renderCommittedSrc:
-    // corpusRoot-relative posix path (adds "src/" prefix).
-    const posixPayload = mod.payload.replaceAll("\\", "/");
-    // path.relative produces OS-sep; we need posix:
-    const key = posixPayload.startsWith(corpusRootPosix + "/")
-      ? posixPayload.slice(corpusRootPosix.length + 1)
-      : path.relative(corpusRoot, mod.payload).replaceAll("\\", "/");
-    keys.push(key);
-  }
-  return keys;
+function buildCorpusStore(): ReturnType<typeof openDb> {
+  const files = collectTsFiles(SRC_ROOT);
+  const batch = ingestBatch(files);
+  const db = openDb(":memory:");
+  insertNodes(db, batch.allNodes);
+  insertReferences(db, batch.references);
+  return db;
 }
 
 describe("experiment real-render path (src/-prefixed posix keys)", () => {
   it("rendered map keys are src/-prefixed posix paths, and scopes bucket correctly", () => {
-    const files = collectTsFiles(SRC_ROOT);
-    const batch = ingestBatch(files);
-    const db = openDb(":memory:");
+    const db = buildCorpusStore();
     try {
-      insertNodes(db, batch.allNodes);
-      insertReferences(db, batch.references);
+      // Call the REAL exported renderCommittedSrc — not a mirror.
+      const rendered = renderCommittedSrc(db, SRC_ROOT);
 
-      const keys = buildRenderedKeys(db, CORPUS_ROOT);
+      // Map must be non-empty and contain the three expected files.
+      expect(rendered.size).toBeGreaterThan(0);
 
       // 1. All keys start with "src/"
-      for (const key of keys) {
+      for (const key of rendered.keys()) {
         expect(key, `key should start with src/: ${key}`).toMatch(/^src\//);
       }
 
       // 2. server/events.ts is present and scopes as "server"
-      const serverKey = keys.find((k) => k === "src/server/events.ts");
-      expect(serverKey, "src/server/events.ts must be in rendered keys").toBeDefined();
-      expect(scopeOf(serverKey!)).toBe("server");
+      expect(rendered.has("src/server/events.ts"), "src/server/events.ts must be in rendered keys").toBe(true);
+      expect(scopeOf("src/server/events.ts")).toBe("server");
 
       // 3. ui/timeline.ts is present and scopes as "ui"
-      const uiKey = keys.find((k) => k === "src/ui/timeline.ts");
-      expect(uiKey, "src/ui/timeline.ts must be in rendered keys").toBeDefined();
-      expect(scopeOf(uiKey!)).toBe("ui");
+      expect(rendered.has("src/ui/timeline.ts"), "src/ui/timeline.ts must be in rendered keys").toBe(true);
+      expect(scopeOf("src/ui/timeline.ts")).toBe("ui");
 
-      // 4. lib/startupStamp.ts scopes as "other"
-      const otherKey = keys.find((k) => k === "src/lib/startupStamp.ts");
-      expect(otherKey, "src/lib/startupStamp.ts must be in rendered keys").toBeDefined();
-      expect(scopeOf(otherKey!)).toBe("other");
+      // 4. lib/startupStamp.ts is present and scopes as "other"
+      expect(rendered.has("src/lib/startupStamp.ts"), "src/lib/startupStamp.ts must be in rendered keys").toBe(true);
+      expect(scopeOf("src/lib/startupStamp.ts")).toBe("other");
     } finally {
       db.close();
     }
