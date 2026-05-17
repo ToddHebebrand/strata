@@ -135,3 +135,30 @@ alias bug; it is withdrawn. New experiments `per-scope-equipped` /
 graph facts only, never the per-scope answer; trapped control still guards).
 Runner now prints tool RESULTS, not just call names (fixes the methodology
 miss). Re-running with the deprivation removed.
+
+## 2026-05-17 — BREAKTHROUGH: with deprivations removed, the substrate DOES the multi-step edit
+
+per-scope-equipped (enriched same-named tools): the agent found everything
+(find_declarations now returns the FirstStatement ZONE w/ modulePath;
+read_node returns modulePath/scope) — yet still explored to wall-time
+without acting. So the failure was NOT tool legibility alone.
+
+per-scope-equipped-gated (equipped + handler exploration-gate forcing the
+transition): the agent ACTED —
+  begin_transaction → add_parameter{ok, afterSignature adds `timezone: string
+  = "UTC"`} → replace_body{ok} → validate → ["Cannot find name 'ZONE'." @
+  src/server/events.ts, src/ui/...]
+The per-scope variant CORRECTLY placed `ZONE` at the server/ui callsites
+(that's exactly why validate reports "Cannot find name 'ZONE'" THERE). The
+ONLY gap: the `import { ZONE }` was never added to those modules.
+
+This overturns every prior "won't act / ceiling / doesn't generalize"
+framing in this file: with (a) legible tools and (b) a nudge off infinite
+exploration, the substrate performs the multi-step per-scope refactor and
+lands within ONE missing import of passing HD. Root issue is now concrete
+and fixable: the per-scope structural op inserts a scope symbol but does not
+ensure that symbol is imported in each callsite module (a completeness bug,
+like rename updating all refs — NOT "the answer", honest). Next iteration:
+make the per-scope op import-complete; verify tsc-clean MODEL-FREE before any
+further keyed run. ~$2.1/$5 spent. Methodology fix applied: runner now prints
+tool RESULTS (this breakthrough was only visible because of that).
