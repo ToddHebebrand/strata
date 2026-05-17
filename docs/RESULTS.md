@@ -1,6 +1,6 @@
 # Strata — Results
 
-*The complete, honest story. Status: 2026-05-16. Authoritative decision trail: [`decisions.md`](../decisions.md). Architecture: [`strata-design.md`](../strata-design.md).*
+*The complete, honest story. Status: 2026-05-17 — **research concluded**. Authoritative decision trail: [`decisions.md`](../decisions.md). Architecture: [`strata-design.md`](../strata-design.md).*
 
 ## The thesis
 
@@ -59,7 +59,7 @@ A fair, general system-prompt + tool-description rework (explore-then-act discip
 - **The negative is also bounded.** "Not agent-effective" was shown for three tools on this corpus/model; it is diagnosed, not merely observed, but it is not proof of an impossibility.
 - **TypeScript only**; the substrate leans on the TS Compiler API (a Rust port would need its own resolver — a known, logged consideration, not undertaken).
 
-## The named next lever — built, found invalid as-built (BG-4), fixed (task-scoped), and keyed-validated: PASS (2026-05-16)
+## The lever investigation — gate built/validated, then the T01 boundary exhaustively bounded by four falsified levers (2026-05-16 → 2026-05-17)
 
 The boundary's one substantive lever — **the agent loop must gate commit on behavioral task-acceptance (run the tests), not just `tsc`-clean** — has now been built. The on-disk render+tsc+test runner was lowered into `@strata/verify` so the agent's commit gate and the benchmark scorer are *one shared function by construction*; `commit_transaction` now refuses a change that type-checks but fails the corpus test suite, returning the failing tests to the agent the same way type errors already are — on live runs only, leaving the proven T03 path and the (now 176) key-free tests byte-unchanged. The build record — including an attempted error-swallowing deviation that was caught and rejected, then fixed properly — is logged in [`decisions.md`](../decisions.md) (2026-05-16); the spec and task plan are under [`docs/specs/`](specs/2026-05-16-behavioral-commit-gate-design.md) and [`docs/superpowers/plans/`](superpowers/plans/2026-05-16-behavioral-commit-gate.md).
 
@@ -84,7 +84,7 @@ Remaining levers (all deeper than legibility/prompt/model/gate — those four ar
 ## What is reproducible
 
 ```
-pnpm install && pnpm -r build && pnpm -r test     # 176 passing, 2 key-gated skipped
+pnpm install && pnpm -r build && pnpm -r test     # 206 passing, 2 key-gated skipped
 node packages/cli/dist/cli.js roundtrip <file.ts>  # Phase 0
 node packages/cli/dist/cli.js t03 ./examples/medium # Phase 1 acceptance (programmatic)
 # Live agent + benchmark (needs ANTHROPIC_API_KEY; writes gitignored results/):
@@ -97,8 +97,14 @@ The two key-gated agent tests are reproduced key-free in CI via a committed real
 
 ## Remaining Phase-5 deliverable
 
-A 5–10 minute demo video (per `strata-design.md` § Phase 5) is the one artifact this write-up cannot produce; it is left for a human.
+Research is concluded. The architecture doc (`strata-design.md`), this results write-up, the open-source `README.md`, and the full decision trail (`decisions.md`) are done. The **only** remaining Phase-5 item is a 5–10 minute demo video (per `strata-design.md` § Phase 5) — the one artifact this write-up cannot produce; it is left for a human.
 
 ## Bottom line
 
-Strata demonstrates, under adversarial scrutiny, that removing the file abstraction makes an agent measurably more efficient at an atomic structural edit — fewer tokens, less time, fewer steps, no quality loss. It also demonstrates, with equal rigor, that this advantage does not yet generalize to multi-step refactors, that the cheap (prompt) fix does not work, and exactly which deeper lever remains. A proven win, a precisely-bounded scope, a diagnosed boundary, and a falsified easy answer — that is the result. The one deeper lever that diagnosis named has since been built and is green key-free; whether it moves the boundary is the next measurement, not a claim made here.
+Strata demonstrates, under sustained adversarial self-scrutiny, that **removing the file abstraction is a real, robust, model-independent efficiency win for an atomic structural edit**: the rename (T03) beats a file-tools baseline on tokens, time, and steps with no quality loss, replicated at N=3 across every harness iteration — including after a contamination bug was found and fixed — and *amplified* under a stronger model (the Opus file-baseline thrashed the rename to a turn-limit where the substrate finished in six tools).
+
+Generalization is **partial and gate-enabled, not free**: a task-scoped behavioral commit gate — itself found invalid as first built (BG-4), fixed, and keyed-validated — extends clean substrate success to two further tasks (T05 a gate-driven *correctness* win, not an efficiency one; T08 after a scorer artifact was root-caused and corrected under independent audit). N=3 final standing: T03 3/3, T05 3/3, T08 3/3, **T01 0/3**.
+
+The remaining multi-step task (T01) is a **precisely-bounded negative, not a vague one**. Its failure mode — the agent ignores authoritative tool feedback and compulsively hand-patches callsites a tool already updated, corrupting the transaction — was not closed by **four independent, pre-registered, transcript-classified, falsified levers**: prompt/description tuning, the commit gate, model capability (at the strongest available model), and tool-result legibility (an audit-proof manifest of exactly what the tool did, which the agent received and ignored). T01 is not a communication problem; it is a deeper agent-behavioral one, untouched by those four.
+
+The methodology is the credibility. Every keyed round was pre-registered tamper-evidently and classified from transcripts, not aggregates; the harness was attacked rather than flattered — it caught its own scorer contamination (BG-4), its own scorer artifact (T08), and a third installed-SDK gap, and it falsified its own easy answers four separate times and logged every negative. **A proven win, a precisely-bounded scope, a boundary diagnosed to a named behavioral cause, and four falsified easy answers — delivered honestly. That is the result.**

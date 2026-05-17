@@ -32,6 +32,20 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-17 — Research concluded (deliberate terminal point, not abandonment)
+
+**Context:** After the AP round (entry below) the T01 boundary is exhaustively characterized by four independent, pre-registered, transcript-classified, falsified levers (prompt/description tuning, the commit gate, model capability, tool-result legibility), with the atomic-edit win (T03) robust, replicated and model-independent throughout. The operator elected to conclude the research here rather than open a new, different-class arc.
+
+**Considered:** (a) take on a deeper different-class lever (remove the `replace_body` escape hatch / agent-loop redesign forbidding re-edit of a tool-touched span) — a new research project, not a continuation; (b) cheap loose ends (optional fresh N=3 confirming T08 beyond the 3 audited transcripts; retiring brittle text-criteria proxies); (c) declare the research complete and close out the write-up.
+
+**Decided:** (c). The research question is answered with claim-grade rigor and the negative is precisely bounded, not vague — that *is* the result. Continuing would be scope expansion into a new arc the bounded negative does not require; the four falsified levers are terminal for the legibility/prompt/model/gate class. RESULTS.md, README, and this decision trail brought into coherence with the terminal state (status → "research concluded 2026-05-17"; bottom line rewritten to the proven-win / partial-gate-enabled-generalization / four-falsified-levers synthesis; stale "pending keyed measurement" framing removed). `strata-design.md` deliberately NOT edited (per CLAUDE.md the contract is not silently rewritten to match; the conclusion lives in RESULTS.md/decisions.md).
+
+**Why:** The project set out to produce "a proven win, a precisely-bounded scope, a boundary diagnosed to a named cause, and falsified easy answers, under adversarial self-scrutiny." All four exist and are honestly recorded. A clean terminal point reached deliberately is itself a result; manufacturing further iteration would dilute, not strengthen, it.
+
+**Design-doc impact:** none. Closes the build/measure arc; `decisions.md` remains the authoritative trail.
+
+**Revisit when:** someone takes up the deferred different-class lever (a) or loose ends (b) as a new effort — each its own spec/decision cycle. The one artifact not producible here — the 5–10 min demo video (`strata-design.md` § Phase 5) — is left for a human; that is the sole outstanding Phase-5 deliverable.
+
 ## 2026-05-17 — `add_parameter` legibility keyed validation: AP-2 NEGATIVE, AP-3 mechanism unchanged — tool-RESULT legibility is insufficient; the T01 boundary is now exhaustively characterized (4 falsified levers)
 
 **Context:** The frozen pre-registered keyed round (`docs/superpowers/specs/2026-05-17-add-parameter-legibility-probe-prereg.md`, commit `70a07eb`, AP-1..AP-4), run from a branch whose code == `main` @ `643e953` (the merged manifest implementation): `pnpm --filter @strata/bench bench -- --trials=3 --tasks=T01,T03 --keep-artifacts`, `claude-sonnet-4-6`, N=3, **round cost $2.86**. Single changed variable vs. all prior T01 rounds: `add_parameter` now returns/surfaces the itemized `AddParameterManifest`; the tool description was held byte-identical (control). Classified from the 6 persisted substrate transcripts per the frozen pre-reg. Artifact: `packages/bench/results/phase15-four-task-2026-05-17T04-48-01-533Z.{json,md}`.
