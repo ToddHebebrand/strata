@@ -300,6 +300,10 @@ async function runAgentForPrompt<
       model: runParams.model,
       maxTurns: runParams.maxTurns,
       wallTimeMs: runParams.wallTimeMs,
+      // taskLabel is widened to string for a future runAgentLab caller
+      // (lab:* labels); current callers only ever pass these four. When
+      // Task 2 lands runAgentLab, revisit: a lab:* label would not be a
+      // real member of this union (log-only field, no behavior impact).
       task: params.taskLabel as "T01" | "T03" | "T05" | "T08",
       actor: ctx.actor
     });

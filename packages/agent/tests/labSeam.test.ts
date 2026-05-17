@@ -22,6 +22,7 @@ describe.skipIf(!existsSync(FIXTURE))(
         replayTranscript: steps
       });
       expect(result.criteria.commitReturnedOk).toBe(true);
+      expect(result.criteria.validateAfterCommitClean).toBe(true);
       expect(result.criteria.operationRowAppended).toBe(true);
     });
   }
