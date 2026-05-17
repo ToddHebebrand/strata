@@ -165,7 +165,7 @@ export function createStrataTools(
       default: z.string().optional().describe("Optional default value expression.")
     },
     async (args) => {
-      add_parameter(
+      const manifest = add_parameter(
         ctx.db,
         args.tx as TxHandle,
         args.function_id,
@@ -174,7 +174,7 @@ export function createStrataTools(
         args.position,
         args.default
       );
-      return textResult({ ok: true });
+      return textResult({ ok: true, ...manifest });
     }
   );
 

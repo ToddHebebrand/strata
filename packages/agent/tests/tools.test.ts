@@ -111,6 +111,76 @@ describe("strata tools drive the spine through the shared context", () => {
     }
   });
 
+  it("add_parameter result carries the manifest, not a bare ok", async () => {
+    const batch = ingestBatch([
+      {
+        path: "lib/format.ts",
+        text:
+          "export function formatTimestamp(ts: number): string {\n" +
+          "  return new Date(ts).toISOString();\n" +
+          "}\n"
+      },
+      {
+        path: "server.ts",
+        text:
+          'import { formatTimestamp } from "./lib/format.ts";\n' +
+          "export function logEvent(t: number): string {\n" +
+          "  return formatTimestamp(t);\n" +
+          "}\n"
+      }
+    ]);
+    const db = openDb(":memory:");
+    try {
+      insertNodes(db, batch.allNodes);
+      insertReferences(db, batch.references);
+      const tools = createStrataTools({ db, actor: "x" });
+      const byName = new Map(tools.map((t) => [t.name, t]));
+
+      const begun = parseText(
+        await byName.get("begin_transaction")!.handler({}, {})
+      ) as {
+        id: string;
+        actor: string;
+      };
+      const decls = parseText(
+        await byName.get("find_declarations")!.handler(
+          { name: "formatTimestamp", kind: "function" },
+          {}
+        )
+      ) as { id: string }[];
+      const result = parseText(
+        await byName.get("add_parameter")!.handler(
+          {
+            tx: begun,
+            function_id: decls[0]!.id,
+            name: "timezone",
+            type: "string",
+            position: 1,
+            default: '"UTC"'
+          },
+          {}
+        )
+      ) as {
+        ok: boolean;
+        declaration: { afterSignature: string };
+        callsitesRewritten: { modulePath: string; after: string }[];
+        arityRiskSites: unknown[];
+      };
+
+      expect(result.ok).toBe(true);
+      expect(result.declaration.afterSignature).toContain(
+        'timezone: string = "UTC"'
+      );
+      expect(result.callsitesRewritten[0]!.modulePath).toBe("server.ts");
+      expect(result.callsitesRewritten[0]!.after).toContain(
+        'formatTimestamp(t, "UTC")'
+      );
+      expect(Array.isArray(result.arityRiskSites)).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
   it("exposes exactly the eleven tool names", () => {
     const db = openDb(":memory:");
     try {
