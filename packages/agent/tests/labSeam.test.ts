@@ -32,7 +32,7 @@ describe("seam: runAgentLab drives the real loop with overrides", () => {
   it("is exported and accepts a tool-server factory + generic scorer", async () => {
     expect(typeof runAgentLab).toBe("function");
     const result = await runAgentLab({
-      corpusRoot: require("node:path").join(
+      corpusRoot: path.join(
         __dirname, "..", "..", "..", "examples", "medium"
       ),
       model: "replay",
