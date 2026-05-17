@@ -31,3 +31,4 @@ NOT decisions.md. Freeform exploration log. Nothing here is a claim.
   Ready for the cheap live inner loop:
   `pnpm --filter @strata/lab lab per-scope-add-parameter`
   (operator-run, ~cents, NOT a claim).
+  DRIFT RISK: applyPerScopeAddParameter is a hand-copy of @strata/store add_parameter; if that canonical algorithm changes, re-sync this copy before trusting any lever result. Mechanical guard: the faithfulness-pin test.

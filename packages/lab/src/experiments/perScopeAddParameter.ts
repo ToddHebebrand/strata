@@ -84,6 +84,15 @@ function selectScopeExpr(
  * the sandbox composes store transaction primitives directly, which is the
  * sanctioned fallback when the canonical op is too rigid.
  *
+ * DRIFT RISK: this is a hand-copy of packages/store/src/addParameter.ts's core
+ * algorithm (parameter-insertion edit, callsite fan-out, single queuePendingOp)
+ * + ONE per-scope extension. If the canonical op's algorithm changes, this copy
+ * silently diverges and the mechanics test would still pass on the fixed corpus.
+ * The faithfulness-pin test (see perScopeAddParameter.test.ts) mechanically
+ * guards the no-per_scope path against canonical; the corpus assertions guard
+ * behavior. Any graduation re-implements per-scope INSIDE @strata/store via the
+ * rigid pipeline — this copy is sandbox-only and never graduates as-is.
+ *
  * CRITICAL INVARIANT (the lever's entire thesis): the declaration parameter
  * insertion AND every per-scope callsite argument insertion are queued as
  * text-span edits in ONE transaction and recorded as exactly ONE
@@ -293,7 +302,7 @@ function textResult(value: unknown) {
  */
 export function buildVariantToolServer(
   ctx: StrataSessionContext
-): McpSdkServerConfigWithInstance & { __labTools: SdkMcpToolDefinition<any>[] } {
+): McpSdkServerConfigWithInstance & { __labTools: SdkMcpToolDefinition<any>[] } { // sandbox: SDK generic bound
   const base = createStrataTools(ctx).filter(
     (definition) => definition.name !== "add_parameter"
   );

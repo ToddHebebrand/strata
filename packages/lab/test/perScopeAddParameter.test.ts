@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { ingestBatch } from "@strata/ingest";
 import {
+  add_parameter,
   begin,
   commitWithoutValidate,
   find_declarations,
@@ -16,7 +17,11 @@ import {
   resolveCallsites
 } from "@strata/store";
 import { renderWithSourceMap } from "@strata/render";
-import { buildVariantToolServer } from "../src/experiments/perScopeAddParameter";
+import {
+  applyPerScopeAddParameter,
+  buildVariantToolServer,
+  perScopeAddParameter
+} from "../src/experiments/perScopeAddParameter";
 
 // ---------------------------------------------------------------------------
 // Model-FREE mechanics test. Drives the variant `add_parameter` tool handler
@@ -84,12 +89,19 @@ function toolDef(server: any, name: string): any {
 }
 
 describe("per-scope add_parameter mechanics (model-free)", () => {
-  it("(d) does not require a live model: no API key, pure store + tool handler", () => {
-    expect(process.env.ANTHROPIC_API_KEY ?? "<unset>").toBeDefined();
-    // The whole suite runs without the SDK query loop — this `it` documents
-    // the contract; the assertions below execute the tool handler directly.
-    expect(typeof buildVariantToolServer).toBe("function");
-  });
+  it(
+    // (d) deterministic & model-free: this entire suite drives tool handlers
+    // directly, no SDK query loop, no API key needed.
+    "(d) does not require a live model: no API key, pure store + tool handler",
+    () => {
+      // Prove the experiment wires a synchronous server factory, not a model
+      // loop — the presence of toolServerFactory on the experiment is the
+      // structural proof that the variant server replaces the SDK model path.
+      expect(perScopeAddParameter.overrides.toolServerFactory).toBeTypeOf(
+        "function"
+      );
+    }
+  );
 
   it("variant set keeps tool NAME add_parameter and drops the canonical one", () => {
     const db = buildCorpusStore();
@@ -236,6 +248,73 @@ describe("per-scope add_parameter mechanics (model-free)", () => {
         }
       } finally {
         db.close();
+      }
+    }
+  );
+
+  it(
+    "faithfulness pin: empty per_scope == canonical add_parameter " +
+      "(guards applyPerScopeAddParameter against silent drift from @strata/store)",
+    () => {
+      // Two INDEPENDENT in-memory stores from the SAME corpus. Store A uses
+      // the canonical exported add_parameter op; store B uses
+      // applyPerScopeAddParameter with NO per_scope policy. Their committed
+      // rendered src/ text maps must be byte-equal, AND both must produce
+      // exactly ONE AddParameter op row. This test FAILS if the lab copy
+      // drifts from canonical on the no-per_scope path.
+      //
+      // Canonical add_parameter IS exported from @strata/store (confirmed in
+      // packages/store/src/index.ts) — pin test is feasible without any deep
+      // import or canonical modification.
+      const dbA = buildCorpusStore();
+      const dbB = buildCorpusStore();
+      try {
+        const fn = find_declarations(dbA, {
+          name: "formatTimestamp",
+          kind: "function"
+        });
+        expect(fn).toHaveLength(1);
+        const functionId = fn[0]!.id;
+
+        // Store A: canonical add_parameter
+        const txA = begin(dbA, "pin-test-canonical");
+        add_parameter(dbA, txA, functionId, "timezone", "string", 1, '"UTC"');
+        commitWithoutValidate(dbA, txA);
+
+        // Store B: lab copy with NO per_scope (empty/undefined → fallback path
+        // must match canonical for every callsite)
+        const txB = begin(dbB, "pin-test-lab");
+        applyPerScopeAddParameter(
+          dbB,
+          txB,
+          functionId,
+          "timezone",
+          "string",
+          1,
+          '"UTC"',
+          undefined // no per_scope → must behave identically to canonical
+        );
+        commitWithoutValidate(dbB, txB);
+
+        // Both must produce exactly ONE AddParameter op row.
+        const opsA = listOperationsByTx(dbA, txA.id);
+        const opsB = listOperationsByTx(dbB, txB.id);
+        expect(opsA).toHaveLength(1);
+        expect(opsA[0]!.kind).toBe("AddParameter");
+        expect(opsB).toHaveLength(1);
+        expect(opsB[0]!.kind).toBe("AddParameter");
+
+        // Rendered src/ text maps must be byte-equal across all modules.
+        const rendA = renderCommitted(dbA);
+        const rendB = renderCommitted(dbB);
+        expect(rendA.size).toBeGreaterThan(0);
+        expect(rendB.size).toBe(rendA.size);
+        for (const [key, textA] of rendA) {
+          expect(rendB.get(key)).toBe(textA);
+        }
+      } finally {
+        dbA.close();
+        dbB.close();
       }
     }
   );
