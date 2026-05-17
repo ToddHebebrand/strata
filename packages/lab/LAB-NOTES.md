@@ -162,3 +162,34 @@ like rename updating all refs — NOT "the answer", honest). Next iteration:
 make the per-scope op import-complete; verify tsc-clean MODEL-FREE before any
 further keyed run. ~$2.1/$5 spent. Methodology fix applied: runner now prints
 tool RESULTS (this breakthrough was only visible because of that).
+
+## 2026-05-17 — Import-complete per-scope op + corpus HOF fix; MODEL-FREE tsc-clean confirmed
+
+Iteration after the breakthrough. Two honest instrument/op fixes:
+1. per-scope add_parameter is now import-COMPLETE: per_scope entries may be
+   { expr, importFrom }; the op also inserts `import { expr } from
+   "importFrom"` into every callsite module it touched (dedup-aware). This
+   is op-completeness (like rename updating all refs), NOT scripting — the
+   agent supplies importFrom from having READ the scope's config; the
+   trapped control still fails any honest ZONE-symbol solution. No-per_scope
+   path byte-unchanged (faithfulness-pin + mechanics tests still green).
+2. Corpus HOF landmine fixed: timelineRows `times.map(formatTimestamp)` →
+   `times.map((t) => formatTimestamp(t))`. The bare HOF pass was an
+   orthogonal tsc trap under ANY signature change (timezone:string vs
+   Array.map index:number) that the task prompt's "leave HOF refs
+   unchanged" could not reconcile with "tests pass". The arrow form is
+   idiomatic and makes it a real ui callsite (now 5 callsites: 2 server,
+   2 ui, 1 other). Deterministic mechanics test updated to track 5 (counts
+   only; integrity assertions — one op row, zero oldText mismatch, hermetic
+   names, faithfulness-pin — unchanged).
+
+probe4.ts (MODEL-FREE, free): applyPerScopeAddParameter with
+{ "src/server/":{expr:ZONE,importFrom:"./config.ts"},
+  "src/ui/":{expr:ZONE,importFrom:"./config.ts"} } → renderCorpusAcceptance:
+tscClean=TRUE, 5 callsites rewritten, imports present, type-correct. The
+only vitest fails are expected & non-blocking for labOk: (a) body doesn't
+implement timezone yet (agent's replace_body), (b) pre-existing T05 seed
+bug. labOk = per-callsite-arg check on the COMMITTED render; clean validate
+now lets the agent commit. Canonical store/render/verify byte-identical;
+agent only the prior Phase-1 seam; fence intact. ~$2.1/$5 keyed. Next: the
+decisive keyed equipped-gated run with the import-complete variant.

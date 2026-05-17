@@ -1,7 +1,7 @@
 import { formatTimestamp } from "../lib/format.ts";
 
 export function timelineRows(times: number[]): string[] {
-  return times.map(formatTimestamp);
+  return times.map((t) => formatTimestamp(t));
 }
 
 export function firstRow(times: number[]): string {

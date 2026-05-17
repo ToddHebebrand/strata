@@ -151,8 +151,9 @@ describe("per-scope add_parameter mechanics (model-free)", () => {
         expect(fn).toHaveLength(1);
         const functionId = fn[0]!.id;
 
-        // Sanity: canonical callsite resolution sees 4 direct callsites
-        // (2 server, 1 ui, 1 lib/other) before any mutation.
+        // Sanity: canonical callsite resolution sees 5 direct callsites
+        // (2 server, 2 ui [firstRow + timelineRows' arrow], 1 lib/other)
+        // before any mutation.
         const pre = resolveCallsites(db, functionId);
         const preScopes = pre.callsites.map((c) => {
           const mp = modulePathOf(db, c.statementId);
@@ -163,7 +164,7 @@ describe("per-scope add_parameter mechanics (model-free)", () => {
               : "other";
         });
         expect(preScopes.sort()).toEqual(
-          ["other", "server", "server", "ui"].sort()
+          ["other", "server", "server", "ui", "ui"].sort()
         );
 
         // begin_transaction via the variant server's own tool. Handlers
@@ -201,8 +202,8 @@ describe("per-scope add_parameter mechanics (model-free)", () => {
             arityRiskSites: unknown[];
           };
           expect(manifest.ok).toBe(true);
-          // (b) every direct callsite rewritten (4), none skipped.
-          expect(manifest.callsitesRewritten).toHaveLength(4);
+          // (b) every direct callsite rewritten (5), none skipped.
+          expect(manifest.callsitesRewritten).toHaveLength(5);
 
           // Commit the overlay. (c) commitWithoutValidate THROWS on any
           // `oldText mismatch` (see transactions.ts) — reaching this line
@@ -238,9 +239,14 @@ describe("per-scope add_parameter mechanics (model-free)", () => {
           expect(
             (serverSrc.match(/formatTimestamp\([^)]*ZONE\)/g) ?? []).length
           ).toBe(2);
-          //   ui-scope callsite → ZONE
+          //   ui-scope callsites → ZONE (firstRow's `(0)` + timelineRows'
+          //   arrow `(t)`, 2 ui callsites in this module).
           const uiSrc = rendered.get("src/ui/timeline.ts")!;
           expect(uiSrc).toMatch(/formatTimestamp\(0,\s*ZONE\)/);
+          expect(uiSrc).toMatch(/formatTimestamp\(t,\s*ZONE\)/);
+          expect(
+            (uiSrc.match(/formatTimestamp\([^)]*ZONE\)/g) ?? []).length
+          ).toBe(2);
           //   other-scope callsite → canonical default ("UTC"), NOT ZONE
           const otherSrc = rendered.get("src/lib/startupStamp.ts")!;
           expect(otherSrc).toMatch(/formatTimestamp\(0,\s*"UTC"\)/);

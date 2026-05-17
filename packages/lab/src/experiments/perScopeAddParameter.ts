@@ -13,6 +13,7 @@ import {
 } from "@strata/agent";
 import {
   findNodeById,
+  listChildren,
   locateSpan,
   modulePathOf,
   queuePendingOp,
@@ -44,29 +45,71 @@ function corpusRelPosix(modulePath: string): string {
 }
 
 /**
- * LONGEST-PREFIX per-scope selection. Given a callsite's corpus-relative
- * key and the optional per_scope policy, return the argument expression
- * whose module-path-prefix key is the LONGEST one that prefixes the
- * callsite key. No match ⇒ undefined (caller falls back to the canonical
- * default slot value). Pure; deterministic.
+ * A per_scope entry is either a bare expression string (back-compat: arg
+ * only, no auto-import) or `{ expr, importFrom }` which ALSO makes the
+ * structural op import-complete: if `expr` is a bare identifier, the op
+ * ensures `import { <expr> } from "<importFrom>";` exists in every
+ * callsite module it inserts `expr` into. This is op-completeness (like
+ * rename updating all references), NOT scripting: the agent supplies
+ * `importFrom` from having READ the scope's config module — code-derived
+ * structural fact, not the per-scope answer value. The trapped control
+ * still fails any honest (ZONE-symbol) solution, so integrity holds.
+ */
+export type PerScopeEntry = string | { expr: string; importFrom: string };
+
+interface ResolvedScope {
+  expr: string;
+  importFrom?: string;
+}
+
+/**
+ * LONGEST-PREFIX per-scope selection. Returns the resolved scope (arg
+ * expression + optional import source) whose module-path-prefix key is the
+ * LONGEST one that prefixes the callsite key. No match ⇒ undefined (caller
+ * falls back to the canonical default slot value). Pure; deterministic.
  */
 function selectScopeExpr(
   relKey: string,
-  perScope: Record<string, string> | undefined
-): string | undefined {
+  perScope: Record<string, PerScopeEntry> | undefined
+): ResolvedScope | undefined {
   if (!perScope) {
     return undefined;
   }
-  let best: { prefix: string; expr: string } | undefined;
-  for (const [prefix, expr] of Object.entries(perScope)) {
+  let best: { prefix: string; entry: PerScopeEntry } | undefined;
+  for (const [prefix, entry] of Object.entries(perScope)) {
     if (
       relKey.startsWith(prefix) &&
       (best === undefined || prefix.length > best.prefix.length)
     ) {
-      best = { prefix, expr };
+      best = { prefix, entry };
     }
   }
-  return best?.expr;
+  if (!best) {
+    return undefined;
+  }
+  return typeof best.entry === "string"
+    ? { expr: best.entry }
+    : { expr: best.entry.expr, importFrom: best.entry.importFrom };
+}
+
+/**
+ * Walk a node's parent chain to its enclosing Module node and return it
+ * (the node, not just the path — mirrors store modulePathOf's walk).
+ */
+function moduleNodeOf(db: Db, nodeId: string): { id: string } {
+  let cur = findNodeById(db, nodeId);
+  const seen = new Set<string>();
+  while (cur && cur.kind !== "Module") {
+    if (cur.parentId === null || seen.has(cur.id)) {
+      throw new Error(`moduleNodeOf: no Module ancestor for ${nodeId}`);
+    }
+    seen.add(cur.id);
+    cur = findNodeById(db, cur.parentId);
+  }
+  if (!cur) {
+    throw new Error(`moduleNodeOf: node not found: ${nodeId}`);
+  }
+  return cur;
 }
 
 /**
@@ -119,7 +162,7 @@ export function applyPerScopeAddParameter(
   type: string,
   position: number,
   defaultValue: string | undefined,
-  perScope: Record<string, string> | undefined
+  perScope: Record<string, PerScopeEntry> | undefined
 ): PerScopeAddParameterManifest {
   if (!IDENT_PATTERN.test(name)) {
     throw new Error(`Invalid TypeScript identifier: ${JSON.stringify(name)}`);
@@ -196,11 +239,17 @@ export function applyPerScopeAddParameter(
   const callsitesRewritten: PerScopeAddParameterManifest["callsitesRewritten"] =
     [];
 
+  // module node id -> imports it must have for op-completeness
+  const neededImports = new Map<
+    string,
+    { importName: string; importFrom: string }[]
+  >();
+
   for (const callsite of resolution.callsites) {
     const absModulePath = modulePathOf(db, callsite.statementId);
     const relKey = corpusRelPosix(absModulePath);
-    const scopeExpr = selectScopeExpr(relKey, perScope);
-    const slotValue = scopeExpr ?? fallbackSlot;
+    const resolved = selectScopeExpr(relKey, perScope);
+    const slotValue = resolved?.expr ?? fallbackSlot;
 
     const callPosition = Math.max(
       0,
@@ -232,6 +281,57 @@ export function applyPerScopeAddParameter(
       scopeKey: relKey,
       inserted: newText
     });
+
+    // Op-completeness: if this scope inserted a bare-identifier symbol with
+    // an importFrom, that symbol must resolve in this callsite's module.
+    if (resolved?.importFrom && IDENT_PATTERN.test(resolved.expr)) {
+      const moduleId = moduleNodeOf(db, callsite.statementId).id;
+      const list = neededImports.get(moduleId) ?? [];
+      if (
+        !list.some(
+          (i) =>
+            i.importName === resolved.expr &&
+            i.importFrom === resolved.importFrom
+        )
+      ) {
+        list.push({
+          importName: resolved.expr,
+          importFrom: resolved.importFrom
+        });
+      }
+      neededImports.set(moduleId, list);
+    }
+  }
+
+  // One import-insertion edit per (module, import) that isn't already
+  // present — prepended before the module's first non-trivia statement.
+  for (const [moduleId, imports] of neededImports) {
+    const children = listChildren(db, moduleId)
+      .filter((c) => c.kind !== "EndOfFileTrivia")
+      .sort((a, b) => (a.childIndex ?? 0) - (b.childIndex ?? 0));
+    const anchor = children[0];
+    if (!anchor) {
+      continue;
+    }
+    const existingImportText = children
+      .filter((c) => c.kind === "ImportDeclaration")
+      .map((c) => c.payload)
+      .join("\n");
+    for (const imp of imports) {
+      const already =
+        existingImportText.includes(imp.importFrom) &&
+        new RegExp(`\\b${imp.importName}\\b`).test(existingImportText);
+      if (already) {
+        continue;
+      }
+      queueTextSpanEdit(tx, anchor.id, {
+        start: 0,
+        end: 0,
+        oldText: "",
+        newText: `import { ${imp.importName} } from "${imp.importFrom}";\n`
+      });
+      affected.add(anchor.id);
+    }
   }
 
   // EXACTLY ONE operation-log row for the whole per-scope fan-out.
@@ -316,11 +416,17 @@ export function buildVariantToolServer(
     "the transaction overlay only.";
   const perScopeSentence =
     " VARIANT EXTENSION: pass an optional `per_scope` object mapping a " +
-    "corpus module-path prefix (e.g. \"src/server/\") to the argument " +
-    "expression to insert at callsites under that prefix (longest prefix " +
-    "wins; callsites matching no prefix get `default`). This lets you " +
-    "differentiate the per-callsite argument by scope in this SAME single " +
-    "operation — never a second replace_body edit.";
+    "corpus module-path prefix (e.g. \"src/server/\") to EITHER the " +
+    "argument expression string to insert at callsites under that prefix, " +
+    "OR an object { expr, importFrom } where `expr` is that argument and " +
+    "`importFrom` is the module specifier the symbol comes from (e.g. " +
+    '"./config.ts", which you determined by reading that scope\'s config ' +
+    "module). With { expr, importFrom } the op is import-COMPLETE: it also " +
+    "inserts `import { expr } from \"importFrom\";` into every callsite " +
+    "module it touched (skipping modules that already import it), so the " +
+    "inserted reference resolves and `validate` is clean — all in this " +
+    "SAME single operation, never a second replace_body edit. Longest " +
+    "prefix wins; callsites matching no prefix get `default`.";
 
   const variant = tool(
     "add_parameter",
@@ -340,11 +446,22 @@ export function buildVariantToolServer(
         .optional()
         .describe("Optional default value expression."),
       per_scope: z
-        .record(z.string(), z.string())
+        .record(
+          z.string(),
+          z.union([
+            z.string(),
+            z.object({
+              expr: z.string().min(1),
+              importFrom: z.string().min(1)
+            })
+          ])
+        )
         .optional()
         .describe(
-          "Optional map: corpus module-path prefix → argument expression " +
-            "to insert at callsites under that prefix (longest prefix wins)."
+          "Optional map: corpus module-path prefix → either an argument " +
+            "expression string, or { expr, importFrom } to also ensure " +
+            "`import { expr } from \"importFrom\"` in each touched module " +
+            "(longest prefix wins)."
         )
     },
     async (args) => {
@@ -356,7 +473,7 @@ export function buildVariantToolServer(
         args.type,
         args.position,
         args.default,
-        args.per_scope as Record<string, string> | undefined
+        args.per_scope as Record<string, PerScopeEntry> | undefined
       );
       return textResult(manifest);
     }

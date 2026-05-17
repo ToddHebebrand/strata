@@ -54,7 +54,9 @@ function gateWrap(tools: ToolDef[], readBudget: number): ToolDef[] {
                       `ZONE constants (find_declarations kind:"variable"). ` +
                       `STOP reading. Call begin_transaction, then ` +
                       `add_parameter on formatTimestamp with a per_scope map ` +
-                      `keyed by module-path prefix, then validate and ` +
+                      `keyed by module-path prefix; use the { expr, ` +
+                      `importFrom } form so the inserted symbol is also ` +
+                      `imported and validate is clean. Then validate and ` +
                       `commit_transaction.`
                   })
                 }
