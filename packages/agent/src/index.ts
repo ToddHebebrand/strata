@@ -8,6 +8,7 @@ export {
 } from "./log";
 export { STRATA_SYSTEM_PROMPT } from "./prompt";
 export {
+  classifySessionError,
   collectSession,
   loadTranscriptFixture,
   normalizeTranscriptForFixture,

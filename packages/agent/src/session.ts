@@ -711,7 +711,11 @@ async function runLiveSession(deps: {
       }
     }
   } catch (caught) {
-    terminal = abortController.signal.aborted ? "error_wall_time" : "error_other";
+    const { terminal: classified, rethrow } = classifySessionError(
+      caught,
+      abortController.signal.aborted
+    );
+    terminal = classified;
     log.append({
       type: "assistant_text",
       ts: Date.now(),
@@ -720,7 +724,7 @@ async function runLiveSession(deps: {
         caught instanceof Error ? caught.message : String(caught)
       }`.slice(0, 240)
     });
-    if (!abortController.signal.aborted) {
+    if (rethrow) {
       throw caught;
     }
   } finally {
@@ -729,6 +733,39 @@ async function runLiveSession(deps: {
   }
 
   return terminal;
+}
+
+/**
+ * Classify an error thrown out of the live `query()` loop into a terminal
+ * reason, and whether it should propagate.
+ *
+ * Installed `@anthropic-ai/claude-agent-sdk@0.2.118` signals the `maxTurns`
+ * bound by THROWING `Reached maximum number of turns (N)` rather than
+ * yielding a `result` message with `subtype: "error_max_turns"` (which
+ * `terminalFromResultSubtype` would otherwise map). That is a benign,
+ * expected per-trial budget outcome — the harness already defines the
+ * `error_max_turns` terminal reason for it — so it must be recorded and
+ * swallowed exactly like a wall-time abort, NOT re-thrown (which previously
+ * crashed the entire round, discarding every other trial incl. the T03
+ * guard; surfaced 2026-05-16 by the first Opus T01 probe). A wall-time
+ * abort still wins (it can race the throw). Any other error is genuinely
+ * unexpected and still fails loud (rethrow).
+ */
+export function classifySessionError(
+  caught: unknown,
+  aborted: boolean
+): {
+  terminal: "error_max_turns" | "error_wall_time" | "error_other";
+  rethrow: boolean;
+} {
+  if (aborted) {
+    return { terminal: "error_wall_time", rethrow: false };
+  }
+  const message = caught instanceof Error ? caught.message : String(caught);
+  if (/maximum number of turns/i.test(message)) {
+    return { terminal: "error_max_turns", rethrow: false };
+  }
+  return { terminal: "error_other", rethrow: true };
 }
 
 function terminalFromResultSubtype(subtype: string): TerminalReason {

@@ -100,4 +100,39 @@ describe("collectBaselineSession (synthetic stream, no key)", () => {
     const session = await collectBaselineSession(errStream());
     expect(session.terminalReason).toBe("error_max_turns");
   });
+
+  it("a THROWN SDK max-turns error becomes error_max_turns, not a crash", async () => {
+    // Installed SDK 0.2.118 THROWS max-turns rather than yielding the result
+    // subtype above. Must not propagate (that crashed the whole round).
+    async function* throwMaxTurns(): AsyncGenerator<unknown, void> {
+      yield { type: "system", subtype: "init", tools: [] };
+      throw new Error(
+        "Claude Code returned an error result: Reached maximum number of turns (40)"
+      );
+    }
+    const session = await collectBaselineSession(throwMaxTurns());
+    expect(session.terminalReason).toBe("error_max_turns");
+    expect(session.result).toBeUndefined();
+  });
+
+  it("a genuine thrown error still fails loud (propagates)", async () => {
+    async function* throwReal(): AsyncGenerator<unknown, void> {
+      yield { type: "system", subtype: "init", tools: [] };
+      throw new Error("ECONNRESET socket hang up");
+    }
+    await expect(collectBaselineSession(throwReal())).rejects.toThrow(
+      /ECONNRESET/
+    );
+  });
+
+  it("an aborted (wall-time) throw becomes error_wall_time", async () => {
+    async function* throwAborted(): AsyncGenerator<unknown, void> {
+      yield { type: "system", subtype: "init", tools: [] };
+      throw new Error("Reached maximum number of turns (40)");
+    }
+    const session = await collectBaselineSession(throwAborted(), {
+      aborted: true
+    });
+    expect(session.terminalReason).toBe("error_wall_time");
+  });
 });

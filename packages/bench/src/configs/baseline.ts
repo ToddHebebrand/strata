@@ -171,7 +171,8 @@ export async function runBaselineTaskTrial(
       query({
         prompt: baselinePrompt(root, TASK_PROMPTS[taskId]),
         options
-      })
+      }),
+      abortController.signal
     );
     const harnessWallTimeMs = Date.now() - startedAt;
     const probe = params.validateWorkingTree

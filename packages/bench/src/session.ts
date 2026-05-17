@@ -1,3 +1,4 @@
+import { classifySessionError } from "@strata/agent";
 import type { TerminalReason } from "./metrics";
 
 export interface BaselineToolEvent {
@@ -118,7 +119,8 @@ function inputPath(input: unknown): string | undefined {
  * passes the real query(...) generator without changing this collector.
  */
 export async function collectBaselineSession(
-  stream: AsyncIterable<unknown>
+  stream: AsyncIterable<unknown>,
+  signal?: { readonly aborted: boolean }
 ): Promise<BaselineSession> {
   const session: BaselineSession = {
     terminalReason: "error_other",
@@ -128,6 +130,7 @@ export async function collectBaselineSession(
   };
   const pending = new Map<string, { tool: string; input: unknown }>();
 
+  try {
   for await (const message of stream) {
     if (!isRecord(message)) {
       continue;
@@ -209,6 +212,16 @@ export async function collectBaselineSession(
         }
       };
     }
+  }
+  } catch (caught) {
+    const { terminal, rethrow } = classifySessionError(
+      caught,
+      signal?.aborted ?? false
+    );
+    if (rethrow) {
+      throw caught;
+    }
+    session.terminalReason = terminal;
   }
 
   return session;
