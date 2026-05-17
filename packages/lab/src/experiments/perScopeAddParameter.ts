@@ -162,7 +162,8 @@ export function applyPerScopeAddParameter(
   type: string,
   position: number,
   defaultValue: string | undefined,
-  perScope: Record<string, PerScopeEntry> | undefined
+  perScope: Record<string, PerScopeEntry> | undefined,
+  omitUnmatched = false
 ): PerScopeAddParameterManifest {
   if (!IDENT_PATTERN.test(name)) {
     throw new Error(`Invalid TypeScript identifier: ${JSON.stringify(name)}`);
@@ -249,6 +250,20 @@ export function applyPerScopeAddParameter(
     const absModulePath = modulePathOf(db, callsite.statementId);
     const relKey = corpusRelPosix(absModulePath);
     const resolved = selectScopeExpr(relKey, perScope);
+
+    // Per-callsite OMIT expressiveness: a callsite matching no per_scope
+    // prefix, with omitUnmatched, gets NO inserted argument — it relies on
+    // the parameter's own default (`formatTimestamp(0)` stays as-is and
+    // remains valid because the new param has a default). This is the
+    // capability canonical add_parameter lacks (it always inserts a uniform
+    // value at every callsite) — the precise expressiveness gap the
+    // authoritative T01 negative named. Not scripting: it only lets a
+    // scope take the declared default; the per-scope VALUES stay
+    // code-derived and the trapped control still fails any honest solution.
+    if (!resolved && omitUnmatched) {
+      continue;
+    }
+
     const slotValue = resolved?.expr ?? fallbackSlot;
 
     const callPosition = Math.max(
@@ -462,6 +477,15 @@ export function buildVariantToolServer(
             "expression string, or { expr, importFrom } to also ensure " +
             "`import { expr } from \"importFrom\"` in each touched module " +
             "(longest prefix wins)."
+        ),
+      omit_unmatched: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true, callsites matching NO per_scope prefix get NO " +
+            "inserted argument — they rely on the parameter's own default " +
+            "(e.g. `formatTimestamp(0)` stays as-is). Use this when some " +
+            "callsites must take the default rather than an explicit value."
         )
     },
     async (args) => {
@@ -473,7 +497,8 @@ export function buildVariantToolServer(
         args.type,
         args.position,
         args.default,
-        args.per_scope as Record<string, PerScopeEntry> | undefined
+        args.per_scope as Record<string, PerScopeEntry> | undefined,
+        args.omit_unmatched === true
       );
       return textResult(manifest);
     }

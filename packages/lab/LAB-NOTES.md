@@ -193,3 +193,28 @@ bug. labOk = per-callsite-arg check on the COMMITTED render; clean validate
 now lets the agent commit. Canonical store/render/verify byte-identical;
 agent only the prior Phase-1 seam; fence intact. ~$2.1/$5 keyed. Next: the
 decisive keyed equipped-gated run with the import-complete variant.
+
+## 2026-05-17 — Isolated the SOLE remaining lever: per-callsite OMIT expressiveness (== the authoritative T01 crux)
+
+Keyed equipped-gated run (full visibility): agent did EVERYTHING right —
+find_declarations{name:ZONE} → begin → add_parameter per_scope
+{server/ui:{expr:ZONE,importFrom:"./config.ts"}} → replace_body (body uses
+timezone) → validate [] → commit{ok:true}, terminal=success. labOk=false.
+probe5 (MODEL-FREE) pinpointed it per-callsite: 4/5 OK (server×2, ui×2 →
+ZONE); 1 BAD: src/lib/startupStamp.ts expected=<default> got="UTC". Root
+cause: add_parameter (canonical AND variant) ALWAYS inserts an arg at every
+callsite — no "omit / take the default" per-callsite expressiveness. This is
+EXACTLY the crux the authoritative T01 negative named, now reproduced and
+isolated on an honest non-trapped task with every other confound removed
+(discovery, attribution, import-completion, exploration, prompt all handled;
+agent flawless).
+
+Honest fix (tool completeness, not the answer; trapped control still guards;
+no-per_scope path byte-unchanged → mechanics/faithfulness green):
+add_parameter gains `omit_unmatched` — callsites matching no per_scope
+prefix get NO inserted arg and rely on the parameter default. probe5 with
+omit_unmatched=true: HD pass=TRUE, all 5 callsites OK
+(startupStamp=<default>). Deterministically satisfies the HD scorer.
+Next: keyed equipped-gated run (gate now instructs omit_unmatched:true); if
+labOk=true, run the trapped control (contamination alarm) before any claim.
+~$2.6/$5 keyed; probes free.

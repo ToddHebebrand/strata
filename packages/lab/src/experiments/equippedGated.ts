@@ -48,16 +48,22 @@ function gateWrap(tools: ToolDef[], readBudget: number): ToolDef[] {
                     reads,
                     message:
                       `Budget spent (${reads} read-only calls, no ` +
-                      `transaction). You already have: the formatTimestamp ` +
-                      `function id, every callsite with its modulePath/scope ` +
-                      `(from get_references + read_node), and the per-scope ` +
-                      `ZONE constants (find_declarations kind:"variable"). ` +
-                      `STOP reading. Call begin_transaction, then ` +
-                      `add_parameter on formatTimestamp with a per_scope map ` +
-                      `keyed by module-path prefix; use the { expr, ` +
-                      `importFrom } form so the inserted symbol is also ` +
-                      `imported and validate is clean. Then validate and ` +
-                      `commit_transaction.`
+                      `transaction). Do NOT keep browsing callsites. ` +
+                      `Remaining required step: if you have not already, ` +
+                      `call find_declarations {name:"ZONE"} once — it ` +
+                      `returns each scope's exported ZONE constant WITH its ` +
+                      `modulePath, and read_node that const to see its ` +
+                      `value and where it lives. Then begin_transaction and ` +
+                      `call add_parameter ONCE on formatTimestamp with a ` +
+                      `per_scope map: { "src/server/": { expr: "ZONE", ` +
+                      `importFrom: <server config module specifier> }, ` +
+                      `"src/ui/": { expr: "ZONE", importFrom: <ui config ` +
+                      `module specifier> } } (derive each importFrom from ` +
+                      `where you saw ZONE defined) AND omit_unmatched: true ` +
+                      `(so callsites in scopes without a ZONE take the ` +
+                      `parameter default instead of an inserted value). ` +
+                      `Then validate and commit_transaction. At most a few ` +
+                      `more reads.`
                   })
                 }
               ]
@@ -74,7 +80,7 @@ function buildEquippedGated(
   ctx: StrataSessionContext
 ): McpSdkServerConfigWithInstance & { __labTools: ToolDef[] } {
   const equipped = buildEquippedToolServer(ctx, { variant: true }).__labTools;
-  const wrapped = gateWrap(equipped, 16);
+  const wrapped = gateWrap(equipped, 24);
   const server = createSdkMcpServer({
     name: STRATA_SERVER_NAME,
     version: "0.0.0",

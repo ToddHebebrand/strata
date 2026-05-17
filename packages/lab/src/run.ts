@@ -54,8 +54,8 @@ async function main(): Promise<void> {
   // inspecting what the tools returned).
   for (const ev of result.log.events) {
     if (ev.type !== "tool_call") continue;
-    const args = JSON.stringify(ev.args).slice(0, 110);
-    const res = String(ev.result_summary ?? "").replace(/\s+/g, " ").slice(0, 220);
+    const args = JSON.stringify(ev.args).slice(0, 500);
+    const res = String(ev.result_summary ?? "").replace(/\s+/g, " ").slice(0, 360);
     console.log(`  · ${ev.tool} ${args}${ev.ok ? "" : " [ERR]"}\n      → ${res}`);
   }
   console.log(
