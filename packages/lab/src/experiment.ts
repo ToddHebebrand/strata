@@ -24,6 +24,10 @@ export function makeLabScorer(task: "HD" | "trap"): RunAgentLabParams["score"] {
     return {
       commitReturnedOk: input.commitReturnedOk,
       validateAfterCommitClean: input.validateAfterCommitClean,
+      // NOTE: operationRowAppended is a conservative PROXY equal to
+      // commitReturnedOk for the sandbox — no add_parameter-kind-specific
+      // operation-log check is implemented yet; a graduating method must add
+      // a real op-log assertion before making any claim based on this field.
       operationRowAppended: input.commitReturnedOk,
       labOk: verdict.pass
     };
@@ -48,8 +52,11 @@ export function makeLabScorer(task: "HD" | "trap"): RunAgentLabParams["score"] {
  * evaluateT03Criteria; the ONLY intentional difference is the
  * corpusRoot-relative key instead of srcRoot-relative.
  *
- * Defensive: if db is falsy or no modules exist, returns new Map() so
- * the unit test (which passes undefined db) does not throw.
+ * Defensive: if db is falsy (degenerate unit-test `undefined as any` case),
+ * returns new Map() so the caller gets labOk:false without a throw.
+ * A genuine DB or render failure is intentionally NOT swallowed — it throws
+ * so the harness/test surfaces the failure immediately. Silent failure would
+ * corrupt measurement.
  *
  * Exported for direct testing of the key-format contract: the instrument's
  * correctness depends on `src/`-prefixed posix keys feeding `scopeOf`.
@@ -59,19 +66,21 @@ export function renderCommittedSrc(db: Db, srcRoot: string): Map<string, string>
     return new Map();
   }
 
+  // Strip any trailing path separators so "path/to/src/" is treated the same
+  // as "path/to/src" — a caller passing a trailing slash still gets the right
+  // corpusRoot (i.e. path.dirname does not see an empty final segment).
+  const normalizedSrcRoot = srcRoot.replace(/[/\\]+$/, "");
+
   // corpusRoot is the parent of srcRoot (e.g. ".../lab/corpus").
   // Relativizing module.payload (an absolute path) against corpusRoot yields
   // "src/server/events.ts" — the key format scopeOf() expects.
-  const corpusRoot = path.dirname(srcRoot);
+  const corpusRoot = path.dirname(normalizedSrcRoot);
 
   const rendered = new Map<string, string>();
 
-  let modules: ReturnType<typeof listModules>;
-  try {
-    modules = listModules(db);
-  } catch {
-    return new Map();
-  }
+  // Let listModules throw naturally — a real DB failure must not be silently
+  // swallowed (that would corrupt measurement by returning an empty map).
+  const modules = listModules(db);
 
   for (const module of modules) {
     const loaded = loadModule(db, module.id);

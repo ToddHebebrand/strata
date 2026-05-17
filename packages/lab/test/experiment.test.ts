@@ -18,16 +18,31 @@ describe("experiment interface", () => {
     );
     expect(c).toHaveProperty("labOk");
     expect(c).toHaveProperty("commitReturnedOk");
+    // Assert VALUES — not just shape — so a silent-success regression is caught.
+    expect(c.labOk).toBe(false);
+    expect(c.commitReturnedOk).toBe(false);
   });
 
   it("a LabExperiment is a self-contained unit", () => {
+    // Construct a real LabExperiment and verify its task field drives a working scorer.
     const exp: LabExperiment = {
       id: "noop",
       hypothesis: "control: canonical tools, expect HD fail (no per-scope expressiveness)",
       task: "HD",
       overrides: {}
     };
-    expect(exp.task).toBe("HD");
+    // The experiment's task must produce a callable scorer.
+    const scorer = makeLabScorer(exp.task);
+    expect(typeof scorer).toBe("function");
+    // Calling the scorer on the degenerate case must yield labOk:false
+    // (no committed src → HD oracle sees empty map → fails).
+    const result = scorer(
+      undefined as any,
+      undefined as any,
+      "",
+      { commitReturnedOk: false, validateAfterCommitClean: false, txId: "t" } as any
+    );
+    expect(result.labOk).toBe(false);
   });
 });
 
