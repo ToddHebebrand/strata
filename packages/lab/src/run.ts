@@ -56,6 +56,17 @@ async function main(): Promise<void> {
     `[lab] terminal=${result.terminalReason} labOk=${result.criteria.labOk} ` +
       `commitOk=${result.criteria.commitReturnedOk}`
   );
+  // Cost/usage from the SDK result event (operator burst-ceiling tracking).
+  const resultEvent = result.log.events.find(
+    (e): e is Extract<(typeof result.log.events)[number], { type: "result" }> =>
+      e.type === "result"
+  );
+  console.log(
+    resultEvent
+      ? `[lab] cost=$${resultEvent.totalCostUsd.toFixed(4)} turns=${resultEvent.numTurns} ` +
+          `tok(in/out)=${resultEvent.usage.inputTokens}/${resultEvent.usage.outputTokens}`
+      : `[lab] cost=n/a (no SDK result event — replay/none)`
+  );
   if (!result.criteria.commitReturnedOk && result.terminalReason !== "success") {
     console.log(
       `[lab] NOTE: agent did not commit — terminal=${result.terminalReason}. ` +

@@ -32,3 +32,15 @@ NOT decisions.md. Freeform exploration log. Nothing here is a claim.
   `pnpm --filter @strata/lab lab per-scope-add-parameter`
   (operator-run, ~cents, NOT a claim).
   DRIFT RISK: applyPerScopeAddParameter is a hand-copy of @strata/store add_parameter; if that canonical algorithm changes, re-sync this copy before trusting any lever result. Mechanical guard: the faithfulness-pin test.
+
+## 2026-05-17 — First cents-loop trajectory (operator burst, ~$1.5/$5, NON-AUTHORITATIVE)
+
+5 live runs, claude-sonnet-4-6, HD task. NOT a claim; sandbox signal only.
+
+- **canonical-control** (vanilla tools): pure read-only exploration thrash, 0 mutations, never `begin_transaction`, wall-time. Reproduces the original T05-class exploration thrash on the *honest* (non-trapped) task.
+- **per-scope-add-parameter** (variant tool): same thrash, never reached `add_parameter`. error_max_turns, $0.2887. The per-scope lever is unreachable — failure is upstream of the callsite-collision it targets.
+- **per-scope-add-parameter-directive** (+ directive honest prompt): still thrash; agent burned the budget *guessing nonexistent constant names* (SERVER_ZONE, DEFAULT_TIMEZONE, …). Re-confirms the falsified BS-P-B prompt class on the new instrument.
+- **per-scope-gated** (+ canUseTool exploration gate): gate INERT. Seam finding: the canonical hermetic session runs `permissionMode: "bypassPermissions"` (session.ts:684), under which the SDK never invokes `canUseTool`. The loop-affordance lever cannot be wired via the SDK permission hook; it must live at the tool-handler layer.
+- **per-scope-handler-gated** (+ tool-handler exploration gate, which DOES fire): exploration successfully capped (~50→~20 calls). But the agent, told repeatedly to `begin_transaction` then `add_parameter`, **never acted** — stalled and wall-timed with no transaction.
+
+**Trajectory finding (sandbox, non-authoritative):** on an honest, code-derivable multi-step task, the substrate + the two deferred levers (per-scope `add_parameter` expressiveness; exploration discipline) do NOT yield a single converged multi-step success. The failure is not the callsite-collision (per-scope lever's target), not prompt directiveness, and not merely unbounded exploration: even with exploration forcibly bounded and an explicit act instruction, the agent does not enter the act phase (never opens a transaction across all 5 configs). This is the first such evidence on a non-trapped task and cleanly extends the published bounded negative — the substrate's robust atomic-rename win does not generalize here even with the new levers. The next question (why the agent will not convert to action even when forced) is a different-class, loop/model-architecture investigation — deliberate design, not more gate/prompt tuning. Nothing here graduates; RESULTS.md/decisions.md unchanged by design.

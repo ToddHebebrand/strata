@@ -20,4 +20,13 @@ describe("registry", () => {
     // The substantive lever wires a tool-server factory override.
     expect(typeof exp.overrides.toolServerFactory).toBe("function");
   });
+
+  it("resolves the inverted control canonical-control (no overrides, HD)", () => {
+    const exp = getExperiment("canonical-control");
+    expect(exp.id).toBe("canonical-control");
+    expect(exp.task).toBe("HD");
+    // The control deliberately has NO overrides — vanilla canonical tools.
+    expect(exp.overrides.toolServerFactory).toBeUndefined();
+    expect(exp.overrides.canUseTool).toBeUndefined();
+  });
 });
