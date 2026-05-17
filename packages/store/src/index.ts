@@ -25,6 +25,7 @@ export {
   listChildren,
   listModules,
   loadModule,
+  modulePathOf,
   type LoadedModule,
   type NodeRow
 } from "./nodes";

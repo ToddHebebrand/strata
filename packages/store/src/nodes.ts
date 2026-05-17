@@ -42,6 +42,37 @@ export function findNodeById(db: Db, id: string): NodeRow | undefined {
   return rowToNode(row);
 }
 
+/**
+ * Walk a node's parent chain to its enclosing `kind:"Module"` node and
+ * return that module's payload, which is the POSIX module path (modules
+ * are roots; their payload is the path — see ingest `nodeId(modulePath,
+ * [], "Module")`). Used by the add_parameter manifest so the agent sees
+ * which module each rewritten callsite is in.
+ */
+export function modulePathOf(db: Db, nodeId: string): string {
+  let current = findNodeById(db, nodeId);
+  if (!current) {
+    throw new Error(`modulePathOf: node not found: ${nodeId}`);
+  }
+  const seen = new Set<string>();
+  while (current.kind !== "Module") {
+    if (current.parentId === null || seen.has(current.id)) {
+      throw new Error(
+        `modulePathOf: no Module ancestor for node ${nodeId}`
+      );
+    }
+    seen.add(current.id);
+    const parent = findNodeById(db, current.parentId);
+    if (!parent) {
+      throw new Error(
+        `modulePathOf: dangling parent ${current.parentId} for ${current.id}`
+      );
+    }
+    current = parent;
+  }
+  return current.payload;
+}
+
 export function loadModule(db: Db, moduleId: string): LoadedModule {
   const module = findNodeById(db, moduleId);
 
