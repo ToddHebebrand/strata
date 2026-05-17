@@ -175,7 +175,7 @@ describe("strata tools drive the spine through the shared context", () => {
       expect(result.callsitesRewritten[0]!.after).toContain(
         'formatTimestamp(t, "UTC")'
       );
-      expect(Array.isArray(result.arityRiskSites)).toBe(true);
+      expect(result.arityRiskSites).toEqual([]);
     } finally {
       db.close();
     }
