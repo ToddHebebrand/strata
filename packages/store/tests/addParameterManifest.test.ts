@@ -35,7 +35,7 @@ function setup(inputs: { path: string; text: string }[]) {
     name: "formatTimestamp",
     kind: "function"
   })[0]!;
-  return { batch, db, decl };
+  return { db, decl };
 }
 
 describe("add_parameter manifest", () => {
