@@ -76,7 +76,7 @@ function gateWrap(tools: ToolDef[], readBudget: number): ToolDef[] {
   });
 }
 
-function buildEquippedGated(
+export function buildEquippedGated(
   ctx: StrataSessionContext
 ): McpSdkServerConfigWithInstance & { __labTools: ToolDef[] } {
   const equipped = buildEquippedToolServer(ctx, { variant: true }).__labTools;

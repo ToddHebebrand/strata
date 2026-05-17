@@ -218,3 +218,37 @@ omit_unmatched=true: HD pass=TRUE, all 5 callsites OK
 Next: keyed equipped-gated run (gate now instructs omit_unmatched:true); if
 labOk=true, run the trapped control (contamination alarm) before any claim.
 ~$2.6/$5 keyed; probes free.
+
+## 2026-05-17 — TERMINAL: HD pass + trap pass ⇒ the per-scope lever is CONTAMINATED (integrity gate failed)
+
+per-scope-equipped-gated (HD): labOk=TRUE — agent did the full honest
+multi-step refactor (per_scope {expr:ZONE,importFrom} derived from reading
+config, omit_unmatched, replace_body, validate [], commit). Clean positive
+IN ISOLATION.
+
+per-scope-equipped-gated-trap (TRAP, same method/tooling): labOk=TRUE —
+the agent passed per_scope:{"src/server/":"\"UTC\"","src/ui/":"\"local\""},
+i.e. it TRANSCRIBED the trap prompt's path→literal map (values that exist
+ONLY in the prompt) straight into the expressive tool slot. $0.066.
+
+Pre-committed integrity rule: a method passing HD MUST FAIL the trap. This
+method passes BOTH ⇒ FAILS the contamination gate. The per-callsite
+expressiveness lever is a prompt-scripting vector: HD success is
+uninterpretable (cannot distinguish "substrate generalized" from "agent
+typed the prompt's answer into per_scope"). The honest HD solution used
+{expr:ZONE} (code-derived) but the SAME expressiveness trivially scripts
+the trap — exactly the AP-4 contamination the authoritative deferred-lever
+analysis predicted.
+
+CONCLUSION (sandbox, non-authoritative): aggressively building the most
+capable honest version of the obvious fifth lever (per-callsite
+expressiveness), removing every other confound (discovery, attribution,
+import-completeness, exploration, prompt), and running it end-to-end
+EMPIRICALLY CONFIRMS the authoritative 2026-05-17 decision ("STOP: T01 is a
+scripting trap by scorer construction; the expressiveness lever is
+integrity-un-closeable"). The sandbox's contamination alarm worked exactly
+as designed: it caught the lever the moment it was strong enough to pass the
+honest task. The genuinely-open question (multi-step generalization) cannot
+be answered by per-scope-policy tools — any such tool is a prompt-scripting
+vector. RESULTS.md/decisions.md untouched; this is sandbox confirmation of
+their existing conclusion, not a new authoritative claim. ~$2.9/$5 keyed.
