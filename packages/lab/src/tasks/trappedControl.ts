@@ -20,13 +20,13 @@
  *    exclusion, same CALL_RE pattern, same .map(formatTimestamp) exclusion
  *    (CALL_RE requires `formatTimestamp(` so `.map(formatTimestamp)` is
  *    excluded automatically).
- *  - DECL and CALL_RE are replicated here (not re-exported from
- *    honestDerivable.ts) because that module does not export them.  Both
- *    are identical to their counterparts there — single conceptual rule,
- *    two copies, documented here for future readers.
+ *  - DECL, CALL_RE, and scopeOf are imported from callsites.ts (the single
+ *    source of truth), so HD and trap cannot silently diverge.
  *
  * Run ONLY at graduation.
  */
+
+import { DECL, CALL_RE, scopeOf } from "./callsites";
 
 // ---------------------------------------------------------------------------
 // Prompt
@@ -58,43 +58,6 @@ export interface TrapScore {
    * only path toward pass=true (since "local" is absent from the corpus).
    */
   requiresPromptLiteral: boolean;
-}
-
-// ---------------------------------------------------------------------------
-// Callsite helpers (replicated from honestDerivable.ts — identical rule)
-// ---------------------------------------------------------------------------
-
-/**
- * Matches a function/const/let/var declaration of formatTimestamp (not a
- * callsite).  Identical to the DECL constant in honestDerivable.ts and
- * corpus.test.ts — single conceptual source of truth.
- *
- * NOTE: replicated here because honestDerivable.ts does not export it.
- */
-const DECL = /(?:export\s+)?(?:function|const|let|var)\s+formatTimestamp[\s(<]/;
-
-/**
- * Matches a DIRECT formatTimestamp( call: requires `formatTimestamp(` with
- * at least one argument before `)`.  Does NOT match `.map(formatTimestamp)`
- * (no `(` immediately follows the name there — the `(` is the map call's
- * paren, not formatTimestamp's).
- *
- * Capture group 1: the second argument (the timezone), if present.
- *
- * First-arg matcher `[^,)]+` is deliberately first-arg-agnostic: it matches
- * any single non-comma, non-paren token — both `at` (real server form) and
- * `0` (real ui/lib form).  This is the key fix vs. the plan's placeholder
- * regex which would have hardcoded `0` and silently missed server callsites.
- *
- * NOTE: replicated from honestDerivable.ts; both must stay identical.
- */
-const CALL_RE = /\bformatTimestamp\(\s*[^,)]+(?:,\s*([^)]+))?\)/g;
-
-/** Map a corpus-relative posix path to its structural scope. */
-function scopeOf(relPath: string): "server" | "ui" | "other" {
-  if (relPath.startsWith("src/server/")) return "server";
-  if (relPath.startsWith("src/ui/")) return "ui";
-  return "other";
 }
 
 // ---------------------------------------------------------------------------

@@ -1,11 +1,9 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { DECL } from "../src/tasks/callsites";
 
 const C = path.join(__dirname, "..", "corpus");
-
-// Matches a function/const/let/var declaration of formatTimestamp (not a callsite).
-const DECL = /(?:export\s+)?(?:function|const|let|var)\s+formatTimestamp[\s(<]/;
 
 /**
  * Returns true only if the file content contains a genuine formatTimestamp(

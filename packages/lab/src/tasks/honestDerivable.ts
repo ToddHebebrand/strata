@@ -18,6 +18,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { DECL, CALL_RE, scopeOf } from "./callsites";
 
 // Resolve corpus root relative to this compiled file's location.
 // src/tasks/honestDerivable.ts → compiled to dist/tasks/honestDerivable.js
@@ -42,28 +43,6 @@ export const HD_PROMPT =
   "(omit the second argument). Higher-order references such as " +
   "`times.map(formatTimestamp)` are NOT direct callsites and must be left " +
   "unchanged. The tests in `tests/timezone.test.ts` must pass.";
-
-// ---------------------------------------------------------------------------
-// Scope helpers
-// ---------------------------------------------------------------------------
-
-/** Map a corpus-relative posix path to its structural scope. */
-function scopeOf(relPath: string): "server" | "ui" | "other" {
-  if (relPath.startsWith("src/server/")) return "server";
-  if (relPath.startsWith("src/ui/")) return "ui";
-  return "other";
-}
-
-// ---------------------------------------------------------------------------
-// Declaration-line regex (shared with corpus.test.ts)
-// ---------------------------------------------------------------------------
-
-/**
- * Matches a function/const/let/var declaration of formatTimestamp (not a
- * callsite).  Identical to the DECL constant in corpus.test.ts — single
- * source of truth for "is this line the declaration?".
- */
-const DECL = /(?:export\s+)?(?:function|const|let|var)\s+formatTimestamp[\s(<]/;
 
 // ---------------------------------------------------------------------------
 // Oracle
@@ -195,24 +174,6 @@ export interface HdScore {
   pass: boolean;
   perCallsite: { path: string; expected: string; got: string; ok: boolean }[];
 }
-
-/**
- * Matches a DIRECT formatTimestamp( call: requires `formatTimestamp(` with at
- * least one argument before `)`.  Does NOT match `.map(formatTimestamp)` (no
- * `(` immediately follows the name there — the `(` is the map call's paren).
- *
- * Capture group 1: the second argument (the timezone), if present.
- *
- * NOTE: the first-arg matcher `[^,)]+` stops at a nested `(`, so a first
- * argument that is itself a call (e.g. `formatTimestamp(getTime(), ZONE)`)
- * would mis-parse the second arg.  Not present in the corpus, and the HD
- * prompt keeps the first arg unchanged, so this is acceptable — documented
- * for future readers.
- *
- * Declaration lines are excluded by the per-line DECL check below (not by
- * skipping the whole file), so this regex is never run against a declaration.
- */
-const CALL_RE = /\bformatTimestamp\(\s*[^,)]+(?:,\s*([^)]+))?\)/g;
 
 /**
  * Pure function of the rendered src text.  Contains NO expected per-scope

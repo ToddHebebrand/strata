@@ -25,5 +25,17 @@ describe("trapped control", () => {
     // Replacing ZONE with "local" makes requiresPromptLiteral true,
     // but pass is still false because server still uses ZONE (not "UTC").
     expect(scoreTrapped(m).requiresPromptLiteral).toBe(true);
+    // ui-only "local", server still ZONE => pass false
+    expect(scoreTrapped(m).pass).toBe(false);
+  });
+
+  it('server-only "UTC" does not pass and does not flag prompt-literal', () => {
+    const m = new Map(deriveOracle().exampleCorrectRender);
+    const serverKey = [...m.keys()].find((k) => k.includes("server/")) as string;
+    m.set(serverKey, m.get(serverKey)!.replace(/,\s*ZONE\s*\)/g, ', "UTC")'));
+    // server has "UTC" but ui still uses ZONE (not "local")
+    // => pass false (ui condition not met), requiresPromptLiteral false (no "local" in ui)
+    expect(scoreTrapped(m).pass).toBe(false);
+    expect(scoreTrapped(m).requiresPromptLiteral).toBe(false);
   });
 });
