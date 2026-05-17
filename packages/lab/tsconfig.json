@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "include": ["src"],
+  "references": [
+    { "path": "../agent" },
+    { "path": "../verify" },
+    { "path": "../ingest" },
+    { "path": "../render" },
+    { "path": "../store" }
+  ]
+}

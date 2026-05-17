@@ -127,6 +127,40 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@22.19.19)
 
+  packages/lab:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: 0.2.118
+        version: 0.2.118(zod@4.4.3)
+      '@strata/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@strata/ingest':
+        specifier: workspace:*
+        version: link:../ingest
+      '@strata/render':
+        specifier: workspace:*
+        version: link:../render
+      '@strata/store':
+        specifier: workspace:*
+        version: link:../store
+      '@strata/verify':
+        specifier: workspace:*
+        version: link:../verify
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.29
+        version: 22.19.19
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@22.19.19)
+
   packages/render:
     dependencies:
       '@strata/store':
