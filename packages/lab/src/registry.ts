@@ -1,19 +1,11 @@
 import type { LabExperiment } from "./experiment";
+import { perScopeAddParameter } from "./experiments/perScopeAddParameter";
 
-// TEMPORARY: Task 10 replaces this inline noop with
-//   import { perScopeAddParameter } from "./experiments/perScopeAddParameter";
-// and registers it under its real id. Until then the registry is non-empty
-// with a control no-op so the CLI + tests are exercisable.
-const noop: LabExperiment = {
-  id: "noop",
-  hypothesis:
-    "control: canonical tools, no overrides — expect HD FAIL (no per-scope expressiveness)",
-  task: "HD",
-  overrides: {}
-};
-
+// The temporary inline `noop` placeholder is GONE (Task 10). The registry
+// now holds the first real experiment: the per-scope-expressive
+// add_parameter variant — the substantive lever the sandbox exists to test.
 export const REGISTRY: Record<string, LabExperiment> = {
-  [noop.id]: noop
+  [perScopeAddParameter.id]: perScopeAddParameter
 };
 
 export function getExperiment(id: string): LabExperiment {

@@ -24,11 +24,11 @@
     "@strata/render": "workspace:*",
     "@strata/store": "workspace:*",
     "@strata/verify": "workspace:*",
+    "typescript": "^5.8.3",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.15.29",
-    "typescript": "^5.8.3",
     "vitest": "^3.2.4"
   }
 }
