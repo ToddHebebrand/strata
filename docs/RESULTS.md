@@ -10,7 +10,7 @@ This document reports what was built, what was measured, where the claim holds, 
 
 ## What was built (Phases 0–1.5)
 
-A TypeScript pnpm monorepo, 35 commits (`9c5e21d` → `9774597`), every phase gated by explicit bail-signals:
+A TypeScript pnpm monorepo, every phase gated by explicit bail-signals (the full, authoritative commit/decision trail is [`decisions.md`](../decisions.md)):
 
 - **Phase 0 — round-trip.** TypeScript → SQLite node graph → rendered TypeScript, byte-identical, `tsc`-clean. Decision logged: the TS Compiler API does parse + print + verify (tree-sitter/Prettier dropped — canonical rendering makes round-trip-preservation moot).
 - **Phase 1 — the `rename_symbol` vertical slice.** Identifier-level lowering, a `TypeChecker`-resolved reference index, transactions with an operation log, validate-before-commit. Acceptance: benchmark task **T03** (rename `User`→`Account` across imports, JSDoc, type positions, generics, namespace imports, a type-only re-export — *without* touching a `"User"` string literal) passes programmatically against a real multi-module corpus.
@@ -42,7 +42,9 @@ A benchmark that survives its own adversarial review is worth more than one that
 
 The token distributions do not overlap (substrate max 1473 < baseline min 4450). This is an *observed separation at N=3*, explicitly **not** a statistical-significance claim — but it is robust: T03 reproduced the win again under the fully-remediated, independently-validated harness (substrate 1359 tok / 30.6 s vs. baseline 3910 tok / 56.4 s) and again after a system-prompt change. Same model, same task, same bar, no quality loss — the structural substrate does materially less work to the right answer. **The file-abstraction bottleneck is real, and removing it helps.**
 
-## The boundary: it does not (yet) generalize to multi-step refactors
+## The Phase-1.5 boundary snapshot (T05/T08 superseded by the lever investigation below)
+
+*This section is the Phase-1.5 state, kept for the honest chronology. The lever investigation that follows materially changed it: T05 and T08 were subsequently brought to 3/3, and T01's negative was bounded far more precisely. Read this together with "The lever investigation" below — do not read it as the final standing.*
 
 Phase 1.5 added three more tools to test generalization. They pass 170 unit tests. The agent **cannot effectively wield them on real tasks**, and — importantly — this was *diagnosed from the agent's actual tool-call transcripts*, then a cheap fix was *attempted and falsified*:
 
