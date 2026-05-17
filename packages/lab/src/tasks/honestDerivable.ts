@@ -10,8 +10,9 @@
  *  - Neither "UTC" nor "local" appears as an expected literal in this file
  *    (only inside the corpus files this code reads at runtime).
  *  - scoreHonestDerivable() never embeds a per-scope expected value; it reads
- *    deriveOracle() which reads corpus/src/<scope>/config.ts.
- *  - The formatTimestamp declaration line in format.ts is excluded.
+ *    deriveOracleScopesOnly() which reads corpus/src/<scope>/config.ts.
+ *  - The formatTimestamp declaration line in format.ts is excluded per-line by
+ *    DECL (consistent with corpus.test.ts), not by whole-file path skip.
  *  - The .map(formatTimestamp) higher-order reference is not a callsite.
  */
 
@@ -54,6 +55,17 @@ function scopeOf(relPath: string): "server" | "ui" | "other" {
 }
 
 // ---------------------------------------------------------------------------
+// Declaration-line regex (shared with corpus.test.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Matches a function/const/let/var declaration of formatTimestamp (not a
+ * callsite).  Identical to the DECL constant in corpus.test.ts — single
+ * source of truth for "is this line the declaration?".
+ */
+const DECL = /(?:export\s+)?(?:function|const|let|var)\s+formatTimestamp[\s(<]/;
+
+// ---------------------------------------------------------------------------
 // Oracle
 // ---------------------------------------------------------------------------
 
@@ -65,10 +77,29 @@ export interface Oracle {
    */
   scopes: { server: "ZONE"; ui: "ZONE"; other: undefined };
   /**
-   * A known-correct rendered src map used only by the scorer's own unit test.
-   * Not used by live agent runs.
+   * A known-correct rendered src map used only by the scorer's own unit test
+   * (reachable via deriveOracle(), the test path only).
+   * NOT reachable from scoreHonestDerivable — that path uses
+   * deriveOracleScopesOnly(), which never calls buildExampleCorrectRender().
    */
   exampleCorrectRender: Map<string, string>;
+}
+
+// ---------------------------------------------------------------------------
+// Shared scope-check helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true if the given scope directory (relative to corpus/src/) has a
+ * config.ts that exports a ZONE constant.  Used by both deriveOracle() and
+ * deriveOracleScopesOnly() — single source of truth.
+ */
+function hasZone(scopeDir: string): boolean {
+  const f = path.join(CORPUS, "src", scopeDir, "config.ts");
+  return (
+    fs.existsSync(f) &&
+    /export const ZONE\b/.test(fs.readFileSync(f, "utf8"))
+  );
 }
 
 /**
@@ -80,14 +111,6 @@ export interface Oracle {
  * Contains NO hardcoded expected timezone value.
  */
 export function deriveOracle(): Oracle {
-  const hasZone = (scopeDir: string): boolean => {
-    const f = path.join(CORPUS, "src", scopeDir, "config.ts");
-    return (
-      fs.existsSync(f) &&
-      /export const ZONE\b/.test(fs.readFileSync(f, "utf8"))
-    );
-  };
-
   const server = hasZone("server") ? ("ZONE" as const) : undefined;
   const ui = hasZone("ui") ? ("ZONE" as const) : undefined;
 
@@ -118,8 +141,8 @@ export function deriveOracle(): Oracle {
  *   lib/startupStamp.ts — ONE callsite, "other" scope, no ZONE in lib/
  *                          config → takes default, no second arg
  *
- * The definition file (lib/format.ts) is NOT included; the scorer explicitly
- * skips it to avoid counting the declaration as a callsite.
+ * Reachable ONLY from deriveOracle() (the test path).  scoreHonestDerivable()
+ * uses deriveOracleScopesOnly() instead and never triggers this function.
  */
 function buildExampleCorrectRender(): Map<string, string> {
   return new Map([
@@ -180,20 +203,31 @@ export interface HdScore {
  *
  * Capture group 1: the second argument (the timezone), if present.
  *
- * The declaration in format.ts (`function formatTimestamp(ts: number): string`)
- * WOULD match this regex, so the scorer skips the format.ts file entirely.
+ * NOTE: the first-arg matcher `[^,)]+` stops at a nested `(`, so a first
+ * argument that is itself a call (e.g. `formatTimestamp(getTime(), ZONE)`)
+ * would mis-parse the second arg.  Not present in the corpus, and the HD
+ * prompt keeps the first arg unchanged, so this is acceptable — documented
+ * for future readers.
+ *
+ * Declaration lines are excluded by the per-line DECL check below (not by
+ * skipping the whole file), so this regex is never run against a declaration.
  */
 const CALL_RE = /\bformatTimestamp\(\s*[^,)]+(?:,\s*([^)]+))?\)/g;
 
 /**
  * Pure function of the rendered src text.  Contains NO expected per-scope
- * literal: all expectations come from deriveOracle() which reads the corpus.
+ * literal: all expectations come from deriveOracleScopesOnly() which reads
+ * the corpus.
  *
  * Rules:
- *  - Skip src/lib/format.ts (it contains the declaration, not a callsite).
- *  - For each remaining file that contains a direct formatTimestamp( call,
- *    determine scope via scopeOf().
- *  - expected = oracle[scope]:  "ZONE" (reference required) | undefined (default).
+ *  - For each file, iterate lines.  Only process lines that contain
+ *    `formatTimestamp(` AND do NOT match DECL (excludes the declaration in
+ *    format.ts by content, not by path — robust if callsites are ever added
+ *    to that file).
+ *  - `.map(formatTimestamp)` is excluded because CALL_RE requires `(` to
+ *    immediately follow the name.
+ *  - For each matching line, run CALL_RE to extract the second arg.
+ *  - expected = oracle[scope]: "ZONE" (reference required) | undefined (default).
  *  - Callsite is ok iff the captured second arg matches the expected symbol
  *    exactly (or both are absent for the default case).
  *  - pass = at least one callsite found AND all are ok.
@@ -203,21 +237,24 @@ export function scoreHonestDerivable(rendered: Map<string, string>): HdScore {
   const perCallsite: HdScore["perCallsite"] = [];
 
   for (const [rel, text] of rendered) {
-    // Exclude the declaration file — its parameter list looks like a callsite.
-    if (rel.endsWith("lib/format.ts")) continue;
-
     const scope = scopeOf(rel);
     const want = oracle[scope]; // "ZONE" or undefined (default, no 2nd arg)
 
-    for (const m of text.matchAll(CALL_RE)) {
-      const arg = (m[1] ?? "").trim();
-      const ok = want === undefined ? arg === "" : arg === want;
-      perCallsite.push({
-        path: rel,
-        expected: want === undefined ? "<default>" : want,
-        got: arg === "" ? "<default>" : arg,
-        ok
-      });
+    for (const line of text.split("\n")) {
+      // Skip lines that don't contain a direct call, and skip declaration lines.
+      if (!line.includes("formatTimestamp(")) continue;
+      if (DECL.test(line)) continue;
+
+      for (const m of line.matchAll(new RegExp(CALL_RE.source, "g"))) {
+        const arg = (m[1] ?? "").trim();
+        const ok = want === undefined ? arg === "" : arg === want;
+        perCallsite.push({
+          path: rel,
+          expected: want === undefined ? "<default>" : want,
+          got: arg === "" ? "<default>" : arg,
+          ok
+        });
+      }
     }
   }
 
@@ -227,12 +264,27 @@ export function scoreHonestDerivable(rendered: Map<string, string>): HdScore {
   };
 }
 
-/** Extract only the scopes record from the oracle (avoids rebuilding the
- *  render map on every scoreHonestDerivable call). */
+/**
+ * Derive only the scopes record from the corpus, WITHOUT calling deriveOracle()
+ * or buildExampleCorrectRender().  Used by scoreHonestDerivable() so that
+ * every scoring call does the minimal corpus read (two config.ts files) and
+ * never builds the example-render map.
+ *
+ * Throws if the corpus invariant (server & ui must export ZONE) is broken —
+ * same guard as deriveOracle().
+ */
 function deriveOracleScopesOnly(): Record<
   "server" | "ui" | "other",
   "ZONE" | undefined
 > {
-  const o = deriveOracle().scopes;
-  return { server: o.server, ui: o.ui, other: o.other };
+  const server = hasZone("server") ? ("ZONE" as const) : undefined;
+  const ui = hasZone("ui") ? ("ZONE" as const) : undefined;
+
+  if (server !== "ZONE" || ui !== "ZONE") {
+    throw new Error(
+      "HD corpus invariant broken: expected ZONE in both server and ui scopes"
+    );
+  }
+
+  return { server, ui, other: undefined };
 }
