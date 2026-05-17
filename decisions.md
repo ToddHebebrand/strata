@@ -32,6 +32,26 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
+## 2026-05-17 — Lab seam landed: one additive, default-preserving session injection point (`toolServerFactory`/`canUseTool`/`runAgentLab`); `SessionStartEvent.task` widened to `string`; sole sanctioned canonical touch for the exploration-sandbox effort
+
+**Context:** `docs/superpowers/specs/2026-05-17-multi-step-exploration-sandbox-design.md` calls for a non-authoritative sandbox (`packages/lab`, forthcoming) to iterate on new multi-step methods without polluting the rigid, pre-registered, keyed framework. Landing any sandbox infrastructure required a minimal injection point in the canonical `@strata/agent` package. The seam work spans four commits: acceptance lift (`9477302`), review polish (`e616525`), seam + log widening (`a744b7f`), test nit (`97dcc8a`).
+
+**Considered:** (a) duplicate the agent loop in `packages/lab` — rejected on integrity grounds (a duplicated loop makes any graduated lab result non-comparable to the canonical path; even a one-line drift could silently change behavior); (b) add optional params to `RunAgentT03Params` and re-use the same private `runAgentForPrompt` — the only option that keeps the comparison honest.
+
+**Decided:**
+- Two optional params added to `RunAgentT03Params`: `toolServerFactory` (overrides the default single-MCP-server construction) and `canUseTool` (per-turn tool filter). Absent both, `server`/`options`/`ctx` construction is byte-identical to before — zero behavioral change on the existing call sites.
+- `acceptance` computation (criteria scoring) lifted from inside `runAgentForPrompt` into its two callers (`runAgentT03`, `runAgentLab`) — behavior-preserving refactor required to give each caller ownership of its own scorer.
+- New exported `runAgentLab` delegates to the same private `runAgentForPrompt` loop. No duplication of the loop; the two entry points share a single code path.
+- `SessionStartEvent.task` in `packages/agent/src/log.ts` widened from `"T01" | "T03" | "T05" | "T08"` to `string`. This removes a cast that would otherwise lie when a `lab:*` label is written to the operation log. `task` consumers verified: `report.ts` already typed it `string`; `runner.ts` writes a `BenchTaskId` constant — neither regresses.
+
+**Gate passed:** additive + default-preserving (verified: absent the optional fields the generated `server`/`options`/`ctx` values are byte-identical). `@strata/agent` tests: **33 passed | 2 skipped** (35 total) — up from 31 passed | 2 skipped before the seam; the two new tests are the `labSeam` guard tests that assert the injection point works and that the pre-existing T03 replay still scores all criteria correctly. All other canonical test counts unchanged. `pnpm -r build` and `pnpm -r test` green. Spec-compliance and code-quality subagent reviews passed (approved-with-minor; minors fixed in the review-polish commit).
+
+**Why:** The sandbox's entire value proposition depends on results being comparable to the canonical substrate runs. A duplicate loop would undermine that; a byte-identical default path provably does not. The `task` widening is honest hygiene — a narrow union that must be cast to accept `lab:*` labels would silently mis-record the operation log and confuse any future reader.
+
+**Design-doc impact:** none to `strata-design.md` (per CLAUDE.md the contract is not silently rewritten; the sandbox's purpose and limits are documented in the spec). This entry is the authoritative record of the infra change. The sandbox itself (`packages/lab`) and its results are explicitly **non-authoritative** and never feed `RESULTS.md` or `decisions.md` unless a method graduates through the existing rigid pre-registered keyed pipeline.
+
+**Revisit when:** a graduated lab method needs net-new tool *names* visible to the hermetic `assertOnlyStrataTools` guard (its own decision/entry); or a `SessionStartEvent.task` consumer needs the old narrow type (none today — verified above).
+
 ## 2026-05-17 — Full multi-agent design of the expressiveness lever → STOP: T01 is a scripting trap *by scorer construction*; the deferred different-class lever is integrity-un-closeable. Terminal.
 
 **Context:** Per the user's "go all out with multiple agents," the `add_parameter` per-callsite-expressiveness lever was taken into a full parallel design: four independent Opus design agents (Facet 1 API/semantics; Facet 2 store/tx + overlap gate; Facet 3 scorer-integrity + single-variable pre-registration; Facet 4 adversarial/blind-spot), on top of the prior independent Codex (gpt-5.5 xhigh) review. Facets 1–3 produced concrete, internally-sound designs (a node-id-keyed `callsite_value_overrides`; the `queueTextSpanEdit` chokepoint gate with a verified T08 two-`replace_body` regression risk; a clean DA-1..DA-5 single-variable pre-registration). The adversarial pass + a direct re-verification overrode them.
