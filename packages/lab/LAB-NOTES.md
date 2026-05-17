@@ -78,3 +78,30 @@ ingest surfaces (function/interface/type) so the task is documented-tool
 satisfiable; (B) treat "find_declarations does not deliver its documented
 variable/Module surface" as the real, decision-grade tooling finding and
 write it up; (C) re-read the Codex/decisions trail before any further lever.
+
+## 2026-05-17 — Deeper probe: the cheap fix is insufficient; tooling-ceiling is the finding
+
+probe3 (model-free): read_node returns {node:{id,kind,parentId,childIndex,
+payload},children}. Module payload = file path, so node→scope is reachable
+ONLY via an undocumented N-level parentId ancestor-walk; a callsite reads
+back as a bare Identifier with no path/scope. find_declarations has no
+Module kind and (decisions.md:948 deferred statement-lowering) no findable
+variable/const.
+
+Consequence: const→function would fix discoverability (FunctionDeclaration
+is surfaced) but NOT attribution — two same-named scope functions /
+per-callsite scoping still undiscoverable via documented tools. The cheap
+"fix the instrument" path does NOT make the per-scope task satisfiable.
+
+DECISION-GRADE (sandbox, non-authoritative, free-probe-evidenced): the
+documented tool surface supports symbol-level reference ops (rename: one
+findable interface, reference graph, no module attribution — why T03 works)
+but cannot support a location/scope-conditioned multi-step refactor (no
+legible node→module attribution; non-function decls unfindable). Upstream of
+and independent of agent/model/prompt/per-scope-tool/exploration-gate. A
+satisfiable honest per-scope task likely needs a canonical Module-aware
+find_declarations or a module_of tool — graduation-class, out of sandbox
+scope. Hypothesis worth a RIGOROUS (not sandbox) check: this attribution
+ceiling may also be a contributing factor in the authoritative T01 negative
+(T01 required exactly the src/server vs src/ui split) — NOT asserted; flagged
+for deliberate review, not claimed against the published result.
