@@ -16,6 +16,10 @@ async function main(): Promise<void> {
   const exp = getExperiment(id);
   const model = argVal("--model") ?? "claude-sonnet-4-6";
   const maxTurns = Number(argVal("--max-turns") ?? 25);
+  if (Number.isNaN(maxTurns)) {
+    console.error("[lab] --max-turns must be a number");
+    process.exit(2);
+  }
   const prompt =
     exp.overrides.prompt ?? (exp.task === "HD" ? HD_PROMPT : TRAP_PROMPT);
 
@@ -33,7 +37,7 @@ async function main(): Promise<void> {
     wallTimeMs: 240000,
     actor: `lab-${exp.id}`,
     prompt,
-    acceptance: undefined,
+    acceptance: undefined, // lab uses labOk (scorer) as the sole verdict; no behavior gate here
     toolServerFactory: exp.overrides.toolServerFactory,
     canUseTool: exp.overrides.canUseTool,
     emptyCriteria: () => ({
@@ -52,6 +56,12 @@ async function main(): Promise<void> {
     `[lab] terminal=${result.terminalReason} labOk=${result.criteria.labOk} ` +
       `commitOk=${result.criteria.commitReturnedOk}`
   );
+  if (!result.criteria.commitReturnedOk && result.terminalReason !== "success") {
+    console.log(
+      `[lab] NOTE: agent did not commit — terminal=${result.terminalReason}. ` +
+        `Consider increasing --max-turns or checking tool errors before tweaking the variant.`
+    );
+  }
   console.log(
     result.criteria.labOk
       ? `[lab] PASS on ${exp.task}. If task=HD: next, run the trapped control before any graduation.`
