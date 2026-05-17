@@ -95,6 +95,17 @@ export interface RunAgentT03Params {
   replayTranscript?: ReplayStep[];
   /** Optional JSON-lines log file path. */
   logPath?: string;
+  /**
+   * LAB-ONLY, additive. Absent ⇒ byte-identical canonical behavior.
+   * Replace the in-process Strata tool server with a variant (same tool
+   * NAMES only — net-new names would trip the hermetic guard and are out
+   * of seam scope).
+   */
+  toolServerFactory?: (
+    ctx: StrataSessionContext
+  ) => ReturnType<typeof createStrataToolServer>;
+  /** LAB-ONLY, additive. SDK loop-level gate passthrough. */
+  canUseTool?: Options["canUseTool"];
 }
 
 export type TerminalReason =
@@ -300,11 +311,7 @@ async function runAgentForPrompt<
       model: runParams.model,
       maxTurns: runParams.maxTurns,
       wallTimeMs: runParams.wallTimeMs,
-      // taskLabel is widened to string for a future runAgentLab caller
-      // (lab:* labels); current callers only ever pass these four. When
-      // Task 2 lands runAgentLab, revisit: a lab:* label would not be a
-      // real member of this union (log-only field, no behavior impact).
-      task: params.taskLabel as "T01" | "T03" | "T05" | "T08",
+      task: params.taskLabel,
       actor: ctx.actor
     });
 
@@ -596,6 +603,52 @@ export function normalizeTranscriptForFixture(
   }));
 }
 
+export interface LabCriteria {
+  commitReturnedOk: boolean;
+  validateAfterCommitClean: boolean;
+  operationRowAppended: boolean;
+  [extra: string]: boolean;
+}
+
+export interface AgentLabResult {
+  criteria: LabCriteria;
+  terminalReason: TerminalReason;
+  log: SessionLog;
+  transcript: ReplayStep[];
+  rendered?: Map<string, string>;
+}
+
+export interface RunAgentLabParams extends RunAgentT03Params {
+  actor: string;
+  prompt: string;
+  acceptance: AcceptanceContext | undefined;
+  emptyCriteria: () => LabCriteria;
+  score: ScoreFromCommitted<LabCriteria>;
+}
+
+export async function runAgentLab(
+  params: RunAgentLabParams
+): Promise<AgentLabResult> {
+  const { actor, prompt, acceptance, emptyCriteria, score, ...runParams } =
+    params;
+  const out = await runAgentForPrompt<LabCriteria>({
+    runParams,
+    taskLabel: `lab:${actor}`,
+    acceptance,
+    actor,
+    prompt,
+    emptyCriteria,
+    scoreFromCommitted: score
+  });
+  return {
+    criteria: out.criteria,
+    terminalReason: out.terminalReason,
+    log: out.log,
+    transcript: out.transcript,
+    rendered: out.rendered
+  };
+}
+
 async function runLiveSession(deps: {
   params: RunAgentT03Params;
   prompt?: string;
@@ -606,7 +659,7 @@ async function runLiveSession(deps: {
   setLastCommitOk: (ok: boolean) => void;
 }): Promise<TerminalReason> {
   const { params, ctx, log, transcript } = deps;
-  const server = createStrataToolServer(ctx);
+  const server = (deps.params.toolServerFactory ?? createStrataToolServer)(ctx);
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), params.wallTimeMs);
   const pending = new Map<
@@ -633,6 +686,7 @@ async function runLiveSession(deps: {
     systemPrompt: STRATA_SYSTEM_PROMPT,
     model: params.model,
     maxTurns: params.maxTurns,
+    ...(params.canUseTool ? { canUseTool: params.canUseTool } : {}),
     abortController,
     stderr: (data: string) =>
       log.append({

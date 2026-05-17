@@ -6,7 +6,7 @@ export interface SessionStartEvent {
   model: string;
   maxTurns: number;
   wallTimeMs?: number;
-  task: "T01" | "T03" | "T05" | "T08";
+  task: string;
   actor: string;
 }
 

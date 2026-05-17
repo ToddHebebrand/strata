@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadTranscriptFixture, runAgentT03 } from "../src/index";
+import { loadTranscriptFixture, runAgentLab, runAgentT03 } from "../src/index";
 
 // Behavior-preservation guard: T03 replay through the refactored
 // runAgentForPrompt is byte-identical to before (uses the committed
@@ -27,3 +27,35 @@ describe.skipIf(!existsSync(FIXTURE))(
     });
   }
 );
+
+describe("seam: runAgentLab drives the real loop with overrides", () => {
+  it("is exported and accepts a tool-server factory + generic scorer", async () => {
+    expect(typeof runAgentLab).toBe("function");
+    const result = await runAgentLab({
+      corpusRoot: require("node:path").join(
+        __dirname, "..", "..", "..", "examples", "medium"
+      ),
+      model: "replay",
+      maxTurns: 1,
+      wallTimeMs: 60000,
+      actor: "lab-test",
+      prompt: "noop",
+      replayTranscript: [],
+      acceptance: undefined,
+      emptyCriteria: () => ({
+        commitReturnedOk: false,
+        validateAfterCommitClean: false,
+        operationRowAppended: false,
+        labOk: false
+      }),
+      score: () => ({
+        commitReturnedOk: false,
+        validateAfterCommitClean: false,
+        operationRowAppended: false,
+        labOk: false
+      })
+    });
+    expect(result.criteria.labOk).toBe(false);
+    expect(result.terminalReason).toBe("replay_complete");
+  });
+});
