@@ -1,6 +1,6 @@
 import ts from "typescript";
 import { resolveCallsites } from "./callsites";
-import { findNodeById } from "./nodes";
+import { findNodeById, modulePathOf } from "./nodes";
 import type { Db } from "./schema";
 import { locateSpan } from "./spanReparse";
 import {
@@ -74,6 +74,25 @@ function parsesAsExpression(exprText: string): boolean {
   );
 }
 
+export interface AddParameterCallsiteEdit {
+  modulePath: string;
+  statementId: string;
+  before: string;
+  after: string;
+}
+
+export interface AddParameterArityRiskSite {
+  modulePath: string;
+  statementId: string;
+  reason: string;
+}
+
+export interface AddParameterManifest {
+  declaration: { id: string; beforeSignature: string; afterSignature: string };
+  callsitesRewritten: AddParameterCallsiteEdit[];
+  arityRiskSites: AddParameterArityRiskSite[];
+}
+
 export function add_parameter(
   db: Db,
   tx: TxHandle,
@@ -82,7 +101,7 @@ export function add_parameter(
   type: string,
   position: number,
   defaultValue?: string
-): void {
+): AddParameterManifest {
   if (!IDENT_PATTERN.test(name)) {
     throw new Error(`Invalid TypeScript identifier: ${JSON.stringify(name)}`);
   }
@@ -133,11 +152,12 @@ export function add_parameter(
   );
   queueTextSpanEdit(tx, functionId, declarationEdit);
 
-  const { callsites } = resolveCallsites(db, functionId);
+  const resolution = resolveCallsites(db, functionId);
   const slotValue = defaultValue ?? "undefined";
   const affected = new Set<string>([functionId]);
+  const callsitesRewritten: AddParameterCallsiteEdit[] = [];
 
-  for (const callsite of callsites) {
+  for (const callsite of resolution.callsites) {
     const callPosition = Math.max(
       0,
       Math.min(clamped, callsite.existingArgCount)
@@ -162,6 +182,20 @@ export function add_parameter(
       newText
     });
     affected.add(callsite.statementId);
+
+    const stmt = findNodeById(db, callsite.statementId);
+    if (!stmt) {
+      throw new Error(
+        `add_parameter: callsite statement not found: ${callsite.statementId}`
+      );
+    }
+    callsitesRewritten.push({
+      modulePath: modulePathOf(db, callsite.statementId),
+      statementId: callsite.statementId,
+      before: stmt.payload,
+      after:
+        stmt.payload.slice(0, start) + newText + stmt.payload.slice(start)
+    });
   }
 
   queuePendingOp(tx, {
@@ -176,6 +210,27 @@ export function add_parameter(
     affectedNodeIdsJson: JSON.stringify([...affected]),
     reasoning: null
   });
+
+  const bodyStart = fn.body ? fn.body.getStart(sf) : declaration.payload.length;
+  const beforeSignature = declaration.payload.slice(0, bodyStart);
+  const afterSignature =
+    beforeSignature.slice(0, declarationEdit.start) +
+    declarationEdit.newText +
+    beforeSignature.slice(declarationEdit.end);
+
+  return {
+    declaration: {
+      id: functionId,
+      beforeSignature,
+      afterSignature
+    },
+    callsitesRewritten,
+    arityRiskSites: resolution.nonCallReferences.map((r) => ({
+      modulePath: modulePathOf(db, r.statementId),
+      statementId: r.statementId,
+      reason: r.shape
+    }))
+  };
 }
 
 function parameterInsertionEdit(
