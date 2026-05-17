@@ -25,4 +25,30 @@ describe("lab corpus", () => {
     walk(path.join(C, "src"));
     expect(hits).toEqual(["src/ui/config.ts"]);
   });
+
+  it("has formatTimestamp( direct calls in all three HD branches: server, ui, and other", () => {
+    const serverFiles: string[] = [];
+    const uiFiles: string[] = [];
+    const otherFiles: string[] = [];
+
+    const serverRoot = path.join(C, "src/server") + path.sep;
+    const uiRoot = path.join(C, "src/ui") + path.sep;
+
+    const walk = (d: string) => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (p.endsWith(".ts") && fs.readFileSync(p, "utf8").includes("formatTimestamp(")) {
+          if (p.startsWith(serverRoot)) serverFiles.push(path.relative(C, p));
+          else if (p.startsWith(uiRoot)) uiFiles.push(path.relative(C, p));
+          else otherFiles.push(path.relative(C, p));
+        }
+      }
+    };
+    walk(path.join(C, "src"));
+
+    expect(serverFiles.length).toBeGreaterThanOrEqual(1);
+    expect(uiFiles.length).toBeGreaterThanOrEqual(1);
+    expect(otherFiles.length).toBeGreaterThanOrEqual(1);
+  });
 });
