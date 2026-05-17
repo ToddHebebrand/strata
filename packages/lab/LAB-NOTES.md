@@ -44,3 +44,37 @@ NOT decisions.md. Freeform exploration log. Nothing here is a claim.
 - **per-scope-handler-gated** (+ tool-handler exploration gate, which DOES fire): exploration successfully capped (~50→~20 calls). But the agent, told repeatedly to `begin_transaction` then `add_parameter`, **never acted** — stalled and wall-timed with no transaction.
 
 **Trajectory finding (sandbox, non-authoritative):** on an honest, code-derivable multi-step task, the substrate + the two deferred levers (per-scope `add_parameter` expressiveness; exploration discipline) do NOT yield a single converged multi-step success. The failure is not the callsite-collision (per-scope lever's target), not prompt directiveness, and not merely unbounded exploration: even with exploration forcibly bounded and an explicit act instruction, the agent does not enter the act phase (never opens a transaction across all 5 configs). This is the first such evidence on a non-trapped task and cleanly extends the published bounded negative — the substrate's robust atomic-rename win does not generalize here even with the new levers. The next question (why the agent will not convert to action even when forced) is a different-class, loop/model-architecture investigation — deliberate design, not more gate/prompt tuning. Nothing here graduates; RESULTS.md/decisions.md unchanged by design.
+
+## 2026-05-17 — CORRECTION: the trajectory entry above is VOID (broken instrument)
+
+The preceding "First cents-loop trajectory" entry's conclusion is WITHDRAWN.
+Root cause found model-free (probe.ts/probe2.ts): `@strata/ingest` ingests
+`export const ZONE = "..."` as kind `FirstStatement` with the name in a child
+`Identifier`; there is NO findable variable/const declaration node, and
+`Module` nodes are not returned by `find_declarations`. So:
+
+- `find_declarations` advertises `kind:"variable"` (its schema) but no such
+  node is emitted for `const` — the documented surface is unreachable for the
+  HD per-scope `ZONE` constants.
+- The agent could not locate `ZONE` or `config` by ANY documented call. Its
+  "thrash" was rational search against a tool returning `[]`.
+
+Therefore the HD task is UNSATISFIABLE via the documented tools, and the 5
+keyed runs measured a broken instrument — the substrate/agent/exploration
+conclusions are artifacts, not findings, and are withdrawn. This is an
+instrument (lab corpus + tool/ingest legibility) defect, NOT a substrate
+result; RESULTS.md/decisions.md remain untouched and unaffected (the original
+rename used InterfaceDeclaration, which IS surfaced).
+
+Methodology miss recorded honestly: the conclusion was drawn from tool-call
+NAMES, not tool RESULTS — the exact aggregate-not-transcript error the
+project forbids. The build's deterministic tests missed it because they drove
+the per-scope tool / scorer directly and never exercised the agent's
+discovery path (`find_declarations` → `ZONE`). Validation gap noted.
+
+Next is an OPERATOR decision, no further keyed spend taken unilaterally — see
+the conversation. Options: (A) redesign the HD signal onto a declaration kind
+ingest surfaces (function/interface/type) so the task is documented-tool
+satisfiable; (B) treat "find_declarations does not deliver its documented
+variable/Module surface" as the real, decision-grade tooling finding and
+write it up; (C) re-read the Codex/decisions trail before any further lever.
