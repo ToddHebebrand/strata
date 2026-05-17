@@ -105,3 +105,16 @@ scope. Hypothesis worth a RIGOROUS (not sandbox) check: this attribution
 ceiling may also be a contributing factor in the authoritative T01 negative
 (T01 required exactly the src/server vs src/ui split) — NOT asserted; flagged
 for deliberate review, not claimed against the published result.
+
+## 2026-05-17 — Closed: ceiling accepted as the result (no further keyed spend)
+
+Operator decision: the tooling-ceiling finding is the deliverable. Reproduce
+it FREE/model-free (no API key) from packages/lab:
+  pnpm --filter @strata/lab build
+  node dist/probe.js    # find_declarations cannot surface const ZONE / config
+  node dist/probe2.js   # ingest emits `export const` as nameless FirstStatement
+  node dist/probe3.js   # no documented node→module attribution (only parentId walk)
+Total keyed spend this arc ≈ $1.5 (5 runs, all on the since-invalidated
+instrument; trajectory withdrawn above). Authoritative RESULTS.md/decisions.md
+untouched and unaffected. The optional rigorous T01-link check was NOT taken
+(deferred; would be a deliberate, non-sandbox investigation, not a claim).
