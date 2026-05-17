@@ -24,6 +24,7 @@ import {
   evaluateT08Criteria,
   validate,
   behavioralFixturesForTask,
+  type AcceptanceContext,
   type T01Criteria,
   type T03Criteria,
   type T05Criteria,
@@ -239,16 +240,29 @@ interface ScoreInput {
   txId: string;
 }
 
-type ScoreFromCommitted<C extends TaskCriteria> = (
+type ScoreFromCommitted<
+  C extends {
+    commitReturnedOk: boolean;
+    validateAfterCommitClean: boolean;
+    operationRowAppended: boolean;
+  }
+> = (
   db: Db,
   batch: ReturnType<typeof ingestBatch>,
   srcRoot: string,
   input: ScoreInput
 ) => C & { rendered?: Map<string, string> };
 
-async function runAgentForPrompt<C extends TaskCriteria>(params: {
+async function runAgentForPrompt<
+  C extends {
+    commitReturnedOk: boolean;
+    validateAfterCommitClean: boolean;
+    operationRowAppended: boolean;
+  }
+>(params: {
   runParams: RunAgentT03Params;
-  taskId: BenchTaskId;
+  taskLabel: string;
+  acceptance: AcceptanceContext | undefined;
   actor: string;
   prompt: string;
   emptyCriteria: () => C;
@@ -275,15 +289,7 @@ async function runAgentForPrompt<C extends TaskCriteria>(params: {
     const ctx: StrataSessionContext = {
       db,
       actor: params.actor,
-      // Replay/key-free runs keep the deterministic tsc-only commit() path;
-      // only live (model-driven) runs enforce the behavioral gate.
-      acceptance: runParams.replayTranscript
-        ? undefined
-        : {
-            corpusRoot: runParams.corpusRoot,
-            srcRoot,
-            behavioralFixtures: behavioralFixturesForTask(params.taskId)
-          }
+      acceptance: params.acceptance
     };
     const tools = createStrataTools(ctx);
     const byName = new Map(tools.map((definition) => [definition.name, definition]));
@@ -294,7 +300,7 @@ async function runAgentForPrompt<C extends TaskCriteria>(params: {
       model: runParams.model,
       maxTurns: runParams.maxTurns,
       wallTimeMs: runParams.wallTimeMs,
-      task: params.taskId,
+      task: params.taskLabel as "T01" | "T03" | "T05" | "T08",
       actor: ctx.actor
     });
 
@@ -410,7 +416,14 @@ export async function runAgentT03(
 ): Promise<AgentT03Result> {
   return runAgentForPrompt({
     runParams: params,
-    taskId: "T03",
+    taskLabel: "T03",
+    acceptance: params.replayTranscript
+      ? undefined
+      : {
+          corpusRoot: params.corpusRoot,
+          srcRoot: path.join(params.corpusRoot, "src"),
+          behavioralFixtures: behavioralFixturesForTask("T03")
+        },
     actor: "agent-t03",
     prompt: T03_PROMPT,
     emptyCriteria: emptyT03Criteria,
@@ -445,7 +458,14 @@ export async function runAgentTask(
 
   const result = await runAgentForPrompt({
     runParams: params,
-    taskId,
+    taskLabel: taskId,
+    acceptance: params.replayTranscript
+      ? undefined
+      : {
+          corpusRoot: params.corpusRoot,
+          srcRoot: path.join(params.corpusRoot, "src"),
+          behavioralFixtures: behavioralFixturesForTask(taskId)
+        },
     actor,
     prompt,
     emptyCriteria: () => emptyTaskCriteria(taskId),
