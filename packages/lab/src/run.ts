@@ -49,8 +49,14 @@ async function main(): Promise<void> {
     score
   });
 
-  for (const step of result.transcript) {
-    console.log(`  · ${step.tool} ${JSON.stringify(step.args).slice(0, 160)}`);
+  // Print tool calls WITH their result summaries (not names only — the
+  // prior methodology miss was concluding from call names without ever
+  // inspecting what the tools returned).
+  for (const ev of result.log.events) {
+    if (ev.type !== "tool_call") continue;
+    const args = JSON.stringify(ev.args).slice(0, 110);
+    const res = String(ev.result_summary ?? "").replace(/\s+/g, " ").slice(0, 220);
+    console.log(`  · ${ev.tool} ${args}${ev.ok ? "" : " [ERR]"}\n      → ${res}`);
   }
   console.log(
     `[lab] terminal=${result.terminalReason} labOk=${result.criteria.labOk} ` +

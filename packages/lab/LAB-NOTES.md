@@ -118,3 +118,20 @@ Total keyed spend this arc ≈ $1.5 (5 runs, all on the since-invalidated
 instrument; trajectory withdrawn above). Authoritative RESULTS.md/decisions.md
 untouched and unaffected. The optional rigorous T01-link check was NOT taken
 (deferred; would be a deliberate, non-sandbox investigation, not a claim).
+
+## 2026-05-17 — CORRECTION: "decision-grade tooling ceiling" was overwrought
+
+Withdrawn. Root cause is NOT a fundamental ceiling: `find_declarations`
+maps kind:"variable" → SQL kind="VariableStatement" (queries.ts:21), but
+ingest stores `export const X` as kind "FirstStatement" (same TS SyntaxKind,
+enum alias). A one-token string mismatch; the name-match machinery already
+works. Module attribution is a one-call `modulePathOf` away. Both are
+trivially bridged LAB-SIDE via same-named enriched tools (zero canonical
+change) — exactly what the sandbox's toolServerFactory is for. The prior
+"ceiling / may bear on authoritative T01" framing re-imposed the published
+project's restrictiveness onto the sandbox and inflated a small ingest/query
+alias bug; it is withdrawn. New experiments `per-scope-equipped` /
+`canonical-equipped` remove the artificial deprivation honestly (structural
+graph facts only, never the per-scope answer; trapped control still guards).
+Runner now prints tool RESULTS, not just call names (fixes the methodology
+miss). Re-running with the deprivation removed.
