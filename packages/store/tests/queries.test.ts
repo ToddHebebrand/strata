@@ -41,6 +41,54 @@ describe("find_declarations", () => {
 
     expect(find_declarations(db, { name: "Missing" })).toEqual([]);
   });
+
+  // Regression test for the 2026-05-26 kind-mapping bug. Ingest stores
+  // `export const X` as kind "FirstStatement" (TypeScript SyntaxKind alias
+  // for VariableStatement, value 244). Prior mapping `variable →
+  // "VariableStatement"` missed every const decl, both with `kind:"variable"`
+  // and with no kind (since the no-kind branch uses Object.values of the
+  // mapping). Fix is in queries.ts:22; this test guards against regression.
+  describe("const declarations (FirstStatement kind)", () => {
+    function seedConstZone() {
+      const db = openDb(":memory:");
+      insertNodes(db, [
+        {
+          id: "m",
+          kind: "Module",
+          parentId: null,
+          childIndex: null,
+          payload: "/work/src/config.ts"
+        },
+        {
+          id: "s",
+          kind: "FirstStatement",
+          parentId: "m",
+          childIndex: 0,
+          payload: 'export const ZONE = "UTC";\n'
+        },
+        {
+          id: "i",
+          kind: "Identifier",
+          parentId: "s",
+          childIndex: null,
+          payload: JSON.stringify({ text: "ZONE", offset: 13 })
+        }
+      ]);
+      return db;
+    }
+
+    it("surfaces an exported const via {name, kind:'variable'}", () => {
+      const db = seedConstZone();
+      const found = find_declarations(db, { name: "ZONE", kind: "variable" });
+      expect(found.map((d) => d.id)).toEqual(["s"]);
+    });
+
+    it("surfaces an exported const via bare {name} (no kind filter)", () => {
+      const db = seedConstZone();
+      const found = find_declarations(db, { name: "ZONE" });
+      expect(found.map((d) => d.id)).toEqual(["s"]);
+    });
+  });
 });
 
 describe("get_references", () => {

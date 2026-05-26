@@ -168,4 +168,77 @@ describe("rename_symbol", () => {
       /is not a declaration/
     );
   });
+
+  // Regression test for 2026-05-26 kind-mapping symmetric fix.
+  // `export const X` is persisted as kind "FirstStatement" by ingest.
+  // The fix in rename.ts:17 adds "FirstStatement" to DECLARATION_KINDS so
+  // const decls are renameable. Without the fix, the test below would
+  // throw "is not a declaration".
+  it("renames an exported const declaration (FirstStatement kind) and its single reference", () => {
+    const db = openDb(":memory:");
+    insertNodes(db, [
+      {
+        id: "module-config",
+        kind: "Module",
+        parentId: null,
+        childIndex: null,
+        payload: "/work/src/config.ts"
+      },
+      {
+        id: "decl",
+        kind: "FirstStatement",
+        parentId: "module-config",
+        childIndex: 0,
+        payload: 'export const ZONE = "UTC";\n'
+      },
+      {
+        id: "decl-ident",
+        kind: "Identifier",
+        parentId: "decl",
+        childIndex: 0,
+        payload: JSON.stringify({ text: "ZONE", offset: 13 })
+      },
+      {
+        id: "module-consumer",
+        kind: "Module",
+        parentId: null,
+        childIndex: null,
+        payload: "/work/src/consumer.ts"
+      },
+      {
+        id: "import",
+        kind: "ImportDeclaration",
+        parentId: "module-consumer",
+        childIndex: 0,
+        payload: 'import { ZONE } from "./config.ts";\n'
+      },
+      {
+        id: "import-ident",
+        kind: "Identifier",
+        parentId: "import",
+        childIndex: 0,
+        payload: JSON.stringify({ text: "ZONE", offset: 9 })
+      }
+    ]);
+    insertReferences(db, [
+      { fromNodeId: "import-ident", toNodeId: "decl-ident", kind: "value" }
+    ]);
+
+    const tx = begin(db, "test");
+    rename_symbol(db, tx, "decl", "TIMEZONE");
+    commitWithoutValidate(db, tx);
+
+    const identifierPayloads = db
+      .prepare(`SELECT id, payload FROM nodes WHERE kind = 'Identifier' ORDER BY id`)
+      .all() as Array<{ id: string; payload: string }>;
+    const textsById = new Map(
+      identifierPayloads.map((row) => [
+        row.id,
+        (JSON.parse(row.payload) as { text: string }).text
+      ])
+    );
+
+    expect(textsById.get("decl-ident")).toEqual("TIMEZONE");
+    expect(textsById.get("import-ident")).toEqual("TIMEZONE");
+  });
 });

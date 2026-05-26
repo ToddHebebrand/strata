@@ -9,12 +9,16 @@ import {
 
 const IDENT_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
+// NOTE: const decls are persisted as "FirstStatement" by ingest (TS SyntaxKind
+// alias for VariableStatement, value 244). Symmetric with queries.ts mapping
+// so `find_declarations({kind:"variable"})` → `rename_symbol` is a valid path
+// for exported consts. See 2026-05-26 Codex review.
 const DECLARATION_KINDS = new Set([
   "InterfaceDeclaration",
   "TypeAliasDeclaration",
   "ClassDeclaration",
   "FunctionDeclaration",
-  "VariableStatement"
+  "FirstStatement"
 ]);
 
 export function rename_symbol(

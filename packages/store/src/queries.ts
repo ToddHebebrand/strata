@@ -14,12 +14,21 @@ export interface FindDeclarationsInput {
   kind?: DeclarationKind;
 }
 
+// NOTE: `variable` maps to "FirstStatement" (not "VariableStatement") because
+// ingest stores `export const X` as kind `"FirstStatement"`. SyntaxKind.
+// FirstStatement and SyntaxKind.VariableStatement share enum value 244, and
+// TypeScript's reverse-lookup (`ts.SyntaxKind[244]`) returns "FirstStatement"
+// because that alias is assigned last in the JS reverse map. The previous
+// mapping ("VariableStatement") never matched any persisted row, so neither
+// the kind-filtered nor the no-kind name lookup (which uses Object.values of
+// this map) could surface const decls. See 2026-05-26 Codex review and the
+// preceding LAB-NOTES entries.
 const KIND_TO_STATEMENT_KIND: Record<DeclarationKind, string> = {
   interface: "InterfaceDeclaration",
   "type-alias": "TypeAliasDeclaration",
   class: "ClassDeclaration",
   function: "FunctionDeclaration",
-  variable: "VariableStatement"
+  variable: "FirstStatement"
 };
 
 export function find_declarations(
