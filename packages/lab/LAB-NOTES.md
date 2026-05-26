@@ -533,3 +533,33 @@ ARC FULLY CLOSED on lab side. ~$9-10 keyed across the full session of $20 budget
 1. Authorize the 2-line canonical fix → ship corpus-preload as default in canonical agent.
 2. Fire the bench-layer enriched-substrate (T05/T08 on examples/medium) to measure the production-task impact unaffected by the kind-mapping bug.
 3. Both — the bug fix makes opus preload work; the bench measurement confirms the T05/T08 cost gap closes.
+
+## 2026-05-26 (N=3 confirmation) — 2x2 holds at N=3 per cell
+
+Re-fired the 2x2 to N=3 per cell after the user's pre-product check ("don't proceed yet — firm up the N=1 result"). 8 more trials, ~$0.80 estimated keyed.
+
+Empty find_declarations queries (the name-fishing proxy) — full distribution:
+| Cell                       | trial1 | trial2 | trial3 | median |
+|----------------------------|--------|--------|--------|--------|
+| Opus preload+bugfix        | 0      | 1      | 0      | 0      |
+| Opus bugfix-only           | 0      | 0      | 1      | 0      |
+| Sonnet preload+bugfix      | 0      | 0      | 0      | 0      |
+| Sonnet bugfix-only         | 8      | 2      | 0      | 2      |
+
+Total tool calls:
+| Cell                       | trial1 | trial2 | trial3 | median |
+|----------------------------|--------|--------|--------|--------|
+| Opus preload+bugfix        | 35     | 40     | 27     | 35     |
+| Opus bugfix-only           | 46     | 46     | 25     | 46     |
+| Sonnet preload+bugfix      | 34     | 28     | 30     | 30     |
+| Sonnet bugfix-only         | 44     | 41     | 33     | 41     |
+
+CONFIRMED AT N=3 (sandbox, non-authoritative):
+1. Bug-fix wrapper drives opus to 0-1 empty queries in all 3 trials (with or without preload). The 2026-05-17 canonical bug is the dominant cause of opus's preload regression; the wrapper eliminates it.
+2. Sonnet bugfix-only is variable (8/2/0 empty queries) — sonnet's fishing pattern is trial-dependent. Preload stabilizes sonnet to 0/0/0.
+3. Preload + bug-fix gives the lowest total-call median in BOTH model rows (opus: 35 vs 46; sonnet: 30 vs 41).
+4. Preload + bug-fix is the ONLY configuration with median 0 empty queries for BOTH models. Confirmed at N=3.
+
+ARC TRULY CLOSED. Total session keyed spend ~$10-11 of $20 budget. The recommendation "the 2-line canonical fix is empirically load-bearing for cross-model preload positivity" now rests on a 2x2 at N=3 per cell, not N=1.
+
+CANONICAL FIX REVIEW BRIEF DRAFTED: docs/reviews/2026-05-26-find-declarations-kind-mapping-fix-brief.md. Ready for Codex xhigh independent review. The brief walks the bug, the proposed fix, blast-radius concerns, TS-SyntaxKind alias stability, test-gap recommendations, and an explicit ask for whether the reviewer endorses the symmetric fix (queries.ts + rename.ts), an asymmetric variant (queries.ts only), or a deeper normalize-at-ingest fix.
