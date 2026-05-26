@@ -16,6 +16,17 @@ import {
 } from "./experiments/equippedVariants";
 import { perScopeEquippedGated } from "./experiments/equippedGated";
 import { perScopeEquippedGatedTrap } from "./experiments/equippedGatedTrap";
+import {
+  nodeRefAddParameter,
+  nodeRefAddParameterEquippedGated,
+  nodeRefAddParameterEquippedGatedTrap
+} from "./experiments/nodeRefAddParameter";
+import {
+  preloadedCanonical,
+  preloadedCanonicalV2,
+  preloadedBugfixed,
+  bugfixedOnly
+} from "./experiments/preloadedCanonical";
 
 // The temporary inline `noop` placeholder is GONE (Task 10). The registry
 // holds the substantive lever (per-scope-expressive add_parameter) and its
@@ -33,7 +44,14 @@ export const REGISTRY: Record<string, LabExperiment> = {
   [perScopeEquipped.id]: perScopeEquipped,
   [canonicalEquipped.id]: canonicalEquipped,
   [perScopeEquippedGated.id]: perScopeEquippedGated,
-  [perScopeEquippedGatedTrap.id]: perScopeEquippedGatedTrap
+  [perScopeEquippedGatedTrap.id]: perScopeEquippedGatedTrap,
+  [nodeRefAddParameter.id]: nodeRefAddParameter,
+  [nodeRefAddParameterEquippedGated.id]: nodeRefAddParameterEquippedGated,
+  [nodeRefAddParameterEquippedGatedTrap.id]: nodeRefAddParameterEquippedGatedTrap,
+  [preloadedCanonical.id]: preloadedCanonical,
+  [preloadedCanonicalV2.id]: preloadedCanonicalV2,
+  [preloadedBugfixed.id]: preloadedBugfixed,
+  [bugfixedOnly.id]: bugfixedOnly
 };
 
 export function getExperiment(id: string): LabExperiment {

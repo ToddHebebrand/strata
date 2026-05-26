@@ -32,7 +32,25 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
-## 2026-05-17 — Lab seam landed: one additive, default-preserving session injection point (`toolServerFactory`/`canUseTool`/`runAgentLab`); `SessionStartEvent.task` widened to `string`; sole sanctioned canonical touch for the exploration-sandbox effort
+## 2026-05-26 — Forward-looking design constraint: any future per-callsite-expressiveness tool must take graph-node references in its value channel, not strings
+
+**Context:** A non-authoritative `packages/lab` arc (probes 6-9, Codex xhigh review, N=5 honest + N=6 trap keyed trials at ~$2.5 sandbox spend; full record in `packages/lab/LAB-NOTES.md` entry of the same date) tested whether a structurally-different per-callsite-expressiveness lever shape could close the contamination channel the 2026-05-17 TERMINAL entry identified. The sandbox arc isn't authoritative and isn't being graduated; the one durable design principle that fell out of it is.
+
+**Considered:**
+- (a) bare-string per_scope value slot (the original `applyPerScopeAddParameter` shape) — probe6 + the prior 2026-05-17 keyed evidence: scripting vector. Agent types prompt literals straight into the slot.
+- (b) `{expr, importFrom}` object shape — probe6: NOT a structural close. Attacker passes `{expr:'"UTC"', importFrom:"./config.ts"}`; IDENT_PATTERN refuses to inject an import for a non-identifier expr, but the renderer still splices the literal verbatim.
+- (c) corpus-grep post-hoc contamination scorer — probe7: structural hole. Trap's prompt-only literals "UTC"/"local" are also corpus ZONE values, so `foundInCorpus=true` for both honest and scripting renders. Can't distinguish source-of-value when corpus and prompt happen to share literals.
+- (d) `{nodeRef: NodeId}` shape (probe8 + the extracted lab experiment): op resolves the nodeRef to its bound IDENTIFIER NAME via the graph and uses that name as the callsite arg. The agent cannot pass a string. Exhaustive graph scan finds zero nodes whose identifier-name is "UTC" or "local" — those are string values inside declarations, not identifier names. Structurally trap-resistant.
+
+**Decided (forward-looking design constraint, not a code change):** If a future authoritative Strata tool adds per-callsite expressiveness to `add_parameter` (or to any structural mutation that fans out distinct values to multiple callsites), the value channel must accept graph-node references, not strings or string-bearing object variants. The agent must POINT AT a declaration the substrate can resolve; the substrate must extract the value from the graph; the agent must never get to TYPE the value.
+
+**Why:** Any string-bearing slot is a prompt-scripting vector by construction — the contamination integrity rule cannot distinguish "agent derived this from code" from "agent transcribed this from the prompt" once the substrate accepts a string. The 2026-05-17 TERMINAL entry's NARROW claim — "per-scope tools accepting arbitrary strings are scripting vectors" — stands. Its broader generalization ("any per-callsite expressiveness tool is integrity-un-closeable") was overshot; nodeRef-only is the existence proof that the lever class admits an honest shape. The principle "structural value channels take graph-node references" is the precise design constraint that distinguishes them.
+
+**Design-doc impact:** none yet. `strata-design.md` does not currently propose any per-callsite-expressiveness tools; this entry is the constraint to apply if/when one is proposed. The corresponding sandbox bundle (`packages/lab/src/experiments/nodeRefAddParameter.ts`) is non-authoritative scaffolding that demonstrates the principle but does not graduate as-is — the discipline gate that complements it (op-log: exactly one AddParameter; ReplaceBody only on the param-target) is a task-specific sandbox sledgehammer and would need redesign for any other task before graduation.
+
+**Revisit when:** an authoritative tool design proposes per-callsite expressiveness, OR the sandbox bundle is taken into the rigid pre-registered keyed pipeline for graduation, OR the sandbox arc is extended to a different multi-step task and the principle is tested for generality.
+
+: one additive, default-preserving session injection point (`toolServerFactory`/`canUseTool`/`runAgentLab`); `SessionStartEvent.task` widened to `string`; sole sanctioned canonical touch for the exploration-sandbox effort
 
 **Context:** `docs/superpowers/specs/2026-05-17-multi-step-exploration-sandbox-design.md` calls for a non-authoritative sandbox (`packages/lab`, forthcoming) to iterate on new multi-step methods without polluting the rigid, pre-registered, keyed framework. Landing any sandbox infrastructure required a minimal injection point in the canonical `@strata/agent` package. The seam work spans four commits: acceptance lift (`9477302`), review polish (`e616525`), seam + log widening (`a744b7f`), test nit (`97dcc8a`).
 

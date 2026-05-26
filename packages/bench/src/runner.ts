@@ -292,6 +292,31 @@ async function main(): Promise<void> {
     );
   }
 
+  // --enriched-substrate replaces the canonical substrate path with the
+  // bench-layer enriched experiment (corpus-map preload via runAgentLab,
+  // no canonical change). Baseline remains untouched. Sandbox-first.
+  const enrichedSubstrate = args.includes("--enriched-substrate");
+  let runSubstrateTask: RunBenchmarkParams["runSubstrateTask"] | undefined;
+  if (enrichedSubstrate) {
+    // Lazy import so the canonical path doesn't pay any cost when the flag
+    // isn't set. This keeps the existing bench path byte-identical.
+    const { runEnrichedSubstrateTrial } = await import(
+      "./configs/enrichedSubstrate"
+    );
+    runSubstrateTask = (taskId, trial) =>
+      runEnrichedSubstrateTrial(taskId, {
+        trial,
+        corpusRoot,
+        model,
+        maxTurns: Number(getArg(args, "--max-turns", "25")),
+        wallTimeMs: Number(getArg(args, "--wall-ms", "240000")),
+        keepArtifacts: args.includes("--keep-artifacts")
+      });
+    console.log(
+      "[bench] --enriched-substrate set: substrate path uses corpus-map preload (sandbox experiment); baseline path unchanged."
+    );
+  }
+
   await runBenchmark({
     tasks,
     model,
@@ -301,7 +326,8 @@ async function main(): Promise<void> {
     wallTimeMs: Number(getArg(args, "--wall-ms", "240000")),
     outDir,
     perTaskBudget,
-    keepArtifacts: args.includes("--keep-artifacts")
+    keepArtifacts: args.includes("--keep-artifacts"),
+    runSubstrateTask
   });
 }
 

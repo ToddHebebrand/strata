@@ -5,6 +5,20 @@ import type { LabCriteria, RunAgentLabParams } from "./seam";
 import { scoreHonestDerivable } from "./tasks/honestDerivable";
 import { scoreTrapped } from "./tasks/trappedControl";
 
+/**
+ * Optional post-scorer discipline gate. Receives the db AFTER the agent has
+ * committed and returns {gatePass, violations}. If gatePass=false, the scorer
+ * forces labOk=false regardless of the task verdict, and prints the violations
+ * so the operator knows what was caught.
+ *
+ * Design: Option A (per-experiment scorer override) — backward-compatible.
+ * Experiments that don't supply extraGate behave exactly as before. The gate
+ * is defined near the op it guards (in nodeRefAddParameter.ts), not in the
+ * framework. This keeps experiment.ts minimal and avoids entangling the
+ * framework with any specific gate logic.
+ */
+export type ExtraGate = (db: Db) => { gatePass: boolean; violations: string[] };
+
 export interface LabExperiment {
   id: string;
   hypothesis: string;
@@ -13,14 +27,51 @@ export interface LabExperiment {
     toolServerFactory?: RunAgentLabParams["toolServerFactory"];
     canUseTool?: RunAgentLabParams["canUseTool"];
     prompt?: string;
+    /**
+     * Optional op-log discipline gate. Called after the task scorer. If it
+     * returns gatePass=false, labOk is forced false and violations are printed.
+     * Leave undefined for experiments that don't need an op-log check (all
+     * prior experiments are unaffected).
+     */
+    extraGate?: ExtraGate;
   };
 }
 
-export function makeLabScorer(task: "HD" | "trap"): RunAgentLabParams["score"] {
+/**
+ * Build the score function for a lab experiment. If the experiment supplies
+ * an extraGate, it is run after the task scorer; a gate failure overrides
+ * labOk to false regardless of the task verdict.
+ */
+export function makeLabScorer(
+  task: "HD" | "trap",
+  extraGate?: ExtraGate
+): RunAgentLabParams["score"] {
   return (db: Db, _batch, srcRoot: string, input): LabCriteria => {
     const rendered = renderCommittedSrc(db, srcRoot);
     const verdict =
       task === "HD" ? scoreHonestDerivable(rendered) : scoreTrapped(rendered);
+
+    let labOk = verdict.pass;
+
+    // Run the optional discipline gate AFTER the task scorer. If the gate
+    // fires, force labOk=false and print violations so the operator sees
+    // what was caught. We always run the gate (even if labOk is already false)
+    // to surface discipline violations for observability.
+    let gatePass = true;
+    if (extraGate) {
+      const gateResult = extraGate(db);
+      gatePass = gateResult.gatePass;
+      if (!gatePass) {
+        console.log(
+          `[lab] DISCIPLINE GATE FIRED — labOk forced false. Violations:`
+        );
+        for (const v of gateResult.violations) {
+          console.log(`  · ${v}`);
+        }
+        labOk = false;
+      }
+    }
+
     return {
       commitReturnedOk: input.commitReturnedOk,
       validateAfterCommitClean: input.validateAfterCommitClean,
@@ -29,7 +80,10 @@ export function makeLabScorer(task: "HD" | "trap"): RunAgentLabParams["score"] {
       // operation-log check is implemented yet; a graduating method must add
       // a real op-log assertion before making any claim based on this field.
       operationRowAppended: input.commitReturnedOk,
-      labOk: verdict.pass
+      labOk,
+      // Extra field for observability — gatePass=true if no gate or gate passed.
+      // LabCriteria has [extra: string]: boolean so this is type-safe.
+      gatePass
     };
   };
 }
