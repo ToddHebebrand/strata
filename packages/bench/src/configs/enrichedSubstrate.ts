@@ -521,20 +521,22 @@ export async function runEnrichedSubstrateTrial(
     emptyCriteria: () => emptyTaskLabCriteria(taskId),
     score: (db, batch, srcRoot, input) => {
       // Route to the canonical scorer for the task. The scorers return
-      // criteria + a `rendered` Map; we strip `rendered` (the runAgentLab
-      // loop also produces its own `rendered` from the committed graph)
-      // and inject labOk computed from the task's shared-keys subset.
+      // criteria PLUS a `rendered` Map. We PRESERVE `rendered` in the
+      // returned object so runAgentLab's loop can hand it back to us for the
+      // post-commit resultQuality probe (tsc + vitest on a temp tree). The
+      // `as unknown as LabCriteria` cast bypasses LabCriteria's
+      // [key: string]: boolean index signature so the rendered Map can
+      // ride along. Initial implementation stripped `rendered` to satisfy
+      // the type signature, which silently broke resultQuality (the
+      // tsc/vitest probe got `rendered=undefined` and returned 0/0). Bug
+      // caught after 2026-05-26 T05/T08 enriched-substrate bench showed
+      // `tsc clean 0/2` despite `Success 2/2`.
       if (taskId === "T01") {
-        const { rendered: _r, ...scored } = evaluateT01Criteria(
-          db,
-          batch,
-          srcRoot,
-          {
-            commitReturnedOk: input.commitReturnedOk,
-            validateAfterCommitClean: input.validateAfterCommitClean,
-            txId: input.txId
-          }
-        );
+        const scored = evaluateT01Criteria(db, batch, srcRoot, {
+          commitReturnedOk: input.commitReturnedOk,
+          validateAfterCommitClean: input.validateAfterCommitClean,
+          txId: input.txId
+        });
         const labOk = SHARED_KEYS_BY_TASK.T01.every(
           (k) => (scored as unknown as Record<string, boolean>)[k] === true
         );
@@ -543,17 +545,12 @@ export async function runEnrichedSubstrateTrial(
         };
       }
       if (taskId === "T05") {
-        const { rendered: _r, ...scored } = evaluateT05Criteria(
-          db,
-          batch,
-          srcRoot,
-          {
-            commitReturnedOk: input.commitReturnedOk,
-            validateAfterCommitClean: input.validateAfterCommitClean,
-            txId: input.txId,
-            seedTestText: seedTestText ?? ""
-          }
-        );
+        const scored = evaluateT05Criteria(db, batch, srcRoot, {
+          commitReturnedOk: input.commitReturnedOk,
+          validateAfterCommitClean: input.validateAfterCommitClean,
+          txId: input.txId,
+          seedTestText: seedTestText ?? ""
+        });
         const labOk = SHARED_KEYS_BY_TASK.T05.every(
           (k) => (scored as unknown as Record<string, boolean>)[k] === true
         );
@@ -562,16 +559,11 @@ export async function runEnrichedSubstrateTrial(
         };
       }
       if (taskId === "T08") {
-        const { rendered: _r, ...scored } = evaluateT08Criteria(
-          db,
-          batch,
-          srcRoot,
-          {
-            commitReturnedOk: input.commitReturnedOk,
-            validateAfterCommitClean: input.validateAfterCommitClean,
-            txId: input.txId
-          }
-        );
+        const scored = evaluateT08Criteria(db, batch, srcRoot, {
+          commitReturnedOk: input.commitReturnedOk,
+          validateAfterCommitClean: input.validateAfterCommitClean,
+          txId: input.txId
+        });
         const labOk = SHARED_KEYS_BY_TASK.T08.every(
           (k) => (scored as unknown as Record<string, boolean>)[k] === true
         );
