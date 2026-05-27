@@ -7,6 +7,43 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-05-27 — Fix-C: JSDoc corpus guard added to examples/medium; T03 substrate-win claim corrected
+
+**What changed:** Added a real JSDoc block above `export interface User` in `examples/medium/src/types/user.ts`:
+
+```typescript
+/**
+ * Represents a user of the system.
+ * @internal
+ */
+export interface User { … }
+```
+
+Prior to this change, `User` had no JSDoc above it. That meant every prior T03 run — including all bench rounds that produced the "T03 is a substrate win" headline — ran on a corpus where `find_declarations` and its five sibling functions (`find_references`, `find_callers`, `find_incoming_refs`, `find_outgoing_refs`, `query_nodes`) never exercised the JSDoc-offset bug fixed in commits `a2e19b3`/`f752671`/`90961fc`/`d4f3fcf`.
+
+**The bug (Fix-A/B, summarized):** `find_declarations` selected the lowest-offset tree-sitter `Identifier` node inside an `InterfaceDeclaration` (or any declaration kind). When a JSDoc block appears above the declaration, tree-sitter emits `Identifier` nodes for each JSDoc tag word (e.g. `internal` from `@internal`) at lower source offsets than the actual declaration name. The lowest-offset picker returned a JSDoc tag word instead of the interface name — wrong identifier, wrong rename target.
+
+**The fix shape:** A `pickDeclName` parser-offset helper was introduced that locates the declared name by walking children of the declaration node and finding the first `Identifier` that is at or after the declaration's own start offset, not just globally minimal. Six sibling call sites in `packages/store/src/store.ts` were updated to use this helper. The store test suite reached 95 tests green.
+
+**Codex review:** An independent xhigh Codex review was conducted in-session on 2026-05-27. Brief at `/tmp/codex-brief-find-declarations.md`. The review recommended adding the JSDoc guard to the bench corpus before closing Fix-C, specifically noting that the prior T03 success was silently conditioned on the corpus being JSDoc-free above the renamed declaration.
+
+**T03 substrate-claim correction:** The "T03 is a substrate win" claim (multi-trial bench results recorded in earlier decisions.md entries and in `docs/product-roadmap.md`) remains directionally correct, but it had an unspoken caveat: the corpus happened to be JSDoc-free above `User`. The claim should now be read as: "T03 is a substrate win, and now verified against a JSDoc-annotated corpus." With the Fix-A/B patch applied, T03 passes on the JSDoc-guarded corpus with all 11 criteria true (`commitReturnedOk`, `validateAfterCommitClean`, `importRenamed`, `typeAnnotationRenamed`, `genericPromiseRenamed`, `namespaceImportRenamed`, `auditLiteralUntouched`, `auditLiteralOnlyRemainingUser`, `indexReExportRenamed`, `jsdocReferencesRenamed`, `operationRowAppended`).
+
+**Why no prior test caught this:** The 95 store tests added in Fix-A/B were synthetic; none used `examples/medium` directly. The T03 acceptance test in `packages/cli/tests/t03.test.ts` ingests the real corpus but the corpus was JSDoc-free, so the broken path was never executed.
+
+**Tried first:** Considered adding JSDoc to a second declaration (not `User`) to stress a non-rename path. Rejected — the scope of Fix-C is the corpus guard for the established T03 benchmark target, not broad corpus enrichment. Drive-by JSDoc additions to other declarations are deferred.
+
+**What was decided:**
+1. `examples/medium/src/types/user.ts` now carries a real `/** ... @internal */` block above `User`. This is the only corpus change in Fix-C; no other declarations in `examples/medium` were JSDoc-annotated.
+2. T03 passes on the new corpus state; all 68 tests across `packages/cli` (7) and `packages/bench` (62) remain green; no fixture updates were needed.
+3. **Forward-looking:** future bench corpora should include JSDoc-prefixed declaration targets by default. A corpus without JSDoc above any target can silently mask the JSDoc-offset class of bugs. The guard is now established; any corpus regression that removes the JSDoc block will be immediately visible in T03.
+
+**Design-doc impact:** none on `strata-design.md`. Bench-corpus shape is an implementation detail, not a design contract.
+
+**Pointer to change:** `examples/medium/src/types/user.ts`, commits for this entry.
+
+---
+
 ## 2026-05-27 — L3.4 paired dogfood (N=1, two rename-class tasks on examples/medium): the substrate compounds — all four acceptance criteria PASS
 
 **Context:** First operator run of the L3 "operation-log as memory" dogfood after building L1+L2+L3. Two rename-class tasks on the same persistent SQLite DB:
