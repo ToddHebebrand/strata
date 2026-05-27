@@ -35,11 +35,18 @@ Goal: we can point the substrate at an arbitrary TypeScript codebase, give the a
 
 Out of scope for iteration 1: CLI polish beyond what dogfooding needs, README aimed at outside users, render-back utility (unless dogfooding forces it), watch-mode, schema migrations.
 
-### Iteration 2 — Broaden the rename-class win
+### Iteration 2 — Broaden the agent's capability surface (in progress)
 
-Goal: more tasks that exercise graph-traceable bulk operations have a tool that wins on them.
+Goal: tools that exercise tasks the agent literally can't do today.
 
-Triggered when iteration 1 has surfaced what's missing from the current tool surface. Likely candidates from `strata-design.md` § Tool set: `extract_function`, `inline_function`, `move_declaration`, `add_import`, `list_module_exports`. Each new tool needs at least one task it visibly wins on (the bench is the right tool for *that* question).
+- [x] **`create_function`** — append a new function declaration to a module. Unblocks the entire "add new code" class of tasks. Inserts into the nodes table immediately so validate() sees it within the same transaction; rollback deletes. Dogfooded: defu got a new exported `isEmptyPlainObject` helper, commit gate clean. (commit `338925e`)
+- [ ] `add_import` — add a named import to a module. Foundational for `move_declaration` and for any `create_function` body that references symbols from another module.
+- [ ] `list_module_exports` — query helper. Trivial implementation, removes a class of `find_declarations`+filter round-trips.
+- [ ] `extract_function` — pull a span of statements into a new function. The hero refactor; complex (parameter inference, span replacement with call site).
+- [ ] `inline_function` — opposite. Moderate complexity around captures.
+- [ ] `move_declaration` — move a declaration to a different module with import updates. Needs `add_import` first.
+
+Each new tool needs at least one task it visibly wins on. The bench is the right tool for that question — but only after the tool exists, not before.
 
 ### Iteration 3 — Make it usable by someone else
 
