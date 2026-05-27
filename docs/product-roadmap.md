@@ -24,13 +24,14 @@ We have #1 in the bench-task sense. We don't have it in the "can we actually use
 
 Each iteration ships a thing. "Ships" means: it works end-to-end, the code is committed, and it has at least one real use.
 
-### Iteration 1 — Works end-to-end on something real (current)
+### Iteration 1 — Works end-to-end on something real (in progress)
 
 Goal: we can point the substrate at an arbitrary TypeScript codebase, give the agent an arbitrary task in plain English, and have it actually do it — with the operation log persisting so the next session sees the history.
 
-- [ ] **Arbitrary prompts.** A new agent entry point that takes `{corpusRoot, prompt}` (not a hardcoded task id) and runs the substrate agent end-to-end. The existing commit gate (tsc + optional vitest) stays; there's no task-specific scoring because the user is the scorer now.
-- [ ] **Persistence.** The store can open against a disk-backed SQLite path instead of `:memory:`. The agent run reads the persisted store, mutates it through the operation log, and the next session sees both. Re-ingesting an already-ingested corpus is idempotent (skip-if-unchanged at the module level; full re-parse is acceptable for v0).
-- [ ] **One real dogfood.** Use the above to do one real refactor — on the Strata codebase itself, or on a real project. Record what worked, what didn't, and what the next thing to fix is.
+- [x] **Arbitrary prompts.** `runAgent({corpusRoot, prompt, ...})` in `@strata/agent` plus `strata agent <corpusRoot> "<prompt>" [--db <path>] [--reset] [--print]` in the CLI. (commit `ec60f62`)
+- [x] **Persistence.** SQLite store opens against any disk path; operation log + node graph durable across sessions; node IDs stable across the round trip (verified via two consecutive `strata agent` invocations against the same db). (commit `ec60f62`)
+- [x] **External corpora work.** In-process `validate()` now resolves `@types` by walking up from the corpus tsconfig and falling back to the Strata repo's `@types`. Without this, the commit gate rejected anything outside the monorepo on missing-`@types/node` errors. (commit `252d56a`)
+- [ ] **One real dogfood.** Two contrived renames (forward + reverse) against `examples/medium` proved the path works, but a real refactor on something we actually care about is still owed. Open question for operator: what refactor to attempt — something in the Strata codebase itself, or in an external project?
 
 Out of scope for iteration 1: CLI polish beyond what dogfooding needs, README aimed at outside users, render-back utility (unless dogfooding forces it), watch-mode, schema migrations.
 
