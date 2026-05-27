@@ -1,4 +1,4 @@
-import { findNodeById, listChildren } from "./nodes";
+import { findNodeById } from "./nodes";
 import { getReferencesByTo } from "./references";
 import type { Db } from "./schema";
 import {
@@ -6,6 +6,7 @@ import {
   queuePendingOp,
   type TxHandle
 } from "./transactions";
+import { resolveDeclarationNameIdentifier } from "./declarationName";
 
 const IDENT_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -41,9 +42,11 @@ export function rename_symbol(
     );
   }
 
-  const declarationIdentifier = listChildren(db, declarationId).find(
-    (child) => child.kind === "Identifier"
-  );
+  // Use resolveDeclarationNameIdentifier to find the correct name Identifier,
+  // not the first/lowest-offset child. For JSDoc'd declarations the first
+  // Identifier child is a @param tag word; resolving by payload parse picks
+  // the actual declaration name.
+  const declarationIdentifier = resolveDeclarationNameIdentifier(db, declarationId);
   if (!declarationIdentifier) {
     throw new Error(`Declaration ${declarationId} has no identifier child`);
   }

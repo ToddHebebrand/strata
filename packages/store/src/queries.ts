@@ -91,18 +91,15 @@ export function get_references(db: Db, declarationId: string): Reference[] {
     return [];
   }
 
-  // One targeted SQL instead of listChildren+filter: skip materializing every
-  // sibling row just to read the Identifier child's id.
-  const row = db
-    .prepare(
-      `SELECT id FROM nodes WHERE parent_id = ? AND kind = 'Identifier' LIMIT 1`
-    )
-    .get(declarationId) as { id: string } | undefined;
-  if (!row) {
+  // Use resolveDeclarationNameIdentifier so that JSDoc'd declarations resolve
+  // to the actual declaration name identifier, not the lowest-offset Identifier
+  // child (which for JSDoc'd decls is a @param tag word with 0 references).
+  const nameIdent = resolveDeclarationNameIdentifier(db, declarationId);
+  if (!nameIdent) {
     return [];
   }
 
-  return getReferencesByTo(db, row.id);
+  return getReferencesByTo(db, nameIdent.id);
 }
 
 export const findDeclarations = find_declarations;

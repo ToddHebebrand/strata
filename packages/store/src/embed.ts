@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { findNodeById, modulePathOf, listChildren } from "./nodes";
+import { findNodeById, modulePathOf } from "./nodes";
 import { isVecAvailable, type Db } from "./schema";
+import { resolveDeclarationNameIdentifier } from "./declarationName";
 
 export interface EmbeddingProvider {
   readonly model: string;
@@ -102,9 +103,10 @@ export function buildDeclarationEmbeddingText(
     }
   })();
 
-  const identifier = listChildren(db, declarationId).find(
-    (c) => c.kind === "Identifier"
-  );
+  // Use resolveDeclarationNameIdentifier so that JSDoc'd declarations resolve
+  // to the actual declaration name identifier, not the lowest-offset Identifier
+  // child (a @param tag word for JSDoc'd decls).
+  const identifier = resolveDeclarationNameIdentifier(db, declarationId);
   let name: string | null = null;
   if (identifier) {
     try {

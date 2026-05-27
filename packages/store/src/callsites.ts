@@ -1,7 +1,8 @@
 import ts from "typescript";
-import { findNodeById, listChildren } from "./nodes";
+import { findNodeById } from "./nodes";
 import { getReferencesByTo } from "./references";
 import type { Db } from "./schema";
+import { resolveDeclarationNameIdentifier } from "./declarationName";
 
 export interface Callsite {
   referenceNodeId: string;
@@ -42,9 +43,11 @@ export function resolveCallsites(
   if (!declaration) {
     throw new Error(`Declaration not found: ${functionId}`);
   }
-  const declIdentifier = listChildren(db, functionId).find(
-    (child) => child.kind === "Identifier"
-  );
+  // Use resolveDeclarationNameIdentifier to find the correct name Identifier,
+  // not the first/lowest-offset child. For JSDoc'd declarations the first
+  // Identifier child is a @param tag word; resolving by payload parse picks
+  // the actual declaration name.
+  const declIdentifier = resolveDeclarationNameIdentifier(db, functionId);
   if (!declIdentifier) {
     throw new Error(`Declaration ${functionId} has no identifier child`);
   }

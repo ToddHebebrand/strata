@@ -9,9 +9,8 @@
  * JSDoc'd declaration, the lowest-offset Identifier is a `@param`/`@returns`
  * tag word, not the declaration name itself.
  *
- * Fix-B note: get_references, rename_symbol, discovery.ts, embed.ts,
- * callsites.ts use the same broken "first Identifier child" pattern and will
- * be migrated to use this helper in a follow-up commit.
+ * Fix-B: get_references, rename_symbol, discovery.ts, embed.ts, and
+ * callsites.ts have been migrated to use this helper.
  */
 
 import ts from "typescript";

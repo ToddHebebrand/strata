@@ -1,5 +1,6 @@
 import { findNodeById, type NodeRow } from "./nodes";
 import type { Db } from "./schema";
+import { resolveDeclarationNameIdentifier } from "./declarationName";
 
 /**
  * Top-level statement kinds that count as "declarations" for discovery.
@@ -74,28 +75,14 @@ export function list_module_exports(
   }
 
   const placeholders = DISCOVERY_KINDS.map(() => "?").join(", ");
+  // Fetch declaration rows without the SQL name subquery. Name resolution is
+  // done via resolveDeclarationNameIdentifier so that JSDoc'd declarations
+  // resolve to the actual declaration name, not the lowest-offset Identifier
+  // child (a @param tag word for JSDoc'd decls).
   const rows = db
     .prepare(
       `
-        SELECT
-          d.id AS id,
-          d.kind AS kind,
-          d.payload AS payload,
-          (
-            SELECT CASE
-              WHEN json_valid(i.payload) THEN json_extract(i.payload, '$.text')
-              ELSE NULL
-            END
-            FROM nodes i
-            WHERE i.parent_id = d.id AND i.kind = 'Identifier'
-            ORDER BY CAST(
-              CASE
-                WHEN json_valid(i.payload) THEN json_extract(i.payload, '$.offset')
-                ELSE NULL
-              END AS INTEGER
-            ) ASC, i.id ASC
-            LIMIT 1
-          ) AS name
+        SELECT d.id AS id, d.kind AS kind, d.payload AS payload
         FROM nodes d
         WHERE d.parent_id = ?
           AND d.kind IN (${placeholders})
@@ -106,15 +93,26 @@ export function list_module_exports(
     id: string;
     kind: string;
     payload: string;
-    name: string | null;
   }[];
 
-  return rows.map((row) => ({
-    id: row.id,
-    kind: row.kind,
-    name: row.name,
-    isExported: isExportedPayload(row.payload)
-  }));
+  return rows.map((row) => {
+    let name: string | null = null;
+    const nameIdent = resolveDeclarationNameIdentifier(db, row.id);
+    if (nameIdent) {
+      try {
+        const parsed = JSON.parse(nameIdent.payload) as { text?: string };
+        if (typeof parsed.text === "string") name = parsed.text;
+      } catch {
+        // payload not JSON — leave name as null
+      }
+    }
+    return {
+      id: row.id,
+      kind: row.kind,
+      name,
+      isExported: isExportedPayload(row.payload)
+    };
+  });
 }
 
 export interface FindInModuleInput {
@@ -136,44 +134,45 @@ export function find_declarations_in_module(
   const kindPlaceholders = kindList.map(() => "?").join(", ");
 
   if (input.name) {
-    const rows = db
+    // Fetch all candidates by kind, then filter in JS using
+    // resolveDeclarationNameIdentifier. This avoids the broken
+    // "lowest-offset Identifier child" SQL subquery which returns JSDoc @param
+    // tag words instead of the actual declaration name for JSDoc'd declarations.
+    const candidates = db
       .prepare(
         `
           SELECT d.id, d.kind, d.parent_id, d.child_index, d.payload
           FROM nodes d
           WHERE d.parent_id = ?
             AND d.kind IN (${kindPlaceholders})
-            AND (
-              SELECT CASE
-                WHEN json_valid(i.payload) THEN json_extract(i.payload, '$.text')
-                ELSE NULL
-              END
-              FROM nodes i
-              WHERE i.parent_id = d.id AND i.kind = 'Identifier'
-              ORDER BY CAST(
-                CASE
-                  WHEN json_valid(i.payload) THEN json_extract(i.payload, '$.offset')
-                  ELSE NULL
-                END AS INTEGER
-              ) ASC, i.id ASC
-              LIMIT 1
-            ) = ?
         `
       )
-      .all(input.moduleId, ...kindList, input.name) as {
+      .all(input.moduleId, ...kindList) as {
       id: string;
       kind: string;
       parent_id: string | null;
       child_index: number | null;
       payload: string;
     }[];
-    return rows.map((row) => ({
-      id: row.id,
-      kind: row.kind,
-      parentId: row.parent_id,
-      childIndex: row.child_index,
-      payload: row.payload
-    }));
+
+    return candidates
+      .filter((row) => {
+        const nameIdent = resolveDeclarationNameIdentifier(db, row.id);
+        if (!nameIdent) return false;
+        try {
+          const parsed = JSON.parse(nameIdent.payload) as { text?: string };
+          return parsed.text === input.name;
+        } catch {
+          return false;
+        }
+      })
+      .map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        parentId: row.parent_id,
+        childIndex: row.child_index,
+        payload: row.payload
+      }));
   }
 
   const rows = db
