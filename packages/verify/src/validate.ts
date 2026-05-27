@@ -144,11 +144,13 @@ export function commitWithBehavioralGate(
   tx: TxHandle,
   acceptance: AcceptanceContext
 ): GatedCommitResult {
-  const diagnostics = validate(db, tx);
-  if (diagnostics.length > 0) {
-    return { ok: false, diagnostics };
-  }
-
+  // No in-process validate() here on purpose. runCorpusAcceptance below
+  // spawns a real tsc against the same rendered tree (plus the corpus's
+  // tests/configs), so an in-process validate first would do the same
+  // type-check work twice — once as ts.createProgram and again as the
+  // spawned tsc — on every commit. The spawned tsc catches everything the
+  // in-process one would have caught (and more, when the corpus tsconfig
+  // includes tests), so its `testFailures` text is the single failure mode.
   const { renderedFiles } = renderPendingModules(db, tx);
   const renderedSrc = new Map<string, string>();
   for (const [absPath, text] of renderedFiles) {
