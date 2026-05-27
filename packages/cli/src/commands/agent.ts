@@ -16,6 +16,12 @@ export interface RunAgentCliInput {
    * end of the stream — see runLiveSession).
    */
   printTranscript?: boolean;
+  /**
+   * When false, suppress the auto-injected codebase-shape index that
+   * normally lands as the agent's turn-1 context. Defaults to true. Use
+   * `--no-index` on the CLI for paired with/without measurement.
+   */
+  injectModuleIndex?: boolean;
 }
 
 export async function runAgentCommand(
@@ -30,7 +36,8 @@ export async function runAgentCommand(
     dbPath: input.dbPath ? path.resolve(input.dbPath) : undefined,
     reset: input.reset === true,
     logPath: input.logPath ? path.resolve(input.logPath) : undefined,
-    actor: "strata-cli"
+    actor: "strata-cli",
+    injectModuleIndex: input.injectModuleIndex !== false
   });
 
   if (input.printTranscript) {

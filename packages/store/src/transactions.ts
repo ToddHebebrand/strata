@@ -37,12 +37,16 @@ export interface TxOverlay {
 
 const overlays = new Map<string, TxOverlay>();
 
-export function begin(db: Db, actor: string): TxHandle {
+export function begin(
+  db: Db,
+  actor: string,
+  triggeringPrompt?: string
+): TxHandle {
   const id = randomUUID();
   db.prepare(
-    `INSERT INTO transactions (tx_id, started_at, status, actor)
-     VALUES (?, ?, 'open', ?)`
-  ).run(id, Date.now(), actor);
+    `INSERT INTO transactions (tx_id, started_at, status, actor, triggering_prompt)
+     VALUES (?, ?, 'open', ?, ?)`
+  ).run(id, Date.now(), actor, triggeringPrompt ?? null);
   overlays.set(id, {
     identifierMutations: new Map(),
     textSpanMutations: new Map(),

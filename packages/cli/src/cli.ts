@@ -8,6 +8,7 @@ import { insertNodes, loadModule, openDb } from "@strata/store";
 import ts from "typescript";
 import { runAgentCommand } from "./commands/agent";
 import { runBaselineCommand } from "./commands/baseline";
+import { runEmbed } from "./commands/embed";
 import { runIngestBatch } from "./commands/ingestBatch";
 import { runRename } from "./commands/rename";
 import { describeSdkToolSchema } from "./commands/sdkSmoke";
@@ -27,6 +28,7 @@ interface ParsedAgentArgs {
   model?: string;
   maxTurns?: number;
   wallTimeMs?: number;
+  injectModuleIndex: boolean;
 }
 
 interface ParsedBaselineArgs {
@@ -47,6 +49,7 @@ function parseAgentArgs(rest: string[]): ParsedAgentArgs | null {
   let wallTimeMs: number | undefined;
   let reset = false;
   let print = false;
+  let injectModuleIndex = true;
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]!;
     if (arg === "--db") {
@@ -55,6 +58,8 @@ function parseAgentArgs(rest: string[]): ParsedAgentArgs | null {
       reset = true;
     } else if (arg === "--print") {
       print = true;
+    } else if (arg === "--no-index") {
+      injectModuleIndex = false;
     } else if (arg === "--model") {
       model = rest[++i];
     } else if (arg === "--max-turns") {
@@ -78,7 +83,8 @@ function parseAgentArgs(rest: string[]): ParsedAgentArgs | null {
     print,
     model,
     maxTurns,
-    wallTimeMs
+    wallTimeMs,
+    injectModuleIndex
   };
 }
 
@@ -163,6 +169,28 @@ function costFromLog(result: {
 
 async function asyncMain(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+  if (command === "embed") {
+    const positional: string[] = [];
+    let dbPath: string | undefined;
+    for (let i = 0; i < rest.length; i += 1) {
+      const arg = rest[i]!;
+      if (arg === "--db") {
+        dbPath = rest[++i];
+      } else if (arg.startsWith("--")) {
+        console.error("Usage: strata embed <corpusRoot> --db <dbPath>");
+        return 1;
+      } else {
+        positional.push(arg);
+      }
+    }
+    if (positional.length !== 1 || !dbPath) {
+      console.error("Usage: strata embed <corpusRoot> --db <dbPath>");
+      return 1;
+    }
+    const result = await runEmbed({ rootDir: positional[0]!, dbPath });
+    console.log(JSON.stringify(result, null, 2));
+    return result.ok ? 0 : 1;
+  }
   if (command !== "agent" && command !== "baseline") {
     return main(argv);
   }
@@ -206,7 +234,7 @@ async function asyncMain(argv: string[]): Promise<number> {
   const parsed = parseAgentArgs(rest);
   if (!parsed) {
     console.error(
-      'Usage: strata agent <corpusRoot> "<prompt>" [--db <path>] [--reset] [--print] [--model <id>] [--max-turns N] [--wall-ms N]'
+      'Usage: strata agent <corpusRoot> "<prompt>" [--db <path>] [--reset] [--print] [--no-index] [--model <id>] [--max-turns N] [--wall-ms N]'
     );
     return 1;
   }
@@ -218,7 +246,8 @@ async function asyncMain(argv: string[]): Promise<number> {
     printTranscript: parsed.print,
     model: parsed.model,
     maxTurns: parsed.maxTurns,
-    wallTimeMs: parsed.wallTimeMs
+    wallTimeMs: parsed.wallTimeMs,
+    injectModuleIndex: parsed.injectModuleIndex
   });
   console.log(
     JSON.stringify(
@@ -294,7 +323,7 @@ function main(argv: string[]): number {
   }
 
   console.error(
-    "Usage: strata roundtrip <input.ts> | ingest-batch <rootDir> <dbPath> | rename <dbPath> <declarationId> <newName> | t03 <examples/medium dir> | sdk-smoke | agent <corpusRoot> \"<prompt>\" [--db <path>] [--reset] [--print] | baseline <corpusRoot> \"<prompt>\" [--keep-tree] [--print]"
+    "Usage: strata roundtrip <input.ts> | ingest-batch <rootDir> <dbPath> | rename <dbPath> <declarationId> <newName> | t03 <examples/medium dir> | sdk-smoke | agent <corpusRoot> \"<prompt>\" [--db <path>] [--reset] [--print] [--no-index] | baseline <corpusRoot> \"<prompt>\" [--keep-tree] [--print] | embed <corpusRoot> --db <dbPath>"
   );
   return 1;
 }

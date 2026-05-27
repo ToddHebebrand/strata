@@ -6,6 +6,168 @@ Log an entry whenever:
 - A choice diverges from `strata-design.md` (swapped library, changed schema, dropped/added scope, different tool shape).
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
+
+## 2026-05-27 — L3.4 paired dogfood (N=1, two rename-class tasks on examples/medium): the substrate compounds — all four acceptance criteria PASS
+
+**Context:** First operator run of the L3 "operation-log as memory" dogfood after building L1+L2+L3. Two rename-class tasks on the same persistent SQLite DB:
+- Arm A (cold DB): rename `User` → `Account` (the T03 prompt).
+- Arm B (same DB, after A): rename `Clock` → `TimeSource` (similar shape, different module).
+
+Both keyed: `ANTHROPIC_API_KEY` for the agent, `STRATA_EMBED_API_KEY` (OpenAI text-embedding-3-small) for L3 commit-pattern embedding. Same model (`claude-sonnet-4-6`), same bounds, same corpus.
+
+**Numbers (N=1 paired):**
+
+| Metric | Arm A (cold) | Arm B (post-A) | B / A |
+|---|---:|---:|---:|
+| Cost USD | $0.0757 | $0.0411 | **54.3%** |
+| Cache read input | 62,796 | 59,051 | 94.0% |
+| Cache creation input | 9,856 | 2,658 | 27.0% |
+| Tool calls | 8 | 6 | 75.0% |
+| Turns | 9 | 7 | 77.8% |
+| Wall ms | 26,263 | 19,033 | 72.5% |
+| Total tokens (non-cached) | 1,262 | 814 | 64.5% |
+
+**Telemetry verified the L3 path activated end-to-end:**
+- `commit_pattern_embed` fired with `ok=true` in Arm A → the pattern (prompt + ops + modules + declarations) was JSON-stringified, embedded via OpenAI, and persisted to `commit_pattern_embeddings` (vec0) + `commit_pattern_meta`.
+- `past_tasks_injected` fired with `count=1` in Arm B → `retrieveSimilarPastTasks` matched A's pattern against B's prompt and injected a "Past tasks like this one" section between L1's codebase shape and the user prompt.
+
+Both arms succeeded with one operation committed each.
+
+**Finding:** The substrate compounds. Arm B was cheaper than Arm A on every metric the harness tracks, and the L3 telemetry confirms the design's intended path executed. The plan L3.4 acceptance ("B's cost < A's cost") clearly holds.
+
+**Two confounds in the N=1 reading (honest scope, not enough to retract the finding):**
+1. **Task-size confound.** `Clock` has fewer references in `examples/medium` than `User`, so Arm B is structurally a smaller task. Some fraction of the 46% cost drop is "B is easier," not L3.
+2. **Cache-warmth confound.** Arm B ran ~10 seconds after Arm A — within Anthropic's 5-minute prompt-cache TTL, so B benefits from cached system-prompt tokens that a cold B-run wouldn't have. Note the cache-creation drop (9,856 → 2,658) is too large to be cache warmth alone, but some of the cache-read symmetry (62,796 → 59,051) is.
+
+To isolate L3's contribution from both confounds, a third arm would help: rename `Clock` → `TimeSource` on a fresh DB (no L3 memory) and compare its cost to Arm B's. Not run today — N=2 paired data points are enough for a first PASS, and per CLAUDE.md "do not chase N=2 noise into product claims" the conservative read is "L3 mechanism works and the cost direction is right." A control arm is filed as a follow-up when a specific falsifiable question demands it.
+
+**Decided:**
+1. L3 stays in. The mechanism is verified, the cost direction is right, and the design's "compounding" claim is supported at N=1 with explicit confound caveats.
+2. The L3.4 harness reports four independent acceptance lines (both commits ok, L3 wrote, L3 retrieved, cost compounded). All four passing simultaneously is the strict signal; a future regression that breaks one but not the others is now diagnosable.
+3. The harness's "honest read" note already documents both confounds in every emitted markdown, so future readings won't accidentally over-claim.
+
+**Tried first:** considered running the same task twice (rename User → Account, reset corpus state between runs). Rejected because L3 retrieves on exact prompt match — that tests retrieval-by-prompt but not "similar shape generalization." The parallel-but-different design (User-rename then Clock-rename) is closer to the design doc's claim.
+
+**Honest scope:**
+- N=1, one paired trial.
+- One corpus (`examples/medium`).
+- One model (`claude-sonnet-4-6`) on one calendar day's pricing.
+- The two confounds above. Most likely interpretation: L3 contributes a real but not-entirely-isolable fraction of the 46% drop; the rest is task-size + cache warmth.
+
+**Design-doc impact:** none. The design's compounding claim is supported.
+
+**Revisit when:** (a) the L2.5 dogfood lands on a corpus where semantic_search is active — the three layers stack and we can see whether L2+L3 compounds further; (b) someone outside the project tries it and the compounding question becomes a real product question rather than a research one.
+
+### Same-day control arm (2026-05-27, same model + bounds + corpus)
+
+Ran `Clock → TimeSource` on a fresh DB with `STRATA_EMBED_API_KEY` unset (L3 disabled — no commit-pattern writes, no retrieval). L1 still on. Result: `success`, lastCommitOk=true, 1 op.
+
+| Run | DB state | L3 | Cost USD | Tool calls | Turns | Wall ms |
+|---|---|---|---:|---:|---:|---:|
+| Arm A (cold) | fresh | n/a (User rename) | $0.0757 | 8 | 9 | 26,263 |
+| Arm B (post-A) | populated | retrieved 1 pattern | $0.0411 | 6 | 7 | 19,033 |
+| Control (B-cold) | fresh | disabled | **$0.0423** | 7 | 8 | 17,975 |
+
+**Decomposition of the A → B 46% cost drop:**
+
+| Component | Cost saved | Share |
+|---|---:|---:|
+| Task-size (Clock < User), measured as Control vs A | $0.0334 | 96% |
+| L3 retrieval, measured as B vs Control | $0.0012 | 4% |
+
+**Revised honest reading at N=1:**
+- The L3 mechanism activates end-to-end (telemetry confirmed in Arm B). That is a real positive signal.
+- Once task-size is controlled for, the isolated L3 effect on this corpus is ~3% cost savings, 1 fewer tool call, 1 fewer turn vs L1-alone. Small. Not nothing, but small.
+- The "B is 54% of A" headline in the harness markdown was overwhelmingly task-size, not L3. The harness's "honest read" note already flagged both confounds, but the headline number is misleading without this decomposition.
+- L3's compounding value almost certainly scales with corpus size (where L1 can't dump everything), pattern count (more retrievable history), and task novelty (where past patterns reveal non-obvious target modules). None of those are stressed in this dogfood — examples/medium is 22 modules, one past pattern, two highly-parallel rename tasks. So the modest isolated L3 effect here is consistent with the design *and* with the design having a much weaker N=1 signal on small corpora than the unconfounded number suggested.
+
+**Updated decision:** L3 stays in (mechanism works, direction is correct), but the dogfood-result interpretation in the harness's emitted markdown should NOT be quoted as "L3 saves 46% on the second task" — that's wrong. The correct N=1 quote is "L3 mechanism works end-to-end; isolated L3 contribution at N=1 on this small corpus is ~3% cost." The harness's existing "honest read" note prevents the wrong quote in any future markdown we emit, but anyone reading the existing 2026-05-27 dogfood markdown should also read this decisions.md entry.
+
+**Revisit when:** L2.5 dogfood lands on a corpus where L1 alone is too expensive to inject fully — that's where L3's "where did past tasks touch" should genuinely save discovery overhead, not just slightly nudge it. If L3 still only saves ~3% there, the design's "substrate compounds" claim is weaker than the design doc suggests and worth re-scoping.
+
+---
+
+## 2026-05-27 — T05 substrate-vs-file-baseline (N=1): substrate+L1 at ~51% baseline cost; "5× tokens" claim in roadmap is stale
+
+**Context:** Followup to the same-day L1.4 dogfood (entry below). Question: is Strata+L1 still more expensive than a plain file-tools Claude Code baseline on T05 — the task the 2026-05-26 roadmap pinned as "substrate ~5× tokens, graph navigation is dead weight"?
+
+**Method:** Ran `strata baseline examples/medium "<T05 prompt>"` once. Same model (`claude-sonnet-4-6`), same prompt, same corpus, same day, file-tools agent on a temp clone. Result: `success` + `tscClean` + `vitestPassed`. Compared against the two arms of the same-day L1.4 dogfood.
+
+**Three-way comparison (all three N=1, all three succeeded):**
+
+| Metric | baseline (file tools) | Strata index-off | Strata index-on |
+|---|---:|---:|---:|
+| Cost USD | $0.0795 | $0.0652 | **$0.0409** |
+| Total tokens (non-cached) | 783 | 1,123 | 1,012 |
+| Output tokens | 776 | 1,114 | 1,004 |
+| Cache read input | 52,057 | 49,315 | 50,072 |
+| Cache creation input | 13,774 | 8,855 | 2,622 |
+| Tool calls | 5 | 7 | 6 |
+| Turns | 6 | 8 | 7 |
+| Wall ms | 35,930 | 24,916 | 20,871 |
+
+**Finding:**
+- **Strata+L1 is ~51% the cost of the file-tools baseline** on T05 ($0.0409 vs $0.0795), ~42% faster on wall time.
+- Strata uses ~29% MORE non-cached tokens than baseline (1,012 vs 783) but creates 81% LESS cache (2,622 vs 13,774). Cache-creation pricing (~3.75× cache-read) dominates the total. The structural tools return compact payloads; file tools dump whole file bodies into context which then has to be cache-created.
+- Baseline uses the fewest tool calls (5). T05 is genuinely local ("open one file, fix one line"), so file tools have a structural advantage on tool count. Strata loses on tool count but wins on cost-per-tool-call.
+- Even Strata index-off ($0.0652) is ~18% cheaper than baseline. So the substrate beats baseline on T05 even before the L1 layer.
+
+**Decided:**
+1. **Roadmap update:** the "T05 substrate costs ~5× tokens, dead weight" framing in `docs/product-roadmap.md` § "Stable signal" is stale and now marked as such. The 5× number was 2026-05-16, pre-iteration-3 tools (`read_test_file`, `list_module_exports`, `find_declarations_in_module`). Token ratio is now 1.29×, not 5×, and cost ratio is 0.51×. The line is reframed as "stale signal under review" rather than overwritten — N=1 is not enough to claim "substrate beats baseline on T05 generally."
+2. **No claim escalation in README.** The README's headline result stays the T03 multi-trial finding. This T05 result is N=1 paired and is not strong enough evidence to put in the README.
+3. **Not running more T05 trials right now.** N=2 would still be noise per CLAUDE.md. If a real product question (e.g. "does this hold across models?", "does Anthropic's cache pricing change the calculus?") creates a falsifiable hypothesis, then a 3-trial paired round is justified. Until then, N=1 is N=1.
+
+**Tried first:** I had assumed the prior roadmap claim was still accurate. The L1.4 dogfood's cost number ($0.0409 for L1-on) made me question that, but the L1.4 dogfood doesn't include a baseline arm. Adding one was a single CLI invocation away.
+
+**Honest scope:**
+- One task (T05). T03/T08/T01 not re-measured today; their roadmap claims may also be stale.
+- One corpus (`examples/medium`, ~22 modules). Different corpora can shift the cache/non-cache split.
+- One model + one calendar day's cache pricing.
+- Strata index-off ran first in the L1.4 pair; baseline ran later. Cache warmth between arms isn't directly comparable across the three runs since they were separate processes — but the prompt-cache TTL is 5 minutes, and the three runs were within that window, so similar warmth is a defensible read.
+
+**Design-doc impact:** none on `strata-design.md`. Roadmap claim about T05 reframed in-place.
+
+**Revisit when:** (a) another tool surface change lands that should affect T05 cost shape; (b) Anthropic's cache pricing ratio changes materially; (c) an explicit hypothesis about T05 substrate behavior demands a multi-trial paired round.
+
+---
+
+## 2026-05-27 — L1.4 paired dogfood (N=1, T05 on examples/medium): L1 wins on every metric except the one I picked as acceptance
+
+**Context:** First operator run of the L1.4 paired dogfood after building the L1/L2/L3 codebase index (specs `docs/specs/2026-05-26-three-layer-codebase-index-*.md`). Harness: `pnpm --filter @strata/bench dogfood:l1 -- examples/medium`. Both arms used `claude-sonnet-4-6`, the T05 prompt, the T05 behavioral fixture as commit gate. Index-off ran first to give index-on the conservative read on cache warmth.
+
+**Raw numbers (single paired trial, both arms `success` + `lastCommitOk=true` + 1 op committed):**
+
+| Metric | index-off | index-on | on / off |
+|---|---:|---:|---:|
+| Total tokens (input+output, non-cached) | 1,123 | 1,012 | **90.1%** |
+| Output tokens | 1,114 | 1,004 | 90.1% |
+| Cache read input | 49,315 | 50,072 | 101.5% |
+| Cache creation input | 8,855 | 2,622 | **29.6%** |
+| Tool calls | 7 | 6 | 85.7% |
+| Turns | 8 | 7 | 87.5% |
+| Wall ms | 24,916 | 20,871 | 83.8% |
+| Cost USD | $0.0652 | $0.0409 | **62.8%** |
+
+Module index size: 1,971 chars / 28 lines. Both arms succeeded with identical operation counts.
+
+**Finding:** the design's central claim ("L1 collapses speculative discovery") is supported on every metric — tool calls, turns, wall time, cache creation, and total cost all dropped. The only metric where the index-on win is small (10%) is "total tokens" (input+output, non-cached), and that's because essentially all input was cached (9 and 8 non-cached input tokens respectively across the two arms). Output is model-reasoning weight and doesn't shrink as dramatically as raw input fetches. So "total tokens" is the wrong acceptance metric on this kind of task — it's dominated by the component the index can't move.
+
+**Decided:**
+1. Harness now reports a richer table (already does) and uses **cost USD ≤ 80% of off** as the primary acceptance threshold (which would have PASSED at 62.8%) instead of total tokens (which FAILED at 90.1%). Cost USD correctly blends input + output + cache-creation + cache-read pricing in the proportions Anthropic actually charges; total tokens is a noisy proxy that ignores the cache axis entirely.
+2. The L1.4 plan acceptance bullet (`Index-on cost ≤ 80% of index-off cost on this single comparison`) is preserved verbatim — "cost" was already the right word in the plan; my harness implementation chose the wrong column to threshold on.
+3. **Not** retrying for a different number. N=1 with a one-op success on both sides is the read. Per CLAUDE.md "do not chase N=2 noise into product claims."
+
+**Tried first:** ran the harness with total-tokens-as-acceptance. It FAILed (90.1% vs 80% threshold) even though every other metric showed a clean win. Reading the columns revealed the cache-vs-non-cached split that made "total tokens" the wrong threshold.
+
+**Honest scope of this finding:**
+- One task (T05, single-test fix on examples/medium). The L1 win shape on a rename-heavy task (T03) or a multi-module discovery task could look quite different.
+- One corpus (examples/medium, ~22 modules). On corpora where the L1 index becomes itself expensive (>100 modules), the calculus changes — that's L2's domain (semantic_search), not L1's.
+- One model (claude-sonnet-4-6) on one calendar day. Cache pricing changed in the past and may change again; an acceptance threshold pinned to USD is more pricing-stable than one pinned to tokens.
+- Index-off ran first; index-on benefited from prompt-cache warmth on the shared system prompt. The 70% drop in cache creation tokens is partly the L1 win and partly index-on being run second. The 16% wall-time drop survives this caveat (both arms were below the cache TTL).
+
+**Design-doc impact:** none. The design's "L1 reduces discovery overhead" claim is supported. The plan's "≤80% cost" acceptance is unchanged.
+
+**Revisit when:** (a) L2.5 dogfood on a corpus where L1 alone is too expensive — that's where cost USD will be more diagnostic; (b) prompt-cache pricing changes; (c) a multi-rename task (T03-style) on examples/medium gets a paired dogfood, which should show a larger relative L1 win since rename involves more declaration-fishing than test-fixing.
 - An attempt fails and shapes the next attempt (record the failure too — silent retries lose information).
 
 If the decision is durable, also update `strata-design.md` and reference the diff or commit from the entry.

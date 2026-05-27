@@ -1,11 +1,18 @@
 export const AGENT_PACKAGE = "@strata/agent" as const;
 export {
   SessionLog,
+  type CommitPatternEmbedEvent,
+  type EmbeddingsBuiltEvent,
+  type EmbeddingsFailedEvent,
   type InitEvent,
+  type ModuleIndexInjectedEvent,
+  type PastTasksFailedEvent,
+  type PastTasksInjectedEvent,
   type ResultEvent,
   type SessionLogEvent,
   type ToolCallEvent
 } from "./log";
+export { buildModuleIndex } from "./moduleIndex";
 export { STRATA_SYSTEM_PROMPT } from "./prompt";
 export {
   classifySessionError,
@@ -34,9 +41,11 @@ export {
   type TerminalReason
 } from "./session";
 export {
+  assembleAgentPrompt,
   fixturesForBenchTask,
   runAgent,
   type AgentResult,
+  type AssembleAgentPromptInput,
   type RunAgentParams
 } from "./runAgent";
 export {

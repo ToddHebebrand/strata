@@ -11,3 +11,7 @@ dist/
 # Phase 4 benchmark round artifacts (operator-run; not committed)
 packages/bench/results/*
 !packages/bench/results/.gitkeep
+
+# Dogfood paired-comparison artifacts (operator-run; not committed)
+docs/dogfood-results/*
+!docs/dogfood-results/.gitkeep

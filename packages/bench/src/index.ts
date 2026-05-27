@@ -99,3 +99,21 @@ export {
   type BenchTaskId,
   type BenchTaskRunParams
 } from "./tasks";
+export {
+  renderDogfoodMarkdown,
+  runDogfoodL1,
+  type DogfoodArm,
+  type DogfoodArmCost,
+  type DogfoodL1Result,
+  type RunDogfoodL1Params
+} from "./dogfoodL1";
+export {
+  L3_TASK_A_PROMPT,
+  L3_TASK_B_PROMPT,
+  renderDogfoodL3Markdown,
+  runDogfoodL3,
+  type DogfoodL3Arm,
+  type DogfoodL3ArmCost,
+  type DogfoodL3Result,
+  type RunDogfoodL3Params
+} from "./dogfoodL3";

@@ -300,7 +300,8 @@ async function runAgentForPrompt<
     const ctx: StrataSessionContext = {
       db,
       actor: params.actor,
-      acceptance: params.acceptance
+      acceptance: params.acceptance,
+      taskPrompt: params.prompt
     };
     const tools = createStrataTools(ctx);
     const byName = new Map(tools.map((definition) => [definition.name, definition]));

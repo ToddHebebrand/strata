@@ -16,7 +16,7 @@ We have #1 in the bench-task sense. We don't have it in the "can we actually use
 ## Stable signal (don't re-litigate)
 
 - **T03 (rename across the corpus):** substrate wins materially on tokens, same quality. By design — this is the task the rename tool was built for.
-- **T05 (debug a failing test):** substrate costs ~5× tokens for identical quality. The task is local; graph navigation is dead weight.
+- **T05 (debug a failing test):** **stale signal under review.** The 2026-05-16 reading was "substrate costs ~5× tokens for identical quality" — that was true with the pre-iteration-3 tool surface. A single paired N=1 dogfood on 2026-05-27 (decisions.md entry of that date) found substrate+L1 at ~51% the cost of the file-tools baseline on the same task (1,012 vs 783 non-cached tokens — substrate uses ~29% more tokens but creates 81% less cache, and cache pricing dominates). Don't generalize from N=1, but the prior "5× tokens, dead weight" framing is wrong now and needs a fresh paired round before being re-quoted. The task is still local — file tools win on tool count (5 vs 6) — but on cost the substrate wins.
 - **T08 (narrow return type):** substrate costs ~2× tokens for same quality. Mixed task; half structural, half creative caller refactor.
 - **T01 (add parameter with per-callsite logic):** the per-callsite expressiveness gap is unresolved — value-channel is strings (decisions.md 2026-05-17 TERMINAL + 2026-05-26 forward-looking constraint).
 
@@ -51,6 +51,23 @@ Goal: tools that exercise tasks the agent literally can't do today.
 - [ ] `move_declaration` — move a declaration to a different module with import updates. Needs `add_import` first.
 
 Each new tool needs at least one task it visibly wins on. The bench is the right tool for that question — but only after the tool exists, not before.
+
+### Iteration 2.5 — Three-layer codebase index (done, unvalidated)
+
+Goal: every `strata agent` invocation gives the agent a structural view of the codebase before the first tool call, and the substrate compounds across sessions.
+
+Specs: [`docs/specs/2026-05-26-three-layer-codebase-index-design.md`](specs/2026-05-26-three-layer-codebase-index-design.md), [`docs/specs/2026-05-26-three-layer-codebase-index-plan.md`](specs/2026-05-26-three-layer-codebase-index-plan.md). Telemetry + structured-pattern follow-up from PR review landed alongside.
+
+- [x] **L1 — static module index (always-on).** `buildModuleIndex(db, corpusRoot)` injected as `## Codebase shape` before the user prompt. `module_index_injected` log event. `--no-index` flag for paired comparison. `assembleAgentPrompt` extracted as a pure function so the L1+L3+separator ordering is test-pinned.
+- [x] **L2 — vector-augmented retrieval.** `sqlite-vec@0.1.9` integrated (gated by `isVecAvailable` for graceful disable). `OpenAIEmbeddingProvider` against text-embedding-3-small with content-hash skip. `semantic_search` agent tool (tool count 16 → 17). Auto-embeds at session start when `STRATA_EMBED_API_KEY` is set; `embeddings_built` / `embeddings_failed` log events. `strata embed` CLI for explicit re-embed.
+- [x] **L3 — operation log as memory.** `triggering_prompt` column on `transactions` (idempotent ALTER). `commit_pattern_meta.pattern_json` (structured `CommitPattern`, not parsed string) + `commit_pattern_embeddings` vec table. `retrieveSimilarPastTasks` injected as `## Past tasks like this one` between L1 and the user prompt. Cold-start silent. `past_tasks_injected` / `past_tasks_failed` / `commit_pattern_embed` log events.
+- [x] **L1.4 dogfood harness.** `pnpm --filter @strata/bench dogfood:l1 -- <corpus>` runs the freeform agent twice (index-off, then index-on) on T05 and prints a comparison table. Operator-only, key-gated.
+- [x] **L1.4 dogfood run** (2026-05-27, decisions.md). N=1 paired on T05/examples/medium. PASS on primary acceptance (cost USD ratio 62.8% ≤ 80%). Total-tokens-as-acceptance was found to be the wrong metric (cache pricing dominates); harness updated to use cost USD primary, tokens secondary.
+- [x] **T05 substrate-vs-file-baseline** (2026-05-27, decisions.md). N=1 paired. Strata+L1 at ~51% baseline cost on T05; "T05 substrate ~5× tokens" claim above is stale and reframed in-place.
+- [x] **L3.4 dogfood run + control arm** (2026-05-27, decisions.md). N=1 paired on examples/medium (User→Account then Clock→TimeSource), plus a control arm running Clock alone on a fresh DB. All four harness-acceptance criteria PASS (mechanism activates end-to-end), but the control isolates the L3 contribution at ~3% cost / 1 fewer tool call / 1 fewer turn on this small corpus. The "B is 54% of A" headline is overwhelmingly task-size, not L3. Conclusion: L3 mechanism works as designed; L3's compounding value on a 22-module corpus with one past pattern is modest. Re-evaluate when L2.5 runs on a larger corpus.
+- [ ] **L2.5 dogfood.** Needs a >200-module corpus where L1's full dump becomes unwieldy; `examples/medium` is too small. Pre-work: identify the corpus.
+
+Known follow-up hardening (deferred from PR review, none state-corrupting): L2 in-session staleness after rename, group `embeddingProvider`+`taskPrompt` on ctx into one `semanticIndex?` field, `embed` CLI returning `{ok:false,reason}` instead of throwing, multi-module commit-pattern tests, content-changed re-embed tests, k-cap tests, OpenAI HTTP error-path tests, batching boundary tests, non-`src/` module-path branches.
 
 ### Iteration 3 — Make it usable by someone else
 

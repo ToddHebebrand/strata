@@ -68,7 +68,28 @@ export {
 } from "./createFunction";
 export { replace_body, replaceBody } from "./replaceBody";
 export { rename_symbol, renameSymbol } from "./rename";
-export { openDb, type Db } from "./schema";
+export { EMBEDDING_DIM, isVecAvailable, openDb, type Db } from "./schema";
+export {
+  buildDeclarationEmbeddingText,
+  embedDeclarations,
+  OpenAIEmbeddingProvider,
+  type EmbedDeclarationsResult,
+  type EmbeddingProvider,
+  type OpenAIEmbeddingProviderOptions
+} from "./embed";
+export {
+  semantic_search,
+  semanticSearch,
+  type SemanticHit
+} from "./semanticSearch";
+export {
+  buildCommitPattern,
+  embedCommitPattern,
+  renderCommitPatternForEmbedding,
+  retrieveSimilarPastTasks,
+  type CommitPattern,
+  type PastTaskHit
+} from "./commitPatterns";
 export { locateSpan, type Span, type SpanKind } from "./spanReparse";
 export {
   begin,

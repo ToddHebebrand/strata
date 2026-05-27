@@ -36,6 +36,49 @@ export interface AssistantTextEvent {
   text: string;
 }
 
+export interface ModuleIndexInjectedEvent {
+  type: "module_index_injected";
+  ts: number;
+  chars: number;
+  lines: number;
+}
+
+export interface EmbeddingsBuiltEvent {
+  type: "embeddings_built";
+  ts: number;
+  embedded: number;
+  skipped: number;
+  model: string;
+}
+
+export interface PastTasksInjectedEvent {
+  type: "past_tasks_injected";
+  ts: number;
+  count: number;
+  k: number;
+}
+
+export interface EmbeddingsFailedEvent {
+  type: "embeddings_failed";
+  ts: number;
+  reason: string;
+  model: string;
+}
+
+export interface PastTasksFailedEvent {
+  type: "past_tasks_failed";
+  ts: number;
+  reason: string;
+}
+
+export interface CommitPatternEmbedEvent {
+  type: "commit_pattern_embed";
+  ts: number;
+  txId: string;
+  ok: boolean;
+  reason: string | null;
+}
+
 export interface ResultEvent {
   type: "result";
   ts: number;
@@ -59,6 +102,12 @@ export type SessionLogEvent =
   | InitEvent
   | ToolCallEvent
   | AssistantTextEvent
+  | ModuleIndexInjectedEvent
+  | EmbeddingsBuiltEvent
+  | PastTasksInjectedEvent
+  | EmbeddingsFailedEvent
+  | PastTasksFailedEvent
+  | CommitPatternEmbedEvent
   | ResultEvent;
 
 const MAX_SUMMARY = 240;

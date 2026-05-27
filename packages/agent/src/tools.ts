@@ -10,17 +10,21 @@ import {
   begin,
   change_return_type,
   create_function,
+  embedCommitPattern,
   find_declarations,
   find_declarations_in_module,
   get_references,
+  isVecAvailable,
   list_module_exports,
   read_node,
   rename_symbol,
   replace_body,
   rollback,
+  semantic_search,
   type Db,
   type DeclarationKind,
   type DiscoveryKind,
+  type EmbeddingProvider,
   type TxHandle
 } from "@strata/store";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -32,6 +36,7 @@ import {
   type AcceptanceContext
 } from "@strata/verify";
 import { z } from "zod/v4";
+import { type SessionLog } from "./log";
 
 /** A stable Strata graph node ID (sha1-derived, 16 hex). */
 export const nodeIdSchema = z
@@ -69,6 +74,25 @@ export interface StrataSessionContext {
    * deterministic tsc-only commit() path is preserved.
    */
   acceptance?: AcceptanceContext;
+  /**
+   * Layer 2 embedding provider for `semantic_search`. When absent or when
+   * the sqlite-vec extension didn't load, `semantic_search` returns a clear
+   * "unavailable" error rather than crashing the session.
+   */
+  embeddingProvider?: EmbeddingProvider;
+  /**
+   * Layer 3: the original user task prompt (BEFORE any L1/L2 scaffolding is
+   * prepended). Recorded on every transaction this session opens so the
+   * commit-pattern memory captures what the agent was actually asked to do,
+   * not the injected codebase shape.
+   */
+  taskPrompt?: string;
+  /**
+   * Session log to surface telemetry events from tool handlers. Today only
+   * commit_transaction emits (commit_pattern_embed ok/failure). Optional so
+   * standalone tool tests can omit it.
+   */
+  log?: SessionLog;
 }
 
 function textResult(value: unknown) {
@@ -177,6 +201,45 @@ export function createStrataTools(
     }
   );
 
+  const semanticSearchTool = tool(
+    "semantic_search",
+    "Semantic search across the codebase's declarations. Use when you don't know the symbol name and need to find candidates by meaning; for known symbol names, find_declarations is faster and exact. Returns top-K declarations with their module paths.",
+    {
+      query: z
+        .string()
+        .min(1)
+        .describe("Natural-language description of what you're looking for."),
+      k: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("Max number of hits to return. Default 10.")
+    },
+    async (args) => {
+      if (!ctx.embeddingProvider) {
+        return textResult({
+          error:
+            "semantic_search unavailable: no embedding provider configured for this session (STRATA_EMBED_API_KEY may be unset)."
+        });
+      }
+      if (!isVecAvailable(ctx.db)) {
+        return textResult({
+          error:
+            "semantic_search unavailable: sqlite-vec extension did not load on this platform."
+        });
+      }
+      const hits = await semantic_search(
+        ctx.db,
+        ctx.embeddingProvider,
+        args.query,
+        args.k ?? 10
+      );
+      return textResult(hits);
+    }
+  );
+
   const getReferencesTool = tool(
     "get_references",
     "List every reference edge pointing at a declaration node. Read-only. Use this to inspect the full reference set before mutating. String literals that merely spell the same word are not references and will not appear here.",
@@ -206,7 +269,7 @@ export function createStrataTools(
     "begin_transaction",
     "Open a transaction. Mutations require an open transaction. Returns a transaction handle { id, actor }; hold it and pass it to rename_symbol, validate, commit_transaction, and rollback_transaction.",
     {},
-    async () => textResult(begin(ctx.db, ctx.actor))
+    async () => textResult(begin(ctx.db, ctx.actor, ctx.taskPrompt))
   );
 
   const renameSymbolTool = tool(
@@ -354,12 +417,43 @@ export function createStrataTools(
     "commit_transaction",
     "Finalize the transaction. It finalizes ONLY if the transaction both type-checks AND the project's real test suite passes. If the type-checker reports errors it returns { ok: false, diagnostics }. If the code type-checks but the tests fail it returns { ok: false, testFailures } with the failing test output - the change is NOT finalized; fix the behavior and try again. On a clean type-check with passing tests it finalizes and returns { ok: true }. Type-clean is not done; the tests passing is done.",
     { tx: txHandleSchema },
-    async (args) =>
-      textResult(
-        ctx.acceptance
-          ? commitWithBehavioralGate(ctx.db, args.tx as TxHandle, ctx.acceptance)
-          : commit(ctx.db, args.tx as TxHandle)
-      )
+    async (args) => {
+      const tx = args.tx as TxHandle;
+      const result = ctx.acceptance
+        ? commitWithBehavioralGate(ctx.db, tx, ctx.acceptance)
+        : commit(ctx.db, tx);
+      // Layer 3: on a successful commit, embed the pattern so future sessions
+      // can retrieve it via retrieveSimilarPastTasks. Gated on (a) the commit
+      // actually finalized, (b) an embedding provider is bound to this
+      // session, and (c) the vec extension is available. Any failure here is
+      // best-effort — the commit already succeeded and a memory miss must not
+      // surface as a tool error.
+      if (
+        result.ok &&
+        ctx.embeddingProvider &&
+        isVecAvailable(ctx.db)
+      ) {
+        try {
+          await embedCommitPattern(ctx.db, tx.id, ctx.embeddingProvider);
+          ctx.log?.append({
+            type: "commit_pattern_embed",
+            ts: Date.now(),
+            txId: tx.id,
+            ok: true,
+            reason: null
+          });
+        } catch (err) {
+          ctx.log?.append({
+            type: "commit_pattern_embed",
+            ts: Date.now(),
+            txId: tx.id,
+            ok: false,
+            reason: err instanceof Error ? err.message : String(err)
+          });
+        }
+      }
+      return textResult(result);
+    }
   );
 
   const rollbackTransactionTool = tool(
@@ -377,6 +471,7 @@ export function createStrataTools(
     findDeclarationsInModuleTool,
     listModuleExportsTool,
     readTestFileTool,
+    semanticSearchTool,
     getReferencesTool,
     readNodeTool,
     beginTransactionTool,
@@ -397,6 +492,7 @@ export const STRATA_TOOL_NAMES = [
   "find_declarations_in_module",
   "list_module_exports",
   "read_test_file",
+  "semantic_search",
   "get_references",
   "read_node",
   "begin_transaction",

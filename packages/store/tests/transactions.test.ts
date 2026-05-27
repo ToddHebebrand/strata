@@ -85,6 +85,27 @@ describe("transactions", () => {
     expect(row.committed_at).toBeGreaterThan(0);
   });
 
+  it("persists the triggering prompt when supplied (L3.1)", () => {
+    const db = openDb(":memory:");
+    const tx = begin(db, "agent", "rename Foo to Bar");
+    const row = db
+      .prepare(
+        "SELECT actor, triggering_prompt FROM transactions WHERE tx_id = ?"
+      )
+      .get(tx.id) as { actor: string; triggering_prompt: string | null };
+    expect(row.actor).toBe("agent");
+    expect(row.triggering_prompt).toBe("rename Foo to Bar");
+  });
+
+  it("stores triggering_prompt as NULL when omitted (back-compat)", () => {
+    const db = openDb(":memory:");
+    const tx = begin(db, "agent");
+    const row = db
+      .prepare("SELECT triggering_prompt FROM transactions WHERE tx_id = ?")
+      .get(tx.id) as { triggering_prompt: string | null };
+    expect(row.triggering_prompt).toBeNull();
+  });
+
   it("re-committing a committed transaction throws", () => {
     const db = openDb(":memory:");
     const tx = begin(db, "test");
