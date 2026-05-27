@@ -24,14 +24,14 @@ We have #1 in the bench-task sense. We don't have it in the "can we actually use
 
 Each iteration ships a thing. "Ships" means: it works end-to-end, the code is committed, and it has at least one real use.
 
-### Iteration 1 — Works end-to-end on something real (in progress)
+### Iteration 1 — Works end-to-end on something real (done)
 
 Goal: we can point the substrate at an arbitrary TypeScript codebase, give the agent an arbitrary task in plain English, and have it actually do it — with the operation log persisting so the next session sees the history.
 
 - [x] **Arbitrary prompts.** `runAgent({corpusRoot, prompt, ...})` in `@strata/agent` plus `strata agent <corpusRoot> "<prompt>" [--db <path>] [--reset] [--print]` in the CLI. (commit `ec60f62`)
 - [x] **Persistence.** SQLite store opens against any disk path; operation log + node graph durable across sessions; node IDs stable across the round trip (verified via two consecutive `strata agent` invocations against the same db). (commit `ec60f62`)
 - [x] **External corpora work.** In-process `validate()` now resolves `@types` by walking up from the corpus tsconfig and falling back to the Strata repo's `@types`. Without this, the commit gate rejected anything outside the monorepo on missing-`@types/node` errors. (commit `252d56a`)
-- [ ] **One real dogfood.** Two contrived renames (forward + reverse) against `examples/medium` proved the path works, but a real refactor on something we actually care about is still owed. Open question for operator: what refactor to attempt — something in the Strata codebase itself, or in an external project?
+- [x] **One real dogfood.** Cloned `unjs/defu` (real TS lib, real deps, TS 6.x) and renamed `Merger` → `MergerFn` end-to-end. Same task surfaced and we fixed three real product gaps: typeRoots discovery, strict-src-only tsconfig assertion, and corpus-vs-Strata TypeScript version mismatch. (commit `a13f624`)
 
 Out of scope for iteration 1: CLI polish beyond what dogfooding needs, README aimed at outside users, render-back utility (unless dogfooding forces it), watch-mode, schema migrations.
 
@@ -41,7 +41,11 @@ Goal: tools that exercise tasks the agent literally can't do today.
 
 - [x] **`create_function`** — append a new function declaration to a module. Unblocks the entire "add new code" class of tasks. Inserts into the nodes table immediately so validate() sees it within the same transaction; rollback deletes. Dogfooded: defu got a new exported `isEmptyPlainObject` helper, commit gate clean. (commit `338925e`)
 - [x] **`add_import`** — add an import declaration to a module. Same shape as create_function. Dogfooded chained: defu got `import type { Input } from "./types"` plus a new `isInput(value): value is Input` type-predicate function in one transaction, commit gate clean, two ops in the log. (commit `5b68bac`)
-- [ ] `list_module_exports` — query helper. Trivial implementation, removes a class of `find_declarations`+filter round-trips.
+- [x] **`list_module_exports`** — top-level exports of one module via one SQL + Identifier join. No more find_declarations + filter round-trips for module-API discovery. (commit `2749a52`)
+- [x] **`find_declarations_in_module`** — module-scoped variant of find_declarations. Cuts speculative codebase-wide fishing when the module is already known. (commit `2749a52`)
+- [x] **`read_test_file`** — reads a corpus test file by corpus-relative path (must resolve under corpusRoot, no `..`). Tests aren't ingested; this gives the agent direct text access for T05-class "fix the failing test" tasks without using the commit gate as an oracle. (commit `2749a52`)
+- [x] **Perf: kill double tsc in commit gate + collapse N+1 SQL in find_declarations / get_references.** Substrate-side cost win on every commit and every query. (commit `42fd557`)
+- [x] **`strata baseline` paired-cost CLI.** File-tools Claude Code on a temp copy of any corpus, same output shape as `strata agent`. Refactored shared baseline primitives out of `@strata/bench` into `@strata/agent/baselineShared.ts`. First paired comparison (Merger rename on defu): substrate 6 tools/32s/$0.05, baseline 12 tools/60s/$0.16 — substrate ~3× cheaper, ~2× faster on real external code. (commit `3268a67`)
 - [ ] `extract_function` — pull a span of statements into a new function. The hero refactor; complex (parameter inference, span replacement with call site).
 - [ ] `inline_function` — opposite. Moderate complexity around captures.
 - [ ] `move_declaration` — move a declaration to a different module with import updates. Needs `add_import` first.
