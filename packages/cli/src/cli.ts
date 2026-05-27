@@ -93,6 +93,18 @@ async function asyncMain(argv: string[]): Promise<number> {
     maxTurns: parsed.maxTurns,
     wallTimeMs: parsed.wallTimeMs
   });
+  const resultEvent = result.log.events.find(
+    (event): event is Extract<typeof event, { type: "result" }> =>
+      event.type === "result"
+  );
+  const toolCalls = result.log.events.filter(
+    (event): event is Extract<typeof event, { type: "tool_call" }> =>
+      event.type === "tool_call"
+  );
+  const usage = resultEvent?.usage;
+  const totalTokens = usage
+    ? usage.inputTokens + usage.outputTokens
+    : 0;
   console.log(
     JSON.stringify(
       {
@@ -100,7 +112,21 @@ async function asyncMain(argv: string[]): Promise<number> {
         lastCommitOk: result.lastCommitOk,
         newOperations: result.newOperationsCount,
         totalOperations: result.totalOperationsCount,
-        dbPath: result.dbPath
+        dbPath: result.dbPath,
+        cost: resultEvent
+          ? {
+              totalTokens,
+              inputTokens: usage?.inputTokens ?? 0,
+              outputTokens: usage?.outputTokens ?? 0,
+              cacheReadInputTokens: usage?.cacheReadInputTokens ?? 0,
+              cacheCreationInputTokens: usage?.cacheCreationInputTokens ?? 0,
+              wallMs: resultEvent.durationMs,
+              apiMs: resultEvent.durationApiMs,
+              numTurns: resultEvent.numTurns,
+              toolCalls: toolCalls.length,
+              costUsd: resultEvent.totalCostUsd
+            }
+          : null
       },
       null,
       2
