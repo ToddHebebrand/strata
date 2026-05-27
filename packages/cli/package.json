@@ -13,6 +13,7 @@
     "roundtrip": "node dist/cli.js roundtrip"
   },
   "dependencies": {
+    "@strata/agent": "workspace:*",
     "@strata/ingest": "workspace:*",
     "@strata/render": "workspace:*",
     "@strata/store": "workspace:*",

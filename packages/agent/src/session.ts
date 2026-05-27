@@ -649,7 +649,7 @@ export async function runAgentLab(
   };
 }
 
-async function runLiveSession(deps: {
+export async function runLiveSession(deps: {
   params: RunAgentT03Params;
   prompt?: string;
   ctx: StrataSessionContext;

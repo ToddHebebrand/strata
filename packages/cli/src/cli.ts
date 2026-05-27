@@ -6,6 +6,7 @@ import { ingest } from "@strata/ingest";
 import { render } from "@strata/render";
 import { insertNodes, loadModule, openDb } from "@strata/store";
 import ts from "typescript";
+import { runAgentCommand } from "./commands/agent";
 import { runIngestBatch } from "./commands/ingestBatch";
 import { runRename } from "./commands/rename";
 import { describeSdkToolSchema } from "./commands/sdkSmoke";
@@ -14,6 +15,98 @@ import { runT03 } from "./commands/t03";
 interface RoundtripResult {
   ok: boolean;
   outputPath?: string;
+}
+
+interface ParsedAgentArgs {
+  corpusRoot: string;
+  prompt: string;
+  dbPath?: string;
+  reset: boolean;
+  print: boolean;
+  model?: string;
+  maxTurns?: number;
+  wallTimeMs?: number;
+}
+
+function parseAgentArgs(rest: string[]): ParsedAgentArgs | null {
+  const positional: string[] = [];
+  let dbPath: string | undefined;
+  let model: string | undefined;
+  let maxTurns: number | undefined;
+  let wallTimeMs: number | undefined;
+  let reset = false;
+  let print = false;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--db") {
+      dbPath = rest[++i];
+    } else if (arg === "--reset") {
+      reset = true;
+    } else if (arg === "--print") {
+      print = true;
+    } else if (arg === "--model") {
+      model = rest[++i];
+    } else if (arg === "--max-turns") {
+      const next = rest[++i];
+      maxTurns = next ? Number(next) : undefined;
+    } else if (arg === "--wall-ms") {
+      const next = rest[++i];
+      wallTimeMs = next ? Number(next) : undefined;
+    } else if (arg.startsWith("--")) {
+      return null;
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (positional.length !== 2) return null;
+  return {
+    corpusRoot: positional[0]!,
+    prompt: positional[1]!,
+    dbPath,
+    reset,
+    print,
+    model,
+    maxTurns,
+    wallTimeMs
+  };
+}
+
+async function asyncMain(argv: string[]): Promise<number> {
+  const [command, ...rest] = argv;
+  if (command !== "agent") {
+    return main(argv);
+  }
+  const parsed = parseAgentArgs(rest);
+  if (!parsed) {
+    console.error(
+      'Usage: strata agent <corpusRoot> "<prompt>" [--db <path>] [--reset] [--print] [--model <id>] [--max-turns N] [--wall-ms N]'
+    );
+    return 1;
+  }
+  const result = await runAgentCommand({
+    corpusRoot: parsed.corpusRoot,
+    prompt: parsed.prompt,
+    dbPath: parsed.dbPath,
+    reset: parsed.reset,
+    printTranscript: parsed.print,
+    model: parsed.model,
+    maxTurns: parsed.maxTurns,
+    wallTimeMs: parsed.wallTimeMs
+  });
+  console.log(
+    JSON.stringify(
+      {
+        terminalReason: result.terminalReason,
+        lastCommitOk: result.lastCommitOk,
+        newOperations: result.newOperationsCount,
+        totalOperations: result.totalOperationsCount,
+        dbPath: result.dbPath
+      },
+      null,
+      2
+    )
+  );
+  return result.terminalReason === "success" ? 0 : 1;
 }
 
 function main(argv: string[]): number {
@@ -73,7 +166,7 @@ function main(argv: string[]): number {
   }
 
   console.error(
-    "Usage: strata roundtrip <input.ts> | ingest-batch <rootDir> <dbPath> | rename <dbPath> <declarationId> <newName> | t03 <examples/medium dir> | sdk-smoke"
+    "Usage: strata roundtrip <input.ts> | ingest-batch <rootDir> <dbPath> | rename <dbPath> <declarationId> <newName> | t03 <examples/medium dir> | sdk-smoke | agent <corpusRoot> \"<prompt>\" [--db <path>] [--reset] [--print]"
   );
   return 1;
 }
@@ -302,7 +395,9 @@ function describeByte(byte: number | undefined): string {
 }
 
 if (require.main === module) {
-  process.exitCode = main(process.argv.slice(2));
+  void asyncMain(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
 }
 
-export { compareRoundTrip, main, roundtrip };
+export { asyncMain, compareRoundTrip, main, roundtrip };

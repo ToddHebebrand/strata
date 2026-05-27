@@ -34,6 +34,12 @@ export {
   type TerminalReason
 } from "./session";
 export {
+  fixturesForBenchTask,
+  runAgent,
+  type AgentResult,
+  type RunAgentParams
+} from "./runAgent";
+export {
   createStrataTools,
   createStrataToolServer,
   STRATA_QUALIFIED_TOOL_NAMES,

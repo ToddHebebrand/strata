@@ -8,8 +8,10 @@
   },
   "include": ["src"],
   "references": [
+    { "path": "../agent" },
     { "path": "../ingest" },
     { "path": "../render" },
-    { "path": "../store" }
+    { "path": "../store" },
+    { "path": "../verify" }
   ]
 }

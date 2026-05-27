@@ -113,6 +113,26 @@ file-tools Claude Code baseline on a temp copy of `examples/medium`, scores
 both through the shared `@strata/verify` T03 text criteria, and reports
 distributions rather than bare means.
 
+## Current orientation: product, not measurement
+
+As of 2026-05-26 this project has shifted from "characterize the substrate with more bench rounds" to "iteratively develop the product the design doc set out to build." The bench is now context, not the goal.
+
+**What is stable and shippable:**
+- The substrate runs end-to-end: ingest → store → mutate via tools → validate → commit gate with tsc+vitest → render. All eight `mcp__strata__*` tools work; the agent runs on `claude-sonnet-4-6` with `tools: []`.
+- T03 (rename) is a clear substrate win on the bench. The other tasks are mixed or losses — that's documented and accepted, not something to chase by re-running the bench.
+
+**What "product iteration" means here, in priority order:**
+1. **Make the substrate usable by someone other than us.** README, quickstart, demo, a `strata` CLI surface that maps to the agent's worldview, not just bench harnesses. The design-doc MVP success criterion is "Strata exists and works end-to-end" + "the architectural argument lands" + a write-up + an open-source release — not "every bench task wins."
+2. **Broaden the tool surface where it cheaply extends the rename-class win.** `extract_function`, `inline_function`, `move_declaration`, `add_import`, `list_module_exports` — these are listed in `strata-design.md` § Tool set and aren't implemented. Each one extends "graph-traceable bulk operation" leverage.
+3. **Persistence and incremental ingest.** Today every session re-ingests the corpus into `:memory:`. A real product persists the store across sessions and re-ingests only changed modules. This is the difference between "a demo" and "a workspace."
+4. **Acknowledge the gaps in product copy.** T01-class per-callsite expressiveness is a known limitation (decisions.md 2026-05-17 TERMINAL + 2026-05-26 forward-looking constraint). Ship the product saying so; don't pretend the surface is broader than it is.
+
+**Hard rules for this orientation:**
+- **Do not propose new bench rounds unless they answer a specific, falsifiable product question.** "Another N=2 round to see if the number changed" is not a product question. "Does the new `extract_function` tool actually save tokens on a task that exercises it" is.
+- **Do not chase N=2 noise into product claims.** If a finding swings between rounds, it's noise; ship the conservative read.
+- **Default move when stuck: ship a smaller piece of the product surface, not run more measurements.** Bench rounds are a tool, not the work.
+- **The roadmap lives in `docs/product-roadmap.md`.** Iteration scope, deliverables, and what "done" means for each iteration are tracked there.
+
 ## Working style for this repo
 
 - Keep changes scoped to one package per change when possible — the packages are designed to be independently testable.

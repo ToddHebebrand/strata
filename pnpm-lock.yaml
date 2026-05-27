@@ -88,6 +88,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@strata/agent':
+        specifier: workspace:*
+        version: link:../agent
       '@strata/ingest':
         specifier: workspace:*
         version: link:../ingest

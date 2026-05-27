@@ -32,7 +32,26 @@ If the decision is durable, also update `strata-design.md` and reference the dif
 
 <!-- New entries go below this line, newest first. -->
 
-## 2026-05-26 — Forward-looking design constraint: any future per-callsite-expressiveness tool must take graph-node references in its value channel, not strings
+## 2026-05-26 — Pivot from "characterize the substrate" to "iteratively develop the product"
+
+**Context:** Across the day's bench rounds, I (Claude) flip-flopped on substrate claims because I kept reading product-level conclusions off N=2 trials and a few measurement bugs I had introduced. The operator named the pattern directly ("it wasn't working, it was working, it wasn't working — flip-flopping — I don't get what we're doing here") and asked the project to be reoriented toward iterative product development. The bench has answered its central question: T03 wins, T01/T05/T08 are mixed-or-lose, and re-running it at low N produces noisy claims, not new insight.
+
+**Considered:**
+- (a) Keep iterating on bench measurement until T01/T05/T08 also separate. Falsified by ~$20 of keyed exploration today + the prior May-17 TERMINAL: the integrity-preserving structural levers that could close T01 don't exist, and T05/T08 are local-content tasks where graph navigation is dead weight by design.
+- (b) Quietly drop the bench and start shipping. Loses the discipline of "tools win on tasks" and risks shipping unmeasured claims.
+- (c) Reorient explicitly: bench is now context (one task wins, the limits are documented), product development is the goal, and any new bench task must be justified by the tool it scores.
+
+**Decided:** (c). Updated CLAUDE.md with a "Current orientation: product, not measurement" section and added `docs/product-roadmap.md` with concrete iterations (usable CLI surface → broaden the tool set with tasks → persistence/incremental ingest → write-up and OSS release). Hard rule encoded in CLAUDE.md: no new bench rounds without a falsifiable product question; default move when stuck is to ship a smaller piece of the surface, not measure again.
+
+**Why:** The MVP success criterion in `strata-design.md` § "What success looks like" is "Strata exists and works end-to-end + the architectural argument lands + a write-up + an OSS release," not "every bench task separates." We have a defensible piece of the second criterion (T03 + honest gap docs) and zero of the third and fourth. Continuing to chase noisy bench rounds spends time and trust without moving any of the four bars. Memory entry `feedback-reproduce-before-rerunning.md` was added separately to encode the "reproduce before re-running" discipline so this specific failure mode doesn't recur.
+
+**Design-doc impact:** none yet — `strata-design.md` § Build phases already names Phase 5 (write-up + OSS release) as the terminal phase; the roadmap is the operational version of that. If iteration 2 lands new tools, update § Tool set to mark them implemented.
+
+**Revisit when:** an iteration deliverable shifts the picture (e.g., `extract_function` lands and bench evidence shows it wins a different-class task), or a write-up reviewer surfaces something the bench would need to re-examine.
+
+---
+
+
 
 **Context:** A non-authoritative `packages/lab` arc (probes 6-9, Codex xhigh review, N=5 honest + N=6 trap keyed trials at ~$2.5 sandbox spend; full record in `packages/lab/LAB-NOTES.md` entry of the same date) tested whether a structurally-different per-callsite-expressiveness lever shape could close the contamination channel the 2026-05-17 TERMINAL entry identified. The sandbox arc isn't authoritative and isn't being graduated; the one durable design principle that fell out of it is.
 
