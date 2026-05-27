@@ -40,7 +40,7 @@ Out of scope for iteration 1: CLI polish beyond what dogfooding needs, README ai
 Goal: tools that exercise tasks the agent literally can't do today.
 
 - [x] **`create_function`** — append a new function declaration to a module. Unblocks the entire "add new code" class of tasks. Inserts into the nodes table immediately so validate() sees it within the same transaction; rollback deletes. Dogfooded: defu got a new exported `isEmptyPlainObject` helper, commit gate clean. (commit `338925e`)
-- [ ] `add_import` — add a named import to a module. Foundational for `move_declaration` and for any `create_function` body that references symbols from another module.
+- [x] **`add_import`** — add an import declaration to a module. Same shape as create_function. Dogfooded chained: defu got `import type { Input } from "./types"` plus a new `isInput(value): value is Input` type-predicate function in one transaction, commit gate clean, two ops in the log. (commit `5b68bac`)
 - [ ] `list_module_exports` — query helper. Trivial implementation, removes a class of `find_declarations`+filter round-trips.
 - [ ] `extract_function` — pull a span of statements into a new function. The hero refactor; complex (parameter inference, span replacement with call site).
 - [ ] `inline_function` — opposite. Moderate complexity around captures.
