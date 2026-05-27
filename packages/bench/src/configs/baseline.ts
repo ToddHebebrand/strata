@@ -1,18 +1,15 @@
-import {
-  cpSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync
-} from "node:fs";
-import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
-import { T03_PROMPT, TASK_PROMPTS } from "@strata/agent";
-import { collectBaselineSession } from "../session";
-import { countBaselineRetries } from "../retry";
+import {
+  BASELINE_TOOLS,
+  collectBaselineSession,
+  countBaselineRetries,
+  materializeCorpus,
+  T03_PROMPT,
+  TASK_PROMPTS,
+  type MaterializeCorpusOptions
+} from "@strata/agent";
 import {
   readModuleMap,
   isSharedSuccess,
@@ -22,60 +19,16 @@ import {
 } from "../score";
 import { tscNoEmitSrc, vitestRun, behavioralFixturesForTask } from "../quality";
 import type { TrialMetrics } from "../metrics";
+import type { TerminalReason } from "../metrics";
 import type { BenchTaskId } from "../tasks";
 
-export const BASELINE_TOOLS = [
-  "Read",
-  "Write",
-  "Edit",
-  "Glob",
-  "Grep",
-  "Bash"
-] as const;
+export { BASELINE_TOOLS, materializeCorpus };
+export type { MaterializeCorpusOptions };
 
-export interface MaterializeCorpusOptions {
-  /**
-   * Live baseline runs initialize a temporary git repository so Claude Code's
-   * normal file tooling sees a repository-shaped workspace. Unit tests pass
-   * false so this implementation session never runs git.
-   */
-  initGit?: boolean;
-}
-
-function repoRootFromHere(): string {
-  return path.resolve(__dirname, "../../../..");
-}
-
-/** Materialize a fresh recursive copy of the corpus in an OS temp dir. */
-export function materializeCorpus(
-  corpusRoot: string,
-  options: MaterializeCorpusOptions = {}
-): { root: string; srcRoot: string } {
-  const root = mkdtempSync(path.join(tmpdir(), "strata-bench-baseline-"));
-  cpSync(corpusRoot, root, { recursive: true });
-
-  const repoNodeModules = path.join(repoRootFromHere(), "node_modules");
-  const tmpNodeModules = path.join(root, "node_modules");
-  if (existsSync(tmpNodeModules)) {
-    rmSync(tmpNodeModules, { recursive: true, force: true });
-  }
-  if (existsSync(repoNodeModules)) {
-    symlinkSync(repoNodeModules, tmpNodeModules, "dir");
-  }
-
-  if (options.initGit !== false) {
-    const init = spawnSync("git", ["init"], {
-      cwd: root,
-      encoding: "utf8"
-    });
-    if (init.status !== 0) {
-      throw new Error(
-        `git init failed in baseline temp tree: ${init.stderr || init.stdout}`
-      );
-    }
-  }
-
-  return { root, srcRoot: path.join(root, "src") };
+function benchTerminalReason(reason: string): TerminalReason {
+  return reason === "replay_complete"
+    ? "error_other"
+    : (reason as TerminalReason);
 }
 
 export interface ScoreBaselineTrialInput {
@@ -237,7 +190,7 @@ export async function runBaselineTaskTrial(
         tscClean: probe.tscClean,
         vitestPassed: probe.vitestPassed
       },
-      terminalReason: session.terminalReason,
+      terminalReason: benchTerminalReason(session.terminalReason),
       operationRowAppended: null
     };
   } finally {

@@ -7,6 +7,7 @@ import { render } from "@strata/render";
 import { insertNodes, loadModule, openDb } from "@strata/store";
 import ts from "typescript";
 import { runAgentCommand } from "./commands/agent";
+import { runBaselineCommand } from "./commands/baseline";
 import { runIngestBatch } from "./commands/ingestBatch";
 import { runRename } from "./commands/rename";
 import { describeSdkToolSchema } from "./commands/sdkSmoke";
@@ -22,6 +23,16 @@ interface ParsedAgentArgs {
   prompt: string;
   dbPath?: string;
   reset: boolean;
+  print: boolean;
+  model?: string;
+  maxTurns?: number;
+  wallTimeMs?: number;
+}
+
+interface ParsedBaselineArgs {
+  corpusRoot: string;
+  prompt: string;
+  keepTree: boolean;
   print: boolean;
   model?: string;
   maxTurns?: number;
@@ -71,11 +82,127 @@ function parseAgentArgs(rest: string[]): ParsedAgentArgs | null {
   };
 }
 
+function parseBaselineArgs(rest: string[]): ParsedBaselineArgs | null {
+  const positional: string[] = [];
+  let model: string | undefined;
+  let maxTurns: number | undefined;
+  let wallTimeMs: number | undefined;
+  let keepTree = false;
+  let print = false;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i]!;
+    if (arg === "--keep-tree") {
+      keepTree = true;
+    } else if (arg === "--print") {
+      print = true;
+    } else if (arg === "--model") {
+      model = rest[++i];
+    } else if (arg === "--max-turns") {
+      const next = rest[++i];
+      maxTurns = next ? Number(next) : undefined;
+    } else if (arg === "--wall-ms") {
+      const next = rest[++i];
+      wallTimeMs = next ? Number(next) : undefined;
+    } else if (arg.startsWith("--")) {
+      return null;
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (positional.length !== 2) return null;
+  return {
+    corpusRoot: positional[0]!,
+    prompt: positional[1]!,
+    keepTree,
+    print,
+    model,
+    maxTurns,
+    wallTimeMs
+  };
+}
+
+function costFromLog(result: {
+  log: Awaited<ReturnType<typeof runAgentCommand>>["log"];
+}): {
+  totalTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  wallMs: number;
+  apiMs: number;
+  numTurns: number;
+  toolCalls: number;
+  costUsd: number;
+} | null {
+  const resultEvent = result.log.events.find(
+    (event): event is Extract<typeof event, { type: "result" }> =>
+      event.type === "result"
+  );
+  const toolCalls = result.log.events.filter(
+    (event): event is Extract<typeof event, { type: "tool_call" }> =>
+      event.type === "tool_call"
+  );
+  const usage = resultEvent?.usage;
+  const totalTokens = usage ? usage.inputTokens + usage.outputTokens : 0;
+  return resultEvent
+    ? {
+        totalTokens,
+        inputTokens: usage?.inputTokens ?? 0,
+        outputTokens: usage?.outputTokens ?? 0,
+        cacheReadInputTokens: usage?.cacheReadInputTokens ?? 0,
+        cacheCreationInputTokens: usage?.cacheCreationInputTokens ?? 0,
+        wallMs: resultEvent.durationMs,
+        apiMs: resultEvent.durationApiMs,
+        numTurns: resultEvent.numTurns,
+        toolCalls: toolCalls.length,
+        costUsd: resultEvent.totalCostUsd
+      }
+    : null;
+}
+
 async function asyncMain(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
-  if (command !== "agent") {
+  if (command !== "agent" && command !== "baseline") {
     return main(argv);
   }
+  if (command === "baseline") {
+    const parsed = parseBaselineArgs(rest);
+    if (!parsed) {
+      console.error(
+        'Usage: strata baseline <corpusRoot> "<prompt>" [--keep-tree] [--print] [--model <id>] [--max-turns N] [--wall-ms N]'
+      );
+      return 1;
+    }
+    const result = await runBaselineCommand({
+      corpusRoot: parsed.corpusRoot,
+      prompt: parsed.prompt,
+      keepTree: parsed.keepTree,
+      printTranscript: parsed.print,
+      model: parsed.model,
+      maxTurns: parsed.maxTurns,
+      wallTimeMs: parsed.wallTimeMs
+    });
+    console.log(
+      JSON.stringify(
+        {
+          terminalReason: result.terminalReason,
+          tscClean: result.resultQuality.tscClean,
+          vitestPassed: result.resultQuality.vitestPassed,
+          tempTreeRoot: result.tempTreeRoot,
+          cost: costFromLog(result)
+        },
+        null,
+        2
+      )
+    );
+    return result.terminalReason === "success" &&
+      result.resultQuality.tscClean &&
+      result.resultQuality.vitestPassed
+      ? 0
+      : 1;
+  }
+
   const parsed = parseAgentArgs(rest);
   if (!parsed) {
     console.error(
@@ -93,18 +220,6 @@ async function asyncMain(argv: string[]): Promise<number> {
     maxTurns: parsed.maxTurns,
     wallTimeMs: parsed.wallTimeMs
   });
-  const resultEvent = result.log.events.find(
-    (event): event is Extract<typeof event, { type: "result" }> =>
-      event.type === "result"
-  );
-  const toolCalls = result.log.events.filter(
-    (event): event is Extract<typeof event, { type: "tool_call" }> =>
-      event.type === "tool_call"
-  );
-  const usage = resultEvent?.usage;
-  const totalTokens = usage
-    ? usage.inputTokens + usage.outputTokens
-    : 0;
   console.log(
     JSON.stringify(
       {
@@ -113,20 +228,7 @@ async function asyncMain(argv: string[]): Promise<number> {
         newOperations: result.newOperationsCount,
         totalOperations: result.totalOperationsCount,
         dbPath: result.dbPath,
-        cost: resultEvent
-          ? {
-              totalTokens,
-              inputTokens: usage?.inputTokens ?? 0,
-              outputTokens: usage?.outputTokens ?? 0,
-              cacheReadInputTokens: usage?.cacheReadInputTokens ?? 0,
-              cacheCreationInputTokens: usage?.cacheCreationInputTokens ?? 0,
-              wallMs: resultEvent.durationMs,
-              apiMs: resultEvent.durationApiMs,
-              numTurns: resultEvent.numTurns,
-              toolCalls: toolCalls.length,
-              costUsd: resultEvent.totalCostUsd
-            }
-          : null
+        cost: costFromLog(result)
       },
       null,
       2
@@ -192,7 +294,7 @@ function main(argv: string[]): number {
   }
 
   console.error(
-    "Usage: strata roundtrip <input.ts> | ingest-batch <rootDir> <dbPath> | rename <dbPath> <declarationId> <newName> | t03 <examples/medium dir> | sdk-smoke | agent <corpusRoot> \"<prompt>\" [--db <path>] [--reset] [--print]"
+    "Usage: strata roundtrip <input.ts> | ingest-batch <rootDir> <dbPath> | rename <dbPath> <declarationId> <newName> | t03 <examples/medium dir> | sdk-smoke | agent <corpusRoot> \"<prompt>\" [--db <path>] [--reset] [--print] | baseline <corpusRoot> \"<prompt>\" [--keep-tree] [--print]"
   );
   return 1;
 }

@@ -40,6 +40,21 @@ export {
   type RunAgentParams
 } from "./runAgent";
 export {
+  BASELINE_TOOLS,
+  collectBaselineSession,
+  countBaselineRetries,
+  materializeCorpus,
+  type BaselineResultCapture,
+  type BaselineSession,
+  type BaselineToolEvent,
+  type MaterializeCorpusOptions
+} from "./baselineShared";
+export {
+  runBaseline,
+  type BaselineResult,
+  type RunBaselineParams
+} from "./runBaseline";
+export {
   createStrataTools,
   createStrataToolServer,
   STRATA_QUALIFIED_TOOL_NAMES,
