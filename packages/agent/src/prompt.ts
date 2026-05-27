@@ -65,6 +65,8 @@ add_parameter adds a parameter to a function declaration and inserts a correspon
 
 change_return_type changes or adds a function declaration's return-type annotation only. It requires a transaction handle. It does not rewrite the body or callers; use validate to see what the compiler now objects to and change those deliberately.
 
+create_function appends a new function declaration to a module. It requires a transaction handle, the target module ID, and the full function text (e.g. an "export function foo(x: number): string { return String(x); }" declaration). The text must parse as a single FunctionDeclaration with a name and body. References inside the new body are not resolved structurally; rely on validate to confirm anything it depends on actually resolves.
+
 replace_body replaces a function declaration's whole body with text you provide, including its braces. It requires a transaction handle. It is the low-level tool for body logic changes that are not a rename, parameter, or return-type change; it does not analyze the new body's references, so rely on validate.
 
 validate type-checks the pending transaction state and returns diagnostics, or an empty list when clean. It requires the transaction handle.
@@ -77,7 +79,7 @@ The ordering dependencies are real. Mutating or validating requires a transactio
 
 ## Choosing the right mutation
 
-Pick the structural tool that matches intent so the operation log records what you meant: rename_symbol for changing a symbol's name; add_parameter for adding a parameter and fanning the argument to callsites; change_return_type for the declared return type; replace_body only when the change is genuinely body logic that none of the others express. Prefer the specific structural tool over replace_body when the change is a rename, a parameter change, or a return-type change. Do not encode task-specific recipes; reason from the actual graph each time.
+Pick the structural tool that matches intent so the operation log records what you meant: rename_symbol for changing a symbol's name; add_parameter for adding a parameter and fanning the argument to callsites; change_return_type for the declared return type; create_function for adding a brand-new function declaration to a module; replace_body only when the change is genuinely body logic that none of the others express. Prefer the specific structural tool over replace_body when the change is a rename, a parameter change, a return-type change, or adding a new function. Do not encode task-specific recipes; reason from the actual graph each time.
 
 ## One worked pattern (rename)
 

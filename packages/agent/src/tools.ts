@@ -8,6 +8,7 @@ import {
   add_parameter,
   begin,
   change_return_type,
+  create_function,
   find_declarations,
   get_references,
   read_node,
@@ -197,6 +198,30 @@ export function createStrataTools(
     }
   );
 
+  const createFunctionTool = tool(
+    "create_function",
+    "Append a new function declaration to a module. Requires an open transaction; the new node is visible to `validate` immediately. You supply the target module id and the full function text (e.g. `export function foo(x: number): string { return String(x); }`). The text must parse as a single FunctionDeclaration with a name and a body — no `declare`, no class methods, no arrow expressions. References inside the new body are NOT resolved structurally: use `validate` after creating to confirm any imports or names it depends on actually resolve, and use other tools (e.g. `rename_symbol`) only on declarations that already exist in the graph.",
+    {
+      tx: txHandleSchema,
+      module_id: nodeIdSchema,
+      function_text: z
+        .string()
+        .min(10)
+        .describe(
+          "Full text of the function declaration to insert, e.g. `export function foo(x: number): string { return String(x); }`."
+        )
+    },
+    async (args) => {
+      const result = create_function(
+        ctx.db,
+        args.tx as TxHandle,
+        args.module_id,
+        args.function_text
+      );
+      return textResult({ ok: true, ...result });
+    }
+  );
+
   const replaceBodyTool = tool(
     "replace_body",
     "Replace a function declaration's entire body with new code you provide, including the surrounding braces. Requires an open transaction; mutates the overlay only. This is the low-level tool for body logic changes that are not a rename, a parameter change, or a return-type change. It does not analyze the new body's references; rely on validate to confirm the new body type-checks before you commit.",
@@ -253,6 +278,7 @@ export function createStrataTools(
     renameSymbolTool,
     addParameterTool,
     changeReturnTypeTool,
+    createFunctionTool,
     replaceBodyTool,
     validateTool,
     commitTransactionTool,
@@ -268,6 +294,7 @@ export const STRATA_TOOL_NAMES = [
   "rename_symbol",
   "add_parameter",
   "change_return_type",
+  "create_function",
   "replace_body",
   "validate",
   "commit_transaction",

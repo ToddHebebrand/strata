@@ -24,6 +24,13 @@ export interface TextSpanEdit {
 export interface TxOverlay {
   identifierMutations: Map<string, { text: string }>;
   textSpanMutations: Map<string, TextSpanEdit[]>;
+  /**
+   * IDs of nodes inserted during this transaction. Unlike identifier and
+   * text-span edits (which are overlay-only until commit), node inserts go
+   * straight into the nodes table so validate() sees them within the same
+   * transaction. Rollback deletes these rows; commit leaves them alone.
+   */
+  insertedNodeIds: string[];
   pendingOps: PendingOp[];
   status: "open" | "committed" | "rolled_back";
 }
@@ -39,10 +46,15 @@ export function begin(db: Db, actor: string): TxHandle {
   overlays.set(id, {
     identifierMutations: new Map(),
     textSpanMutations: new Map(),
+    insertedNodeIds: [],
     pendingOps: [],
     status: "open"
   });
   return { id, actor };
+}
+
+export function trackInsertedNode(tx: TxHandle, nodeId: string): void {
+  getOverlay(tx).insertedNodeIds.push(nodeId);
 }
 
 export function getOverlay(tx: TxHandle): TxOverlay {
@@ -86,6 +98,16 @@ export function rollback(db: Db, tx: TxHandle): void {
   }
   if (overlay.status !== "open") {
     throw new Error(`Transaction ${tx.id} not open`);
+  }
+
+  if (overlay.insertedNodeIds.length > 0) {
+    const deleteNode = db.prepare(`DELETE FROM nodes WHERE id = ?`);
+    const drop = db.transaction(() => {
+      for (const id of overlay.insertedNodeIds) {
+        deleteNode.run(id);
+      }
+    });
+    drop();
   }
 
   db.prepare(

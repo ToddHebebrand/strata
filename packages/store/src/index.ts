@@ -51,6 +51,11 @@ export {
   type AddParameterArityRiskSite
 } from "./addParameter";
 export { change_return_type, changeReturnType } from "./changeReturnType";
+export {
+  create_function,
+  createFunction,
+  type CreateFunctionResult
+} from "./createFunction";
 export { replace_body, replaceBody } from "./replaceBody";
 export { rename_symbol, renameSymbol } from "./rename";
 export { openDb, type Db } from "./schema";
@@ -64,6 +69,7 @@ export {
   queuePendingOp,
   rollback,
   startupRecoverOpenTransactions,
+  trackInsertedNode,
   type PendingOp,
   type TextSpanEdit,
   type TxHandle,

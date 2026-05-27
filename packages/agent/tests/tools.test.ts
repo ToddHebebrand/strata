@@ -181,7 +181,7 @@ describe("strata tools drive the spine through the shared context", () => {
     }
   });
 
-  it("exposes exactly the eleven tool names", () => {
+  it("exposes exactly the twelve tool names", () => {
     const db = openDb(":memory:");
     try {
       const tools = createStrataTools({ db, actor: "x" });
@@ -191,6 +191,7 @@ describe("strata tools drive the spine through the shared context", () => {
           "add_parameter",
           "change_return_type",
           "commit_transaction",
+          "create_function",
           "find_declarations",
           "get_references",
           "read_node",
