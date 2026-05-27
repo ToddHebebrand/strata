@@ -65,6 +65,12 @@ add_parameter adds a parameter to a function declaration and inserts a correspon
 
 change_return_type changes or adds a function declaration's return-type annotation only. It requires a transaction handle. It does not rewrite the body or callers; use validate to see what the compiler now objects to and change those deliberately.
 
+list_module_exports lists the top-level declarations of one module — names, kinds, and whether each is exported. Read-only. Prefer this over a codebase-wide find_declarations when you already know which module to inspect.
+
+find_declarations_in_module finds declarations inside one module by name and/or kind. Read-only. Cheaper than the codebase-wide find_declarations when the module is known.
+
+read_test_file reads a corpus test file by its corpus-relative path (must start with tests/ or test/). Read-only. Test files live on disk and are NOT part of the structural graph. When a task is "fix the failing test", reading the test directly is far cheaper than triggering commit_transaction just to see the gate's test output.
+
 add_import adds an import declaration to a module. It requires a transaction handle, the target module ID, and the full import statement text. The text must parse as a single ImportDeclaration. The new import is appended to the module's children; rely on validate to confirm the imported names resolve.
 
 create_function appends a new function declaration to a module. It requires a transaction handle, the target module ID, and the full function text (e.g. an "export function foo(x: number): string { return String(x); }" declaration). The text must parse as a single FunctionDeclaration with a name and body. References inside the new body are not resolved structurally; rely on validate to confirm anything it depends on actually resolves.

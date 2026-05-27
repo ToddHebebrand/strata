@@ -51,6 +51,15 @@ export {
   type AddParameterArityRiskSite
 } from "./addParameter";
 export { add_import, addImport, type AddImportResult } from "./addImport";
+export {
+  find_declarations_in_module,
+  findDeclarationsInModule,
+  list_module_exports,
+  listModuleExports,
+  type DiscoveryKind,
+  type FindInModuleInput,
+  type ModuleExport
+} from "./discovery";
 export { change_return_type, changeReturnType } from "./changeReturnType";
 export {
   create_function,

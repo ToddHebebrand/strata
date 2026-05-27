@@ -11,15 +11,20 @@ import {
   change_return_type,
   create_function,
   find_declarations,
+  find_declarations_in_module,
   get_references,
+  list_module_exports,
   read_node,
   rename_symbol,
   replace_body,
   rollback,
   type Db,
   type DeclarationKind,
+  type DiscoveryKind,
   type TxHandle
 } from "@strata/store";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
 import {
   commit,
   commitWithBehavioralGate,
@@ -98,6 +103,78 @@ export function createStrataTools(
           kind: args.kind as DeclarationKind | undefined
         }).map((n) => ({ id: n.id, kind: n.kind, payload: n.payload }))
       )
+  );
+
+  const listModuleExportsTool = tool(
+    "list_module_exports",
+    "List the top-level declarations of a single module with their names, kinds, and whether they're exported. Read-only. Use this when you know which module to look at and want its API shape without enumerating the whole codebase via find_declarations.",
+    { module_id: nodeIdSchema },
+    async (args) => textResult(list_module_exports(ctx.db, args.module_id))
+  );
+
+  const findDeclarationsInModuleTool = tool(
+    "find_declarations_in_module",
+    "Find declarations scoped to a single module by name and/or kind. Read-only. Cheaper than find_declarations when you already know which module the declaration belongs to (e.g. from list_module_exports or the upfront codebase index).",
+    {
+      module_id: nodeIdSchema,
+      name: z.string().optional().describe("Declaration name to match."),
+      kind: declarationKindSchema.optional()
+    },
+    async (args) =>
+      textResult(
+        find_declarations_in_module(ctx.db, {
+          moduleId: args.module_id,
+          name: args.name,
+          kind: args.kind as DiscoveryKind | undefined
+        }).map((n) => ({ id: n.id, kind: n.kind, payload: n.payload }))
+      )
+  );
+
+  const readTestFileTool = tool(
+    "read_test_file",
+    "Read a test file from the corpus by its corpus-relative path (must start with `tests/` or `test/`). Read-only. Test files live on disk, not in the structural graph — when a task is 'fix the failing test', the test itself is the spec, and this tool lets you read it directly instead of triggering the gate just to see test output. Refuses anything outside the corpus or anything not under tests/ or test/.",
+    {
+      path: z
+        .string()
+        .min(1)
+        .describe(
+          "Corpus-relative path, e.g. `tests/dateRange.test.ts`. Must start with `tests/` or `test/` and must not contain `..`."
+        )
+    },
+    async (args) => {
+      if (!ctx.acceptance) {
+        throw new Error(
+          "read_test_file requires an acceptance context (corpus root). Not available in this session."
+        );
+      }
+      const rel = args.path.replaceAll("\\", "/");
+      if (rel.includes("..")) {
+        throw new Error(
+          `read_test_file: path must not contain '..': ${JSON.stringify(rel)}`
+        );
+      }
+      if (!rel.startsWith("tests/") && !rel.startsWith("test/")) {
+        throw new Error(
+          `read_test_file: path must start with 'tests/' or 'test/': ${JSON.stringify(rel)}`
+        );
+      }
+      const abs = path.join(ctx.acceptance.corpusRoot, rel);
+      const resolved = path.resolve(abs);
+      const corpusResolved = path.resolve(ctx.acceptance.corpusRoot);
+      if (
+        resolved !== corpusResolved &&
+        !resolved.startsWith(corpusResolved + path.sep)
+      ) {
+        throw new Error(
+          `read_test_file: resolved path escapes corpus root: ${resolved}`
+        );
+      }
+      if (!existsSync(resolved) || !statSync(resolved).isFile()) {
+        throw new Error(`read_test_file: not a file: ${rel}`);
+      }
+      const content = readFileSync(resolved, "utf8");
+      return textResult({ path: rel, content });
+    }
   );
 
   const getReferencesTool = tool(
@@ -297,6 +374,9 @@ export function createStrataTools(
 
   return [
     findDeclarationsTool,
+    findDeclarationsInModuleTool,
+    listModuleExportsTool,
+    readTestFileTool,
     getReferencesTool,
     readNodeTool,
     beginTransactionTool,
@@ -314,6 +394,9 @@ export function createStrataTools(
 
 export const STRATA_TOOL_NAMES = [
   "find_declarations",
+  "find_declarations_in_module",
+  "list_module_exports",
+  "read_test_file",
   "get_references",
   "read_node",
   "begin_transaction",
