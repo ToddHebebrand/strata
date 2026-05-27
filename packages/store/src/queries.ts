@@ -1,6 +1,7 @@
 import { findNodeById, type NodeRow } from "./nodes";
 import { getReferencesByTo, type Reference } from "./references";
 import type { Db } from "./schema";
+import { resolveDeclarationNameIdentifier } from "./declarationName";
 
 export type DeclarationKind =
   | "interface"
@@ -40,42 +41,36 @@ export function find_declarations(
     : Object.values(KIND_TO_STATEMENT_KIND);
   const kindPlaceholders = kindList.map(() => "?").join(", ");
 
-  // When a name filter is present, push it into SQL via a join to the
-  // Identifier child + json_extract on its payload. This replaces an
-  // O(N_decls + 1) walk that did `listChildren` for every candidate just
-  // to read the identifier text — fine on the bench corpus, expensive on
-  // real codebases with hundreds of declarations per kind.
+  // When a name filter is present, fetch all candidates by kind and then use
+  // resolveDeclarationNameIdentifier to determine the true declaration name
+  // from the parsed payload. This avoids the previous "lowest-offset
+  // Identifier child" SQL heuristic which incorrectly matched JSDoc @param
+  // tag identifiers (they appear at lower offsets than the declaration name
+  // because getChildren() includes JSDoc nodes). O(N_decls) payload parses;
+  // acceptable for now — a persisted name column can optimize later if needed.
   if (input.name) {
-    const rows = db
+    const candidates = db
       .prepare(
         `
-          SELECT d.id, d.kind, d.parent_id, d.child_index, d.payload
-          FROM nodes d
-          JOIN nodes i
-            ON i.id = (
-              SELECT i2.id
-              FROM nodes i2
-              WHERE i2.parent_id = d.id
-                AND i2.kind = 'Identifier'
-                AND json_valid(i2.payload)
-              ORDER BY CAST(
-                CASE
-                  WHEN json_valid(i2.payload) THEN json_extract(i2.payload, '$.offset')
-                  ELSE NULL
-                END AS INTEGER
-              ) ASC,
-              i2.id ASC
-              LIMIT 1
-            )
-          WHERE d.kind IN (${kindPlaceholders})
-            AND CASE
-              WHEN json_valid(i.payload) THEN json_extract(i.payload, '$.text')
-              ELSE NULL
-            END = ?
+          SELECT id, kind, parent_id, child_index, payload
+          FROM nodes
+          WHERE kind IN (${kindPlaceholders})
         `
       )
-      .all(...kindList, input.name);
-    return rows.map(rowToNode);
+      .all(...kindList)
+      .map(rowToNode);
+
+    return candidates.filter((candidate) => {
+      const nameIdent = resolveDeclarationNameIdentifier(db, candidate.id);
+      if (!nameIdent) return false;
+      let parsed: { text?: string };
+      try {
+        parsed = JSON.parse(nameIdent.payload) as { text?: string };
+      } catch {
+        return false;
+      }
+      return parsed.text === input.name;
+    });
   }
 
   return db
