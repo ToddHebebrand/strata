@@ -58,6 +58,15 @@ Prior to this change, `User` had no JSDoc above it. That meant every prior T03 r
 
 **Pointer to change:** `examples/medium/src/types/user.ts`, commits for this entry.
 
+**Correction (2026-05-27, post-entry):** Cross-cutting review found three factual errors in the descriptive paragraphs above. Append-only fix per the file's convention:
+
+- The helper is named `resolveDeclarationNameIdentifier`, not `pickDeclName`. It lives in `packages/store/src/declarationName.ts`, not `store.ts`.
+- The "five sibling functions" parenthetical (`find_references`, `find_callers`, `find_incoming_refs`, `find_outgoing_refs`, `query_nodes`) is incorrect — none of those exist. The actual six call sites migrated in Fix-B are: `get_references` and `find_declarations` in `queries.ts`, `list_module_exports` and `find_declarations_in_module` in `discovery.ts`, `rename_symbol` in `rename.ts`, `buildDeclarationEmbeddingText` in `embed.ts`, and `resolveCallsites` in `callsites.ts` (5 files, 6 functions, one of which — `find_declarations` — was migrated in Fix-A).
+- The "Six sibling call sites in `packages/store/src/store.ts`" sentence is wrong on both count and file: there's no `store.ts`; the call sites live in the five files named above.
+- The bug mechanism description ("tree-sitter `Identifier` node") is also off — Strata uses TypeScript's compiler API (`@strata/ingest`'s `emitIdentifiers` via `getChildren`), not tree-sitter. The mechanism is correct in shape (lowest-offset Identifier picked, JSDoc tag identifiers persisted as children with lower offsets), just the parser name was wrong.
+
+The Codex review brief was at `/tmp/codex-brief-find-declarations.md` (tmp path, not committed; key recommendation summarized in the original entry above).
+
 ---
 
 ## 2026-05-27 — L3.4 paired dogfood (N=1, two rename-class tasks on examples/medium): the substrate compounds — all four acceptance criteria PASS
