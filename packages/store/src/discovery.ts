@@ -57,8 +57,9 @@ function isExportedPayload(payload: string): boolean {
 
 /**
  * List the top-level declarations of a module with their names and whether
- * they're exported. Cheap discovery primitive — one SQL query plus a join
- * to the declaration's name Identifier child.
+ * they're exported. Cheap discovery primitive — one SQL query plus one
+ * resolveDeclarationNameIdentifier call per row (O(N_decls) payload parses;
+ * acceptable for now — a persisted name column can optimize later if needed).
  */
 export function list_module_exports(
   db: Db,
@@ -75,10 +76,9 @@ export function list_module_exports(
   }
 
   const placeholders = DISCOVERY_KINDS.map(() => "?").join(", ");
-  // Fetch declaration rows without the SQL name subquery. Name resolution is
-  // done via resolveDeclarationNameIdentifier so that JSDoc'd declarations
-  // resolve to the actual declaration name, not the lowest-offset Identifier
-  // child (a @param tag word for JSDoc'd decls).
+  // Name resolution is via resolveDeclarationNameIdentifier — see declarationName.ts.
+  // O(N_decls) payload parses; acceptable for now — a persisted name column
+  // can optimize later if needed.
   const rows = db
     .prepare(
       `
@@ -125,6 +125,9 @@ export interface FindInModuleInput {
  * Module-scoped variant of find_declarations. Saves the agent from a
  * codebase-wide fish when it already knows which module the declaration
  * belongs to (e.g., from list_module_exports or an upfront module index).
+ * When a name filter is present: O(N_decls) payload parses via
+ * resolveDeclarationNameIdentifier; acceptable for now — a persisted name
+ * column can optimize later if needed.
  */
 export function find_declarations_in_module(
   db: Db,

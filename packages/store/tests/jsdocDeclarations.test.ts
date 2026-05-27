@@ -20,6 +20,8 @@ import {
   find_declarations_in_module
 } from "../src/discovery";
 import { rename_symbol } from "../src/rename";
+import { resolveCallsites } from "../src/callsites";
+import { buildDeclarationEmbeddingText } from "../src/embed";
 import {
   insertNodes,
   insertReferences,
@@ -83,16 +85,58 @@ describe("get_references with JSDoc'd declarations (Fix-B assertion 4)", () => {
     // The call `parse("x")` inside `caller` should produce at least one reference.
     expect(refs.length).toBeGreaterThanOrEqual(1);
 
-    // Every reference's toNodeId should be the name identifier of `parse`,
-    // not a JSDoc tag identifier.
-    for (const ref of refs) {
-      const refRow = db
+    // The meaningful assertion is on fromNodeId: each reference site must be
+    // an Identifier whose text is "parse" (the call-site usage in `caller`),
+    // not a JSDoc @param tag word. toNodeId is the same for all rows by
+    // construction (getReferencesByTo filters by it), so checking it would be
+    // a tautology.
+    function payloadText(nodeId: string): string | undefined {
+      const row = db
         .prepare(`SELECT payload FROM nodes WHERE id = ?`)
-        .get(ref.toNodeId) as { payload: string } | undefined;
-      expect(refRow).toBeDefined();
-      const parsed = JSON.parse(refRow!.payload) as { text?: string };
-      // The identifier being referenced must be "parse", never "param".
-      expect(parsed.text).toBe("parse");
+        .get(nodeId) as { payload: string } | undefined;
+      if (!row) return undefined;
+      try {
+        return (JSON.parse(row.payload) as { text?: string }).text;
+      } catch {
+        return undefined;
+      }
+    }
+
+    for (const ref of refs) {
+      // The call-site identifier must spell "parse", not "param".
+      expect(payloadText(ref.fromNodeId)).toBe("parse");
+
+      // The call site must live inside the `caller` function, not somewhere else.
+      // Walk up parent_id until we hit a FunctionDeclaration or null.
+      let ancestorId: string | null = ref.fromNodeId;
+      let foundCallerAncestor = false;
+      while (ancestorId !== null) {
+        const ancestor = db
+          .prepare(`SELECT kind, payload, parent_id FROM nodes WHERE id = ?`)
+          .get(ancestorId) as { kind: string; payload: string; parent_id: string | null } | undefined;
+        if (!ancestor) break;
+        if (ancestor.kind === "FunctionDeclaration") {
+          // The enclosing function's name identifier should be "caller".
+          const nameIdentRow = db
+            .prepare(
+              `SELECT payload FROM nodes WHERE parent_id = ? AND kind = 'Identifier' ORDER BY child_index ASC LIMIT 1`
+            )
+            .get(ancestorId) as { payload: string } | undefined;
+          if (nameIdentRow) {
+            try {
+              const nameText = (JSON.parse(nameIdentRow.payload) as { text?: string }).text;
+              if (nameText === "caller") {
+                foundCallerAncestor = true;
+              }
+            } catch {
+              // ignore parse error
+            }
+          }
+          break;
+        }
+        ancestorId = ancestor.parent_id;
+      }
+      expect(foundCallerAncestor).toBe(true);
     }
 
     db.close();
@@ -203,6 +247,79 @@ describe("find_declarations_in_module with JSDoc'd declarations (Fix-B assertion
       kind: "FunctionDeclaration"
     });
     expect(notFound).toHaveLength(0);
+
+    db.close();
+  });
+});
+
+describe("buildDeclarationEmbeddingText with JSDoc'd declarations (Fix-B assertion 8)", () => {
+  it("embedding text for parse contains 'parse' as name, not 'param'", () => {
+    const db = seedJsdocDb();
+
+    const parseDecls = find_declarations(db, { name: "parse", kind: "function" });
+    expect(parseDecls).toHaveLength(1);
+    const parseDecl = parseDecls[0]!;
+
+    const text = buildDeclarationEmbeddingText(db, parseDecl.id);
+
+    // The name line must say "parse", not "param" (the JSDoc @param tag word).
+    expect(text).toContain("name: parse");
+    expect(text).not.toContain("name: param");
+
+    db.close();
+  });
+});
+
+describe("resolveCallsites with JSDoc'd declarations (Fix-B assertion 9)", () => {
+  it("callsites of parse surface the call from caller, not a JSDoc identifier", () => {
+    const db = seedJsdocDb();
+
+    const parseDecls = find_declarations(db, { name: "parse", kind: "function" });
+    expect(parseDecls).toHaveLength(1);
+    const parseDecl = parseDecls[0]!;
+
+    const result = resolveCallsites(db, parseDecl.id);
+
+    // The call `parse("x")` inside `caller` must appear as a direct callsite.
+    expect(result.callsites.length).toBeGreaterThanOrEqual(1);
+    // No JSDoc identifier should have been misrouted as an unresolved reference
+    // or a spurious callsite.
+    expect(result.unresolvedReferences).toHaveLength(0);
+
+    // The callsite's statementId must belong to a node whose ancestor is the
+    // `caller` function, not the `parse` declaration or a JSDoc node.
+    const firstCallsite = result.callsites[0]!;
+    const statementNode = db
+      .prepare(`SELECT kind, parent_id FROM nodes WHERE id = ?`)
+      .get(firstCallsite.statementId) as { kind: string; parent_id: string | null } | undefined;
+    expect(statementNode).toBeDefined();
+    // Walk up to find the enclosing FunctionDeclaration.
+    let ancestorId: string | null = firstCallsite.statementId;
+    let enclosingFnName: string | null = null;
+    while (ancestorId !== null) {
+      const ancestor = db
+        .prepare(`SELECT kind, parent_id FROM nodes WHERE id = ?`)
+        .get(ancestorId) as { kind: string; parent_id: string | null } | undefined;
+      if (!ancestor) break;
+      if (ancestor.kind === "FunctionDeclaration") {
+        // Get the name identifier of this function declaration.
+        const nameIdent = db
+          .prepare(
+            `SELECT payload FROM nodes WHERE parent_id = ? AND kind = 'Identifier' ORDER BY child_index ASC LIMIT 1`
+          )
+          .get(ancestorId) as { payload: string } | undefined;
+        if (nameIdent) {
+          try {
+            enclosingFnName = (JSON.parse(nameIdent.payload) as { text?: string }).text ?? null;
+          } catch {
+            // ignore
+          }
+        }
+        break;
+      }
+      ancestorId = ancestor.parent_id;
+    }
+    expect(enclosingFnName).toBe("caller");
 
     db.close();
   });
