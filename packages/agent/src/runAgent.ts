@@ -107,7 +107,13 @@ export async function runAgent(params: RunAgentParams): Promise<AgentResult> {
     acceptance: {
       corpusRoot: params.corpusRoot,
       srcRoot,
-      behavioralFixtures: params.behavioralFixtures ?? []
+      behavioralFixtures: params.behavioralFixtures ?? [],
+      // Freeform agent default: respect the project's own tsconfig scope.
+      // The bench's src-only invariant is bench-isolation discipline that
+      // doesn't apply to real projects, which routinely include test files
+      // in their tsconfig include list (decisions.md 2026-05-26 dogfood
+      // finding on unjs/defu).
+      strictSrcOnlyTscScope: false
     }
   };
 

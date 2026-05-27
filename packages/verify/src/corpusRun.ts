@@ -75,7 +75,20 @@ export function tscNoEmit(treeRoot: string): {
     return { tscClean: false, output: "tscNoEmit: no tsconfig.json" };
   }
 
-  const tscBin = require.resolve("typescript/bin/tsc");
+  // Prefer the corpus's own typescript binary (if installed under its
+  // node_modules) — module-resolution defaults differ across TS versions, so
+  // running with the corpus's TS matches what the project author intended.
+  // Fall back to Strata's TS for bench corpora that don't ship their own.
+  const corpusTsc = path.join(
+    treeRoot,
+    "node_modules",
+    "typescript",
+    "bin",
+    "tsc"
+  );
+  const tscBin = existsSync(corpusTsc)
+    ? corpusTsc
+    : require.resolve("typescript/bin/tsc");
   const typeRoots = path.join(repoRootFromHere(), "node_modules", "@types");
   const result = spawnSync(
     process.execPath,
@@ -198,16 +211,27 @@ export function vitestRun(
   };
 }
 
+export interface CorpusAcceptanceOptions {
+  /**
+   * When true (bench default), tsc step asserts the corpus tsconfig is
+   * src-only — the 1.5-R bench-isolation invariant. When false (freeform
+   * agent default), tsc respects whatever scope the project's tsconfig
+   * declares, so real projects with tests in include still pass through.
+   */
+  strictSrcOnlyTscScope?: boolean;
+}
+
 /**
  * Materialize rendered src + the corpus's own tests/configs into a scratch
- * tree, then run the src-scoped type-check and the real test suite. This is
+ * tree, then run the type-check and (optionally) the real test suite. This is
  * the single behavioral finish line shared by the agent commit gate and the
  * benchmark scorer.
  */
 export function runCorpusAcceptance(
   renderedSrc: Map<string, string>,
   corpusRoot: string,
-  fixtures?: readonly string[]
+  fixtures?: readonly string[],
+  options: CorpusAcceptanceOptions = {}
 ): CorpusAcceptanceResult {
   if (renderedSrc.size === 0) {
     return {
@@ -217,6 +241,7 @@ export function runCorpusAcceptance(
     };
   }
 
+  const strictSrcOnlyTscScope = options.strictSrcOnlyTscScope !== false;
   const outRoot = mkdtempSync(path.join(tmpdir(), "strata-accept-"));
   try {
     const outSrc = path.join(outRoot, "src");
@@ -233,18 +258,31 @@ export function runCorpusAcceptance(
       }
     }
 
-    const seedTests = path.join(corpusRoot, "tests");
-    if (existsSync(seedTests)) {
-      cpSync(seedTests, path.join(outRoot, "tests"), { recursive: true });
+    // The bench corpora use `tests/`; many real-world projects use `test/`.
+    // Copy whichever exists so the gate's tsc and vitest see the test files
+    // that the corpus tsconfig may include in scope.
+    for (const dirName of ["tests", "test"]) {
+      const fromDir = path.join(corpusRoot, dirName);
+      if (existsSync(fromDir)) {
+        cpSync(fromDir, path.join(outRoot, dirName), { recursive: true });
+      }
     }
 
+    // Prefer the corpus's own node_modules when present (the project's real
+    // deps); fall back to the Strata repo's node_modules so the bench corpora
+    // (which have no own deps) still resolve @types.
+    const corpusNodeModules = path.join(corpusRoot, "node_modules");
     const repoNodeModules = path.join(repoRootFromHere(), "node_modules");
     const tmpNodeModules = path.join(outRoot, "node_modules");
-    if (existsSync(repoNodeModules)) {
+    if (existsSync(corpusNodeModules)) {
+      symlinkSync(corpusNodeModules, tmpNodeModules, "dir");
+    } else if (existsSync(repoNodeModules)) {
       symlinkSync(repoNodeModules, tmpNodeModules, "dir");
     }
 
-    const tsc = tscNoEmitSrc(outRoot);
+    const tsc = strictSrcOnlyTscScope
+      ? tscNoEmitSrc(outRoot)
+      : tscNoEmit(outRoot);
     const vitest = vitestRun(outRoot, fixtures);
     const failureOutput =
       tsc.tscClean && vitest.vitestPassed

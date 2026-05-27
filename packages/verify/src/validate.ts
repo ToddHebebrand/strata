@@ -118,6 +118,14 @@ export interface AcceptanceContext {
    * live gate is always task-scoped (decisions.md 2026-05-16 / BG-4).
    */
   behavioralFixtures: readonly string[];
+  /**
+   * When true (the bench default), the gate's tsc step asserts the corpus
+   * tsconfig include is src-only — a bench-isolation invariant from the
+   * 1.5-R remediation phase. When false (the freeform agent default), the
+   * gate respects whatever scope the project's tsconfig declares, so real
+   * projects that include tests in their tsconfig still pass through.
+   */
+  strictSrcOnlyTscScope?: boolean;
 }
 
 export type GatedCommitResult =
@@ -153,7 +161,8 @@ export function commitWithBehavioralGate(
   const result = runCorpusAcceptance(
     renderedSrc,
     acceptance.corpusRoot,
-    acceptance.behavioralFixtures
+    acceptance.behavioralFixtures,
+    { strictSrcOnlyTscScope: acceptance.strictSrcOnlyTscScope !== false }
   );
   if (!result.tscClean || !result.vitestPassed) {
     return { ok: false, testFailures: result.failureOutput };
