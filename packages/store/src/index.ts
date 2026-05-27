@@ -50,6 +50,7 @@ export {
   type AddParameterCallsiteEdit,
   type AddParameterArityRiskSite
 } from "./addParameter";
+export { add_import, addImport, type AddImportResult } from "./addImport";
 export { change_return_type, changeReturnType } from "./changeReturnType";
 export {
   create_function,

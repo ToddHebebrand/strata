@@ -181,14 +181,15 @@ describe("strata tools drive the spine through the shared context", () => {
     }
   });
 
-  it("exposes exactly the twelve tool names", () => {
+  it("exposes exactly the thirteen tool names", () => {
     const db = openDb(":memory:");
     try {
       const tools = createStrataTools({ db, actor: "x" });
       expect(tools.map((t) => t.name).sort()).toEqual(
         [
-          "begin_transaction",
+          "add_import",
           "add_parameter",
+          "begin_transaction",
           "change_return_type",
           "commit_transaction",
           "create_function",

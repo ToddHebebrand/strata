@@ -5,6 +5,7 @@ import {
   type SdkMcpToolDefinition
 } from "@anthropic-ai/claude-agent-sdk";
 import {
+  add_import,
   add_parameter,
   begin,
   change_return_type,
@@ -198,6 +199,30 @@ export function createStrataTools(
     }
   );
 
+  const addImportTool = tool(
+    "add_import",
+    "Add an import declaration to a module. Requires an open transaction; the new node is visible to `validate` immediately. You supply the target module ID and the full import statement text (e.g. an `import { foo } from \"./bar\"` line). Must parse as a single ImportDeclaration. The import is appended to the module's children; TypeScript is order-insensitive for value imports, so its rendered position at end-of-file is semantically fine. Use this before or together with create_function / replace_body when the new code references a symbol the module doesn't already import.",
+    {
+      tx: txHandleSchema,
+      module_id: nodeIdSchema,
+      import_text: z
+        .string()
+        .min(8)
+        .describe(
+          "Full text of the import statement to insert, e.g. an `import { foo } from \"./bar\"` line."
+        )
+    },
+    async (args) => {
+      const result = add_import(
+        ctx.db,
+        args.tx as TxHandle,
+        args.module_id,
+        args.import_text
+      );
+      return textResult({ ok: true, ...result });
+    }
+  );
+
   const createFunctionTool = tool(
     "create_function",
     "Append a new function declaration to a module. Requires an open transaction; the new node is visible to `validate` immediately. You supply the target module id and the full function text (e.g. `export function foo(x: number): string { return String(x); }`). The text must parse as a single FunctionDeclaration with a name and a body — no `declare`, no class methods, no arrow expressions. References inside the new body are NOT resolved structurally: use `validate` after creating to confirm any imports or names it depends on actually resolve, and use other tools (e.g. `rename_symbol`) only on declarations that already exist in the graph.",
@@ -278,6 +303,7 @@ export function createStrataTools(
     renameSymbolTool,
     addParameterTool,
     changeReturnTypeTool,
+    addImportTool,
     createFunctionTool,
     replaceBodyTool,
     validateTool,
@@ -294,6 +320,7 @@ export const STRATA_TOOL_NAMES = [
   "rename_symbol",
   "add_parameter",
   "change_return_type",
+  "add_import",
   "create_function",
   "replace_body",
   "validate",

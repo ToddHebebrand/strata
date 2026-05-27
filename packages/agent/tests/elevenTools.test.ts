@@ -7,13 +7,14 @@ import {
   STRATA_TOOL_NAMES
 } from "../src/tools";
 
-describe("agent surface (12 tools after iteration 2 create_function add)", () => {
-  it("registers exactly twelve tools including the four mutations under test", () => {
+describe("agent surface (13 tools after iteration 2 create_function + add_import)", () => {
+  it("registers exactly thirteen tools including the mutations under test", () => {
     const db = openDb(":memory:");
     try {
       const tools = createStrataTools({ db, actor: "t" });
-      expect(tools).toHaveLength(12);
+      expect(tools).toHaveLength(13);
       const names = tools.map((t) => t.name).sort();
+      expect(names).toContain("add_import");
       expect(names).toContain("add_parameter");
       expect(names).toContain("change_return_type");
       expect(names).toContain("create_function");
@@ -23,8 +24,9 @@ describe("agent surface (12 tools after iteration 2 create_function add)", () =>
     }
   });
 
-  it("includes the four mutations under test in the hermetic guard lists", () => {
+  it("includes the mutations under test in the hermetic guard lists", () => {
     for (const name of [
+      "add_import",
       "add_parameter",
       "change_return_type",
       "create_function",
@@ -33,10 +35,11 @@ describe("agent surface (12 tools after iteration 2 create_function add)", () =>
       expect(STRATA_TOOL_NAMES).toContain(name);
       expect(STRATA_QUALIFIED_TOOL_NAMES).toContain(`mcp__strata__${name}`);
     }
-    expect(STRATA_TOOL_NAMES).toHaveLength(12);
+    expect(STRATA_TOOL_NAMES).toHaveLength(13);
   });
 
   it("prompt describes each mutation and choosing the right mutation", () => {
+    expect(STRATA_SYSTEM_PROMPT).toContain("add_import");
     expect(STRATA_SYSTEM_PROMPT).toContain("add_parameter");
     expect(STRATA_SYSTEM_PROMPT).toContain("change_return_type");
     expect(STRATA_SYSTEM_PROMPT).toContain("create_function");
