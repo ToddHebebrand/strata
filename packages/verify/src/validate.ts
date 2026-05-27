@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { renderWithSourceMap, type SourceMapEntry } from "@strata/render";
 import { runCorpusAcceptance } from "./corpusRun";
@@ -397,9 +398,44 @@ function loadCompilerOptions(rootNames: string[]): ts.CompilerOptions {
 
   return {
     ...parsed.options,
+    typeRoots: resolveTypeRoots(parsed.options, configPath),
     noEmit: true,
     skipLibCheck: true
   };
+}
+
+// In-process tsc (via ts.createProgram) doesn't auto-discover @types the way
+// the tsc binary does — it relies on whatever typeRoots are set in options or
+// in tsconfig. When a corpus has no explicit typeRoots and its `types` list
+// includes "node" (or similar), in-process validate() fails to resolve them
+// unless we make typeRoots match the binary's default discovery: walk up from
+// the tsconfig dir looking for node_modules/@types, plus fall back to the
+// Strata repo's own @types so corpora without their own deps still type-check.
+function resolveTypeRoots(
+  options: ts.CompilerOptions,
+  configPath: string
+): string[] {
+  const explicit = Array.isArray(options.typeRoots) ? [...options.typeRoots] : [];
+  const candidates = new Set<string>(explicit);
+  let dir = path.dirname(configPath);
+  for (let depth = 0; depth < 16; depth += 1) {
+    const candidate = path.join(dir, "node_modules", "@types");
+    if (existsSync(candidate)) {
+      candidates.add(candidate);
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  const repoTypes = path.join(repoRootFromHere(), "node_modules", "@types");
+  if (existsSync(repoTypes)) {
+    candidates.add(repoTypes);
+  }
+  return [...candidates];
+}
+
+function repoRootFromHere(): string {
+  return path.resolve(__dirname, "../../..");
 }
 
 function findNearestTsconfig(rootNames: string[]): string | undefined {
