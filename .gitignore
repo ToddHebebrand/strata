@@ -15,3 +15,4 @@ packages/bench/results/*
 # Dogfood paired-comparison artifacts (operator-run; not committed)
 docs/dogfood-results/*
 !docs/dogfood-results/.gitkeep
+!docs/dogfood-results/*-prep-*.md
