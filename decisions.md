@@ -7,6 +7,22 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-05-27 — validate() scopes tsc to all ingested modules (including tests + tool configs), not src-only
+
+**Context:** L2.5 dogfood prep Task 5: no-op transaction commit gate against the valibot/library corpus (1,087 ingested modules). `commit(db, tx)` returned `ok: false` with 531 diagnostics.
+
+**Finding:** `validate()` in `packages/verify/src/validate.ts` builds `rootNames: [...renderedFiles.keys()]`, where `renderedFiles` is populated from `listModules(db)` — all ingested modules. For valibot, this includes 272 `*.test.ts` files, 245 `*.test-d.ts` files, and 4 root-level files (`playground.ts`, `tsdown.config.ts`, `vitest.config.ts`, `mod.ts`) that valibot's own tsconfig never type-checks (`include: ["src"]`). The in-process `ts.createProgram` resolves imports for all 1,087 files and cannot find `vitest` (a dev dependency not exposed to this tsc call), `tsdown`, or `./dist/index.mjs`. All 531 diagnostics originate from outside `src/`; zero from `src/` files.
+
+By contrast, `commitWithBehavioralGate()` (the agent path) uses `runCorpusAcceptance()` → `tscNoEmitSrc()` which asserts src-only scope. The basic `commit()` path has no such filter.
+
+**Root cause:** `commit()` was designed for controlled bench corpora with src-only tsconfigs. It has no filtering layer to exclude non-src modules before building the tsc program. This wasn't visible in bench testing because the bench corpora (`examples/medium` etc.) contain only src files.
+
+**Not fixed inline:** This is config plumbing, not a structural-tool semantic gap, and the L2.5 dogfooding can proceed using `commitWithBehavioralGate()` (which the agent already uses) rather than bare `commit()`. Fixing `validate()` to filter out test/config files is straightforward (e.g. filter `renderedFiles` to paths under `src/` before passing to `ts.createProgram`, or accept an explicit `srcRoot` parameter), but it's a change to `packages/verify` that deserves its own task with a test.
+
+**Design-doc impact:** None to the architectural contract. The commit-gate semantic ("tsc must pass before commit") is correct; the scope of what gets passed to tsc needs tightening for real-world corpora.
+
+**Revisit when:** `validate()` is used against any real-world corpus (non-bench). Fix: add a `srcRoot` parameter to `validate()` (and propagate through `commit()`) so it can filter `renderedFiles` to `path.relative(srcRoot, absPath)` patterns, mirroring what `commitWithBehavioralGate` does. Alternatively, exclude files matching `*.test.ts`, `*.test-d.ts`, and any module whose payload is outside the corpus's tsconfig `include` scope.
+
 ## 2026-05-27 — Fix-C: JSDoc corpus guard added to examples/medium; T03 substrate-win claim corrected
 
 **What changed:** Added a real JSDoc block above `export interface User` in `examples/medium/src/types/user.ts`:
