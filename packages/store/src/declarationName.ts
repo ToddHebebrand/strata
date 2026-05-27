@@ -18,6 +18,14 @@ import ts from "typescript";
 import { findNodeById, type NodeRow } from "./nodes";
 import type { Db } from "./schema";
 
+interface IdentifierRow {
+  id: string;
+  kind: string;
+  parent_id: string | null;
+  child_index: number | null;
+  payload: string;
+}
+
 /**
  * Given a declaration node's db id, resolve the Identifier child that
  * represents the declaration's *name* — as determined by parsing the payload
@@ -88,14 +96,6 @@ export function resolveDeclarationNameIdentifier(
   // Look up the persisted Identifier child whose payload matches {text, offset}.
   // We query by parent_id + kind and then filter in JS to avoid a JSON index
   // (acceptable for declaration-count N; optimization can come later).
-  interface IdentifierRow {
-    id: string;
-    kind: string;
-    parent_id: string | null;
-    child_index: number | null;
-    payload: string;
-  }
-
   const rows = db
     .prepare(
       `SELECT id, kind, parent_id, child_index, payload
@@ -145,9 +145,8 @@ function pickNameIdentifier(
     ts.isClassDeclaration(stmt) ||
     ts.isTypeAliasDeclaration(stmt)
   ) {
-    const named = stmt as { name?: ts.Node };
-    if (named.name && ts.isIdentifier(named.name)) {
-      return named.name;
+    if (stmt.name && ts.isIdentifier(stmt.name)) {
+      return stmt.name;
     }
     return undefined;
   }

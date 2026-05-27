@@ -28,7 +28,7 @@ describe("resolveDeclarationNameIdentifier", () => {
   });
 
   it("resolves a plain FunctionDeclaration (no JSDoc)", () => {
-    const { db, result } = seedFromSource(
+    const { db } = seedFromSource(
       "fn.ts",
       "export function greet(name: string): string {\n  return name;\n}\n"
     );
@@ -45,7 +45,7 @@ describe("resolveDeclarationNameIdentifier", () => {
     const src =
       "/**\n * @param {string} value\n */\n" +
       "export function parse(value: string): string {\n  return value;\n}\n";
-    const { db, result } = seedFromSource("parser.ts", src);
+    const { db } = seedFromSource("parser.ts", src);
     const decls = find_declarations(db, { kind: "function" });
     const parseDecl = decls.find((d) => {
       const r = resolveDeclarationNameIdentifier(db, d.id);
@@ -123,6 +123,29 @@ describe("resolveDeclarationNameIdentifier", () => {
     expect(nameIdent).toBeDefined();
     const parsed = JSON.parse(nameIdent!.payload) as { text: string };
     expect(parsed.text).toBe("add");
+    db.close();
+  });
+
+  it("resolves a JSDoc'd ClassDeclaration with @typeParam", () => {
+    const src =
+      "/**\n * @typeParam T - element type\n */\n" +
+      "export class Box<T> {\n  constructor(public value: T) {}\n}\n";
+    const { db } = seedFromSource("box.ts", src);
+    const decls = find_declarations(db, { name: "Box", kind: "class" });
+    expect(decls).toHaveLength(1);
+    const nameIdent = resolveDeclarationNameIdentifier(db, decls[0]!.id);
+    expect(nameIdent).toBeDefined();
+    const parsed = JSON.parse(nameIdent!.payload) as { text: string };
+    expect(parsed.text).toBe("Box");
+    db.close();
+  });
+
+  it("returns undefined for a destructured-const VariableStatement", () => {
+    const src = "export const { a, b } = { a: 1, b: 2 };\n";
+    const { db } = seedFromSource("destructured.ts", src);
+    const decls = find_declarations(db, { kind: "variable" });
+    expect(decls).toHaveLength(1);
+    expect(resolveDeclarationNameIdentifier(db, decls[0]!.id)).toBeUndefined();
     db.close();
   });
 });
