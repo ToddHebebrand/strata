@@ -1,6 +1,10 @@
-import { findNodeById, modulePathOf } from "./nodes";
+import ts from "typescript";
+import { findNodeById, modulePathOf, insertNodes } from "./nodes";
+import type { NodeRow } from "./nodes";
 import type { Db } from "./schema";
 import type { TxOverlay } from "./transactions";
+import { trackInsertedNode, type TxHandle } from "./transactions";
+import { emitIdentifiers } from "./emitIdentifiers";
 
 export interface MaterializationPlan {
   dirtyModulePaths: string[];
@@ -46,4 +50,35 @@ export function planMaterialization(db: Db, overlay: TxOverlay): Materialization
 
 export function isNoop(plan: MaterializationPlan): boolean {
   return plan.insertedNodeIds.length === 0 && plan.reDerivedStatementIds.length === 0;
+}
+
+/**
+ * Class-1: for each inserted top-level node, parse its payload and emit its
+ * Identifier children. The node's childIndex is its statement index N (post
+ * the EOF fix), so emitted identifier IDs match what a re-ingest produces.
+ * Emitted identifiers are tracked for rollback.
+ */
+export function emitIdentifiersForInserted(
+  db: Db,
+  tx: TxHandle,
+  plan: MaterializationPlan
+): void {
+  for (const insertedId of plan.insertedNodeIds) {
+    const node = findNodeById(db, insertedId);
+    if (!node || node.childIndex === null) continue;
+    const modulePath = modulePathOf(db, insertedId);
+    const sf = ts.createSourceFile(
+      modulePath,
+      node.payload.replace(/^\n+/, ""),
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS
+    );
+    const stmt = sf.statements[0];
+    if (!stmt) continue;
+    const identifiers = emitIdentifiers(sf, stmt, modulePath, [node.childIndex]);
+    if (identifiers.length === 0) continue;
+    insertNodes(db, identifiers);
+    for (const ident of identifiers) trackInsertedNode(tx, ident.id);
+  }
 }

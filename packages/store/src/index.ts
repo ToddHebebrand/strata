@@ -111,6 +111,7 @@ export {
   type TxOverlay
 } from "./transactions";
 export {
+  emitIdentifiersForInserted,
   planMaterialization,
   isNoop,
   type MaterializationPlan

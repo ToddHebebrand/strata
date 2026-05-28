@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ingestBatch } from "@strata/ingest";
 import { openDb } from "../src/schema";
-import { insertNodes } from "../src/nodes";
+import { insertNodes, listChildren } from "../src/nodes";
 import { begin, queueIdentifierUpdate, getOverlay } from "../src/transactions";
 import { create_function } from "../src/createFunction";
-import { planMaterialization, isNoop } from "../src/materializeGraph";
+import { planMaterialization, isNoop, emitIdentifiersForInserted } from "../src/materializeGraph";
 import { nodeId } from "../src/ids";
 
 function seed(path: string, text: string) {
@@ -34,6 +34,21 @@ describe("planMaterialization / isNoop", () => {
     expect(isNoop(plan)).toBe(false);
     expect(plan.dirtyModulePaths).toContain("m.ts");
     expect(plan.insertedNodeIds).toContain(newNodeId);
+    db.close();
+  });
+
+  it("emits Identifier children for an inserted function so it is findable", () => {
+    const db = seed("m.ts", `export const x = 1;\n`);
+    const tx = begin(db, "test");
+    const moduleId = nodeId("m.ts", [], "Module");
+    const { newNodeId } = create_function(db, tx, moduleId, `export function h(): void {}`);
+    const plan = planMaterialization(db, getOverlay(tx));
+
+    emitIdentifiersForInserted(db, tx, plan);
+
+    const idents = listChildren(db, newNodeId).filter((c) => c.kind === "Identifier");
+    const names = idents.map((n) => (JSON.parse(n.payload) as { text: string }).text);
+    expect(names).toContain("h");
     db.close();
   });
 });
