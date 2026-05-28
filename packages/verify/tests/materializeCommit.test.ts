@@ -12,7 +12,9 @@ import {
   add_parameter,
   rollback,
   nodeId,
-  listChildren
+  listChildren,
+  findNodeById,
+  queueTextSpanEdit
 } from "@strata/store";
 import { commit } from "../src/validate";
 
@@ -206,6 +208,55 @@ describe("commit materializes the graph", () => {
       `Expected a ../b cross-module edge from inside usesB (ids: ${[...usesBIdentIds].join(",")}) ` +
         `to fromB, but refs were: ${JSON.stringify(refs)}`
     ).toBe(true);
+
+    db.close();
+  });
+
+  it("no dangling edges after extract-shaped commit (falsifier #4)", () => {
+    // Fixture: parent calls console.log(a). We extract that call into a helper h
+    // by (a) creating h and (b) text-span-splicing the parent body to call h(a).
+    // Post-splice parent type-checks because the removed statement does not define
+    // anything used later — both `console.log(a)` and `h(a)` are pure side-effects.
+    const db = seed(
+      "/project/m.ts",
+      "export function parent(a: number): void { console.log(a); }\n"
+    );
+
+    const tx = begin(db, "test-no-dangling");
+    const moduleId = nodeId("/project/m.ts", [], "Module");
+
+    // Class-1: create the extracted helper.
+    create_function(db, tx, moduleId, `export function h(a: number): void { console.log(a); }`);
+
+    // Class-2: text-span-splice the parent body.
+    const parentId = nodeId("/project/m.ts", [0], "FunctionDeclaration");
+    const parentNode = findNodeById(db, parentId)!;
+    const removed = `console.log(a);`;
+    const start = parentNode.payload.indexOf(removed);
+    expect(start).toBeGreaterThanOrEqual(0); // sanity: span must be found
+    queueTextSpanEdit(tx, parentId, {
+      start,
+      end: start + removed.length,
+      oldText: removed,
+      newText: `h(a);`
+    });
+
+    // commit() runs validate (tsc) + graph materialization in one DB transaction.
+    const result = commit(db, tx);
+    expect(result.ok).toBe(true);
+
+    // Falsifier #4: no node_references row may point to a missing node.
+    const dangling = db
+      .prepare(
+        `SELECT count(*) AS n FROM node_references r
+         WHERE NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = r.from_node_id)
+            OR NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = r.to_node_id)`
+      )
+      .get() as { n: number };
+    expect(dangling.n).toBe(0);
+
+    // The helper must be findable after the extract-shaped commit.
+    expect(find_declarations(db, { name: "h" })).toHaveLength(1);
 
     db.close();
   });
