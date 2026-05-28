@@ -51,4 +51,31 @@ describe("planMaterialization / isNoop", () => {
     expect(names).toContain("h");
     db.close();
   });
+
+  it("emits Identifier children with offsets matching re-ingest (offset consistency)", () => {
+    const db = seed("m.ts", `export const x = 1;\n`);
+    const tx = begin(db, "test");
+    const moduleId = nodeId("m.ts", [], "Module");
+    const { newNodeId } = create_function(db, tx, moduleId, `export function h(): void {}`);
+    const plan = planMaterialization(db, getOverlay(tx));
+
+    emitIdentifiersForInserted(db, tx, plan);
+
+    // The rendered module: statement[0] payload "export const x = 1;" +
+    // new function payload "\n\nexport function h(): void {}" + EOF payload "\n"
+    // = "export const x = 1;\n\nexport function h(): void {}\n"
+    const renderedModule = `export const x = 1;\n\nexport function h(): void {}\n`;
+    const reIngest = ingestBatch([{ path: "m.ts", text: renderedModule }]);
+    const reH = reIngest.allNodes.find(
+      (n) => n.kind === "Identifier" && (JSON.parse(n.payload) as { text: string }).text === "h"
+    );
+    const storedH = listChildren(db, newNodeId).find(
+      (c) => c.kind === "Identifier" && (JSON.parse(c.payload) as { text: string }).text === "h"
+    );
+    expect(storedH).toBeDefined();
+    expect(reH).toBeDefined();
+    expect(storedH!.id).toBe(reH!.id);
+    expect(JSON.parse(storedH!.payload)).toEqual(JSON.parse(reH!.payload));
+    db.close();
+  });
 });

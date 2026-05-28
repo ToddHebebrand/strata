@@ -1,6 +1,5 @@
 import ts from "typescript";
 import { findNodeById, modulePathOf, insertNodes } from "./nodes";
-import type { NodeRow } from "./nodes";
 import type { Db } from "./schema";
 import type { TxOverlay } from "./transactions";
 import { trackInsertedNode, type TxHandle } from "./transactions";
@@ -69,7 +68,7 @@ export function emitIdentifiersForInserted(
     const modulePath = modulePathOf(db, insertedId);
     const sf = ts.createSourceFile(
       modulePath,
-      node.payload.replace(/^\n+/, ""),
+      node.payload,
       ts.ScriptTarget.Latest,
       true,
       ts.ScriptKind.TS
