@@ -4,6 +4,7 @@ import { findNodeById, insertNodes, listChildren } from "./nodes";
 import type { Db } from "./schema";
 import {
   queuePendingOp,
+  trackDeletedNodeForRestore,
   trackInsertedNode,
   type TxHandle
 } from "./transactions";
@@ -73,7 +74,11 @@ export function create_function(
   const name = parsed.name!.text;
 
   const existing = listChildren(db, moduleId);
-  const nextChildIndex = existing.length;
+  const eof = existing.find((child) => child.kind === "EndOfFileTrivia");
+  // The new statement takes the EOF node's index (= number of real statements,
+  // N), matching what a clean re-ingest of the rendered text produces. The EOF
+  // node, if present, shifts to N+1. (decisions.md 2026-05-28 EOF fix.)
+  const nextChildIndex = eof ? eof.childIndex! : existing.length;
   const newId = nodeId(moduleNode.payload, [nextChildIndex], "FunctionDeclaration");
 
   if (existing.some((child) => child.id === newId)) {
@@ -82,8 +87,6 @@ export function create_function(
     );
   }
 
-  // Normalize leading whitespace the way ingest does: existing top-level
-  // statements have a leading "\n\n" so consecutive renders read cleanly.
   const normalized = functionText.startsWith("\n")
     ? functionText
     : `\n\n${functionText}`;
@@ -98,6 +101,25 @@ export function create_function(
     }
   ]);
   trackInsertedNode(tx, newId);
+
+  if (eof) {
+    const shiftedIndex = nextChildIndex + 1;
+    const shiftedEofId = nodeId(moduleNode.payload, [shiftedIndex], "EndOfFileTrivia");
+    // Record the EOF row as-is so rollback restores it; then replace it with
+    // a row at the shifted, re-ingest-consistent index/id.
+    trackDeletedNodeForRestore(tx, eof);
+    db.prepare(`DELETE FROM nodes WHERE id = ?`).run(eof.id);
+    insertNodes(db, [
+      {
+        id: shiftedEofId,
+        kind: "EndOfFileTrivia",
+        parentId: moduleId,
+        childIndex: shiftedIndex,
+        payload: eof.payload
+      }
+    ]);
+    trackInsertedNode(tx, shiftedEofId);
+  }
 
   queuePendingOp(tx, {
     kind: "CreateFunction",
