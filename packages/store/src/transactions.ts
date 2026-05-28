@@ -117,27 +117,23 @@ export function rollback(db: Db, tx: TxHandle): void {
     throw new Error(`Transaction ${tx.id} not open`);
   }
 
-  if (overlay.insertedNodeIds.length > 0) {
+  if (overlay.insertedNodeIds.length > 0 || overlay.deletedNodesToRestore.length > 0) {
     const deleteNode = db.prepare(`DELETE FROM nodes WHERE id = ?`);
-    const drop = db.transaction(() => {
+    // Precondition: each row in deletedNodesToRestore was physically deleted
+    // earlier in this transaction, so the row must not exist at this point.
+    const insertNode = db.prepare(
+      `INSERT INTO nodes (id, kind, parent_id, child_index, payload)
+       VALUES (@id, @kind, @parentId, @childIndex, @payload)`
+    );
+    const undo = db.transaction(() => {
       for (const id of overlay.insertedNodeIds) {
         deleteNode.run(id);
       }
-    });
-    drop();
-  }
-
-  if (overlay.deletedNodesToRestore.length > 0) {
-    const insertNode = db.prepare(
-      `INSERT OR REPLACE INTO nodes (id, kind, parent_id, child_index, payload)
-       VALUES (@id, @kind, @parentId, @childIndex, @payload)`
-    );
-    const restore = db.transaction(() => {
       for (const node of overlay.deletedNodesToRestore) {
         insertNode.run(node);
       }
     });
-    restore();
+    undo();
   }
 
   db.prepare(

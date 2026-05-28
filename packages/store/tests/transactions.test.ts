@@ -131,8 +131,8 @@ describe("transactions", () => {
 
     rollback(db, tx);
 
-    const row = db.prepare(`SELECT id, payload FROM nodes WHERE id = ?`).get("n1");
-    expect(row).toEqual({ id: "n1", payload: "m.ts" });
+    const row = db.prepare(`SELECT id, kind, payload FROM nodes WHERE id = ?`).get("n1");
+    expect(row).toEqual({ id: "n1", kind: "Module", payload: "m.ts" });
     db.close();
   });
 });
