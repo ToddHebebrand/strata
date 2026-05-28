@@ -10,6 +10,7 @@ import {
   find_declarations,
   get_references,
   add_parameter,
+  add_import,
   rollback,
   nodeId,
   listChildren,
@@ -257,6 +258,125 @@ describe("commit materializes the graph", () => {
 
     // The helper must be findable after the extract-shaped commit.
     expect(find_declarations(db, { name: "h" })).toHaveLength(1);
+
+    db.close();
+  });
+
+  it("add_import: imported name is resolvable as a reference target after commit", () => {
+    // Gap 1: verify that after add_import + create_function in one tx, the new
+    // function's use of the imported name resolves to the exporting declaration.
+    // Fixture: dep.ts exports `helper`; main.ts initially does NOT import it.
+    // The tx adds the import and a function that uses the imported name.
+    const files = [
+      { path: "/project/dep.ts", text: `export const helper = 1;\n` },
+      { path: "/project/main.ts", text: `export const x = 1;\n` }
+    ];
+    const batch = ingestBatch(files);
+    const db = openDb(":memory:");
+    insertNodes(db, batch.allNodes);
+    insertReferences(db, batch.references);
+
+    const mainModuleId = nodeId("/project/main.ts", [], "Module");
+    const tx = begin(db, "test-add-import");
+
+    // Add the import declaration first so the subsequent create_function can
+    // reference the imported name and tsc sees it.
+    add_import(db, tx, mainModuleId, `import { helper } from "./dep";`);
+    create_function(db, tx, mainModuleId, `export function usesHelper(): number { return helper; }`);
+
+    const result = commit(db, tx);
+    expect(result.ok, `commit failed: ${JSON.stringify((result as any).diagnostics)}`).toBe(true);
+
+    // usesHelper must be findable after commit.
+    const usesHelperDecls = find_declarations(db, { name: "usesHelper" });
+    expect(usesHelperDecls).toHaveLength(1);
+    const usesHelperDeclId = usesHelperDecls[0]!.id;
+
+    // Collect the Identifier children of the usesHelper FunctionDeclaration.
+    const usesHelperIdentIds = new Set(
+      listChildren(db, usesHelperDeclId)
+        .filter((n) => n.kind === "Identifier")
+        .map((n) => n.id)
+    );
+    expect(usesHelperIdentIds.size).toBeGreaterThan(0); // sanity: must have identifier children
+
+    // Core assertion: get_references on dep.ts's `helper` declaration must include
+    // an edge whose fromNodeId originates inside the usesHelper function body.
+    // This proves the imported name resolved to the exporting declaration after commit.
+    const helperDeclId = find_declarations(db, { name: "helper" })[0]!.id;
+    const refs = get_references(db, helperDeclId);
+    const hasUsesHelperEdge = refs.some((r) => usesHelperIdentIds.has(r.fromNodeId));
+    expect(
+      hasUsesHelperEdge,
+      `Expected a reference edge from inside usesHelper (ids: ${[...usesHelperIdentIds].join(",")}) ` +
+        `to dep.ts helper declaration, but refs were: ${JSON.stringify(refs)}`
+    ).toBe(true);
+
+    db.close();
+  });
+
+  it("dirty-set scoping: a tx touching module A does not alter graph facts for unrelated modules B and C", () => {
+    // Gap 2: behavioral proxy for boundedRenderInputs scoping.
+    // Materialization of a tx touching only a.ts must leave the node_references
+    // rows for b.ts and c.ts byte-identical before and after commit.
+    // (If boundedRenderInputs over-included b.ts/c.ts, their edges would be
+    // re-derived unnecessarily — but since these modules have no imports from
+    // a.ts, over-inclusion here would not change the edges. The real value is
+    // confirming that isolated modules are not dragged into the program, and the
+    // observable guarantee — "unrelated modules' graph facts are untouched" — is
+    // what the product needs to hold.)
+    const files = [
+      { path: "/project/a.ts", text: `export const a = 1;\n` },
+      { path: "/project/b.ts", text: `export const b = 1;\n` },
+      { path: "/project/c.ts", text: `export const c = 1;\n` }
+    ];
+    const batch = ingestBatch(files);
+    const db = openDb(":memory:");
+    insertNodes(db, batch.allNodes);
+    insertReferences(db, batch.references);
+
+    // Helper to snapshot all nodes and edges that belong to b.ts or c.ts.
+    // Nodes: all rows whose id starts with the module path (ingest encodes the
+    // file path into the node ID).  Edges: any row with from_node_id or
+    // to_node_id anchored to b.ts or c.ts nodes.
+    function snapshotBandC(): string {
+      const nodes = (
+        db
+          .prepare(`SELECT id, kind, parent_id, child_index, payload FROM nodes ORDER BY id`)
+          .all() as Array<{ id: string; kind: string; parent_id: string | null; child_index: number | null; payload: string }>
+      ).filter((n) => n.id.startsWith("/project/b.ts") || n.id.startsWith("/project/c.ts"));
+
+      const allEdges = db
+        .prepare(`SELECT from_node_id, to_node_id, kind FROM node_references ORDER BY from_node_id`)
+        .all() as Array<{ from_node_id: string; to_node_id: string; kind: string }>;
+      const bIds = new Set(nodes.filter((n) => n.id.startsWith("/project/b.ts")).map((n) => n.id));
+      const cIds = new Set(nodes.filter((n) => n.id.startsWith("/project/c.ts")).map((n) => n.id));
+      const relatedEdges = allEdges.filter(
+        (e) =>
+          bIds.has(e.from_node_id) || bIds.has(e.to_node_id) ||
+          cIds.has(e.from_node_id) || cIds.has(e.to_node_id)
+      );
+
+      return JSON.stringify({ nodes, relatedEdges });
+    }
+
+    const snapshotBefore = snapshotBandC();
+
+    // Tx that only touches a.ts — no imports from b.ts or c.ts.
+    const aModuleId = nodeId("/project/a.ts", [], "Module");
+    const tx = begin(db, "test-dirty-scope");
+    create_function(db, tx, aModuleId, `export function fa(): number { return a; }`);
+    const result = commit(db, tx);
+    expect(result.ok, `commit failed: ${JSON.stringify((result as any).diagnostics)}`).toBe(true);
+
+    const snapshotAfter = snapshotBandC();
+
+    // The snapshot must be byte-identical: materialization touched only a.ts.
+    expect(
+      snapshotAfter,
+      `b.ts/c.ts graph facts changed after a tx that only touched a.ts.\n` +
+        `Before: ${snapshotBefore}\nAfter:  ${snapshotAfter}`
+    ).toBe(snapshotBefore);
 
     db.close();
   });
