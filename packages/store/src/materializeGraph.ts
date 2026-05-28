@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { findNodeById, modulePathOf, insertNodes, listChildren } from "./nodes";
+import type { NodeRow } from "./nodes";
 import type { Db } from "./schema";
 import type { TxOverlay } from "./transactions";
 import { trackInsertedNode, trackDeletedNodeForRestore, type TxHandle } from "./transactions";
@@ -54,6 +55,27 @@ export function isNoop(plan: MaterializationPlan): boolean {
 }
 
 /**
+ * Parse a statement node's FULL payload (no leading-newline strip — offsets
+ * must be relative to the statement's full start, matching ingest and the
+ * rename/render splice path), emit its Identifier children, insert them, and
+ * track them for rollback. Shared by class-1 (inserted nodes) and class-2
+ * (re-derived statements) so the offset-basis decision lives in one place.
+ */
+function emitAndTrackIdentifiers(db: Db, tx: TxHandle, node: NodeRow): void {
+  if (node.childIndex === null) return;
+  const modulePath = modulePathOf(db, node.id);
+  const sf = ts.createSourceFile(
+    modulePath, node.payload, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS
+  );
+  const stmt = sf.statements[0];
+  if (!stmt) return;
+  const items = emitIdentifiers(sf, stmt, modulePath, [node.childIndex]);
+  if (items.length === 0) return;
+  insertNodes(db, items);
+  for (const item of items) trackInsertedNode(tx, item.id);
+}
+
+/**
  * Class-1: for each inserted top-level node, parse its payload and emit its
  * Identifier children. The node's childIndex is its statement index N (post
  * the EOF fix), so emitted identifier IDs match what a re-ingest produces.
@@ -66,21 +88,8 @@ export function emitIdentifiersForInserted(
 ): void {
   for (const insertedId of plan.insertedNodeIds) {
     const node = findNodeById(db, insertedId);
-    if (!node || node.childIndex === null) continue;
-    const modulePath = modulePathOf(db, insertedId);
-    const sf = ts.createSourceFile(
-      modulePath,
-      node.payload,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS
-    );
-    const stmt = sf.statements[0];
-    if (!stmt) continue;
-    const identifiers = emitIdentifiers(sf, stmt, modulePath, [node.childIndex]);
-    if (identifiers.length === 0) continue;
-    insertNodes(db, identifiers);
-    for (const ident of identifiers) trackInsertedNode(tx, ident.id);
+    if (!node) continue;
+    emitAndTrackIdentifiers(db, tx, node);
   }
 }
 
@@ -202,11 +211,13 @@ export function reDeriveChangedStatements(
   for (const statementId of plan.reDerivedStatementIds) {
     const statement = findNodeById(db, statementId);
     if (!statement || statement.childIndex === null) continue;
-    const modulePath = modulePathOf(db, statementId);
 
     const oldIdentifiers = listChildren(db, statementId).filter(
       (c) => c.kind === "Identifier"
     );
+    // NOTE: full atomicity (delete + re-emit as one unit) is provided by the
+    // outer commit transaction (wired in a later task); the delete phase and
+    // insert phase below are not jointly atomic on their own.
     const drop = db.transaction(() => {
       for (const ident of oldIdentifiers) {
         trackDeletedNodeForRestore(tx, ident);
@@ -216,19 +227,9 @@ export function reDeriveChangedStatements(
     });
     drop();
 
-    const sf = ts.createSourceFile(
-      modulePath,
-      statement.payload,
-      ts.ScriptTarget.Latest,
-      true,
-      ts.ScriptKind.TS
-    );
-    const stmt = sf.statements[0];
-    if (!stmt) continue;
-    const fresh = emitIdentifiers(sf, stmt, modulePath, [statement.childIndex]);
-    if (fresh.length > 0) {
-      insertNodes(db, fresh);
-      for (const ident of fresh) trackInsertedNode(tx, ident.id);
-    }
+    // The delete phase does NOT touch the statement node's own payload, so
+    // `statement` (fetched above) holds the final spliced payload. Pass it
+    // directly — emitAndTrackIdentifiers parses node.payload with no stripping.
+    emitAndTrackIdentifiers(db, tx, statement);
   }
 }

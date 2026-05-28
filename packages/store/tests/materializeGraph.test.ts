@@ -186,7 +186,7 @@ it("re-derives a spliced parent body: removed-span ids gone, call-site id presen
   const moduleId = nodeId("m.ts", [], "Module");
 
   // 1) Create the helper (class-1).
-  const { newNodeId: helperId } = create_function(
+  create_function(
     db, tx, moduleId, `export function h(a: number): void { const b = a + 1; }`
   );
 
@@ -276,20 +276,7 @@ it("re-derived statement identifiers match re-ingest (offset consistency)", () =
   // EOF payload = "\n".
   // The rendered module is the concatenation of all statement payloads.
   // The helper payload from create_function has a "\n\n" prefix.
-  // We use ingest to derive the expected module, matching what render would produce.
-  const helperNode = db.prepare(`SELECT payload FROM nodes WHERE parent_id = ? AND kind = 'FunctionDeclaration'`)
-    .all(moduleId) as { payload: string }[];
-  // There should be exactly 2 FunctionDeclaration children: parent (index 0) and helper (index 1).
-  // The spliced parent payload is newPayload. Helper payload includes leading "\n\n".
-  const helperPayload = helperNode.find((_n, _i, arr) => {
-    // Find the one that is NOT the parent. We can use nodeId to distinguish.
-    const splicedParent = db.prepare(`SELECT payload FROM nodes WHERE id = ?`).get(parentId) as { payload: string } | null;
-    return true; // iterate all, filter below
-    void arr;
-  });
-  void helperPayload;
-
-  // Simpler: directly construct the rendered module from known parts.
+  // Directly construct the rendered module from known parts.
   // The original source's parent statement (statement[0]) has no leading newline
   // (it starts at offset 0). After splice its payload is newPayload.
   // The helper was appended with "\n\n" prefix by create_function.
