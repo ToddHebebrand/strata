@@ -104,6 +104,19 @@ describe("commit materializes the graph", () => {
     db.close();
   });
 
+  it("a pure rename commit leaves node_references unchanged (no-op gate)", () => {
+    const db = seed("/project/m.ts", `export function f(): number { return 1; }\nexport const y = f();\n`);
+    const before = db.prepare(`SELECT count(*) AS n FROM node_references`).get() as { n: number };
+    const decl = find_declarations(db, { name: "f" })[0]!;
+    const tx = begin(db, "test");
+    rename_symbol(db, tx, decl.id, "g");
+    expect(commit(db, tx).ok).toBe(true);
+    const after = db.prepare(`SELECT count(*) AS n FROM node_references`).get() as { n: number };
+    expect(after.n).toBe(before.n); // edges survive a rename untouched
+    expect(find_declarations(db, { name: "g" })).toHaveLength(1);
+    db.close();
+  });
+
   it("add_parameter graph is consistent after commit (class-2 path)", () => {
     // Seed a module with an exported function foo that has a same-module callsite,
     // so there is a callsite to re-derive through class-2 graph materialization.
