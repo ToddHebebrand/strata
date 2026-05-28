@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { openDb } from "../src/schema";
+import { insertNodes } from "../src/nodes";
 import {
   begin,
   commitWithoutValidate,
@@ -7,7 +8,8 @@ import {
   queueIdentifierUpdate,
   queuePendingOp,
   rollback,
-  startupRecoverOpenTransactions
+  startupRecoverOpenTransactions,
+  trackDeletedNodeForRestore
 } from "../src/transactions";
 
 describe("transactions", () => {
@@ -113,5 +115,24 @@ describe("transactions", () => {
     commitWithoutValidate(db, tx);
 
     expect(() => commitWithoutValidate(db, tx)).toThrow(/no overlay|not open/);
+  });
+
+  it("rollback re-inserts nodes tracked for restore", () => {
+    const db = openDb(":memory:");
+    insertNodes(db, [
+      { id: "n1", kind: "Module", parentId: null, childIndex: null, payload: "m.ts" }
+    ]);
+    const tx = begin(db, "test");
+
+    // Simulate a mid-tx delete that must be undone on rollback.
+    const original = { id: "n1", kind: "Module", parentId: null, childIndex: null, payload: "m.ts" };
+    trackDeletedNodeForRestore(tx, original);
+    db.prepare(`DELETE FROM nodes WHERE id = ?`).run("n1");
+
+    rollback(db, tx);
+
+    const row = db.prepare(`SELECT id, payload FROM nodes WHERE id = ?`).get("n1");
+    expect(row).toEqual({ id: "n1", payload: "m.ts" });
+    db.close();
   });
 });

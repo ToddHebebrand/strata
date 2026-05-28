@@ -101,6 +101,7 @@ export {
   queuePendingOp,
   rollback,
   startupRecoverOpenTransactions,
+  trackDeletedNodeForRestore,
   trackInsertedNode,
   type PendingOp,
   type TextSpanEdit,

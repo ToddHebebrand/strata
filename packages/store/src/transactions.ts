@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { appendOperations, type OperationRow } from "./operations";
 import type { Db } from "./schema";
+import type { NodeRow } from "./nodes";
 
 export interface TxHandle {
   readonly id: string;
@@ -31,6 +32,13 @@ export interface TxOverlay {
    * transaction. Rollback deletes these rows; commit leaves them alone.
    */
   insertedNodeIds: string[];
+  /**
+   * Full node rows deleted (or about to be replaced) during this transaction
+   * that must be re-inserted verbatim on rollback. Used by the EOF-shift in
+   * create_function/add_import and by class-2 identifier re-derivation, which
+   * delete existing rows the plain insertedNodeIds rollback cannot restore.
+   */
+  deletedNodesToRestore: NodeRow[];
   pendingOps: PendingOp[];
   status: "open" | "committed" | "rolled_back";
 }
@@ -51,6 +59,7 @@ export function begin(
     identifierMutations: new Map(),
     textSpanMutations: new Map(),
     insertedNodeIds: [],
+    deletedNodesToRestore: [],
     pendingOps: [],
     status: "open"
   });
@@ -59,6 +68,10 @@ export function begin(
 
 export function trackInsertedNode(tx: TxHandle, nodeId: string): void {
   getOverlay(tx).insertedNodeIds.push(nodeId);
+}
+
+export function trackDeletedNodeForRestore(tx: TxHandle, node: NodeRow): void {
+  getOverlay(tx).deletedNodesToRestore.push(node);
 }
 
 export function getOverlay(tx: TxHandle): TxOverlay {
@@ -112,6 +125,19 @@ export function rollback(db: Db, tx: TxHandle): void {
       }
     });
     drop();
+  }
+
+  if (overlay.deletedNodesToRestore.length > 0) {
+    const insertNode = db.prepare(
+      `INSERT OR REPLACE INTO nodes (id, kind, parent_id, child_index, payload)
+       VALUES (@id, @kind, @parentId, @childIndex, @payload)`
+    );
+    const restore = db.transaction(() => {
+      for (const node of overlay.deletedNodesToRestore) {
+        insertNode.run(node);
+      }
+    });
+    restore();
   }
 
   db.prepare(
