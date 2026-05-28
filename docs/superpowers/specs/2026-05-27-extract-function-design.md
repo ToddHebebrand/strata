@@ -1,7 +1,27 @@
 # extract_function — design
 
 **Date:** 2026-05-27
-**Status:** approved (design); pending Codex xhigh review before the implementation plan is written
+**Status:** BLOCKED on a prerequisite (graph-materialization for inserted nodes) + needs revision. Codex xhigh review (2026-05-28) found 5 P0 issues; see "Codex review outcome" below. Do NOT write the implementation plan from this spec until it is revised and the prerequisite lands.
+
+## Codex review outcome (2026-05-28)
+
+Codex (gpt-5.5, xhigh) reviewed this spec. Verdict: **not ready for the plan as written.** Shape B remains viable; the design needs revision. Findings, verified against the code:
+
+1. **"No type annotations, rely on inference" is false under `strict`.** A captured param with no annotation → TS7006 (implicit any). Captured params must be typed, which requires a `ts.TypeChecker` to print their types. The "with captures" happy path fails as specified. (`tsconfig.base.json` strict; `validate.ts:55`.)
+2. **Reusing public `create_function` logs a separate `CreateFunction` op**, contradicting "one ExtractFunction op." Need a shared internal insert helper. (`createFunction.ts:102`.)
+3. **`create_function` appends at module end, not "after the parent"**, and IDs encode child-index paths, so mid-module insertion churns IDs. Drop the "after the parent" placement; append at end. (`createFunction.ts:75`, `ids.ts:9`.)
+4. **Offsets are UTF-16 code-unit offsets, not bytes.** Terminology + op-log encoding fix. (`spanReparse.ts:30`, `render/splice.ts:37`.)
+5. **LINCHPIN — inserted nodes have no Identifier children or reference edges.** Verified: `create_function` (`createFunction.ts:91-99`) inserts only the FunctionDeclaration node. So `resolveDeclarationNameIdentifier` finds nothing → a created/extracted function is invisible to `find_declarations({name})` and `get_references`. This is a pre-existing gap in the shipped `create_function` and `add_import`, and it is the prerequisite extract_function must be built on.
+
+Plus: the commit gate is **not** a sufficient correctness backstop (Codex gave a `var`-hoist/module-shadow case and a local-`helper`-shadow case that compile clean but bind wrong). Rejection-list additions required for v1 honesty: `arguments`, `new.target`, `eval`, `using`/`await using`, parent type-params used in the span, and `newFunctionName` shadowed by any in-scope binding (broaden `name-conflicts`). Pass-1 capture binding needs a real lexical binder (var hoisting, block scope, destructuring, shadowing, type-space, property-name positions), not a naive identifier walk — doable without a full TypeChecker for *binding*, but type *emission* needs one.
+
+**Decision (2026-05-28):** sequence prerequisite-first (path A). Build graph-materialization for inserted nodes as its own spec/plan; then revise this spec for the typed-params + binder + rejection findings and build extract_function on the fixed foundation. Codex brief at `/tmp/codex-brief-extract-function.md` (tmp, not committed); full response at `/tmp/codex-extract-function-response.log`.
+
+---
+
+**Original design below — retained for reference; supersede per the findings above when revising.**
+
+
 **Roadmap line:** `docs/product-roadmap.md` § "Iteration 2", unchecked `extract_function`
 **Design-doc reference:** `strata-design.md` § "Tool set" — `extract_function(scope_node_id, name, params)` listed as a high-level structural operation
 
