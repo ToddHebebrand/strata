@@ -7,6 +7,192 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-05-28 — validate() now resolves in-memory relative imports (resolveModuleNames override); fixes a pre-existing cross-module type-check gap
+
+**Context:** Surfaced while building graph-materialization (plan Task 11). A new test commits a
+`create_function` into module `a.ts` that imports from `./b` where `b.ts` exists only in the
+in-memory rendered set (not on disk). `commit()` → `validate()` returned `{ok:false}` with a
+TS2307 ("cannot find module './b'").
+
+**Root cause:** `validate()` builds an in-process `ts.createProgram` with a host whose
+`fileExists`/`readFile`/`getSourceFile` are overridden to serve the in-memory `renderedFiles`.
+But TypeScript's module *resolution* path does not go through those overrides the way file
+reads do — it uses its own resolver (effectively `ts.sys.fileExists`), so a relative import to
+an in-memory-only module fails to resolve even though the module's text is available. This was a
+pre-existing latent bug: it never bit before because bench corpora live on disk, so relative
+imports resolved against the real filesystem.
+
+**Fix:** added a `resolveModuleNames` override on the `validate()` compiler host. For relative
+specifiers (start with `.`) it resolves against `renderedFiles` by `path.join(containingDir,
+spec)` + extension probing (`.ts/.tsx/.js/.mjs`), returning the in-memory module. For bare/
+package specifiers it falls back to `ts.resolveModuleName(...)` (disk/node_modules). The fallback
+is a pure function over the host, no recursion. The override is strictly *more* correct: it can
+only resolve modules that genuinely exist in the store; a truly missing module still yields
+TS2307. (`packages/verify/src/validate.ts`.)
+
+**Known residual limitation:** in-memory-only **barrel `index.ts`** imports (`from "./subdir"`
+resolving to `./subdir/index.ts`) are only partially probed; if the barrel is in-memory-only it
+may still not resolve. Not hit by any current corpus (real barrels are on disk). Revisit if an
+all-in-memory barrel case appears.
+
+**Why logged:** unplanned divergence discovered during implementation; it changes module
+resolution for every `commit()`/`validate()` call, so it deserves a record per CLAUDE.md. All
+49 verify tests + the full monorepo suite pass with the override.
+
+## 2026-05-28 — graph-materialization implementation: add_parameter is NOT deferred after all — it flows through class-2 and is verified consistent
+
+**Context:** The graph-materialization spec (entry below) deliberately DEFERRED `add_parameter`
+materialization to keep the prerequisite's blast radius small, planning to scope class-2
+re-derivation to extract's parent statement only. During implementation (plan
+`docs/superpowers/plans/2026-05-28-graph-materialization.md`, Task 9 — commit-path wiring) this
+deferral turned out to be both unnecessary and counterproductive, and was reversed.
+
+**What changed:** `add_parameter` now flows through class-2 re-derivation like any other
+text-span mutation. The class-2 trigger is "the statement has a queued `textSpanMutation`," and
+`add_parameter` queues text-span edits on the signature statement + each callsite statement — so
+those statements are re-derived at commit, making `add_parameter`'s graph consistent (its new
+parameter identifier and each callsite's new argument identifier become real nodes; edges
+recompute).
+
+**Why the deferral was reversed:**
+1. **No clean way to defer it.** class-2 fires on any `queueTextSpanEdit`. The only current
+   producers of text-span edits are `add_parameter` (and `change_return_type`/`replace_body`);
+   `extract_function` does not exist yet. So "defer add_parameter" would have meant scoping
+   class-2 to fire on *nothing that currently exists* — leaving the entire class-2 path dead and
+   untested until extract is built. Embracing add_parameter gives class-2 a real, shipping,
+   tested consumer NOW.
+2. **It closes a real staleness gap.** `add_parameter` had the same invisibility gap as
+   `create_function`/`add_import` (it inserted identifiers via text edits without materializing
+   graph nodes). Routing it through class-2 fixes that for free.
+3. **It's verified correct.** A new test (`packages/verify/tests/materializeCommit.test.ts`,
+   "add_parameter graph is consistent after commit (class-2 path)") proves: after
+   `add_parameter` + `commit()`, the function is still findable, its declaration node id is
+   stable, `get_references` returns the re-derived callsite edge, no `node_references` row
+   dangles, and the signature payload is updated. All 296 tests across the monorepo pass.
+
+**Implementation wrinkle this surfaced (and its fix):** when a statement is both renamed (an
+`identifierMutation`) and re-derived (a `textSpanMutation`) — or more generally when class-2
+deletes+re-emits a statement's identifier rows — the overlay's `identifierMutations` still
+referenced the OLD (now-deleted) identifier IDs, which `commitWithoutValidate` would then
+mis-apply. Fixed with `collectReDerivedIdentifierIds()` (snapshots the pre-deletion identifier
+IDs) + `stripStaleMutations()` (drops those entries from the overlay before
+`commitWithoutValidate`), since the rename is already baked into the statement's final payload
+that class-2 re-derives from. See `packages/verify/src/validate.ts`.
+
+**Atomicity:** the post-validation materialization sequence
+(`materializeStatementPayloads` → class-1 → class-2 → `refreshReferenceEdges` →
+`commitWithoutValidate`) is wrapped in a single `db.transaction()` in both `commit()` and
+`commitWithBehavioralGate()`, so a throw mid-materialization rolls back payloads, node/edge
+changes, and the op-log together (no partial state). better-sqlite3 nests via SAVEPOINTs.
+
+**Design-doc impact:** none on `strata-design.md`. The graph-materialization spec
+(`docs/superpowers/specs/2026-05-28-graph-materialization-design.md`) is updated: the
+"add_parameter deferred" notes are corrected to "add_parameter included + verified." The
+[[strata-scope-drift]] guard is satisfied — this is a substrate-correctness win on a shipping
+tool, not methodology navel-gazing.
+
+**Tried first:** scoping class-2 to exclude add_parameter (per the original spec). Rejected: no
+clean discriminator between add_parameter's and extract's text-span edits, and it would leave
+class-2 untested until extract exists. Operator confirmed "embrace + verify + log" on 2026-05-28.
+
+## 2026-05-28 — graph-materialization design: R1 + scoped per-statement re-derivation (bounded stable-ID-invariant divergence) + EOF off-by-one fix
+
+**Context:** `extract_function` (spec `docs/superpowers/specs/2026-05-27-extract-function-design.md`)
+is blocked on a prerequisite: a commit-time pass that re-derives Identifier children + reference
+edges for modules a transaction changed. The shipped `create_function`/`add_import` insert only
+the top-level statement node — no Identifier children, no edges — so created/imported names are
+invisible to `find_declarations`/`get_references` (verified: `createFunction.ts:91-99`,
+`addImport.ts:80-88`). The prerequisite spec proposed three resolutions (R1 additive-only, R2
+scoped re-derive + remap, R3 re-key IDs off content) and tentatively leaned R1. Per `CLAUDE.md`,
+the spec went to Codex (gpt-5.5, xhigh, read-only) before an implementation plan; every pivotal
+Codex claim was then verified against the code before acceptance.
+
+**What was decided:** Adopt **R1 + a bounded R2 scoped to a single statement**, not pure R1.
+- **R1 (additive)** for newly-inserted top-level nodes (helpers, imports): emit their Identifier
+  children with fresh, re-ingest-consistent IDs.
+- **Scoped re-derivation (class-2)** for edited-in-place statements whose internal identifier
+  set/order changed (extract's parent-body splice; `add_parameter`'s signature + each callsite):
+  re-derive *that statement's* identifiers from final rendered text — delete old Identifier rows
+  + their edges, re-emit, recompute edges via the resolver.
+- **No change (class-3)** for set/order-preserving edits (`rename_symbol`): keep the existing
+  payload-edit model; no re-derivation, no program build.
+
+**Why pure R1 was insufficient (the decision-grade Codex finding, verified):** extract's call
+site (`helper(a, b)`) is inserted *inside* the parent body, which is an edited-in-place statement
+(a `queueTextSpanEdit`, `transactions.ts:83`), not a new top-level node. Pure R1 explicitly does
+not re-derive an edited statement's internal identifiers, so it would make the helper findable
+but never create the call-site→helper edge. That is not merely an observability gap: `rename_symbol`
+propagates through reference edges (`rename.ts:61` renames the declaration identifier **plus**
+every `getReferencesByTo` source), and `add_parameter` discovers callsites from references
+(`addParameter.ts:155`, `callsites.ts:59`) — so a missing call-site edge silently breaks a later
+rename/add_parameter of the extracted helper. Confirmed against the code.
+
+**Why this touches the invariant, and the bound:** `CLAUDE.md` invariant — "a mutated expression
+is the same node with new state, not a new node; do not introduce ID churn without logging a
+decision." Identifier node IDs are position-derived: `nodeId(modulePath, [statementIndex,
+identifierDFSIndex], "Identifier")` (`ids.ts:9`, `identifiers.ts:20,28`), and must match what a
+clean re-ingest computes (the resolver re-derives them by re-parsing, `batch.ts:185,193,218`).
+Once a statement's internal identifier set changes, "keep survivor IDs" and "match re-ingest" are
+incompatible — there is **no clean position-stable ID for a mid-statement inserted identifier**
+(re-running DFS shifts survivors; reusing freed indices corrupts history; fresh non-DFS IDs
+diverge from the resolver). So class-2 re-derivation deliberately churns the changed statement's
+body-internal identifier IDs. **The bound that makes this acceptable:** IDs are scoped by
+`statementIndex`, and structural edits change only a statement's *internal* identifiers — extract
+removes *body* statements (inside one top-level FunctionDeclaration), `create_function`/`add_import`
+append at the end, so **top-level statementIndex values stay stable and no other statement's
+identifier IDs are perturbed.** Churn is contained to the one statement that structurally changed.
+
+**v1 cost accepted (logged here):** reference edges are *always* made consistent (the resolver
+recomputes them — `get_references`/`rename`/`add_parameter` depend on it). But op-log
+`operations.affected_node_ids_json` entries that named a now-churned body-internal identifier
+become point-in-time pointers; these are **not** retroactively remapped in v1 (consistent with
+extract's existing "span offsets are point-in-time" stance; op-log replay is not a v1 use case).
+The operation sequence + reasoning remain canonical history. A per-statement old→new remap is
+deferred until a replay/audit use case exists.
+
+**Pre-existing bug surfaced (verified, must fix first):** ingest stores an `EndOfFileTrivia`
+module child at `childIndex = statements.length` (`ingest/index.ts:42-49`), and
+`create_function`/`add_import` use `listChildren(moduleId).length` as the new statement index
+(`createFunction.ts:75`, `addImport.ts:64`). For a module with `N` real statements + 1 EOF node,
+they place the appended statement at `[N+1]`, but a clean re-ingest of the rendered text places it
+at `[N]` (EOF moves to `[N+1]`). The batch resolver derives `[N]`. So additive materialization
+would emit identifiers whose parent ID never matches the stored node. **Fix:** append at the EOF
+node's index (`N`), bump EOF to `N+1`. Render output is unchanged (function still at file end);
+only the derived ID moves. This is independently a latent correctness bug in the shipped tools.
+
+**Other verified Codex corrections folded into the spec:**
+- Resolver core + `emitIdentifiers` move into `@strata/store` (no ingest cycle: ingest→store
+  only, store already imports `typescript`). It must take **final rendered text as a parameter**
+  — store must not import `@strata/render` (`render/package.json` depends on store; store↔render
+  cycle otherwise).
+- Edge refresh is **surgical, not wholesale**: delete + recompute edges only for identifiers
+  actually materialized/deleted (`from_node_id`/`to_node_id` keying, `schema.ts:43-49`), with
+  delete-before-insert (`from_node_id` is PK, `insertReferences` is plain INSERT, `references.ts:11`).
+- Materialization runs **inside the commit's DB transaction**, after payload materialization,
+  only when validation passed — because `rollback` only deletes `overlay.insertedNodeIds`
+  (`transactions.ts:107`) and `commit()` returns before materializing on diagnostics
+  (`validate.ts:101`). Dirty/removal plan must be **snapshotted before** `materializeStatementPayloads`
+  clears `overlay.textSpanMutations` (`validate.ts:285`).
+- No-op gate is "no inserted nodes AND no identifier-set-changing structural edit," not "dirty set
+  empty" — pure rename (`rename.ts:67`) must skip the program build.
+- Resolver uses `validate()`'s tsconfig-derived compiler options (`validate.ts:392`), not
+  `batch.ts`'s hardcoded ones (`batch.ts:133`).
+
+**Tried first / rejected:** pure R1 (insufficient — call-site edge); R2-global re-derive +
+remap-everything (biggest blast radius, churns IDs beyond the changed statement); R3 re-key IDs
+off content (touches ingest + every ID consumer, out of scope for a prerequisite); and a
+"split — ship R1-additive now, defer the call-site edge" option (rejected by operator in favor of
+fully unblocking extract in one prerequisite).
+
+**Design-doc impact:** none to `strata-design.md`'s architectural contract. This is the
+incremental-mutation counterpart of batch ingest's graph derivation; the node-graph + operation-log
+model is unchanged. The stable-ID invariant gets a logged, bounded exception for body-internal
+identifiers of structurally-changed statements.
+
+**Pointer:** `docs/superpowers/specs/2026-05-28-graph-materialization-design.md` (revised
+2026-05-28 with the "Codex review outcome" + "Decision" sections). Codex transcript was at
+`/tmp/codex-graphmat-response.log` (tmp, not committed).
+
 ## 2026-05-27 — validate() scopes tsc to all ingested modules (including tests + tool configs), not src-only
 
 **Context:** L2.5 dogfood prep Task 5: no-op transaction commit gate against the valibot/library corpus (1,087 ingested modules). `commit(db, tx)` returned `ok: false` with 531 diagnostics.
