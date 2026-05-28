@@ -91,6 +91,7 @@ export {
   type PastTaskHit
 } from "./commitPatterns";
 export { locateSpan, type Span, type SpanKind } from "./spanReparse";
+export { emitIdentifiers } from "./emitIdentifiers";
 export { resolveDeclarationNameIdentifier } from "./declarationName";
 export {
   begin,
