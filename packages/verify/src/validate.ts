@@ -127,33 +127,65 @@ export function validate(db: Db, tx: TxHandle): Diagnostic[] {
  * over every module. Conservative: over-inclusion is safe; under-inclusion only
  * drops a cross-module edge that self-heals when the referencing module next
  * commits. A regex import scan (not full module resolution) — adequate here.
+ *
+ * Relative import specifiers (starting with `.`) are resolved using path.join
+ * against the dirty module's directory, so both `./foo` and `../bar` style
+ * imports are correctly included. Non-relative (bare/package) specifiers are
+ * skipped — they are external and never appear in the rendered map.
  */
 function boundedRenderInputs(
   renderedFiles: Map<string, string>,
   dirtyModulePaths: string[]
 ): Map<string, string> {
   const norm = (p: string) => normalizeFileName(p);
-  const byNorm = new Map<string, { abs: string; text: string }>();
-  for (const [abs, text] of renderedFiles) byNorm.set(norm(abs), { abs, text });
+  const byNorm = new Map<string, string>();
+  for (const [abs, text] of renderedFiles) byNorm.set(norm(abs), text);
 
   const wanted = new Set<string>(dirtyModulePaths.map(norm));
   for (const dirty of dirtyModulePaths) {
-    const entry = byNorm.get(norm(dirty));
-    if (!entry) continue;
-    for (const m of entry.text.matchAll(/from\s+["']([^"']+)["']/g)) {
-      const spec = m[1]!.replace(/^\.\//, "").replace(/\.(ts|tsx|js|mjs)$/, "");
-      for (const key of byNorm.keys()) {
-        const keyBase = key.replace(/\.(ts|tsx|js|mjs)$/, "");
-        if (keyBase.endsWith(spec)) wanted.add(key);
-      }
+    const dirtyNorm = norm(dirty);
+    const text = byNorm.get(dirtyNorm);
+    if (!text) continue;
+    const dir = path.dirname(dirtyNorm);
+    for (const m of text.matchAll(/from\s+["']([^"']+)["']/g)) {
+      const spec = m[1]!;
+      if (!spec.startsWith(".")) continue; // bare/package specifier — external, skip
+      const resolved = resolveRelativeToRenderedKey(dir, spec, byNorm);
+      if (resolved !== undefined) wanted.add(resolved);
     }
   }
 
   const out = new Map<string, string>();
-  for (const [normKey, { text }] of byNorm) {
+  for (const [normKey, text] of byNorm) {
     if (wanted.has(normKey)) out.set(normKey, text);
   }
   return out;
+}
+
+/**
+ * Resolve a relative import specifier `spec` (starting with `.`) against
+ * `dir` (the directory of the importing module, already normalized) into a
+ * key that exists in `renderedKeys`. Probes the candidate base with common
+ * TypeScript extensions. Returns the normalized key on a hit, undefined on miss.
+ * Used by both boundedRenderInputs and could be reused by resolveModuleNames.
+ */
+function resolveRelativeToRenderedKey(
+  dir: string,
+  spec: string,
+  renderedKeys: Map<string, string>
+): string | undefined {
+  const specBase = spec.replace(/\.(ts|tsx|js|mjs)$/, "");
+  const candidateBase = normalizeFileName(path.join(dir, specBase));
+  for (const ext of ["", ".ts", ".tsx", ".js", ".mjs"]) {
+    const candidate = candidateBase + ext;
+    if (renderedKeys.has(candidate)) return candidate;
+  }
+  // Barrel directory: try index files
+  for (const ext of [".ts", ".tsx", ".js", ".mjs"]) {
+    const candidate = normalizeFileName(path.join(candidateBase, "index" + ext));
+    if (renderedKeys.has(candidate)) return candidate;
+  }
+  return undefined;
 }
 
 export function commit(db: Db, tx: TxHandle): CommitResult {

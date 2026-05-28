@@ -11,7 +11,8 @@ import {
   get_references,
   add_parameter,
   rollback,
-  nodeId
+  nodeId,
+  listChildren
 } from "@strata/store";
 import { commit } from "../src/validate";
 
@@ -134,12 +135,77 @@ describe("commit materializes the graph", () => {
     // New function in a that references the imported fromB → must resolve to b's decl.
     create_function(db, tx, moduleA, `export function usesB(): number { return fromB; }`);
     expect(commit(db, tx).ok).toBe(true);
-    expect(find_declarations(db, { name: "usesB" })).toHaveLength(1);
 
-    // Strengthen: assert the cross-module edge resolves (usesB body references fromB in b.ts).
+    const usesBDecls = find_declarations(db, { name: "usesB" });
+    expect(usesBDecls).toHaveLength(1);
+    const usesBDeclId = usesBDecls[0]!.id;
+
+    // Strengthen: assert the specific NEW edge from within usesB's body to fromB.
+    // Collect the Identifier children of the usesB FunctionDeclaration node.
+    const usesBIdentIds = new Set(
+      listChildren(db, usesBDeclId)
+        .filter((n) => n.kind === "Identifier")
+        .map((n) => n.id)
+    );
+    expect(usesBIdentIds.size).toBeGreaterThan(0); // sanity: usesB has identifier children
+
+    // get_references(fromBDecl) returns edges whose toNodeId is fromB's name identifier.
+    // Assert that at least one such edge originates from an Identifier inside usesB.
     const fromBDecl = find_declarations(db, { name: "fromB" })[0]!;
     const refs = get_references(db, fromBDecl.id);
-    expect(refs.length).toBeGreaterThanOrEqual(1);
+    const hasUsesBEdge = refs.some((r) => usesBIdentIds.has(r.fromNodeId));
+    expect(
+      hasUsesBEdge,
+      `Expected a reference edge from inside usesB (ids: ${[...usesBIdentIds].join(",")}) ` +
+        `to fromB, but refs were: ${JSON.stringify(refs)}`
+    ).toBe(true);
+
+    db.close();
+  });
+
+  it("boundedRenderInputs resolves ../ relative imports (cross-dir cross-module edge)", () => {
+    // a.ts in /project/sub/ imports fromB from ../b (not ./b) — this exercises the
+    // path.join-based resolution for ../ specifiers in boundedRenderInputs.
+    const files = [
+      {
+        path: "/project/sub/a.ts",
+        text: `import { fromB } from "../b";\nexport const ax = fromB;\n`
+      },
+      { path: "/project/b.ts", text: `export const fromB = 1;\n` }
+    ];
+    const batch = ingestBatch(files);
+    const db = openDb(":memory:");
+    insertNodes(db, batch.allNodes);
+    insertReferences(db, batch.references);
+
+    const moduleA = nodeId("/project/sub/a.ts", [], "Module");
+    const tx = begin(db, "test");
+    // New function in sub/a that references the imported fromB → must cross the ../ boundary.
+    create_function(db, tx, moduleA, `export function usesB(): number { return fromB; }`);
+    expect(commit(db, tx).ok).toBe(true);
+
+    const usesBDecls = find_declarations(db, { name: "usesB" });
+    expect(usesBDecls).toHaveLength(1);
+    const usesBDeclId = usesBDecls[0]!.id;
+
+    const usesBIdentIds = new Set(
+      listChildren(db, usesBDeclId)
+        .filter((n) => n.kind === "Identifier")
+        .map((n) => n.id)
+    );
+    expect(usesBIdentIds.size).toBeGreaterThan(0);
+
+    // The critical assertion: the new edge from within usesB to fromB must exist.
+    // This only passes if boundedRenderInputs correctly includes /project/b.ts
+    // when the dirty module is /project/sub/a.ts importing via "../b".
+    const fromBDecl = find_declarations(db, { name: "fromB" })[0]!;
+    const refs = get_references(db, fromBDecl.id);
+    const hasUsesBEdge = refs.some((r) => usesBIdentIds.has(r.fromNodeId));
+    expect(
+      hasUsesBEdge,
+      `Expected a ../b cross-module edge from inside usesB (ids: ${[...usesBIdentIds].join(",")}) ` +
+        `to fromB, but refs were: ${JSON.stringify(refs)}`
+    ).toBe(true);
 
     db.close();
   });
