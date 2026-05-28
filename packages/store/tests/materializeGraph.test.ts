@@ -1,0 +1,39 @@
+import { describe, expect, it } from "vitest";
+import { ingestBatch } from "@strata/ingest";
+import { openDb } from "../src/schema";
+import { insertNodes } from "../src/nodes";
+import { begin, queueIdentifierUpdate, getOverlay } from "../src/transactions";
+import { create_function } from "../src/createFunction";
+import { planMaterialization, isNoop } from "../src/materializeGraph";
+import { nodeId } from "../src/ids";
+
+function seed(path: string, text: string) {
+  const batch = ingestBatch([{ path, text }]);
+  const db = openDb(":memory:");
+  insertNodes(db, batch.allNodes);
+  return db;
+}
+
+describe("planMaterialization / isNoop", () => {
+  it("is a no-op for a pure rename (only identifier text updates)", () => {
+    const db = seed("m.ts", `export function f(): void {}\n`);
+    const tx = begin(db, "test");
+    const declNameId = nodeId("m.ts", [0, 0], "Identifier");
+    queueIdentifierUpdate(tx, declNameId, "g");
+    const plan = planMaterialization(db, getOverlay(tx));
+    expect(isNoop(plan)).toBe(true);
+    db.close();
+  });
+
+  it("flags an inserted node as a dirty module needing class-1 emission", () => {
+    const db = seed("m.ts", `export const x = 1;\n`);
+    const tx = begin(db, "test");
+    const moduleId = nodeId("m.ts", [], "Module");
+    const { newNodeId } = create_function(db, tx, moduleId, `export function h(): void {}`);
+    const plan = planMaterialization(db, getOverlay(tx));
+    expect(isNoop(plan)).toBe(false);
+    expect(plan.dirtyModulePaths).toContain("m.ts");
+    expect(plan.insertedNodeIds).toContain(newNodeId);
+    db.close();
+  });
+});

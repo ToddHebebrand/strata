@@ -110,3 +110,8 @@ export {
   type TxHandle,
   type TxOverlay
 } from "./transactions";
+export {
+  planMaterialization,
+  isNoop,
+  type MaterializationPlan
+} from "./materializeGraph";
