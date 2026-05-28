@@ -4,9 +4,14 @@ import { renderWithSourceMap, type SourceMapEntry } from "@strata/render";
 import { runCorpusAcceptance } from "./corpusRun";
 import {
   commitWithoutValidate,
+  emitIdentifiersForInserted,
   getOverlay,
+  isNoop,
   listModules,
   loadModule,
+  planMaterialization,
+  reDeriveChangedStatements,
+  refreshReferenceEdges,
   type Db,
   type NodeRow,
   type TxHandle
@@ -104,7 +109,30 @@ export function commit(db: Db, tx: TxHandle): CommitResult {
     return { ok: false, diagnostics };
   }
 
+  // Snapshot the materialization plan BEFORE materializeStatementPayloads
+  // clears overlay.textSpanMutations.
+  const plan = planMaterialization(db, getOverlay(tx));
+  const { renderedFiles } = renderPendingModules(db, tx);
+  const renderedByPath = new Map(
+    [...renderedFiles].map(([abs, text]) => [normalizeFileName(abs), text])
+  );
+  const options = loadCompilerOptions([...renderedFiles.keys()]);
+
   materializeStatementPayloads(db, tx);
+
+  if (!isNoop(plan)) {
+    // Collect old identifier IDs for re-derived statements BEFORE they are
+    // deleted by reDeriveChangedStatements. These IDs may be re-used for
+    // different identifiers after re-derivation (DFS indices shift when new
+    // identifiers are added), so commitWithoutValidate must not apply stale
+    // mutations to them.
+    const staleIdentifierIds = collectReDerivedIdentifierIds(db, plan);
+    emitIdentifiersForInserted(db, tx, plan);
+    reDeriveChangedStatements(db, tx, plan);
+    refreshReferenceEdges(db, plan, renderedByPath, options);
+    stripStaleMutations(db, tx, staleIdentifierIds);
+  }
+
   commitWithoutValidate(db, tx);
   return { ok: true };
 }
@@ -151,7 +179,18 @@ export function commitWithBehavioralGate(
   // spawned tsc — on every commit. The spawned tsc catches everything the
   // in-process one would have caught (and more, when the corpus tsconfig
   // includes tests), so its `testFailures` text is the single failure mode.
+
+  // Snapshot the materialization plan BEFORE materializeStatementPayloads
+  // clears overlay.textSpanMutations. The overlay still has textSpanMutations
+  // at this point (renderPendingModules reads them but does not clear them).
+  const plan = planMaterialization(db, getOverlay(tx));
+
   const { renderedFiles } = renderPendingModules(db, tx);
+  const renderedByPath = new Map(
+    [...renderedFiles].map(([abs, text]) => [normalizeFileName(abs), text])
+  );
+  const options = loadCompilerOptions([...renderedFiles.keys()]);
+
   const renderedSrc = new Map<string, string>();
   for (const [absPath, text] of renderedFiles) {
     const rel = path
@@ -171,8 +210,54 @@ export function commitWithBehavioralGate(
   }
 
   materializeStatementPayloads(db, tx);
+
+  if (!isNoop(plan)) {
+    const staleIdentifierIds = collectReDerivedIdentifierIds(db, plan);
+    emitIdentifiersForInserted(db, tx, plan);
+    reDeriveChangedStatements(db, tx, plan);
+    refreshReferenceEdges(db, plan, renderedByPath, options);
+    stripStaleMutations(db, tx, staleIdentifierIds);
+  }
+
   commitWithoutValidate(db, tx);
   return { ok: true };
+}
+
+/**
+ * Collect the current identifier IDs for all re-derived statements BEFORE
+ * reDeriveChangedStatements deletes them. These IDs will be removed from
+ * overlay.identifierMutations so that commitWithoutValidate does not corrupt
+ * the fresh rows that re-derivation inserts (old IDs can be re-used for
+ * different identifiers when the DFS index set changes after adding params).
+ */
+function collectReDerivedIdentifierIds(
+  db: Db,
+  plan: import("@strata/store").MaterializationPlan
+): Set<string> {
+  const ids = new Set<string>();
+  const query = db.prepare(
+    `SELECT id FROM nodes WHERE parent_id = ? AND kind = 'Identifier'`
+  );
+  for (const statementId of plan.reDerivedStatementIds) {
+    for (const row of query.all(statementId) as Array<{ id: string }>) {
+      ids.add(row.id);
+    }
+  }
+  return ids;
+}
+
+/**
+ * After class-1/class-2 graph materialization, old identifier rows are deleted
+ * and replaced with fresh ones. commitWithoutValidate still has those old IDs
+ * in overlay.identifierMutations and would overwrite the fresh rows, corrupting
+ * offsets (e.g. when new params shift DFS identifier indices, old ID N now maps
+ * to a different identifier). Remove the pre-collected stale IDs.
+ */
+function stripStaleMutations(db: Db, tx: TxHandle, staleIds: Set<string>): void {
+  const overlay = getOverlay(tx);
+  for (const identifierId of staleIds) {
+    overlay.identifierMutations.delete(identifierId);
+  }
 }
 
 function materializeStatementPayloads(db: Db, tx: TxHandle): void {
