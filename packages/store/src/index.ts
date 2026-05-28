@@ -113,6 +113,7 @@ export {
 export {
   emitIdentifiersForInserted,
   planMaterialization,
+  refreshReferenceEdges,
   isNoop,
   type MaterializationPlan
 } from "./materializeGraph";

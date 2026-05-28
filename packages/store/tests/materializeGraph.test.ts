@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
+import ts from "typescript";
 import { ingestBatch } from "@strata/ingest";
 import { openDb } from "../src/schema";
 import { insertNodes, listChildren } from "../src/nodes";
 import { begin, queueIdentifierUpdate, getOverlay } from "../src/transactions";
 import { create_function } from "../src/createFunction";
-import { planMaterialization, isNoop, emitIdentifiersForInserted } from "../src/materializeGraph";
+import { planMaterialization, isNoop, emitIdentifiersForInserted, refreshReferenceEdges } from "../src/materializeGraph";
 import { nodeId } from "../src/ids";
+import { find_declarations, get_references } from "../src/queries";
 
 function seed(path: string, text: string) {
   const batch = ingestBatch([{ path, text }]);
@@ -78,4 +80,38 @@ describe("planMaterialization / isNoop", () => {
     expect(JSON.parse(storedH!.payload)).toEqual(JSON.parse(reH!.payload));
     db.close();
   });
+});
+
+const OPTIONS = {
+  target: ts.ScriptTarget.ES2022,
+  module: ts.ModuleKind.ESNext,
+  moduleResolution: ts.ModuleResolutionKind.Bundler,
+  strict: true,
+  allowImportingTsExtensions: true,
+  noEmit: true,
+  skipLibCheck: true
+} as const;
+
+it("created function is findable and a same-module caller resolves to it", () => {
+  const db = seed("m.ts", `export function caller(): void { h(); }\n`);
+  const tx = begin(db, "test");
+  const moduleId = nodeId("m.ts", [], "Module");
+  const { newNodeId } = create_function(db, tx, moduleId, `export function h(): void {}`);
+  const plan = planMaterialization(db, getOverlay(tx));
+  emitIdentifiersForInserted(db, tx, plan);
+
+  // Rendered module: existing caller statement + new h function.
+  // Statement indices: 0 = caller, 1 = h (new, childIndex assigned by create_function).
+  const rendered = new Map<string, string>([
+    ["m.ts", `export function caller(): void { h(); }\n\nexport function h(): void {}`]
+  ]);
+  refreshReferenceEdges(db, plan, rendered, { ...OPTIONS });
+
+  // find_declarations returns NodeRow[]; each row has .id (the declaration node id)
+  const decls = find_declarations(db, { name: "h" });
+  expect(decls).toHaveLength(1);
+  // get_references takes the declaration node id and returns Reference[]
+  const refs = get_references(db, decls[0]!.id);
+  expect(refs.length).toBeGreaterThanOrEqual(1);
+  db.close();
 });
