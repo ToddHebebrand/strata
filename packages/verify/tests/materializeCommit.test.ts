@@ -117,6 +117,33 @@ describe("commit materializes the graph", () => {
     db.close();
   });
 
+  it("materialization over a small dirty set still commits + resolves cross-module imports", () => {
+    const files = [
+      { path: "/project/a.ts", text: `import { fromB } from "./b";\nexport const ax = fromB;\n` },
+      { path: "/project/b.ts", text: `export const fromB = 1;\n` },
+      { path: "/project/c.ts", text: `export const cx = 1;\n` },
+      { path: "/project/d.ts", text: `export const dx = 1;\n` }
+    ];
+    const batch = ingestBatch(files);
+    const db = openDb(":memory:");
+    insertNodes(db, batch.allNodes);
+    insertReferences(db, batch.references);
+
+    const moduleA = nodeId("/project/a.ts", [], "Module");
+    const tx = begin(db, "test");
+    // New function in a that references the imported fromB → must resolve to b's decl.
+    create_function(db, tx, moduleA, `export function usesB(): number { return fromB; }`);
+    expect(commit(db, tx).ok).toBe(true);
+    expect(find_declarations(db, { name: "usesB" })).toHaveLength(1);
+
+    // Strengthen: assert the cross-module edge resolves (usesB body references fromB in b.ts).
+    const fromBDecl = find_declarations(db, { name: "fromB" })[0]!;
+    const refs = get_references(db, fromBDecl.id);
+    expect(refs.length).toBeGreaterThanOrEqual(1);
+
+    db.close();
+  });
+
   it("add_parameter graph is consistent after commit (class-2 path)", () => {
     // Seed a module with an exported function foo that has a same-module callsite,
     // so there is a callsite to re-derive through class-2 graph materialization.

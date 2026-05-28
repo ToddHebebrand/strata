@@ -91,6 +91,24 @@ export function validate(db: Db, tx: TxHandle): Diagnostic[] {
       shouldCreateNewSourceFile
     );
   };
+  // Override resolveModuleNames so relative imports resolve against in-memory
+  // files rather than the real filesystem. Without this, a module like `./b`
+  // imported by `/project/a.ts` would fail when `/project/b.ts` only exists
+  // in renderedFiles and not on disk.
+  host.resolveModuleNames = (moduleNames, containingFile) =>
+    moduleNames.map((moduleName) => {
+      if (moduleName.startsWith(".")) {
+        const dir = path.dirname(containingFile);
+        for (const ext of [".ts", ".tsx", ".js", ".mjs"]) {
+          const candidate = normalizeFileName(path.join(dir, moduleName + ext));
+          if (renderedFiles.has(candidate)) {
+            return { resolvedFileName: candidate, isExternalLibraryImport: false };
+          }
+        }
+      }
+      const result = ts.resolveModuleName(moduleName, containingFile, options, host);
+      return result.resolvedModule;
+    });
 
   const program = ts.createProgram({
     rootNames: [...renderedFiles.keys()],
@@ -103,6 +121,41 @@ export function validate(db: Db, tx: TxHandle): Diagnostic[] {
     .map((diagnostic) => mapDiagnostic(diagnostic, sourceMaps));
 }
 
+/**
+ * Narrow the resolver's program input to dirty modules + the modules they
+ * import, so a 1-dirty-module commit on a large corpus does not build a program
+ * over every module. Conservative: over-inclusion is safe; under-inclusion only
+ * drops a cross-module edge that self-heals when the referencing module next
+ * commits. A regex import scan (not full module resolution) — adequate here.
+ */
+function boundedRenderInputs(
+  renderedFiles: Map<string, string>,
+  dirtyModulePaths: string[]
+): Map<string, string> {
+  const norm = (p: string) => normalizeFileName(p);
+  const byNorm = new Map<string, { abs: string; text: string }>();
+  for (const [abs, text] of renderedFiles) byNorm.set(norm(abs), { abs, text });
+
+  const wanted = new Set<string>(dirtyModulePaths.map(norm));
+  for (const dirty of dirtyModulePaths) {
+    const entry = byNorm.get(norm(dirty));
+    if (!entry) continue;
+    for (const m of entry.text.matchAll(/from\s+["']([^"']+)["']/g)) {
+      const spec = m[1]!.replace(/^\.\//, "").replace(/\.(ts|tsx|js|mjs)$/, "");
+      for (const key of byNorm.keys()) {
+        const keyBase = key.replace(/\.(ts|tsx|js|mjs)$/, "");
+        if (keyBase.endsWith(spec)) wanted.add(key);
+      }
+    }
+  }
+
+  const out = new Map<string, string>();
+  for (const [normKey, { text }] of byNorm) {
+    if (wanted.has(normKey)) out.set(normKey, text);
+  }
+  return out;
+}
+
 export function commit(db: Db, tx: TxHandle): CommitResult {
   const diagnostics = validate(db, tx);
   if (diagnostics.length > 0) {
@@ -113,9 +166,7 @@ export function commit(db: Db, tx: TxHandle): CommitResult {
   // clears overlay.textSpanMutations.
   const plan = planMaterialization(db, getOverlay(tx));
   const { renderedFiles } = renderPendingModules(db, tx);
-  const renderedByPath = new Map(
-    [...renderedFiles].map(([abs, text]) => [normalizeFileName(abs), text])
-  );
+  const renderedByPath = boundedRenderInputs(renderedFiles, plan.dirtyModulePaths);
   const options = loadCompilerOptions([...renderedFiles.keys()]);
 
   // Single transaction so a throw mid-materialization rolls back payloads,
@@ -191,9 +242,7 @@ export function commitWithBehavioralGate(
   const plan = planMaterialization(db, getOverlay(tx));
 
   const { renderedFiles } = renderPendingModules(db, tx);
-  const renderedByPath = new Map(
-    [...renderedFiles].map(([abs, text]) => [normalizeFileName(abs), text])
-  );
+  const renderedByPath = boundedRenderInputs(renderedFiles, plan.dirtyModulePaths);
   const options = loadCompilerOptions([...renderedFiles.keys()]);
 
   const renderedSrc = new Map<string, string>();
