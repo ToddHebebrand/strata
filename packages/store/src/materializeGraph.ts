@@ -2,7 +2,7 @@ import ts from "typescript";
 import { findNodeById, modulePathOf, insertNodes, listChildren } from "./nodes";
 import type { Db } from "./schema";
 import type { TxOverlay } from "./transactions";
-import { trackInsertedNode, type TxHandle } from "./transactions";
+import { trackInsertedNode, trackDeletedNodeForRestore, type TxHandle } from "./transactions";
 import { emitIdentifiers } from "./emitIdentifiers";
 import { resolveReferencesForModules } from "./resolveReferences";
 import { insertReferences } from "./references";
@@ -179,4 +179,56 @@ export function refreshReferenceEdges(
     if (toInsert.length > 0) insertReferences(db, toInsert);
   });
   apply();
+}
+
+/**
+ * Class-2: for each statement whose identifier set/order changed, delete its
+ * old Identifier rows (tracked for rollback) + their edges, then re-emit from
+ * the statement's final payload. Edges for the fresh identifiers are recomputed
+ * by refreshReferenceEdges (which sees the new identifier IDs via listChildren).
+ * Bounded churn: only this statement's internal identifier IDs change; other
+ * statements are untouched (their statementIndex is stable).
+ */
+export function reDeriveChangedStatements(
+  db: Db,
+  tx: TxHandle,
+  plan: MaterializationPlan
+): void {
+  const deleteNode = db.prepare(`DELETE FROM nodes WHERE id = ?`);
+  const deleteEdges = db.prepare(
+    `DELETE FROM node_references WHERE from_node_id = ? OR to_node_id = ?`
+  );
+
+  for (const statementId of plan.reDerivedStatementIds) {
+    const statement = findNodeById(db, statementId);
+    if (!statement || statement.childIndex === null) continue;
+    const modulePath = modulePathOf(db, statementId);
+
+    const oldIdentifiers = listChildren(db, statementId).filter(
+      (c) => c.kind === "Identifier"
+    );
+    const drop = db.transaction(() => {
+      for (const ident of oldIdentifiers) {
+        trackDeletedNodeForRestore(tx, ident);
+        deleteEdges.run(ident.id, ident.id);
+        deleteNode.run(ident.id);
+      }
+    });
+    drop();
+
+    const sf = ts.createSourceFile(
+      modulePath,
+      statement.payload,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS
+    );
+    const stmt = sf.statements[0];
+    if (!stmt) continue;
+    const fresh = emitIdentifiers(sf, stmt, modulePath, [statement.childIndex]);
+    if (fresh.length > 0) {
+      insertNodes(db, fresh);
+      for (const ident of fresh) trackInsertedNode(tx, ident.id);
+    }
+  }
 }

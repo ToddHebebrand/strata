@@ -113,6 +113,7 @@ export {
 export {
   emitIdentifiersForInserted,
   planMaterialization,
+  reDeriveChangedStatements,
   refreshReferenceEdges,
   isNoop,
   type MaterializationPlan

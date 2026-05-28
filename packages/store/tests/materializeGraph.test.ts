@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import ts from "typescript";
 import { ingestBatch } from "@strata/ingest";
 import { openDb } from "../src/schema";
-import { insertNodes, listChildren } from "../src/nodes";
-import { begin, queueIdentifierUpdate, getOverlay } from "../src/transactions";
+import { insertNodes, listChildren, findNodeById } from "../src/nodes";
+import { begin, queueIdentifierUpdate, queueTextSpanEdit, getOverlay } from "../src/transactions";
 import { create_function } from "../src/createFunction";
-import { planMaterialization, isNoop, emitIdentifiersForInserted, refreshReferenceEdges } from "../src/materializeGraph";
+import { planMaterialization, isNoop, emitIdentifiersForInserted, refreshReferenceEdges, reDeriveChangedStatements } from "../src/materializeGraph";
 import { nodeId } from "../src/ids";
 import { find_declarations, get_references } from "../src/queries";
 import { insertReferences, getReferencesByTo } from "../src/references";
@@ -176,5 +176,159 @@ it("refreshReferenceEdges Step 2 does NOT delete inbound edges of a surviving fr
   // fDeclName → fCallsite. Assert that inbound edge survived.
   const inboundEdges = getReferencesByTo(db, fCallsiteId);
   expect(inboundEdges.some((e) => e.fromNodeId === fDeclNameId)).toBe(true);
+  db.close();
+});
+
+it("re-derives a spliced parent body: removed-span ids gone, call-site id present", () => {
+  const source = `export function parent(a: number): void {\n  const b = a + 1;\n  console.log(b);\n}\n`;
+  const db = seed("m.ts", source);
+  const tx = begin(db, "test");
+  const moduleId = nodeId("m.ts", [], "Module");
+
+  // 1) Create the helper (class-1).
+  const { newNodeId: helperId } = create_function(
+    db, tx, moduleId, `export function h(a: number): void { const b = a + 1; }`
+  );
+
+  // 2) Splice the parent body's first body statement with a call to h.
+  const parentId = nodeId("m.ts", [0], "FunctionDeclaration");
+  const parentNode = findNodeById(db, parentId)!;
+  const removed = `  const b = a + 1;`;
+  const start = parentNode.payload.indexOf(removed);
+  queueTextSpanEdit(tx, parentId, {
+    start,
+    end: start + removed.length,
+    oldText: removed,
+    newText: `  h(a);`
+  });
+
+  // Apply the payload edit to the parent node (mimics materializeStatementPayloads).
+  const newPayload =
+    parentNode.payload.slice(0, start) + `  h(a);` + parentNode.payload.slice(start + removed.length);
+  db.prepare(`UPDATE nodes SET payload = ? WHERE id = ?`).run(newPayload, parentId);
+
+  const plan = planMaterialization(db, getOverlay(tx));
+  emitIdentifiersForInserted(db, tx, plan);
+  reDeriveChangedStatements(db, tx, plan);
+
+  const parentIdents = listChildren(db, parentId)
+    .filter((c) => c.kind === "Identifier");
+  const parentIdentTexts = parentIdents.map((n) => (JSON.parse(n.payload) as { text: string }).text);
+
+  // After splice: `const b = a + 1;` is gone, so the old DFS-index-2 identifier
+  // (which was `b` from the const declaration) no longer exists as `b` — it's now
+  // `h` (the call-site). The `b` from `console.log(b)` still exists (it's in the
+  // body), but the const-declaration `b` identifier is gone.
+  // The original `b` at DFS index 2 had id nodeId("m.ts", [0, 2], "Identifier").
+  // After re-derivation that slot is `h`. The old `b` from `console.log(b)` is
+  // still in the function, so `b` appears exactly once (in the log call).
+  expect(parentIdentTexts).toContain("h");
+  // The OLD identifier ID for DFS slot 2 (was `b`) is now re-used for `h`.
+  const slot2Id = nodeId("m.ts", [0, 2], "Identifier");
+  const slot2 = parentIdents.find((n) => n.id === slot2Id);
+  expect(slot2).toBeDefined();
+  expect((JSON.parse(slot2!.payload) as { text: string }).text).toBe("h");
+  // The console.log(b) `b` still exists (it was not removed by the splice).
+  expect(parentIdentTexts.filter((t) => t === "b")).toHaveLength(1);
+  db.close();
+});
+
+it("re-derived statement identifiers match re-ingest (offset consistency)", () => {
+  // This is the core guarantee: identifiers emitted by reDeriveChangedStatements
+  // must have the same IDs and payloads as a clean re-ingest of the final module text.
+  //
+  // Assumption: after the splice, the rendered module is the spliced parent
+  // (with `h(a)` replacing `const b = a + 1`) followed by the helper `h`.
+  // We construct this text and compare ids/payloads for the parent statement.
+  const source = `export function parent(a: number): void {\n  const b = a + 1;\n  console.log(b);\n}\n`;
+  const db = seed("m.ts", source);
+  const tx = begin(db, "test");
+  const moduleId = nodeId("m.ts", [], "Module");
+
+  // 1) Create the helper (class-1).
+  create_function(
+    db, tx, moduleId, `export function h(a: number): void { const b = a + 1; }`
+  );
+
+  // 2) Splice the parent body.
+  const parentId = nodeId("m.ts", [0], "FunctionDeclaration");
+  const parentNode = findNodeById(db, parentId)!;
+  const removed = `  const b = a + 1;`;
+  const start = parentNode.payload.indexOf(removed);
+  queueTextSpanEdit(tx, parentId, {
+    start,
+    end: start + removed.length,
+    oldText: removed,
+    newText: `  h(a);`
+  });
+
+  const newPayload =
+    parentNode.payload.slice(0, start) + `  h(a);` + parentNode.payload.slice(start + removed.length);
+  db.prepare(`UPDATE nodes SET payload = ? WHERE id = ?`).run(newPayload, parentId);
+
+  const plan = planMaterialization(db, getOverlay(tx));
+  emitIdentifiersForInserted(db, tx, plan);
+  reDeriveChangedStatements(db, tx, plan);
+
+  // Build the final rendered module text.
+  // Statement[0] = spliced parent payload (no leading newline for first statement).
+  // Statement[1] = helper payload (create_function prepends "\n\n").
+  // EOF payload = "\n".
+  // The rendered module is the concatenation of all statement payloads.
+  // The helper payload from create_function has a "\n\n" prefix.
+  // We use ingest to derive the expected module, matching what render would produce.
+  const helperNode = db.prepare(`SELECT payload FROM nodes WHERE parent_id = ? AND kind = 'FunctionDeclaration'`)
+    .all(moduleId) as { payload: string }[];
+  // There should be exactly 2 FunctionDeclaration children: parent (index 0) and helper (index 1).
+  // The spliced parent payload is newPayload. Helper payload includes leading "\n\n".
+  const helperPayload = helperNode.find((_n, _i, arr) => {
+    // Find the one that is NOT the parent. We can use nodeId to distinguish.
+    const splicedParent = db.prepare(`SELECT payload FROM nodes WHERE id = ?`).get(parentId) as { payload: string } | null;
+    return true; // iterate all, filter below
+    void arr;
+  });
+  void helperPayload;
+
+  // Simpler: directly construct the rendered module from known parts.
+  // The original source's parent statement (statement[0]) has no leading newline
+  // (it starts at offset 0). After splice its payload is newPayload.
+  // The helper was appended with "\n\n" prefix by create_function.
+  // Retrieve the helper's actual stored payload.
+  const helperStmt = db.prepare(
+    `SELECT payload FROM nodes WHERE parent_id = ? AND kind = 'FunctionDeclaration' AND id != ?`
+  ).get(moduleId, parentId) as { payload: string } | null;
+  if (!helperStmt) throw new Error("helper not found");
+
+  // The rendered module text is: splicedParentPayload + helperPayload + "\n" (EOF payload).
+  const renderedModule = newPayload + helperStmt.payload + "\n";
+
+  // Re-ingest from this rendered text.
+  const reIngest = ingestBatch([{ path: "m.ts", text: renderedModule }]);
+
+  // For statement[0] (the spliced parent, at childIndex 0), compare all identifiers.
+  const reIngestParentIdents = reIngest.allNodes.filter(
+    (n) => n.kind === "Identifier" && n.parentId === nodeId("m.ts", [0], "FunctionDeclaration")
+  );
+  const storedParentIdents = listChildren(db, parentId).filter(
+    (c) => c.kind === "Identifier"
+  );
+
+  // IDs must match exactly.
+  const reIngestIds = new Set(reIngestParentIdents.map((n) => n.id));
+  const storedIds = new Set(storedParentIdents.map((n) => n.id));
+  for (const id of reIngestIds) {
+    expect(storedIds.has(id)).toBe(true);
+  }
+  for (const id of storedIds) {
+    expect(reIngestIds.has(id)).toBe(true);
+  }
+
+  // Payloads must also match.
+  for (const reNode of reIngestParentIdents) {
+    const stored = storedParentIdents.find((n) => n.id === reNode.id);
+    expect(stored).toBeDefined();
+    expect(JSON.parse(stored!.payload)).toEqual(JSON.parse(reNode.payload));
+  }
+
   db.close();
 });
