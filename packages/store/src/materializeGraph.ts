@@ -117,6 +117,9 @@ export function refreshReferenceEdges(
   if (isNoop(plan)) return;
 
   // Collect all identifier IDs that belong to inserted or re-derived nodes.
+  // Assumption: emitted Identifier nodes are DIRECT children of their statement
+  // node (both class-1 emission and class-2 re-derivation store them at one
+  // level under the statement), so a shallow listChildren is sufficient.
   const ownedIdentifierIds = new Set<string>();
   for (const parentId of [...plan.insertedNodeIds, ...plan.reDerivedStatementIds]) {
     for (const child of listChildren(db, parentId)) {
@@ -136,28 +139,39 @@ export function refreshReferenceEdges(
     (r) => ownedIdentifierIds.has(r.fromNodeId) || ownedIdentifierIds.has(r.toNodeId)
   );
 
-  // Prepare a single delete statement usable for both the owned-set sweep and
-  // the PK-conflict guard below.
+  // Step 1 uses OR (from OR to) to sweep all edges touching owned identifiers.
   const del = db.prepare(
     `DELETE FROM node_references WHERE from_node_id = ? OR to_node_id = ?`
   );
 
+  // Step 2 uses from-only: a surviving from-identifier may ALSO be a reference
+  // target (e.g. a re-export / alias that importers point to). Deleting by
+  // `OR to_node_id = fromId` would wrongly drop those inbound edges.
+  const delByFrom = db.prepare(
+    `DELETE FROM node_references WHERE from_node_id = ?`
+  );
+
   const apply = db.transaction(() => {
     // Step 1: delete all existing edges touching any owned identifier (from OR to).
+    // Owned to-identifiers are freshly created this commit, so no pre-existing
+    // valid edge can point to them — the OR form is safe here.
     for (const id of ownedIdentifierIds) del.run(id, id);
 
     // Step 2: PK-conflict guard. toInsert may include edges whose fromNodeId is
     // a SURVIVING identifier (not in ownedIdentifierIds). If that surviving
     // from-identifier already has an edge pointing to a different target, the
     // Step 1 sweep above did NOT remove it (it only swept owned ids). To prevent
-    // a PK collision, delete any remaining edge for each fromNodeId we are about
-    // to insert, using the same OR-based statement (harmless if already deleted).
+    // a PK collision on insert, delete only the OUTGOING edge for each surviving
+    // fromNodeId we are about to re-insert. We must NOT use the OR form here:
+    // a surviving from-identifier can also be a reference TARGET (e.g. a
+    // re-export/alias where other identifiers point to it), and deleting its
+    // inbound edges would corrupt the graph.
     const fromsToInsert = new Set(toInsert.map((r) => r.fromNodeId));
     for (const fromId of fromsToInsert) {
       if (!ownedIdentifierIds.has(fromId)) {
         // Only surviving from-identifiers need this guard; owned ones were
         // already cleared in Step 1.
-        del.run(fromId, fromId);
+        delByFrom.run(fromId);
       }
     }
 

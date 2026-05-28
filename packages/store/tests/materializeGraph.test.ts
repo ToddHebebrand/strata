@@ -8,6 +8,7 @@ import { create_function } from "../src/createFunction";
 import { planMaterialization, isNoop, emitIdentifiersForInserted, refreshReferenceEdges } from "../src/materializeGraph";
 import { nodeId } from "../src/ids";
 import { find_declarations, get_references } from "../src/queries";
+import { insertReferences, getReferencesByTo } from "../src/references";
 
 function seed(path: string, text: string) {
   const batch = ingestBatch([{ path, text }]);
@@ -111,7 +112,69 @@ it("created function is findable and a same-module caller resolves to it", () =>
   const decls = find_declarations(db, { name: "h" });
   expect(decls).toHaveLength(1);
   // get_references takes the declaration node id and returns Reference[]
+  // (internally resolves to the declaration-name identifier and returns inbound edges)
   const refs = get_references(db, decls[0]!.id);
-  expect(refs.length).toBeGreaterThanOrEqual(1);
+  // Exactly one reference: the h() call-site identifier in caller resolves to
+  // the declaration-name identifier of h (statement index 1, first child [1,0]).
+  expect(refs).toHaveLength(1);
+  expect(refs[0]!.toNodeId).toBe(nodeId("m.ts", [1, 0], "Identifier"));
+  db.close();
+});
+
+it("refreshReferenceEdges Step 2 does NOT delete inbound edges of a surviving from-identifier", () => {
+  // Scenario: module has `f` (statement [0]) and `caller` (calls `f`, statement [1]).
+  // We create a new function `h`. During refreshReferenceEdges the resolver re-produces
+  // the edge fCallsite → fDeclName (because `caller` is a dirty-module surviving caller).
+  // Before refresh we also wire a SYNTHETIC INBOUND edge pointing TO fCallsiteId,
+  // simulating fCallsiteId being both a reference source (it resolves to f) and a
+  // reference target (something else points to it — e.g. an alias / re-export).
+  // After refresh, the inbound edge must survive. With the pre-fix code (OR form),
+  // Step 2 would delete it; with the fix (from-only), it survives.
+  const db = seed("m.ts", `export function f(): void {}\nexport function caller(): void { f(); }\n`);
+
+  // emitIdentifiers does a pre-order DFS over getChildren within each statement.
+  // For `export function caller(): void { f(); }`:
+  //   index 0 → `caller` (the function name)
+  //   index 1 → `f`     (the call expression identifier)
+  // So the f-callsite identifier is at child path [1, 1].
+  const fCallsiteId = nodeId("m.ts", [1, 1], "Identifier");
+
+  // The f declaration name identifier is at [0, 0] (first identifier in statement 0).
+  const fDeclNameId = nodeId("m.ts", [0, 0], "Identifier");
+
+  // Manually wire a pre-existing outgoing edge: fCallsite → fDeclName.
+  // (mirrors what a full ingest + resolve pass would have written)
+  insertReferences(db, [{ fromNodeId: fCallsiteId, toNodeId: fDeclNameId, kind: "value" }]);
+
+  // Wire a synthetic INBOUND edge pointing TO fCallsiteId. The source must be a
+  // real node in the DB to satisfy the FK constraint, and must not already be a
+  // from_node_id in node_references. fDeclNameId has no outgoing edge yet and is
+  // a valid choice — it represents "something pointing at the callsite identifier".
+  insertReferences(db, [{ fromNodeId: fDeclNameId, toNodeId: fCallsiteId, kind: "value" }]);
+
+  // Create new function h and run the materialization pipeline.
+  // The plan's insertedNodeIds includes h; its Identifier children are owned.
+  // f and caller identifiers are NOT owned — they're surviving.
+  const tx = begin(db, "test");
+  const moduleId = nodeId("m.ts", [], "Module");
+  const { newNodeId: _hNodeId } = create_function(db, tx, moduleId, `export function h(): void {}`);
+  const plan = planMaterialization(db, getOverlay(tx));
+  emitIdentifiersForInserted(db, tx, plan);
+
+  // Rendered text: f + caller (unchanged) + h (new at index 2).
+  const rendered = new Map<string, string>([
+    [
+      "m.ts",
+      `export function f(): void {}\nexport function caller(): void { f(); }\n\nexport function h(): void {}`
+    ]
+  ]);
+  refreshReferenceEdges(db, plan, rendered, { ...OPTIONS });
+
+  // The resolver will have re-produced fCallsite → fDeclName (because caller/f
+  // are in the dirty module). Step 2 must have deleted only fCallsite's outgoing
+  // edge (by from_node_id) before re-inserting it — NOT the inbound edge
+  // fDeclName → fCallsite. Assert that inbound edge survived.
+  const inboundEdges = getReferencesByTo(db, fCallsiteId);
+  expect(inboundEdges.some((e) => e.fromNodeId === fDeclNameId)).toBe(true);
   db.close();
 });
