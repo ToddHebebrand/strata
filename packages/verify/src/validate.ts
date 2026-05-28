@@ -118,22 +118,27 @@ export function commit(db: Db, tx: TxHandle): CommitResult {
   );
   const options = loadCompilerOptions([...renderedFiles.keys()]);
 
-  materializeStatementPayloads(db, tx);
+  // Single transaction so a throw mid-materialization rolls back payloads,
+  // node/identifier changes, edges, and the op-log together (no partial state).
+  const finalize = db.transaction(() => {
+    materializeStatementPayloads(db, tx);
 
-  if (!isNoop(plan)) {
-    // Collect old identifier IDs for re-derived statements BEFORE they are
-    // deleted by reDeriveChangedStatements. These IDs may be re-used for
-    // different identifiers after re-derivation (DFS indices shift when new
-    // identifiers are added), so commitWithoutValidate must not apply stale
-    // mutations to them.
-    const staleIdentifierIds = collectReDerivedIdentifierIds(db, plan);
-    emitIdentifiersForInserted(db, tx, plan);
-    reDeriveChangedStatements(db, tx, plan);
-    refreshReferenceEdges(db, plan, renderedByPath, options);
-    stripStaleMutations(db, tx, staleIdentifierIds);
-  }
+    if (!isNoop(plan)) {
+      // Collect old identifier IDs for re-derived statements BEFORE they are
+      // deleted by reDeriveChangedStatements. These IDs may be re-used for
+      // different identifiers after re-derivation (DFS indices shift when new
+      // identifiers are added), so commitWithoutValidate must not apply stale
+      // mutations to them.
+      const staleIdentifierIds = collectReDerivedIdentifierIds(db, plan);
+      emitIdentifiersForInserted(db, tx, plan);
+      reDeriveChangedStatements(db, tx, plan);
+      refreshReferenceEdges(db, plan, renderedByPath, options);
+      stripStaleMutations(db, tx, staleIdentifierIds);
+    }
 
-  commitWithoutValidate(db, tx);
+    commitWithoutValidate(db, tx);
+  });
+  finalize();
   return { ok: true };
 }
 
@@ -209,17 +214,22 @@ export function commitWithBehavioralGate(
     return { ok: false, testFailures: result.failureOutput };
   }
 
-  materializeStatementPayloads(db, tx);
+  // Single transaction so a throw mid-materialization rolls back payloads,
+  // node/identifier changes, edges, and the op-log together (no partial state).
+  const finalizeGated = db.transaction(() => {
+    materializeStatementPayloads(db, tx);
 
-  if (!isNoop(plan)) {
-    const staleIdentifierIds = collectReDerivedIdentifierIds(db, plan);
-    emitIdentifiersForInserted(db, tx, plan);
-    reDeriveChangedStatements(db, tx, plan);
-    refreshReferenceEdges(db, plan, renderedByPath, options);
-    stripStaleMutations(db, tx, staleIdentifierIds);
-  }
+    if (!isNoop(plan)) {
+      const staleIdentifierIds = collectReDerivedIdentifierIds(db, plan);
+      emitIdentifiersForInserted(db, tx, plan);
+      reDeriveChangedStatements(db, tx, plan);
+      refreshReferenceEdges(db, plan, renderedByPath, options);
+      stripStaleMutations(db, tx, staleIdentifierIds);
+    }
 
-  commitWithoutValidate(db, tx);
+    commitWithoutValidate(db, tx);
+  });
+  finalizeGated();
   return { ok: true };
 }
 
