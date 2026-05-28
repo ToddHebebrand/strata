@@ -135,4 +135,20 @@ describe("transactions", () => {
     expect(row).toEqual({ id: "n1", kind: "Module", payload: "m.ts" });
     db.close();
   });
+
+  it("rollback restore is idempotent when the tracked row still exists (no PK violation)", () => {
+    const db = openDb(":memory:");
+    insertNodes(db, [
+      { id: "n1", kind: "Module", parentId: null, childIndex: null, payload: "m.ts" }
+    ]);
+    const tx = begin(db, "test");
+    const original = { id: "n1", kind: "Module", parentId: null, childIndex: null, payload: "m.ts" };
+    trackDeletedNodeForRestore(tx, original);
+    // Simulate the throwing-finalize case: the row was NOT actually deleted
+    // (SAVEPOINT revert already restored it), yet it remains tracked for restore.
+    expect(() => rollback(db, tx)).not.toThrow();
+    const row = db.prepare(`SELECT id, payload FROM nodes WHERE id = ?`).get("n1");
+    expect(row).toEqual({ id: "n1", payload: "m.ts" });
+    db.close();
+  });
 });

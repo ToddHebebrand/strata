@@ -119,10 +119,12 @@ export function rollback(db: Db, tx: TxHandle): void {
 
   if (overlay.insertedNodeIds.length > 0 || overlay.deletedNodesToRestore.length > 0) {
     const deleteNode = db.prepare(`DELETE FROM nodes WHERE id = ?`);
-    // Precondition: each row in deletedNodesToRestore was physically deleted
-    // earlier in this transaction, so the row must not exist at this point.
+    // INSERT OR REPLACE (not plain INSERT): a throwing commit `finalize()`
+    // transaction may have already restored some of these rows via SAVEPOINT
+    // revert while they remain tracked here, so the restore must be idempotent.
+    // The stored row IS the pre-tx state, so overwriting with it is always correct.
     const insertNode = db.prepare(
-      `INSERT INTO nodes (id, kind, parent_id, child_index, payload)
+      `INSERT OR REPLACE INTO nodes (id, kind, parent_id, child_index, payload)
        VALUES (@id, @kind, @parentId, @childIndex, @payload)`
     );
     const undo = db.transaction(() => {
