@@ -56,3 +56,48 @@ describe("analyzeMove — scaffolding", () => {
     expect(r.sourceStillUses).toBe(false);
   });
 });
+
+describe("analyzeMove — self-contained verification", () => {
+  it("accepts a declaration that uses only globals + its own internals", () => {
+    const rendered = new Map<string, string>([
+      ["/p/a.ts", `export function clamp(n: number, lo: number, hi: number): number {\n  return Math.min(Math.max(n, lo), hi);\n}\n`],
+      ["/p/b.ts", `export const x = 1;\n`]
+    ]);
+    const r = analyzeMove(rendered, OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 0, name: "clamp", targetPath: "/p/b.ts" });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects a declaration that references a source-local symbol", () => {
+    const rendered = new Map<string, string>([
+      ["/p/a.ts", `const BASE = 10;\nexport function scaled(n: number): number { return n * BASE; }\n`],
+      ["/p/b.ts", `export const x = 1;\n`]
+    ]);
+    // scaled is statements[1]; it references BASE (source-local, statements[0]).
+    const r = analyzeMove(rendered, OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 1, name: "scaled", targetPath: "/p/b.ts" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/BASE|self-contained|depends/i);
+  });
+
+  it("rejects a declaration that references an imported symbol", () => {
+    const rendered = new Map<string, string>([
+      ["/p/types.ts", `export type User = { id: string };\n`],
+      ["/p/a.ts", `import { User } from "./types.ts";\nexport function idOf(u: User): string { return u.id; }\n`],
+      ["/p/b.ts", `export const x = 1;\n`]
+    ]);
+    const r = analyzeMove(rendered, OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 1, name: "idOf", targetPath: "/p/b.ts" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/User|self-contained|depends/i);
+  });
+
+  it("accepts a declaration that references a symbol already in the target", () => {
+    const rendered = new Map<string, string>([
+      ["/p/a.ts", `import { User } from "./b.ts";\nexport function idOf(u: User): string { return u.id; }\n`],
+      ["/p/b.ts", `export type User = { id: string };\n`]
+    ]);
+    // idOf uses User which lives in the TARGET (b.ts) — in scope after the move.
+    const r = analyzeMove(rendered, OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 1, name: "idOf", targetPath: "/p/b.ts" });
+    expect(r.ok).toBe(true);
+  });
+});

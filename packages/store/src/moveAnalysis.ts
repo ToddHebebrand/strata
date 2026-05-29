@@ -75,16 +75,61 @@ function isExported(stmt: ts.Statement): boolean {
 }
 
 /**
+ * The declaration is self-contained iff every identifier in its subtree
+ * resolves to: its own internals (decl inside the statement span), a global/lib
+ * symbol (no rendered declaration), or a symbol declared in the TARGET module
+ * (in scope after the move). Any other rendered-module declaration (source-local
+ * or imported) means it depends on context that won't move with it → reject.
+ */
+function findOutOfScopeDependency(
+  checker: ts.TypeChecker,
+  srcSf: ts.SourceFile,
+  tgtSf: ts.SourceFile,
+  stmt: ts.Statement
+): string | null {
+  const spanStart = stmt.getStart(srcSf);
+  const spanEnd = stmt.getEnd();
+  let bad: string | null = null;
+  const walk = (node: ts.Node): void => {
+    if (bad) return;
+    if (ts.isIdentifier(node)) {
+      let sym = checker.getSymbolAtLocation(node);
+      // An imported usage resolves to the local ImportSpecifier (an alias) in the
+      // SOURCE module. Follow the alias to the original declaration so a symbol
+      // whose real home is the TARGET module reads as in-scope-after-move.
+      if (sym && sym.flags & ts.SymbolFlags.Alias) {
+        sym = checker.getAliasedSymbol(sym);
+      }
+      const decl = sym?.declarations?.[0];
+      if (decl) {
+        const declSf = decl.getSourceFile();
+        const inLib = declSf.isDeclarationFile; // .d.ts / lib
+        const inOwnSpan = declSf === srcSf && decl.getStart(declSf) >= spanStart && decl.getEnd() <= spanEnd;
+        const inTarget = declSf === tgtSf;
+        const inRendered = !inLib;
+        if (inRendered && !inOwnSpan && !inTarget) {
+          bad = sym!.getName();
+          return;
+        }
+      }
+    }
+    node.forEachChild(walk);
+  };
+  walk(stmt);
+  return bad;
+}
+
+/**
  * Analyze a candidate move. Pure: builds a program over the rendered set, no DB.
- * Self-contained verification + importer classification arrive in Tasks 3-5;
- * this scaffolding handles location, exported, and target-collision checks.
+ * Importer classification + rewrite computation arrive in Tasks 4-5; this handles
+ * location, exported, target-collision, and self-contained verification checks.
  */
 export function analyzeMove(
   rendered: Map<string, string>,
   options: ts.CompilerOptions,
   input: MoveInput
 ): MoveResult {
-  const { sourceFiles } = buildProgram(rendered, options);
+  const { checker, sourceFiles } = buildProgram(rendered, options);
   const srcSf = sourceFiles.get(normalizePath(path.resolve(input.sourcePath)))
     ?? sourceFiles.get(normalizePath(input.sourcePath));
   if (!srcSf) return reject(`move: source module not found in rendered set: ${input.sourcePath}`);
@@ -101,6 +146,11 @@ export function analyzeMove(
   }
   if (tgtSf.statements.some((s) => declName(s) === input.name)) {
     return reject(`move: target module already declares ${input.name} (name collision)`);
+  }
+
+  const dep = findOutOfScopeDependency(checker, srcSf, tgtSf, stmt);
+  if (dep) {
+    return reject(`move: declaration ${input.name} references \`${dep}\` which is not in scope at the target (v1 moves only self-contained declarations; relocate or keep it manually)`);
   }
 
   return {
