@@ -83,7 +83,19 @@ export function trackInsertedNode(tx: TxHandle, nodeId: string): void {
 }
 
 export function trackDeletedNodeForRestore(tx: TxHandle, node: NodeRow): void {
-  getOverlay(tx).deletedNodesToRestore.push(node);
+  const overlay = getOverlay(tx);
+  // First-seen-wins: if this id was already INSERTED earlier in this same
+  // transaction (and not previously seen as a pre-tx deletion), the row being
+  // deleted now is an EPHEMERAL this-tx row, not pre-tx state — restoring it on
+  // rollback would resurrect a node that never existed before the tx. (Concrete
+  // case: move_declaration inserts a re-indexed EOF row, then the conditional
+  // back-import's appendChildStatement shifts that very row and calls this.)
+  // It is safe to skip the restore: rollback's phase-1 deletes all inserted ids.
+  const insertedFirst =
+    overlay.insertedNodeIds.includes(node.id) &&
+    !overlay.deletedNodesToRestore.some((n) => n.id === node.id);
+  if (insertedFirst) return;
+  overlay.deletedNodesToRestore.push(node);
 }
 
 export function trackDeletedEdgeForRestore(

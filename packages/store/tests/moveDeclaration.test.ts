@@ -66,6 +66,94 @@ describe("move_declaration apply — move mechanism", () => {
     db.close();
   });
 
+  it("re-indexes surviving source siblings + EOF down by one after the moved decl is removed", () => {
+    // a.ts: Id (TypeAliasDeclaration @0), KEEP (FirstStatement @1), EOF @2.
+    const { db, rendered } = seed([
+      { path: "/project/a.ts", text: `export type Id = string;\nexport const KEEP = 1;\n` },
+      { path: "/project/b.ts", text: `export const x = 1;\n` }
+    ]);
+    const moduleA = listModules(db).find((m) => m.payload.endsWith("a.ts"))!;
+    // Sanity: confirm the stored layout (stored kind of `const` is FirstStatement).
+    const before = listChildren(db, moduleA.id);
+    expect(before.map((c) => [c.childIndex, c.kind])).toEqual([
+      [0, "TypeAliasDeclaration"],
+      [1, "FirstStatement"],
+      [2, "EndOfFileTrivia"]
+    ]);
+
+    const declId = nodeId("/project/a.ts", [0], "TypeAliasDeclaration");
+    const targetId = nodeId("/project/b.ts", [], "Module");
+    const tx = begin(db, "t");
+    move_declaration(db, tx, declId, targetId, rendered, OPTIONS);
+
+    // The moved decl is gone from the source.
+    expect(findNodeById(db, declId)).toBeUndefined();
+
+    // KEEP shifted from index 1 → 0: the new id exists, the old id is gone.
+    expect(findNodeById(db, nodeId("/project/a.ts", [0], "FirstStatement"))).toBeDefined();
+    expect(findNodeById(db, nodeId("/project/a.ts", [1], "FirstStatement"))).toBeUndefined();
+
+    // EOF shifted from index 2 → 1.
+    const after = listChildren(db, moduleA.id);
+    const eof = after.find((c) => c.kind === "EndOfFileTrivia")!;
+    expect(eof.childIndex).toBe(1);
+
+    // Contiguous, gap-free, duplicate-free childIndex set {0, 1}.
+    const indices = after.map((c) => c.childIndex!).sort((a, b) => a - b);
+    expect(indices).toEqual([0, 1]);
+    db.close();
+  });
+
+  it("rollback restores re-indexed surviving siblings + their nodes/edges exactly", () => {
+    // a.ts: Id (moved) + a surviving statement that USES Id (self-use edge) and
+    // is itself imported by c.ts (inbound edge) — so the survivor's subtree
+    // carries real edges that must be restored on rollback.
+    const { db, rendered } = seed([
+      {
+        path: "/project/a.ts",
+        text: `export type Id = string;\nexport const fallback: Id = "x";\n`
+      },
+      { path: "/project/b.ts", text: `export const x = 1;\n` },
+      {
+        path: "/project/c.ts",
+        text: `import { fallback } from "./a.ts";\nexport const y = fallback;\n`
+      }
+    ]);
+    const declId = nodeId("/project/a.ts", [0], "TypeAliasDeclaration");
+    const targetId = nodeId("/project/b.ts", [], "Module");
+
+    const allNodes = () =>
+      new Set(
+        (db.prepare(`SELECT id FROM nodes`).all() as { id: string }[]).map((r) => r.id)
+      );
+    const allEdges = () =>
+      new Set(
+        (
+          db
+            .prepare(`SELECT from_node_id AS f, to_node_id AS t, kind FROM node_references`)
+            .all() as { f: string; t: string; kind: string }[]
+        ).map((r) => `${r.f}|${r.t}|${r.kind}`)
+      );
+
+    const nodesBefore = allNodes();
+    const edgesBefore = allEdges();
+    expect(edgesBefore.size).toBeGreaterThan(0);
+
+    const tx = begin(db, "t");
+    move_declaration(db, tx, declId, targetId, rendered, OPTIONS);
+    // After apply: decl gone AND the survivor was re-indexed (old id gone).
+    expect(findNodeById(db, declId)).toBeUndefined();
+    expect(findNodeById(db, nodeId("/project/a.ts", [1], "FirstStatement"))).toBeUndefined();
+    expect(findNodeById(db, nodeId("/project/a.ts", [0], "FirstStatement"))).toBeDefined();
+
+    rollback(db, tx);
+
+    // The graph must be the byte-for-byte pre-move snapshot.
+    expect(allNodes()).toEqual(nodesBefore);
+    expect(allEdges()).toEqual(edgesBefore);
+    db.close();
+  });
+
   it("rollback restores both the deleted nodes AND their reference edges", () => {
     // a.ts exports Id and uses it in another statement (self-use → edge);
     // c.ts imports { Id } and uses it (importer → edge TO the decl name id).
