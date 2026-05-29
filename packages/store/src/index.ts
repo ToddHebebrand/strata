@@ -43,7 +43,16 @@ export {
   type ReadNodeOptions,
   type ReadNodeResult
 } from "./read_node";
-export { listBodyStatements, type BodyStatement } from "./extractAnalysis";
+export {
+  listBodyStatements,
+  type BodyStatement,
+  analyzeExtraction,
+  type ExtractionResult,
+  type ExtractionPlan,
+  type ExtractionRejection,
+  type ExtractParam,
+  type ExtractReturn
+} from "./extractAnalysis";
 export {
   add_parameter,
   addParameter,
@@ -93,7 +102,7 @@ export {
 } from "./commitPatterns";
 export { locateSpan, type Span, type SpanKind } from "./spanReparse";
 export { emitIdentifiers } from "./emitIdentifiers";
-export { resolveReferencesForModules } from "./resolveReferences";
+export { resolveReferencesForModules, createInMemoryProgram, normalizePath } from "./resolveReferences";
 export { resolveDeclarationNameIdentifier } from "./declarationName";
 export {
   begin,

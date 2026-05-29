@@ -66,7 +66,7 @@ export function resolveReferencesForModules(
   return references;
 }
 
-function createInMemoryProgram(
+export function createInMemoryProgram(
   renderedByPath: Map<string, string>,
   sourceFiles: Map<string, ts.SourceFile>,
   options: ts.CompilerOptions
@@ -132,6 +132,6 @@ function identifierNodeId(
   return nodeId(modulePath, [statementIndex, found], "Identifier");
 }
 
-function normalizePath(fileName: string): string {
+export function normalizePath(fileName: string): string {
   return fileName.replaceAll("\\", "/").replace(/^\.\//, "");
 }
