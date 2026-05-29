@@ -18,7 +18,8 @@
     "bench:t03": "node dist/runner.js --tasks=T03",
     "dogfood:l1": "node dist/dogfoodL1Cli.js",
     "dogfood:l3": "node dist/dogfoodL3Cli.js",
-    "dogfood:extract": "node dist/dogfoodExtractCli.js"
+    "dogfood:extract": "node dist/dogfoodExtractCli.js",
+    "dogfood:move": "node dist/dogfoodMoveCli.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.118",

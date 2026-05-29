@@ -61,6 +61,20 @@ export {
   type AddParameterArityRiskSite
 } from "./addParameter";
 export { add_import, addImport, type AddImportResult } from "./addImport";
+export { appendChildStatement } from "./appendChildStatement";
+export {
+  analyzeMove,
+  type MoveResult,
+  type MovePlan,
+  type MoveRejection,
+  type MoveInput,
+  type ImporterRewrite
+} from "./moveAnalysis";
+export {
+  move_declaration,
+  moveDeclaration,
+  type MoveDeclarationManifest
+} from "./moveDeclaration";
 export {
   find_declarations_in_module,
   findDeclarationsInModule,
@@ -118,6 +132,7 @@ export {
   queuePendingOp,
   rollback,
   startupRecoverOpenTransactions,
+  trackDeletedEdgeForRestore,
   trackDeletedNodeForRestore,
   trackInsertedNode,
   type PendingOp,
