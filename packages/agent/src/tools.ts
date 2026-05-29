@@ -11,6 +11,7 @@ import {
   change_return_type,
   create_function,
   embedCommitPattern,
+  extract_function,
   find_declarations,
   find_declarations_in_module,
   get_references,
@@ -30,6 +31,7 @@ import {
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
+  buildAnalysisContext,
   commit,
   commitWithBehavioralGate,
   validate,
@@ -387,6 +389,32 @@ export function createStrataTools(
     }
   );
 
+  const extractFunctionTool = tool(
+    "extract_function",
+    "Extract a contiguous run of statements from a function body into a NEW top-level function, replacing the original statements with a call — all in one operation in the open transaction you pass. You give the parent function's node ID, an inclusive statement index range over its body's top-level statements (read them first via read_node, which lists `bodyStatements` with their indices), and the new function's name. The tool AUTO-INFERS everything: parameters (the variables the span reads from the enclosing function), the return value(s) (variables the span declares that are used after it — one becomes `return x`, several become a returned object you destructure at the call site), and whether the new function must be `async` (if the span awaits). You do NOT, and must not, hand-write the new function or edit the call site afterward — both are produced and applied for you; editing them yourself double-edits the transaction. The tool REFUSES, with a specific reason, spans it cannot prove safe to move: a `return`, a `break`/`continue` that escapes the span, `yield`, `this`/`super`/`arguments`, dependence on the enclosing function's type parameters, or reassignment of an outer variable. When refused, pick a different range or fall back to create_function + replace_body. Requires an open transaction; mutates the overlay only. The new function and the rewritten call site are graph-consistent after commit, so the new function is findable and its call site resolves to it.",
+    {
+      tx: txHandleSchema,
+      parent_id: nodeIdSchema,
+      start_index: z.number().int().min(0).describe("Inclusive 0-based index of the first body statement to extract."),
+      end_index: z.number().int().min(0).describe("Inclusive 0-based index of the last body statement to extract."),
+      name: z.string().min(1).describe("Name of the new function.")
+    },
+    async (args) => {
+      const { renderedByPath, options } = buildAnalysisContext(ctx.db, args.tx as TxHandle);
+      const manifest = extract_function(
+        ctx.db,
+        args.tx as TxHandle,
+        args.parent_id,
+        args.start_index,
+        args.end_index,
+        args.name,
+        renderedByPath,
+        options
+      );
+      return textResult(manifest);
+    }
+  );
+
   const replaceBodyTool = tool(
     "replace_body",
     "Replace a function declaration's entire body with new code you provide, including the surrounding braces. Requires an open transaction; mutates the overlay only. This is the low-level tool for body logic changes that are not a rename, a parameter change, or a return-type change. It does not analyze the new body's references; rely on validate to confirm the new body type-checks before you commit.",
@@ -480,6 +508,7 @@ export function createStrataTools(
     changeReturnTypeTool,
     addImportTool,
     createFunctionTool,
+    extractFunctionTool,
     replaceBodyTool,
     validateTool,
     commitTransactionTool,
@@ -501,6 +530,7 @@ export const STRATA_TOOL_NAMES = [
   "change_return_type",
   "add_import",
   "create_function",
+  "extract_function",
   "replace_body",
   "validate",
   "commit_transaction",
