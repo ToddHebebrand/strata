@@ -7,6 +7,25 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-05-29 — move_declaration paired dogfood (N=1): substrate ~48% cheaper — bulk-propagation cost edge extends to cross-module moves
+
+**What ran.** `dogfood:move` (`packages/bench/src/dogfoodMove.ts`) — one keyed paired comparison on `examples/medium`, same natural-language prompt for both arms: move `formatTimestamp` from `src/lib/format.ts` into `src/lib/dateRange.ts` and repoint every importer. Baseline = file-tools Claude Code on a temp tree; substrate = Strata agent with `move_declaration`. Model `claude-sonnet-4-6`, default bounds (maxTurns=25, wallMs=240000), baseline-first. Artifacts: `packages/bench/results/dogfood-move-2026-05-29T17-14-42-229Z.{json,md}`.
+
+**Result (both arms quality-pass — tsc-clean AND move genuinely performed: moved-to-target, removed-from-source, importers repointed → comparison conclusive):**
+
+| Metric | baseline (file tools) | substrate (move_declaration) | sub/base |
+|---|---:|---:|---:|
+| Cost USD | $0.1840 | **$0.0952** | **51.7%** |
+| Tool calls | 18 | **10** | 55.6% |
+| Turns | 19 | **11** | 57.9% |
+| Wall ms | 82,815 | **34,012** | 41.1% |
+
+**Read: substrate CHEAPER (~48%), with about half the tool calls/turns and ~2.4× faster wall.** This is a confirming data point that `move_declaration` lands in the substrate's documented **bulk-propagation cost-win class** (rename/param-propagation-style leverage over many refs), not the extract/new-code class — even at modest fan-out (2 importers repointed), the structural move beat file tools on cost. Contrast the same-day `extract_function` dogfood below, where the substrate was *more* expensive: the distinguishing factor is whether the task forces bulk reference repointing (move/rename) vs. single-site code synthesis (extract).
+
+**Caveats (do not overstate).** N=1, single paired trial — NOT a bench round; do not generalize to "move wins by X%". Fan-out is only 2 importers (`examples/medium` has no higher-fan-out non-barrel movable symbol; see the v1 entry's limitation (iv)). The quality gate is symmetric tsc + structural-move-performed; vitest is informational and the corpus's pre-existing T05 `dateRange.test.ts` failure is move-irrelevant (the baseline arm's full-suite vitest=false does not reflect the move). The asymmetry (substrate tsc-only gate vs. baseline tsc+vitest) is immaterial here since no test depends on where `formatTimestamp` lives.
+
+**Design-doc impact:** none. Validates the prediction logged in the v1 entry's item (g).
+
 ## 2026-05-29 — move_declaration v1 shipped: cross-module move + named-import rewrite, intentional ID churn, shared appendChildStatement, source-sibling re-index, overlay edge-restore
 
 **(a) v1 surface and boundaries.** `move_declaration(declaration_id, target_module_id)` — the 19th structural agent tool. Pure `analyzeMove` lives in `@strata/store` (the caller passes rendered context via `buildAnalysisContext`, the same seam `extract_function` uses); the apply path is `moveDeclaration.ts`. It moves a top-level declaration from its source module to a target module and repoints every importer.
