@@ -188,6 +188,22 @@ function resolveRelativeToRenderedKey(
   return undefined;
 }
 
+/**
+ * Build the inputs analyzeExtraction / extract_function need at mutation time:
+ * the current rendered modules (keyed by resolved path) and the corpus compiler
+ * options. Keeps loadCompilerOptions private; mirrors how the commit path
+ * assembles rendered text. Renders the full set (correctness over minimality);
+ * the program only analyzes the parent module.
+ */
+export function buildAnalysisContext(
+  db: Db,
+  tx: TxHandle
+): { renderedByPath: Map<string, string>; options: ts.CompilerOptions } {
+  const { renderedFiles } = renderPendingModules(db, tx);
+  const options = loadCompilerOptions([...renderedFiles.keys()]);
+  return { renderedByPath: renderedFiles, options };
+}
+
 export function commit(db: Db, tx: TxHandle): CommitResult {
   const diagnostics = validate(db, tx);
   if (diagnostics.length > 0) {
