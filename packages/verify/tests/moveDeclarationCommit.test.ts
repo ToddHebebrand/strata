@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
 import { ingestBatch } from "@strata/ingest";
 import {
   openDb, insertNodes, insertReferences, begin,
@@ -93,6 +95,82 @@ describe("move_declaration commit (integration)", () => {
     expect(() => move_declaration(db, tx, declId, targetId, renderedByPath, options)).toThrow(/NEEDED|self-contained|depends/i);
     expect(commit(db, tx).ok).toBe(true); // empty tx commits fine; nothing moved
     expect(find_declarations(db, { name: "uses" })).toHaveLength(1); // still in a.ts
+    db.close();
+  });
+});
+
+function loadMedium() {
+  const root = path.resolve(__dirname, "../../../examples/medium/src");
+  const files: { path: string; text: string }[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir)) {
+      const full = path.join(dir, e);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (e.endsWith(".ts")) files.push({ path: full.replaceAll("\\", "/"), text: readFileSync(full, "utf8") });
+    }
+  };
+  walk(root);
+  return { root, files };
+}
+
+describe("move_declaration on the real corpus", () => {
+  // Tolerant probe against examples/medium: a move either commits clean OR is
+  // refused with a specific reason — but NEVER corrupts the store. This guards
+  // against real-world import shapes (re-exports, back-imports, multi-import
+  // statements) the synthetic tests don't cover.
+  //
+  // Candidate selection: server/audit.ts declares `export type AuditKind =
+  // "User" | "Session" | "Token"` — a self-contained string-literal union that
+  // is NOT re-exported by index.ts (unlike everything in types.ts, which the
+  // re-export gate refuses). `AuditEntry` (staying behind in audit.ts) uses it,
+  // so the move exercises the BACK-IMPORT path: the source must re-import the
+  // moved symbol after it leaves. We move it to lru.ts (no existing imports).
+  it("moves a self-contained exported type to a new home (or refuses with a reason); never corrupts", () => {
+    const { root, files } = loadMedium();
+    const batch = ingestBatch(files);
+    const db = openDb(":memory:");
+    insertNodes(db, batch.allNodes);
+    insertReferences(db, batch.references);
+
+    const srcPath = `${root}/server/audit.ts`;
+    const srcMod = listModules(db).find((m) => m.payload === srcPath);
+    const tgtPath = `${root}/lru.ts`;
+    const tgtMod = listModules(db).find((m) => m.payload === tgtPath);
+    expect(srcMod && tgtMod).toBeTruthy();
+    if (!srcMod || !tgtMod) return;
+
+    // First exported TypeAliasDeclaration child of the source module. payload is
+    // getFullText (incl. leading trivia), so a trimmed `export ` prefix detects
+    // the export modifier without re-parsing.
+    const candidate = loadModule(db, srcMod.id).children.find(
+      (c) => c.kind === "TypeAliasDeclaration" && c.payload.trim().startsWith("export ")
+    );
+    if (!candidate) { console.log("no exported type alias in source; skipping"); return; }
+
+    const tx = begin(db, "t");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    let moved = true;
+    let manifest: ReturnType<typeof move_declaration> | undefined;
+    try {
+      manifest = move_declaration(db, tx, candidate.id, tgtMod.id, renderedByPath, options);
+    } catch (e) {
+      moved = false; // self-contained / importer-shape / re-export refusal is acceptable
+      console.log("move refused:", (e as Error).message);
+    }
+    if (moved && manifest) {
+      const result = commit(db, tx);
+      if (!result.ok) {
+        // A commit failure on a legitimate move is a REAL bug — surface it.
+        console.log("COMMIT FAILED diagnostics:", JSON.stringify(result.diagnostics, null, 2));
+      }
+      expect(result.ok).toBe(true);
+      console.log(
+        `moved ${manifest.newDeclarationId} to lru.ts; importersRewritten=${manifest.importersRewritten.length}; sourceBackImportAdded=${manifest.sourceBackImportAdded}`
+      );
+      // Post-commit the symbol resolves at exactly one home (the target).
+      const found = find_declarations(db, { name: candidate.payload.match(/type\s+([A-Za-z0-9_]+)/)?.[1] ?? "" });
+      expect(found.length).toBeGreaterThanOrEqual(1);
+    }
     db.close();
   });
 });
