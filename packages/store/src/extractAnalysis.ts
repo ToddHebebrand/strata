@@ -179,7 +179,20 @@ function inferParams(ctx: SpanContext): ExtractParam[] {
   const parentStart = ctx.parent.getStart(ctx.sf);
   const parentEnd = ctx.parent.getEnd();
   forEachSpanIdentifier(ctx, (id) => {
-    const symbol = ctx.checker.getSymbolAtLocation(id);
+    // ShorthandPropertyAssignment: `{ a, b }` — getSymbolAtLocation(a) returns
+    // the property symbol (flags=Property, declared inside the object literal,
+    // i.e. inside the span), not the variable symbol. Use
+    // getShorthandAssignmentValueSymbol to resolve to the value (variable) symbol
+    // so the param-eligibility check sees the correct declaration site.
+    let symbol: ts.Symbol | undefined;
+    if (
+      ts.isShorthandPropertyAssignment(id.parent) &&
+      id.parent.name === id
+    ) {
+      symbol = ctx.checker.getShorthandAssignmentValueSymbol(id.parent) ?? undefined;
+    } else {
+      symbol = ctx.checker.getSymbolAtLocation(id) ?? undefined;
+    }
     if (!symbol || seen.has(symbol)) return;
     if ((symbol.flags & ts.SymbolFlags.Value) === 0) return; // type-only / namespace
     const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];

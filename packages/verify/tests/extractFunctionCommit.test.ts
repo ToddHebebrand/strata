@@ -148,6 +148,31 @@ describe("extract_function commit (integration)", () => {
     expect(dangling.n).toBe(0);
     db.close();
   });
+
+  it("shorthand property assignment reads of parent-scope params become parameters", () => {
+    // Seed: extracting `const pair = { a, b };` should infer params a and b,
+    // because `a` and `b` are referenced via shorthand property assignment.
+    // Without the fix, getSymbolAtLocation(a) returns the property symbol
+    // (declared inside the object literal, i.e. inside the span), so inferParams
+    // excludes a and b — the extracted function omits them and tsc rejects it.
+    const db = seed(
+      "/project/m.ts",
+      `export function f(a: number, b: number): { a: number; b: number } {\n  const pair = { a, b };\n  return pair;\n}\n`
+    );
+    const parentId = nodeId("/project/m.ts", [0], "FunctionDeclaration");
+    const tx = begin(db, "test");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    const manifest = extract_function(db, tx, parentId, 0, 0, "pairBuild", renderedByPath, options);
+    const result = commit(db, tx);
+    expect(result.ok).toBe(true);
+    expect(find_declarations(db, { name: "pairBuild" })).toHaveLength(1);
+    const decl = find_declarations(db, { name: "pairBuild" })[0]!;
+    expect(get_references(db, decl.id).length).toBeGreaterThanOrEqual(1);
+    // The call site must pass both a and b as arguments.
+    expect(manifest.callSiteText).toContain("a");
+    expect(manifest.callSiteText).toContain("b");
+    db.close();
+  });
 });
 
 function loadMedium(): { root: string; files: { path: string; text: string }[] } {
