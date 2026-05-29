@@ -13,19 +13,31 @@ import { openDb, listModules, loadModule } from "@strata/store";
 import { render } from "@strata/render";
 
 /**
- * Natural-language task (no tool leak) used for BOTH arms. Moves the `User`
- * type from src/types/user.ts into src/types.ts and repoints every importer.
+ * Natural-language task (no tool leak) used for BOTH arms. Moves the
+ * `formatTimestamp` function from src/lib/format.ts into src/lib/dateRange.ts
+ * and repoints every importer.
  *
- * This is a BULK-PROPAGATION task: in examples/medium, `User` is declared in
- * src/types/user.ts and imported by 5 modules (4 named `import { User }`, 1
- * namespace import `import * as UserTypes`). Moving the declaration requires
- * rewriting the import specifier in every importer so the project still
- * type-checks — exactly the rename-class leverage move_declaration extends.
+ * This is a BULK-PROPAGATION task and — critically — one move_declaration v1 can
+ * actually perform: in examples/medium, `formatTimestamp` is declared in
+ * src/lib/format.ts and imported by 2 modules (src/server/events.ts and
+ * src/ui/timeline.ts), both via PLAIN NAMED imports (`import { formatTimestamp }
+ * from "../lib/format.ts"`), and it is NOT re-exported by the src/index.ts
+ * barrel. It is self-contained (uses only the `Date` global). Moving the
+ * declaration requires rewriting the import specifier in every importer so the
+ * project still type-checks — exactly the rename-class leverage move_declaration
+ * extends.
+ *
+ * (The original default — moving `User` from src/types/user.ts — was a v1
+ * capability BOUNDARY, not a cost comparison: `User` has a namespace importer
+ * (`import * as UserTypes` in src/users/serializer.ts) and a barrel re-export
+ * (`export type { User } from "./types/user.ts"` in src/index.ts), both of which
+ * move_declaration v1 provably refuses. Measuring that move would measure a
+ * refusal, not bulk-propagation cost. See decisions.md.)
  */
 export const MOVE_DOGFOOD_PROMPT =
-  "Move the User type (and only that declaration) from src/types/user.ts into " +
-  "a new home in src/types.ts, and update every file that imports it so the " +
-  "project still type-checks. Keep behavior identical.";
+  "Move the formatTimestamp function (and only that declaration) from " +
+  "src/lib/format.ts into src/lib/dateRange.ts, and update every file that " +
+  "imports it so the project still type-checks. Keep behavior identical.";
 
 export interface DogfoodArmCost {
   totalTokens: number;
@@ -42,11 +54,11 @@ export interface DogfoodArmCost {
 
 /**
  * Identifies the symbol + source/target modules a move is verified against.
- * Defaults are keyed to MOVE_DOGFOOD_PROMPT (User: types/user → types.ts) but
- * are parameters so verifyMove isn't hardcoded when the operator overrides the
- * prompt. `sourceMatch`/`targetMatch` are path SUFFIXES (POSIX, extension
- * optional) matched against each corpus path; pick suffixes specific enough to
- * disambiguate (e.g. "types/user" vs "types.ts").
+ * Defaults are keyed to MOVE_DOGFOOD_PROMPT (formatTimestamp: lib/format →
+ * lib/dateRange) but are parameters so verifyMove isn't hardcoded when the
+ * operator overrides the prompt. `sourceMatch`/`targetMatch` are path SUFFIXES
+ * (POSIX, extension optional) matched against each corpus path; pick suffixes
+ * specific enough to disambiguate (e.g. "lib/format" vs "lib/dateRange").
  */
 export interface MoveTarget {
   symbol: string;
@@ -57,9 +69,9 @@ export interface MoveTarget {
 }
 
 export const DEFAULT_MOVE_TARGET: MoveTarget = {
-  symbol: "User",
-  sourceMatch: "types/user",
-  targetMatch: "types.ts"
+  symbol: "formatTimestamp",
+  sourceMatch: "lib/format",
+  targetMatch: "lib/dateRange"
 };
 
 export interface MoveVerification {
@@ -373,8 +385,9 @@ async function runBaselineArm(
  * move_declaration). Baseline-first so the substrate arm is the conservative
  * read on any prompt-cache warmth.
  *
- * This is the bulk-propagation validation: moving `User` requires repointing
- * every importer's specifier, the rename-class leverage move_declaration extends.
+ * This is the bulk-propagation validation: moving `formatTimestamp` requires
+ * repointing every importer's specifier, the rename-class leverage
+ * move_declaration extends.
  *
  * Honest N=1. Not a bench round. Per CLAUDE.md, do not generalize a single
  * paired trial into a "substrate wins/loses by N%" claim.

@@ -51,9 +51,11 @@ const USAGE =
   "  Paired dogfood for move_declaration on <corpusRoot> (default examples/medium):\n" +
   "    1) baseline   (file-tools Claude Code on a temp tree)\n" +
   "    2) substrate  (Strata agent with move_declaration)\n" +
-  "  Same natural-language prompt for both; default moves the User type from\n" +
-  "  src/types/user.ts into src/types.ts and repoints every importer (a\n" +
-  "  bulk-propagation task: User is imported by 5 modules in examples/medium).\n" +
+  "  Same natural-language prompt for both; default moves the formatTimestamp\n" +
+  "  function from src/lib/format.ts into src/lib/dateRange.ts and repoints every\n" +
+  "  importer (a bulk-propagation task: formatTimestamp is imported by\n" +
+  "  src/server/events.ts and src/ui/timeline.ts via plain named imports, and is\n" +
+  "  NOT barrel-re-exported, so move_declaration v1 can perform it).\n" +
   "  Prints a comparison table + quality floor + honest caveats. Requires\n" +
   "  ANTHROPIC_API_KEY.\n" +
   "\n" +
