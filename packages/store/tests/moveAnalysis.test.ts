@@ -146,6 +146,34 @@ describe("analyzeMove — importer classification", () => {
   });
 });
 
+describe("analyzeMove — dynamic import rejection", () => {
+  it("rejects a module that dynamically imports the source module", () => {
+    const rendered = new Map<string, string>([
+      ["/p/a.ts", `export type Id = string;\nexport const ID_NAME = "id";\n`],
+      ["/p/b.ts", `export const x = 1;\n`],
+      ["/p/c.ts", `export async function load() {\n  const m = await import("./a.ts");\n  return m.ID_NAME;\n}\n`]
+    ]);
+    const r = analyzeMove(rendered, OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 1, name: "ID_NAME", targetPath: "/p/b.ts" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/dynamic/i);
+  });
+
+  it("does NOT reject a dynamic import of an UNRELATED module", () => {
+    const rendered = new Map<string, string>([
+      ["/p/a.ts", `export type Id = string;\nexport const ID_NAME = "id";\n`],
+      ["/p/b.ts", `export const x = 1;\n`],
+      ["/p/other.ts", `export const z = 2;\n`],
+      ["/p/c.ts", `import { ID_NAME } from "./a.ts";\nexport async function load() {\n  const m = await import("./other.ts");\n  return [ID_NAME, m.z];\n}\n`]
+    ]);
+    // c.ts imports ID_NAME normally (named) AND dynamically imports an unrelated module.
+    // The dynamic import is to ./other.ts (not the source), so it must NOT trigger the dynamic rejection;
+    // the named import of ID_NAME from ./a.ts should be handled normally (path-rewrite).
+    const r = analyzeMove(rendered, OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 1, name: "ID_NAME", targetPath: "/p/b.ts" });
+    expect(r.ok).toBe(true);
+  });
+});
+
 describe("analyzeMove — rewrite computation", () => {
   it("sole import → specifier path rewrite, style preserved (.ts kept)", () => {
     const rendered = new Map<string, string>([

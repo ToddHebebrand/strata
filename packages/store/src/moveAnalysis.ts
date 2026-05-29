@@ -175,6 +175,21 @@ function sameModule(a: string, b: string): boolean {
   return strip(a) === strip(b);
 }
 
+/**
+ * A dynamic import call: `import("<specifier>")`. This is a CallExpression whose
+ * expression is the `import` keyword (NOT an ImportDeclaration), with a
+ * string-literal first argument. These can appear anywhere in a module, so they
+ * must be found via a full recursive AST walk, not just over top-level statements.
+ */
+function isDynamicImportCall(node: ts.Node): node is ts.CallExpression {
+  return (
+    ts.isCallExpression(node) &&
+    node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+    node.arguments.length >= 1 &&
+    ts.isStringLiteral(node.arguments[0]!)
+  );
+}
+
 interface ImporterHit {
   importerPath: string;
   sf: ts.SourceFile;
@@ -194,6 +209,25 @@ function collectImporters(
   const hits: ImporterHit[] = [];
   for (const [importerKey, sf] of sourceFiles) {
     if (sameModule(importerKey, srcKey)) continue; // skip the source module itself
+    // Reject any module that dynamically imports the SOURCE module. v1 only
+    // statically rewrites named ImportDeclarations; a `await import("./src")`
+    // object's `.X` access can't be statically tracked (same limitation as a
+    // namespace import), so refuse loudly rather than commit a broken consumer.
+    let dynamicReason: string | null = null;
+    const walkDynamic = (node: ts.Node): void => {
+      if (dynamicReason) return;
+      if (isDynamicImportCall(node)) {
+        const spec = (node.arguments[0] as ts.StringLiteral).text;
+        const resolved = resolveSpecifier(importerKey, spec);
+        if (resolved && sameModule(resolved, srcKey)) {
+          dynamicReason = `move: ${importerKey} dynamically imports the source module (import("${spec}")); v1 cannot statically rewrite dynamic imports, so it handles static named imports only`;
+          return;
+        }
+      }
+      node.forEachChild(walkDynamic);
+    };
+    walkDynamic(sf);
+    if (dynamicReason) return { reason: dynamicReason };
     for (let i = 0; i < sf.statements.length; i++) {
       const stmt = sf.statements[i]!;
       // Re-export: export { X } from "./src"
