@@ -7,6 +7,25 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-05-29 — extract_function paired dogfood (N=1): file-tools baseline beats the substrate on a one-shot extraction
+
+**What ran.** `dogfood:extract` (new harness, `packages/bench/src/dogfoodExtract.ts`) — one keyed paired comparison on `examples/medium`, same natural-language prompt for both arms: extract the `parseArgs` token-parsing loop in `src/flags.ts` into a helper. Baseline = file-tools Claude Code on a temp tree; substrate = Strata agent with `extract_function`. Model `claude-sonnet-4-6`, default bounds. Artifacts: `packages/bench/results/dogfood-extract-2026-05-29T04-00-33-315Z.{json,md}` (+ `-corrected.md`).
+
+**Result (both arms produced a correct, tsc-clean extraction):**
+
+| Metric | baseline (file tools) | substrate (extract_function) | sub/base |
+|---|---:|---:|---:|
+| Cost USD | **$0.0969** | $0.1174 | 121% |
+| Tool calls | **4** | 7 | 175% |
+| Turns | **5** | 8 | 160% |
+| Wall ms | **30,837** | 63,365 | 206% |
+
+**Honest finding: on a single-site extraction, the file-tools baseline wins** — cheaper, fewer tools/turns, faster, and arguably a cleaner result (the baseline chose a return-object design `parseTokens(tokens): { positional, options }`; the substrate used by-reference mutation — both correct and tsc-clean). This is N=1, not a bench round, and is **directionally consistent with the architecture**, not a surprise: `extract_function` is a one-shot, single-site edit, which is exactly where file tools are cheap (the agent just edits text). The substrate's distinctive value for extract is the **graph-traceable post-condition** — the new function is immediately findable / renamable / has resolved reference edges (proven in the feature's integration tests) — i.e. the payoff is on *follow-on* operations, not the extraction itself. So the roadmap rule "each new tool needs a task it visibly wins on" is **not** satisfied by a one-shot extraction; a compound task (extract → then rename/add_parameter the new helper across callers, a graph-traceable bulk op of the rename-class the substrate does win) is the validation that could show the edge. Recommended as the next falsifiable question, deferred to an explicit operator-budgeted run.
+
+**Harness bug found and fixed mid-analysis (no re-spend).** The first run wasted $0 (failed at corpus-copy before any model call — relative `examples/medium` resolved under the pnpm-filter cwd `packages/bench/`; fixed by passing an absolute corpus path). The completed run then mis-reported "inconclusive" because the baseline's full-suite vitest failed — but that failure is `examples/medium`'s **pre-existing** T05 half-open-interval fixture (`dateRange.test.ts`), unrelated to the extraction, and the substrate arm runs a tsc-only gate so it never ran vitest. Requiring full-suite vitest on the baseline was unfair and asymmetric. Fix: the harness quality floor is now **symmetric tsc-clean + structural-extraction** for both arms; `vitestPassed` is informational with a note about pre-existing corpus failures. Verdict recomputed from the captured costs (no new keyed run): both arms quality-pass → comparison conclusive → substrate not cheaper.
+
+**Why logged:** records the only keyed spend this iteration and its honest (negative-for-the-tool) result, plus the harness correction, so the "extract_function wins" question isn't silently assumed and the next validation (compound task) is captured.
+
 ## 2026-05-28 — extract_function v1 shipped: two-coordinate design, lib-backed analysis program, shorthand-property fix, op-log provenance
 
 **What shipped:** `extract_function` (packages/store/src/extractFunction.ts + extractAnalysis.ts; agent tool in packages/agent/src/tools.ts). Pulls a contiguous statement index range from a top-level `FunctionDeclaration` body into a new top-level function and replaces the span with a call. Full auto-infer: parameters (parent-scope free variables), return value(s) (span-declared bindings used after the span — single binding → `return x`, multiple → returned object destructured at the call site), and async-ness (span contains `await` → new function is `async`, call site uses `await`). Implemented as plan `docs/superpowers/plans/2026-05-28-extract-function.md` (Tasks 1–10), branch `extract-function`.
