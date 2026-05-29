@@ -63,6 +63,14 @@ export {
 export { add_import, addImport, type AddImportResult } from "./addImport";
 export { appendChildStatement } from "./appendChildStatement";
 export {
+  analyzeMove,
+  type MoveResult,
+  type MovePlan,
+  type MoveRejection,
+  type MoveInput,
+  type ImporterRewrite
+} from "./moveAnalysis";
+export {
   find_declarations_in_module,
   findDeclarationsInModule,
   list_module_exports,
