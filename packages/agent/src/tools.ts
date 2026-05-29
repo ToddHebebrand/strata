@@ -17,6 +17,7 @@ import {
   get_references,
   isVecAvailable,
   list_module_exports,
+  move_declaration,
   read_node,
   rename_symbol,
   replace_body,
@@ -415,6 +416,28 @@ export function createStrataTools(
     }
   );
 
+  const moveDeclarationTool = tool(
+    "move_declaration",
+    "Move an exported top-level declaration (function/class/interface/type/const) from its current module to a different module, and rewrite EVERY importer's import path to point at the new module — all in one operation in the open transaction you pass. You give the declaration's node ID and the target module's node ID; the tool finds all importers through the reference graph and rewrites them (a sole `import { X } from \"old\"` has its path rewritten; a mixed `import { X, Y }` has X split out into a new import from the target). If the source module still uses the symbol, a back-import is added there. You do NOT, and must not, hand-edit importers afterward — they are already rewritten, so editing them yourself double-edits the transaction. The moved declaration gets a new node ID (IDs encode the module); use find_declarations to re-locate it after commit. The tool REFUSES, with a specific reason, moves it cannot do safely: a declaration that references source-local or imported symbols (v1 moves only self-contained declarations — those using just globals, their own internals, or symbols already in the target), a non-exported declaration, a target that already declares the name, or importers that use namespace/default/re-export/dynamic forms. Requires an open transaction; mutates the overlay only.",
+    {
+      tx: txHandleSchema,
+      declaration_id: nodeIdSchema,
+      target_module_id: nodeIdSchema
+    },
+    async (args) => {
+      const { renderedByPath, options } = buildAnalysisContext(ctx.db, args.tx as TxHandle);
+      const manifest = move_declaration(
+        ctx.db,
+        args.tx as TxHandle,
+        args.declaration_id,
+        args.target_module_id,
+        renderedByPath,
+        options
+      );
+      return textResult({ ok: true, ...manifest });
+    }
+  );
+
   const replaceBodyTool = tool(
     "replace_body",
     "Replace a function declaration's entire body with new code you provide, including the surrounding braces. Requires an open transaction; mutates the overlay only. This is the low-level tool for body logic changes that are not a rename, a parameter change, or a return-type change. It does not analyze the new body's references; rely on validate to confirm the new body type-checks before you commit.",
@@ -509,6 +532,7 @@ export function createStrataTools(
     addImportTool,
     createFunctionTool,
     extractFunctionTool,
+    moveDeclarationTool,
     replaceBodyTool,
     validateTool,
     commitTransactionTool,
@@ -531,6 +555,7 @@ export const STRATA_TOOL_NAMES = [
   "add_import",
   "create_function",
   "extract_function",
+  "move_declaration",
   "replace_body",
   "validate",
   "commit_transaction",
