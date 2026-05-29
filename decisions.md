@@ -7,7 +7,7 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
-## 2026-05-29 — extract_function paired dogfood (N=1): file-tools baseline beats the substrate on a one-shot extraction
+## 2026-05-29 — extract_function paired dogfood (N=1, simple + compound): baseline wins both; substrate's cost edge is bulk-propagation-specific, not extract-class
 
 **What ran.** `dogfood:extract` (new harness, `packages/bench/src/dogfoodExtract.ts`) — one keyed paired comparison on `examples/medium`, same natural-language prompt for both arms: extract the `parseArgs` token-parsing loop in `src/flags.ts` into a helper. Baseline = file-tools Claude Code on a temp tree; substrate = Strata agent with `extract_function`. Model `claude-sonnet-4-6`, default bounds. Artifacts: `packages/bench/results/dogfood-extract-2026-05-29T04-00-33-315Z.{json,md}` (+ `-corrected.md`).
 
@@ -20,7 +20,20 @@ Log an entry whenever:
 | Turns | **5** | 8 | 160% |
 | Wall ms | **30,837** | 63,365 | 206% |
 
-**Honest finding: on a single-site extraction, the file-tools baseline wins** — cheaper, fewer tools/turns, faster, and arguably a cleaner result (the baseline chose a return-object design `parseTokens(tokens): { positional, options }`; the substrate used by-reference mutation — both correct and tsc-clean). This is N=1, not a bench round, and is **directionally consistent with the architecture**, not a surprise: `extract_function` is a one-shot, single-site edit, which is exactly where file tools are cheap (the agent just edits text). The substrate's distinctive value for extract is the **graph-traceable post-condition** — the new function is immediately findable / renamable / has resolved reference edges (proven in the feature's integration tests) — i.e. the payoff is on *follow-on* operations, not the extraction itself. So the roadmap rule "each new tool needs a task it visibly wins on" is **not** satisfied by a one-shot extraction; a compound task (extract → then rename/add_parameter the new helper across callers, a graph-traceable bulk op of the rename-class the substrate does win) is the validation that could show the edge. Recommended as the next falsifiable question, deferred to an explicit operator-budgeted run.
+**Honest finding: on a single-site extraction, the file-tools baseline wins** — cheaper, fewer tools/turns, faster, and arguably a cleaner result (the baseline chose a return-object design `parseTokens(tokens): { positional, options }`; the substrate used by-reference mutation — both correct and tsc-clean). This is N=1, not a bench round, and is **directionally consistent with the architecture**: `extract_function` is a one-shot, single-site edit, which is exactly where file tools are cheap (the agent just edits text).
+
+**Compound follow-up (same session, 2026-05-29) — the hypothesis was WRONG.** Hypothesis: a compound task (extract → rename the helper → add a parameter to it) would let the substrate's graph-traceability win, since each follow-on is a clean graph op. Ran the SAME paired harness with a compound prompt (artifacts `dogfood-extract-2026-05-29T04-26-30-720Z.{json,md}`). Both arms completed the full compound correctly (final `scanTokens(... verbose: boolean = false)`, tsc-clean). Result — the substrate did **worse**, not better:
+
+| Metric | baseline | substrate (compound) | sub/base |
+|---|---:|---:|---:|
+| Cost USD | **$0.1004** | $0.2089 | **208%** |
+| Tool calls | **3** | 16 | 533% |
+| Turns | **4** | 17 | 425% |
+| Wall ms | **33,923** | 93,045 | 274% |
+
+**Root cause (the decision-grade insight).** The substrate's measured cost advantage requires **bulk graph-traceable propagation over many existing references** (the T03 rename-across-a-corpus win). A *freshly extracted* helper has exactly **one** caller, so NO follow-on op on it is bulk — rename and add_parameter each touch a single call site, which the file-tools agent folds into the same ~3 text edits as the extract. Meanwhile the substrate pays per-op **transaction + validate(tsc) + commit ceremony** for each of the three ops, plus `find_declarations` to re-locate the node between steps — so the compound *multiplied* the substrate's ceremony (16 tools / 3 commits) without adding any bulk leverage. Stacking graph ops on a low-fan-out symbol makes the substrate strictly worse.
+
+**Refined value proposition (use this in product copy).** `extract_function`'s value is NOT cost — it is (a) correctness/safety (auto-inferred params/returns, hazard rejection, semantic preservation by construction) and (b) making new code a graph citizen so it can *participate* in a future bulk op. The substrate's *cost* win is specific to **bulk propagation over many existing call sites** (rename / add_parameter on widely-referenced symbols, T01/T03-class). Do not pitch extract-class or new-code tools as token wins. The roadmap "visibly wins" gate for extract is **not met and is not expected to be met on extract-shaped tasks**; the win lives in the rename/parameter-propagation class, already demonstrated by T03.
 
 **Harness bug found and fixed mid-analysis (no re-spend).** The first run wasted $0 (failed at corpus-copy before any model call — relative `examples/medium` resolved under the pnpm-filter cwd `packages/bench/`; fixed by passing an absolute corpus path). The completed run then mis-reported "inconclusive" because the baseline's full-suite vitest failed — but that failure is `examples/medium`'s **pre-existing** T05 half-open-interval fixture (`dateRange.test.ts`), unrelated to the extraction, and the substrate arm runs a tsc-only gate so it never ran vitest. Requiring full-suite vitest on the baseline was unfair and asymmetric. Fix: the harness quality floor is now **symmetric tsc-clean + structural-extraction** for both arms; `vitestPassed` is informational with a note about pre-existing corpus failures. Verdict recomputed from the captured costs (no new keyed run): both arms quality-pass → comparison conclusive → substrate not cheaper.
 
