@@ -233,13 +233,21 @@ function isReferencedAfterSpan(ctx: SpanContext, symbol: ts.Symbol): boolean {
   let found = false;
   const walk = (node: ts.Node): void => {
     if (found) return;
-    if (
-      ts.isIdentifier(node) &&
-      node.getStart(ctx.sf) >= ctx.spanEnd &&
-      ctx.checker.getSymbolAtLocation(node) === symbol
-    ) {
-      found = true;
-      return;
+    if (ts.isIdentifier(node) && node.getStart(ctx.sf) >= ctx.spanEnd) {
+      // Direct reference via getSymbolAtLocation.
+      const sym = ctx.checker.getSymbolAtLocation(node);
+      if (sym === symbol) { found = true; return; }
+      // ShorthandPropertyAssignment: `{ store, }` — getSymbolAtLocation returns the
+      // property symbol (flags=Property), not the local variable symbol.
+      // getShorthandAssignmentValueSymbol resolves to the value (variable) symbol.
+      if (
+        ts.isShorthandPropertyAssignment(node.parent) &&
+        node.parent.name === node &&
+        ctx.checker.getShorthandAssignmentValueSymbol(node.parent) === symbol
+      ) {
+        found = true;
+        return;
+      }
     }
     node.forEachChild(walk);
   };

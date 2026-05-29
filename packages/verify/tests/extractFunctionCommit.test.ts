@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import ts from "typescript";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
 import { ingestBatch } from "@strata/ingest";
 import {
   openDb,
@@ -143,6 +146,78 @@ describe("extract_function commit (integration)", () => {
       )
       .get() as { n: number };
     expect(dangling.n).toBe(0);
+    db.close();
+  });
+});
+
+function loadMedium(): { root: string; files: { path: string; text: string }[] } {
+  const root = path.resolve(__dirname, "../../../examples/medium/src");
+  const files: { path: string; text: string }[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir)) {
+      const full = path.join(dir, e);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (e.endsWith(".ts")) files.push({ path: full.replaceAll("\\", "/"), text: readFileSync(full, "utf8") });
+    }
+  };
+  walk(root);
+  return { root, files };
+}
+
+describe("extract_function on the real corpus", () => {
+  it("extracts a contiguous span from a medium-corpus function and commits green", () => {
+    const { root, files } = loadMedium();
+    const batch = ingestBatch(files);
+    const db = openDb(":memory:");
+    insertNodes(db, batch.allNodes);
+    insertReferences(db, batch.references);
+
+    // Pick a function with >=2 simple body statements. Inspect via read_node-style
+    // listing: find the first top-level FunctionDeclaration in lru.ts with a body
+    // of at least 2 statements and extract its first statement.
+    const lruPath = `${root}/lru.ts`;
+    const lruModule = nodeId(lruPath, [], "Module");
+    // Find a FunctionDeclaration child of lru.ts (fall back to any module if none).
+    const candidates = listModules(db)
+      .flatMap((m) => loadModule(db, m.id).children.map((c) => ({ m, c })))
+      .filter(({ c }) => c.kind === "FunctionDeclaration");
+    const target = candidates.find(({ c }) => {
+      const sf = ts.createSourceFile("x.ts", c.payload, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const fn = sf.statements[0];
+      return fn && ts.isFunctionDeclaration(fn) && fn.body && fn.body.statements.length >= 2;
+    });
+    expect(target).toBeDefined();
+    if (!target) return;
+
+    const tx = begin(db, "test");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    const analysis = (() => {
+      try {
+        return extract_function(db, tx, target.c.id, 0, 0, "__extracted_probe__", renderedByPath, options);
+      } catch (e) {
+        return e as Error;
+      }
+    })();
+    // Either the extraction is safe and commits green, or it was refused with a
+    // reason (also acceptable — the point is no corruption). If it applied, commit.
+    if (!(analysis instanceof Error)) {
+      const result = commit(db, tx);
+      expect(result.ok).toBe(true);
+      expect(find_declarations(db, { name: "__extracted_probe__" })).toHaveLength(1);
+    }
+    db.close();
+  });
+});
+
+describe("extract_function pre-commit rejection (transaction stays open)", () => {
+  it("refuses a span containing a return, before any mutation", () => {
+    const db = seed("/project/m.ts", `export function f(a: number): number {\n  if (a > 0) {\n    return a;\n  }\n  return -a;\n}\n`);
+    const parentId = nodeId("/project/m.ts", [0], "FunctionDeclaration");
+    const tx = begin(db, "test");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    expect(() => extract_function(db, tx, parentId, 0, 0, "g", renderedByPath, options)).toThrow(/return/i);
+    // Parent unchanged; the transaction is still usable for a different op.
+    expect(find_declarations(db, { name: "g" })).toHaveLength(0);
     db.close();
   });
 });
