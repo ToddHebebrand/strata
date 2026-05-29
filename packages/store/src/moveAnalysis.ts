@@ -14,12 +14,13 @@ export interface ImporterRewrite {
   /** child index of the importer's ImportDeclaration statement in its module. */
   importStatementIndex: number;
   style: "path-rewrite" | "split-out";
-  /** path-rewrite: original specifier text incl. quotes, and its replacement (filled in Task 5). */
+  /** path-rewrite: the original quoted specifier text to replace. */
   oldSpecifier?: string;
+  /** path-rewrite: the replacement quoted specifier text. */
   newSpecifier?: string;
-  /** split-out: the symbol name to remove from this import's binding list (filled in Task 5). */
+  /** split-out: the symbol name to remove from this import's binding list. */
   removeName?: string;
-  /** split-out: a new `import { X } from "<target>"` to append to the importer (filled in Task 5). */
+  /** split-out: a new `import { X } from "<target>"` statement to append to the importer. */
   newImportText?: string;
 }
 
@@ -57,19 +58,7 @@ function buildProgram(rendered: Map<string, string>, options: ts.CompilerOptions
   return { program, checker: program.getTypeChecker(), sourceFiles };
 }
 
-function declName(stmt: ts.Statement): string | undefined {
-  if ((ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt) ||
-       ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) && stmt.name) {
-    return stmt.name.text;
-  }
-  if (ts.isVariableStatement(stmt)) {
-    const d = stmt.declarationList.declarations[0];
-    if (d && ts.isIdentifier(d.name)) return d.name.text;
-  }
-  return undefined;
-}
-
-/** The declaration's name identifier node, for symbol resolution. Mirrors declName's kind coverage. */
+/** The declaration's name identifier node, for symbol resolution. Covers all 5 movable kinds. */
 function declNameNode(stmt: ts.Statement): ts.Node | undefined {
   if ((ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt) ||
        ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) && stmt.name) {
@@ -80,6 +69,11 @@ function declNameNode(stmt: ts.Statement): ts.Node | undefined {
     if (d && ts.isIdentifier(d.name)) return d.name;
   }
   return undefined;
+}
+
+function declName(stmt: ts.Statement): string | undefined {
+  const n = declNameNode(stmt);
+  return n && ts.isIdentifier(n) ? n.text : undefined;
 }
 
 function isExported(stmt: ts.Statement): boolean {
@@ -136,7 +130,11 @@ function findOutOfScopeDependency(
   return bad;
 }
 
-/** Relative import path from importer to target, preserving the importer's extension style. */
+/**
+ * Relative import path from importer to target. Preserves whether the importer
+ * used a file extension at all (v1 assumes .ts targets; it does not translate a
+ * .js-style specifier back to .js).
+ */
 function rewrittenSpecifier(importerPath: string, targetPath: string, originalSpecifier: string): string {
   const fromDir = path.dirname(normalizePath(importerPath));
   let rel = normalizePath(path.relative(fromDir, normalizePath(targetPath)));
