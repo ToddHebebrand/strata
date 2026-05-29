@@ -101,3 +101,52 @@ describe("analyzeMove — self-contained verification", () => {
     expect(r.ok).toBe(true);
   });
 });
+
+describe("analyzeMove — importer classification", () => {
+  const base = (extra: Record<string, string>) =>
+    new Map<string, string>([
+      ["/p/a.ts", `export type Id = string;\n`],
+      ["/p/b.ts", `export const x = 1;\n`],
+      ...Object.entries(extra)
+    ]);
+
+  it("rejects a namespace importer", () => {
+    const r = analyzeMove(
+      base({ "/p/c.ts": `import * as A from "./a.ts";\nexport const y: A.Id = "1";\n` }),
+      OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 0, name: "Id", targetPath: "/p/b.ts" }
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/namespace|import \*/i);
+  });
+
+  it("rejects a re-export importer", () => {
+    const r = analyzeMove(
+      base({ "/p/c.ts": `export { Id } from "./a.ts";\n` }),
+      OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 0, name: "Id", targetPath: "/p/b.ts" }
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/re-export|export .* from/i);
+  });
+
+  it("accepts named importers (sole and mixed) and records them", () => {
+    const r = analyzeMove(
+      base({
+        "/p/c.ts": `import { Id } from "./a.ts";\nexport const y: Id = "1";\n`,
+        "/p/d.ts": `import { Id, } from "./a.ts";\nimport { x } from "./b.ts";\nexport const z: Id = "2";\n`
+      }),
+      OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 0, name: "Id", targetPath: "/p/b.ts" }
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.importerRewrites.map((i) => i.importerPath).sort()).toEqual(
+      [normalizePathTest("/p/c.ts"), normalizePathTest("/p/d.ts")].sort()
+    );
+  });
+});
+
+// helper mirroring resolveReferences.normalizePath for assertion convenience
+function normalizePathTest(p: string): string {
+  return p.replaceAll("\\", "/").replace(/^\.\//, "");
+}

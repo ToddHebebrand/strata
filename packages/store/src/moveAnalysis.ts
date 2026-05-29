@@ -123,6 +123,75 @@ function findOutOfScopeDependency(
   return bad;
 }
 
+/** Resolve a relative import specifier from an importer file to a normalized module key. */
+function resolveSpecifier(importerPath: string, specifier: string): string | null {
+  if (!specifier.startsWith(".")) return null; // bare/package — not our source
+  const dir = path.dirname(normalizePath(importerPath));
+  const joined = normalizePath(path.join(dir, specifier));
+  return joined; // compared against source key (both may carry/omit extension; see caller)
+}
+
+/** True if two module keys refer to the same file, ignoring a .ts/.tsx/.js/.mjs extension. */
+function sameModule(a: string, b: string): boolean {
+  const strip = (p: string) => p.replace(/\.(ts|tsx|js|mjs)$/, "");
+  return strip(a) === strip(b);
+}
+
+interface ImporterHit {
+  importerPath: string;
+  sf: ts.SourceFile;
+  importDecl: ts.ImportDeclaration;
+  /** index of this ImportDeclaration among the module's top-level statements. */
+  statementIndex: number;
+  /** the named bindings in this import (text of each specifier name). */
+  bindingNames: string[];
+}
+
+/** Find/validate importers of `name` from `srcKey`. Returns hits or a rejection reason. */
+function collectImporters(
+  sourceFiles: Map<string, ts.SourceFile>,
+  srcKey: string,
+  name: string
+): { hits: ImporterHit[] } | { reason: string } {
+  const hits: ImporterHit[] = [];
+  for (const [importerKey, sf] of sourceFiles) {
+    if (sameModule(importerKey, srcKey)) continue; // skip the source module itself
+    for (let i = 0; i < sf.statements.length; i++) {
+      const stmt = sf.statements[i]!;
+      // Re-export: export { X } from "./src"
+      if (ts.isExportDeclaration(stmt) && stmt.moduleSpecifier && ts.isStringLiteral(stmt.moduleSpecifier)) {
+        const resolved = resolveSpecifier(importerKey, stmt.moduleSpecifier.text);
+        if (resolved && sameModule(resolved, srcKey) && stmt.exportClause && ts.isNamedExports(stmt.exportClause)
+            && stmt.exportClause.elements.some((e) => e.name.text === name)) {
+          return { reason: `move: ${importerKey} re-exports ${name} (export { ${name} } from ...); v1 does not rewrite re-exports` };
+        }
+        continue;
+      }
+      if (!ts.isImportDeclaration(stmt) || !stmt.moduleSpecifier || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+      const resolved = resolveSpecifier(importerKey, stmt.moduleSpecifier.text);
+      if (!resolved || !sameModule(resolved, srcKey)) continue;
+      const clause = stmt.importClause;
+      if (!clause) continue; // side-effect import — doesn't bind the symbol
+      // default import of the symbol
+      if (clause.name && clause.name.text === name) {
+        return { reason: `move: ${importerKey} imports ${name} as a default import; v1 handles named imports only` };
+      }
+      const bindings = clause.namedBindings;
+      if (bindings && ts.isNamespaceImport(bindings)) {
+        // import * as A — can't tell statically whether A.name is used; reject conservatively
+        return { reason: `move: ${importerKey} uses a namespace import (import * as ${bindings.name.text}); v1 handles named imports only` };
+      }
+      if (bindings && ts.isNamedImports(bindings)) {
+        const names = bindings.elements.map((e) => e.name.text);
+        if (names.includes(name)) {
+          hits.push({ importerPath: importerKey, sf, importDecl: stmt, statementIndex: i, bindingNames: names });
+        }
+      }
+    }
+  }
+  return { hits };
+}
+
 /**
  * Analyze a candidate move. Pure: builds a program over the rendered set, no DB.
  * Importer classification + rewrite computation arrive in Tasks 4-5; this handles
@@ -157,13 +226,25 @@ export function analyzeMove(
     return reject(`move: declaration ${input.name} references \`${dep}\` which is not in scope at the target (v1 moves only self-contained declarations; relocate or keep it manually)`);
   }
 
+  // Derive srcKey from the already-resolved srcSf so it matches a sourceFiles key
+  // exactly (buildProgram keyed each SourceFile by normalizePath(renderedPath)).
+  const srcKey = normalizePath(srcSf.fileName);
+  const importers = collectImporters(sourceFiles, srcKey, input.name);
+  if ("reason" in importers) return reject(importers.reason);
+  // Task 5 fills in the specifier / split-out fields; this task records identity + style.
+  const importerRewrites: ImporterRewrite[] = importers.hits.map((h) => ({
+    importerPath: h.importerPath,
+    importStatementIndex: h.statementIndex,
+    style: h.bindingNames.length === 1 ? "path-rewrite" : "split-out"
+  }));
+
   return {
     ok: true,
     name: input.name,
     declKind: ts.SyntaxKind[stmt.kind],
     declPayload: srcSf.text.slice(stmt.getStart(srcSf), stmt.getEnd()),
     sourceChildIndex: input.declChildIndex,
-    importerRewrites: [],
+    importerRewrites,
     sourceStillUses: false
   };
 }
