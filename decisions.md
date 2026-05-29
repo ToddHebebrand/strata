@@ -27,6 +27,12 @@ Log an entry whenever:
 
 **Op-log provenance.** `extract_function` reuses `create_function` internally to insert the new function. This means the operation log records a `CreateFunction` op followed by an `ExtractFunction` op for a single extract. This is intentional — the `CreateFunction` is real provenance (the node was created), and the `ExtractFunction` captures the extract-specific parameters (parent ID, index range, param/return counts). A future replay or audit system will need to handle both entries as a unit; that's deferred to when op-log replay is a first-class use case (not v1).
 
+**Known v1 gaps (validate-backstopped, not pre-commit rejections).** Surfaced by the final whole-implementation review; documented here so they are durable, not surprises:
+- **Destructuring-binding declarations used after the span.** `collectSpanDeclarations` only collects identifier binding names, so a span that declares via destructuring (`const { x, y } = a;`) and uses `x`/`y` after the span under-returns (returns `void`). The spliced parent then references undefined names and the commit fails with a TS2304 ("Cannot find name 'x'") rather than a friendly "destructuring binding used after the span is not supported in v1" reason. No corruption (the `validate` gate refuses the commit); only the error quality suffers. Cheap future improvement: detect a destructuring decl whose names are used after the span and reject with a specific reason.
+- **Name collision with an imported (vs declared) symbol.** The pre-commit collision scan compares only against sibling top-level *declaration* names, not imported names. Extracting into a function whose chosen name shadows an `import { name }` is caught at commit by `validate` (commit returns `{ ok: false }`), not by the friendly pre-commit collision message. Again validate-backstopped; only error quality.
+
+Both are accepted v1 limits: the integrity guarantee (no silent wrong-but-compiling output) holds because the commit `validate` gate is the backstop; only the *diagnostic* is less friendly than a static rejection.
+
 **Integration tests:** 8 tests in `packages/verify/tests/extractFunctionCommit.test.ts` covering findability after commit, call-site → new-function reference edge, re-ingest equivalence (node IDs + edges), rollback on tsc failure, shorthand-property params, real-corpus tolerant probe, and pre-commit rejection. All pass; full-suite 261 tests pass; T03 all 11 criteria true.
 
 **Design-doc impact:** none on `strata-design.md`. Adds to the tool surface as specified in § "Tool set."
