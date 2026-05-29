@@ -98,7 +98,11 @@ function findOutOfScopeDependency(
       // SOURCE module. Follow the alias to the original declaration so a symbol
       // whose real home is the TARGET module reads as in-scope-after-move.
       if (sym && sym.flags & ts.SymbolFlags.Alias) {
-        sym = checker.getAliasedSymbol(sym);
+        try {
+          sym = checker.getAliasedSymbol(sym);
+        } catch {
+          /* keep alias symbol */
+        }
       }
       const decl = sym?.declarations?.[0];
       if (decl) {
