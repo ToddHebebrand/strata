@@ -51,6 +51,55 @@ describe("analyzeExtraction — returns", () => {
   });
 });
 
+describe("analyzeExtraction — async + hazards", () => {
+  it("marks the extraction async and wraps the return type when the span awaits", () => {
+    const source = `async function f(p: Promise<number>): Promise<number> {\n  const v = await p;\n  return v + 1;\n}\n`;
+    const r = analyzeExtraction(rendered(source), OPTIONS, "/p/m.ts", 0, { start: 0, end: 0 }, "load");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.isAsync).toBe(true);
+    expect(r.returnType).toBe("Promise<number>");
+    expect(r.callSiteText).toBe("const v = await load(p);");
+  });
+
+  it("rejects a span containing a return statement", () => {
+    const source = `export function f(a: number): number {\n  if (a > 0) {\n    return a;\n  }\n  return -a;\n}\n`;
+    const r = analyzeExtraction(rendered(source), OPTIONS, "/p/m.ts", 0, { start: 0, end: 0 }, "g");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/return/i);
+  });
+
+  it("rejects a span with a break that escapes the span", () => {
+    const source = `export function f(xs: number[]): void {\n  for (const x of xs) {\n    if (x < 0) break;\n    console.log(x);\n  }\n}\n`;
+    // Extract the inner if (index 0 of the for body)? Simpler: extract a break-bearing
+    // statement directly. Here extract the whole for-loop body's first statement set
+    // by targeting a nested span is awkward; instead test a labeled escape:
+    const labeled = `export function f(xs: number[]): void {\n  outer: for (const x of xs) {\n    break outer;\n  }\n}\n`;
+    const r = analyzeExtraction(rendered(labeled), OPTIONS, "/p/m.ts", 0, { start: 0, end: 0 }, "g");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/break|continue/i);
+  });
+
+  it("rejects a span referencing this", () => {
+    const source = `export function f(this: { n: number }): number {\n  const v = this.n + 1;\n  return v;\n}\n`;
+    const r = analyzeExtraction(rendered(source), OPTIONS, "/p/m.ts", 0, { start: 0, end: 0 }, "g");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/this|super|arguments/i);
+  });
+
+  it("rejects reassignment of a parent-scope binding", () => {
+    const source = `export function f(a: number): number {\n  let acc = 0;\n  acc = acc + a;\n  return acc;\n}\n`;
+    // Extract index 1 (`acc = acc + a;`) — reassigns acc, declared outside the span.
+    const r = analyzeExtraction(rendered(source), OPTIONS, "/p/m.ts", 0, { start: 1, end: 1 }, "g");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/reassign|assignment/i);
+  });
+});
+
 describe("analyzeExtraction — parameters", () => {
   it("infers parent-scope free variables as parameters with inferred types", () => {
     const source = `export function f(a: number, b: number): number {\n  const sum = a + b;\n  const scaled = sum * 2;\n  return scaled;\n}\n`;
