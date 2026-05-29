@@ -130,6 +130,26 @@ describe("analyzeMove — importer classification", () => {
     expect(r.reason).toMatch(/re-export|export .* from/i);
   });
 
+  it("rejects a default importer of the symbol", () => {
+    // /p/a.ts exports a named, self-contained `Widget` (to move) AND a default
+    // export. The importer binds the DEFAULT export to the local name `Widget`
+    // via `import Widget from "./a.ts"`. collectImporters keys the default-import
+    // branch on `clause.name.text === name` (the moved symbol name "Widget"), so
+    // the rejection fires even though the local binding is the default, not the
+    // named, export.
+    const rendered = new Map<string, string>([
+      ["/p/a.ts", `export function Widget(): number { return 1; }\nconst d = 0;\nexport default d;\n`],
+      ["/p/b.ts", `export const x = 1;\n`],
+      ["/p/c.ts", `import Widget from "./a.ts";\nexport const y = Widget;\n`]
+    ]);
+    const r = analyzeMove(rendered, OPTIONS, {
+      sourcePath: "/p/a.ts", declChildIndex: 0, name: "Widget", targetPath: "/p/b.ts"
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/default import/i);
+  });
+
   it("accepts named importers (sole and mixed) and records them", () => {
     const r = analyzeMove(
       base({
