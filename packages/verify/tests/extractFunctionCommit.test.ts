@@ -200,8 +200,6 @@ describe("extract_function on the real corpus", () => {
     // Pick a function with >=2 simple body statements. Inspect via read_node-style
     // listing: find the first top-level FunctionDeclaration in lru.ts with a body
     // of at least 2 statements and extract its first statement.
-    const lruPath = `${root}/lru.ts`;
-    const lruModule = nodeId(lruPath, [], "Module");
     // Find a FunctionDeclaration child of lru.ts (fall back to any module if none).
     const candidates = listModules(db)
       .flatMap((m) => loadModule(db, m.id).children.map((c) => ({ m, c })))

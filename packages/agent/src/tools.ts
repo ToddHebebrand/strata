@@ -411,7 +411,7 @@ export function createStrataTools(
         renderedByPath,
         options
       );
-      return textResult(manifest);
+      return textResult({ ok: true, ...manifest });
     }
   );
 
