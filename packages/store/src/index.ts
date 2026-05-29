@@ -76,6 +76,11 @@ export {
   createFunction,
   type CreateFunctionResult
 } from "./createFunction";
+export {
+  extract_function,
+  extractFunction,
+  type ExtractFunctionManifest
+} from "./extractFunction";
 export { replace_body, replaceBody } from "./replaceBody";
 export { rename_symbol, renameSymbol } from "./rename";
 export { EMBEDDING_DIM, isVecAvailable, openDb, type Db } from "./schema";
