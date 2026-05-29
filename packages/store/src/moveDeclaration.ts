@@ -1,10 +1,13 @@
 import ts from "typescript";
-import { findNodeById, listChildren, modulePathOf } from "./nodes";
+import path from "node:path";
+import { findNodeById, listChildren, listModules, modulePathOf } from "./nodes";
 import type { Db } from "./schema";
 import { appendChildStatement } from "./appendChildStatement";
+import { add_import } from "./addImport";
 import { resolveDeclarationNameIdentifier } from "./declarationName";
 import {
   queuePendingOp,
+  queueTextSpanEdit,
   trackDeletedEdgeForRestore,
   trackDeletedNodeForRestore,
   type TxHandle
@@ -22,6 +25,65 @@ export interface MoveDeclarationManifest {
 }
 
 /**
+ * Normalize a module path key for importer lookup. Mirrors how rendered keys
+ * and stored module payloads relate: `path.resolve` is idempotent on the
+ * absolute paths the store uses, and slash-normalization keeps Windows-style
+ * separators aligned with analyzeMove's `normalizePath` output.
+ */
+function normalizeKey(p: string): string {
+  return path.resolve(p).replaceAll("\\", "/");
+}
+
+/**
+ * Find the importer's ImportDeclaration by its STORED child index. analyzeMove
+ * derived `importStatementIndex` from the importer module's top-level statement
+ * order; ingest stores top-level statements at matching 0-based child indices,
+ * so the two coordinate systems align.
+ */
+function nthImportDeclaration(db: Db, moduleId: string, statementIndex: number) {
+  return listChildren(db, moduleId).find(
+    (c) => c.childIndex === statementIndex && c.kind === "ImportDeclaration"
+  );
+}
+
+/**
+ * Remove `name` (and one adjacent comma) from a `{ ... }` import payload,
+ * returning a PAYLOAD-RELATIVE span edit. Re-parses the importer's stored
+ * statement text in isolation so all offsets are relative to that payload, not
+ * the rendered module.
+ */
+function computeBindingRemoval(
+  payload: string,
+  name: string
+): { start: number; end: number; oldText: string; newText: string } | null {
+  const sf = ts.createSourceFile("__imp__.ts", payload, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const stmt = sf.statements[0];
+  if (!stmt || !ts.isImportDeclaration(stmt) || !stmt.importClause?.namedBindings) return null;
+  const named = stmt.importClause.namedBindings;
+  if (!ts.isNamedImports(named)) return null;
+  const els = named.elements;
+  const idx = els.findIndex((e) => e.name.text === name);
+  if (idx < 0) return null;
+  let start = els[idx]!.getStart(sf);
+  let end = els[idx]!.getEnd();
+  if (idx < els.length - 1) end = els[idx + 1]!.getStart(sf);
+  else if (idx > 0) start = els[idx - 1]!.getEnd();
+  return { start, end, oldText: payload.slice(start, end), newText: "" };
+}
+
+/**
+ * Build a back-import statement for the source module: a `.ts`-extensioned
+ * relative specifier from the source module to the target (matches
+ * examples/medium's import style).
+ */
+function relativeImport(fromModulePath: string, toModulePath: string, name: string): string {
+  const fromDir = path.dirname(normalizeKey(fromModulePath));
+  let rel = path.relative(fromDir, normalizeKey(toModulePath)).replaceAll("\\", "/");
+  if (!rel.startsWith(".")) rel = `./${rel}`;
+  return `import { ${name} } from "${rel}";`;
+}
+
+/**
  * move_declaration apply — recreate-in-target + delete-from-source.
  *
  * The move mechanism: recreate the declaration in the target module (a new
@@ -34,9 +96,11 @@ export interface MoveDeclarationManifest {
  * move (non-self-contained, not exported, collision, …) this throws and leaves
  * the store untouched.
  *
- * Importer rewrites + the source back-import are Task 7 — NOT done here.
- * `importersRewritten` is reporting-only (derived from analysis) and
- * `sourceBackImportAdded` is always false for now.
+ * Importer rewrites + the source back-import: each importer's stored
+ * ImportDeclaration payload is edited in PAYLOAD-RELATIVE coordinates
+ * (path-rewrite replaces the specifier; split-out removes the binding and
+ * adds a new import to the importer pointing at the target), and the source
+ * module gets a back-import iff it still uses the symbol after the move.
  */
 export function move_declaration(
   db: Db,
@@ -118,7 +182,43 @@ export function move_declaration(
   });
   drop();
 
-  // Importer rewrites + back-import: Task 7. Manifest skeleton for now.
+  // Importer rewrites + back-import. analyzeMove emitted OFFSET-FREE intents in
+  // rendered-MODULE coordinates; here we apply them against each importer's
+  // STORED ImportDeclaration payload (the statement's own text), recomputing
+  // payload-relative offsets so the two-coordinate discipline holds.
+  const moduleByPath = new Map<string, string>();
+  for (const m of listModules(db)) moduleByPath.set(normalizeKey(m.payload), m.id);
+
+  for (const rw of analysis.importerRewrites) {
+    const importerModuleId = moduleByPath.get(normalizeKey(rw.importerPath));
+    if (!importerModuleId) continue; // importer not in store (shouldn't happen)
+    const importStmt = nthImportDeclaration(db, importerModuleId, rw.importStatementIndex);
+    if (!importStmt) continue;
+    if (rw.style === "path-rewrite") {
+      const at = importStmt.payload.indexOf(rw.oldSpecifier!);
+      if (at < 0) continue;
+      queueTextSpanEdit(tx, importStmt.id, {
+        start: at,
+        end: at + rw.oldSpecifier!.length,
+        oldText: rw.oldSpecifier!,
+        newText: rw.newSpecifier!
+      });
+    } else {
+      // split-out: remove the binding from this import's payload + add a new import.
+      const removal = computeBindingRemoval(importStmt.payload, rw.removeName!);
+      if (removal) queueTextSpanEdit(tx, importStmt.id, removal);
+      add_import(db, tx, importerModuleId, rw.newImportText!);
+    }
+  }
+
+  let sourceBackImportAdded = false;
+  if (analysis.sourceStillUses) {
+    const srcModuleId = decl.parentId; // still the source module id
+    const rel = relativeImport(sourceModulePath, targetModulePath, name);
+    add_import(db, tx, srcModuleId, rel);
+    sourceBackImportAdded = true;
+  }
+
   queuePendingOp(tx, {
     kind: "MoveDeclaration",
     paramsJson: JSON.stringify({
@@ -142,7 +242,7 @@ export function move_declaration(
       modulePath: r.importerPath,
       style: r.style
     })),
-    sourceBackImportAdded: false
+    sourceBackImportAdded
   };
 }
 

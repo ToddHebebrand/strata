@@ -4,9 +4,16 @@ import { ingestBatch } from "@strata/ingest";
 import { openDb } from "../src/schema";
 import { insertNodes, findNodeById, listChildren } from "../src/nodes";
 import { insertReferences } from "../src/references";
-import { begin, rollback } from "../src/transactions";
+import { begin, rollback, getOverlay } from "../src/transactions";
 import { move_declaration } from "../src/moveDeclaration";
 import { nodeId } from "../src/ids";
+import { listModules } from "../src/nodes";
+
+function importDeclFor(db: ReturnType<typeof openDb>, modulePath: string, name: string) {
+  const mod = listModules(db).find((m) => m.payload.endsWith(modulePath))!;
+  return listChildren(db, mod.id).filter((c) => c.kind === "ImportDeclaration")
+    .find((c) => c.payload.includes(name));
+}
 
 const OPTIONS: ts.CompilerOptions = {
   target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
@@ -108,6 +115,31 @@ describe("move_declaration apply — move mechanism", () => {
     // every node AND every reference edge restored verbatim, none extra.
     expect(allNodes()).toEqual(nodesBefore);
     expect(allEdges()).toEqual(edgesBefore);
+    db.close();
+  });
+});
+
+describe("move_declaration apply — importer rewrites", () => {
+  it("rewrites a sole importer's specifier and adds a back-import when source still uses it", () => {
+    const { db, rendered } = seed([
+      { path: "/project/a.ts", text: `export type Id = string;\nexport const first: Id = "1";\n` },
+      { path: "/project/lib/b.ts", text: `export const x = 1;\n` },
+      { path: "/project/c.ts", text: `import { Id } from "./a.ts";\nexport const y: Id = "z";\n` }
+    ]);
+    const declId = nodeId("/project/a.ts", [0], "TypeAliasDeclaration");
+    const targetId = nodeId("/project/lib/b.ts", [], "Module");
+    const tx = begin(db, "t");
+
+    const manifest = move_declaration(db, tx, declId, targetId, rendered, OPTIONS);
+
+    expect(manifest.sourceBackImportAdded).toBe(true); // a.ts still uses Id in `first`
+    expect(manifest.importersRewritten.map((i) => i.style)).toContain("path-rewrite");
+
+    // c.ts ImportDeclaration got a queued text-span edit rewriting "./a.ts" -> "./lib/b.ts"
+    const cImport = importDeclFor(db, "c.ts", "Id")!;
+    const edits = getOverlay(tx).textSpanMutations.get(cImport.id);
+    expect(edits).toBeDefined();
+    expect(edits!.some((e) => e.newText === `"./lib/b.ts"` && e.oldText === `"./a.ts"`)).toBe(true);
     db.close();
   });
 });
