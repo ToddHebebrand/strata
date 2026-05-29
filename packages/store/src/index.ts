@@ -61,6 +61,7 @@ export {
   type AddParameterArityRiskSite
 } from "./addParameter";
 export { add_import, addImport, type AddImportResult } from "./addImport";
+export { appendChildStatement } from "./appendChildStatement";
 export {
   find_declarations_in_module,
   findDeclarationsInModule,

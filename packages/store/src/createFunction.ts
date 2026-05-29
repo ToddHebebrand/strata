@@ -1,13 +1,8 @@
 import ts from "typescript";
-import { nodeId } from "./ids";
-import { findNodeById, insertNodes, listChildren } from "./nodes";
+import { appendChildStatement } from "./appendChildStatement";
+import { findNodeById } from "./nodes";
 import type { Db } from "./schema";
-import {
-  queuePendingOp,
-  trackDeletedNodeForRestore,
-  trackInsertedNode,
-  type TxHandle
-} from "./transactions";
+import { queuePendingOp, type TxHandle } from "./transactions";
 
 function validateFunctionText(text: string): {
   parsed: ts.FunctionDeclaration;
@@ -73,53 +68,16 @@ export function create_function(
   const { parsed } = validateFunctionText(functionText);
   const name = parsed.name!.text;
 
-  const existing = listChildren(db, moduleId);
-  const eof = existing.find((child) => child.kind === "EndOfFileTrivia");
-  // The new statement takes the EOF node's index (= number of real statements,
-  // N), matching what a clean re-ingest of the rendered text produces. The EOF
-  // node, if present, shifts to N+1. (decisions.md 2026-05-28 EOF fix.)
-  const nextChildIndex = eof ? eof.childIndex! : existing.length;
-  const newId = nodeId(moduleNode.payload, [nextChildIndex], "FunctionDeclaration");
-
-  if (existing.some((child) => child.id === newId)) {
-    throw new Error(
-      `create_function: a node with derived ID ${newId} already exists at module ${moduleId} child_index ${nextChildIndex}`
-    );
-  }
-
   const normalized = functionText.startsWith("\n")
     ? functionText
     : `\n\n${functionText}`;
-
-  insertNodes(db, [
-    {
-      id: newId,
-      kind: "FunctionDeclaration",
-      parentId: moduleId,
-      childIndex: nextChildIndex,
-      payload: normalized
-    }
-  ]);
-  trackInsertedNode(tx, newId);
-
-  if (eof) {
-    const shiftedIndex = nextChildIndex + 1;
-    const shiftedEofId = nodeId(moduleNode.payload, [shiftedIndex], "EndOfFileTrivia");
-    // Record the EOF row as-is so rollback restores it; then replace it with
-    // a row at the shifted, re-ingest-consistent index/id.
-    trackDeletedNodeForRestore(tx, eof);
-    db.prepare(`DELETE FROM nodes WHERE id = ?`).run(eof.id);
-    insertNodes(db, [
-      {
-        id: shiftedEofId,
-        kind: "EndOfFileTrivia",
-        parentId: moduleId,
-        childIndex: shiftedIndex,
-        payload: eof.payload
-      }
-    ]);
-    trackInsertedNode(tx, shiftedEofId);
-  }
+  const newId = appendChildStatement(
+    db,
+    tx,
+    moduleId,
+    "FunctionDeclaration",
+    normalized
+  );
 
   queuePendingOp(tx, {
     kind: "CreateFunction",
