@@ -189,14 +189,31 @@ export function move_declaration(
   const moduleByPath = new Map<string, string>();
   for (const m of listModules(db)) moduleByPath.set(normalizeKey(m.payload), m.id);
 
+  // analyzeMove ran FIRST and validated the move; every rewrite it promised is
+  // reported in the manifest. If apply cannot carry out a promised rewrite, the
+  // analyze/apply coordinate systems disagree — a bug — and a silent skip would
+  // produce a HALF-APPLIED move whose manifest misreports success. Prefer LOUD
+  // failure: throw with the rewrite coordinates so the mismatch is debuggable.
   for (const rw of analysis.importerRewrites) {
     const importerModuleId = moduleByPath.get(normalizeKey(rw.importerPath));
-    if (!importerModuleId) continue; // importer not in store (shouldn't happen)
+    if (!importerModuleId) {
+      throw new Error(
+        `move_declaration: importer module not found in store for promised rewrite: ${rw.importerPath}`
+      );
+    }
     const importStmt = nthImportDeclaration(db, importerModuleId, rw.importStatementIndex);
-    if (!importStmt) continue;
+    if (!importStmt) {
+      throw new Error(
+        `move_declaration: import statement #${rw.importStatementIndex} not found in ${rw.importerPath} for promised rewrite`
+      );
+    }
     if (rw.style === "path-rewrite") {
       const at = importStmt.payload.indexOf(rw.oldSpecifier!);
-      if (at < 0) continue;
+      if (at < 0) {
+        throw new Error(
+          `move_declaration: specifier ${rw.oldSpecifier} not found in import payload for ${rw.importerPath}`
+        );
+      }
       queueTextSpanEdit(tx, importStmt.id, {
         start: at,
         end: at + rw.oldSpecifier!.length,
@@ -205,8 +222,16 @@ export function move_declaration(
       });
     } else {
       // split-out: remove the binding from this import's payload + add a new import.
+      // Throw BEFORE add_import if the binding can't be located: otherwise the
+      // old binding is left in place AND a duplicate import is appended,
+      // producing a tsc conflict.
       const removal = computeBindingRemoval(importStmt.payload, rw.removeName!);
-      if (removal) queueTextSpanEdit(tx, importStmt.id, removal);
+      if (!removal) {
+        throw new Error(
+          `move_declaration: could not locate binding ${rw.removeName} to remove in import payload for ${rw.importerPath}`
+        );
+      }
+      queueTextSpanEdit(tx, importStmt.id, removal);
       add_import(db, tx, importerModuleId, rw.newImportText!);
     }
   }

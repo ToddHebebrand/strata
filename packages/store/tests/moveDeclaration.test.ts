@@ -120,6 +120,14 @@ describe("move_declaration apply — move mechanism", () => {
 });
 
 describe("move_declaration apply — importer rewrites", () => {
+  // NOTE: the importer-rewrite apply loop now THROWS (rather than silently
+  // skipping) when a rewrite analyzeMove promised cannot be applied — an
+  // analyze/apply coordinate disagreement is a bug, and a silent skip would
+  // leave a half-applied move whose manifest misreports success. Those throws
+  // are invariant guards: they must NOT fire on valid moves. The sole-importer
+  // path-rewrite test below exercises the path-rewrite throws' non-firing
+  // (importer-found, statement-found, specifier-found); Task 9's integration
+  // split-out test will cover the split-out binding guard's non-firing.
   it("rewrites a sole importer's specifier and adds a back-import when source still uses it", () => {
     const { db, rendered } = seed([
       { path: "/project/a.ts", text: `export type Id = string;\nexport const first: Id = "1";\n` },
