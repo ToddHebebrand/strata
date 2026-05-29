@@ -43,6 +43,7 @@ export {
   type ReadNodeOptions,
   type ReadNodeResult
 } from "./read_node";
+export { listBodyStatements, type BodyStatement } from "./extractAnalysis";
 export {
   add_parameter,
   addParameter,
