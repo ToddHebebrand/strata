@@ -1,5 +1,6 @@
 import { findNodeById, listChildren, type NodeRow } from "./nodes";
 import type { Db } from "./schema";
+import { listBodyStatements, type BodyStatement } from "./extractAnalysis";
 
 export interface ReadNodeOptions {
   /** When true, include the node's direct children (one level only). */
@@ -10,13 +11,14 @@ export interface ReadNodeResult {
   node: NodeRow;
   /** Present only when includeChildren is true. */
   children?: NodeRow[];
+  /**
+   * Present only for FunctionDeclaration nodes: the indexed top-level
+   * statements of the function body, so callers can choose an extract_function
+   * statement range without computing character offsets.
+   */
+  bodyStatements?: BodyStatement[];
 }
 
-/**
- * Read one node by ID, optionally with its direct (one-level) children.
- * Thin composition of findNodeById + listChildren so consumers do not reach
- * into store internals.
- */
 export function readNode(
   db: Db,
   id: string,
@@ -24,8 +26,12 @@ export function readNode(
 ): ReadNodeResult | undefined {
   const node = findNodeById(db, id);
   if (!node) return undefined;
-  if (!options.includeChildren) return { node };
-  return { node, children: listChildren(db, id) };
+  const result: ReadNodeResult = { node };
+  if (options.includeChildren) result.children = listChildren(db, id);
+  if (node.kind === "FunctionDeclaration") {
+    result.bodyStatements = listBodyStatements(node.payload);
+  }
+  return result;
 }
 
 export const read_node = readNode;

@@ -44,6 +44,16 @@ export {
   type ReadNodeResult
 } from "./read_node";
 export {
+  listBodyStatements,
+  type BodyStatement,
+  analyzeExtraction,
+  type ExtractionResult,
+  type ExtractionPlan,
+  type ExtractionRejection,
+  type ExtractParam,
+  type ExtractReturn
+} from "./extractAnalysis";
+export {
   add_parameter,
   addParameter,
   type AddParameterManifest,
@@ -66,6 +76,11 @@ export {
   createFunction,
   type CreateFunctionResult
 } from "./createFunction";
+export {
+  extract_function,
+  extractFunction,
+  type ExtractFunctionManifest
+} from "./extractFunction";
 export { replace_body, replaceBody } from "./replaceBody";
 export { rename_symbol, renameSymbol } from "./rename";
 export { EMBEDDING_DIM, isVecAvailable, openDb, type Db } from "./schema";
@@ -92,7 +107,7 @@ export {
 } from "./commitPatterns";
 export { locateSpan, type Span, type SpanKind } from "./spanReparse";
 export { emitIdentifiers } from "./emitIdentifiers";
-export { resolveReferencesForModules } from "./resolveReferences";
+export { resolveReferencesForModules, createInMemoryProgram, normalizePath } from "./resolveReferences";
 export { resolveDeclarationNameIdentifier } from "./declarationName";
 export {
   begin,

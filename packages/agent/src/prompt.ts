@@ -75,6 +75,8 @@ add_import adds an import declaration to a module. It requires a transaction han
 
 create_function appends a new function declaration to a module. It requires a transaction handle, the target module ID, and the full function text (e.g. an "export function foo(x: number): string { return String(x); }" declaration). The text must parse as a single FunctionDeclaration with a name and body. References inside the new body are not resolved structurally; rely on validate to confirm anything it depends on actually resolves.
 
+extract_function pulls a contiguous run of body statements out of a function into a new top-level function and replaces them with a call, inferring parameters, return values, and async automatically; read the parent with read_node first to choose the statement index range. It refuses unsafe spans (a return, an escaping break/continue, yield, this/super/arguments, enclosing generics, or outer-variable reassignment) with a specific reason — when refused, choose a different range or fall back to create_function plus replace_body.
+
 replace_body replaces a function declaration's whole body with text you provide, including its braces. It requires a transaction handle. It is the low-level tool for body logic changes that are not a rename, parameter, or return-type change; it does not analyze the new body's references, so rely on validate.
 
 validate type-checks the pending transaction state and returns diagnostics, or an empty list when clean. It requires the transaction handle.
@@ -87,7 +89,7 @@ The ordering dependencies are real. Mutating or validating requires a transactio
 
 ## Choosing the right mutation
 
-Pick the structural tool that matches intent so the operation log records what you meant: rename_symbol for changing a symbol's name; add_parameter for adding a parameter and fanning the argument to callsites; change_return_type for the declared return type; create_function for adding a brand-new function declaration to a module; add_import for adding an import declaration to a module; replace_body only when the change is genuinely body logic that none of the others express. Prefer the specific structural tool over replace_body when the change is a rename, a parameter change, a return-type change, adding a new function, or adding a new import. Do not encode task-specific recipes; reason from the actual graph each time.
+Pick the structural tool that matches intent so the operation log records what you meant: rename_symbol for changing a symbol's name; add_parameter for adding a parameter and fanning the argument to callsites; change_return_type for the declared return type; create_function for adding a brand-new function declaration to a module; extract_function for pulling existing body statements into a new function and replacing them with a call; add_import for adding an import declaration to a module; replace_body only when the change is genuinely body logic that none of the others express. Prefer the specific structural tool over replace_body when the change is a rename, a parameter change, a return-type change, adding a new function, extracting statements into a function, or adding a new import. Do not encode task-specific recipes; reason from the actual graph each time.
 
 ## One worked pattern (rename)
 

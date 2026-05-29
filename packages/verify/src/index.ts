@@ -1,4 +1,5 @@
 export {
+  buildAnalysisContext,
   commit,
   validate,
   renderPendingModules,
