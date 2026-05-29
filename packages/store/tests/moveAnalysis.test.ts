@@ -146,6 +146,51 @@ describe("analyzeMove — importer classification", () => {
   });
 });
 
+describe("analyzeMove — rewrite computation", () => {
+  it("sole import → specifier path rewrite, style preserved (.ts kept)", () => {
+    const rendered = new Map<string, string>([
+      ["/p/sub/a.ts", `export type Id = string;\n`],
+      ["/p/lib/b.ts", `export const x = 1;\n`],
+      ["/p/c.ts", `import { Id } from "./sub/a.ts";\nexport const y: Id = "1";\n`]
+    ]);
+    const r = analyzeMove(rendered, OPTIONS, { sourcePath: "/p/sub/a.ts", declChildIndex: 0, name: "Id", targetPath: "/p/lib/b.ts" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const rw = r.importerRewrites.find((i) => i.importerPath.endsWith("c.ts"))!;
+    expect(rw.style).toBe("path-rewrite");
+    // c.ts is at /p/c.ts; target /p/lib/b.ts → "./lib/b.ts"
+    expect(rw.newSpecifier).toBe(`"./lib/b.ts"`);
+    expect(rw.oldSpecifier).toBe(`"./sub/a.ts"`);
+  });
+
+  it("mixed import → remove the binding + add a new target import", () => {
+    const rendered = new Map<string, string>([
+      ["/p/a.ts", `export type Id = string;\nexport type Other = number;\n`],
+      ["/p/b.ts", `export const x = 1;\n`],
+      ["/p/c.ts", `import { Id, Other } from "./a.ts";\nexport const y: Id = "1";\nexport const z: Other = 2;\n`]
+    ]);
+    const r = analyzeMove(rendered, OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 0, name: "Id", targetPath: "/p/b.ts" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const rw = r.importerRewrites.find((i) => i.importerPath.endsWith("c.ts"))!;
+    expect(rw.style).toBe("split-out");
+    expect(rw.removeName).toBe("Id");
+    expect(rw.newImportText).toBe(`import { Id } from "./b.ts";`);
+  });
+
+  it("detects source self-use", () => {
+    const rendered = new Map<string, string>([
+      ["/p/a.ts", `export type Id = string;\nexport const first: Id = "1";\n`],
+      ["/p/b.ts", `export const x = 1;\n`]
+    ]);
+    // a.ts itself uses Id (in `first`), so after moving Id a back-import is needed.
+    const r = analyzeMove(rendered, OPTIONS, { sourcePath: "/p/a.ts", declChildIndex: 0, name: "Id", targetPath: "/p/b.ts" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.sourceStillUses).toBe(true);
+  });
+});
+
 // helper mirroring resolveReferences.normalizePath for assertion convenience
 function normalizePathTest(p: string): string {
   return p.replaceAll("\\", "/").replace(/^\.\//, "");

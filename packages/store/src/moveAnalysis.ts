@@ -69,6 +69,19 @@ function declName(stmt: ts.Statement): string | undefined {
   return undefined;
 }
 
+/** The declaration's name identifier node, for symbol resolution. Mirrors declName's kind coverage. */
+function declNameNode(stmt: ts.Statement): ts.Node | undefined {
+  if ((ts.isFunctionDeclaration(stmt) || ts.isClassDeclaration(stmt) ||
+       ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) && stmt.name) {
+    return stmt.name;
+  }
+  if (ts.isVariableStatement(stmt)) {
+    const d = stmt.declarationList.declarations[0];
+    if (d && ts.isIdentifier(d.name)) return d.name;
+  }
+  return undefined;
+}
+
 function isExported(stmt: ts.Statement): boolean {
   const mods = ts.canHaveModifiers(stmt) ? ts.getModifiers(stmt) : undefined;
   return Boolean(mods?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword));
@@ -121,6 +134,33 @@ function findOutOfScopeDependency(
   };
   walk(stmt);
   return bad;
+}
+
+/** Relative import path from importer to target, preserving the importer's extension style. */
+function rewrittenSpecifier(importerPath: string, targetPath: string, originalSpecifier: string): string {
+  const fromDir = path.dirname(normalizePath(importerPath));
+  let rel = normalizePath(path.relative(fromDir, normalizePath(targetPath)));
+  if (!rel.startsWith(".")) rel = `./${rel}`;
+  const hadExt = /\.(ts|tsx|js|mjs)$/.exec(originalSpecifier);
+  if (!hadExt) rel = rel.replace(/\.(ts|tsx|js|mjs)$/, "");
+  return rel;
+}
+
+/** True if the source module still references `name` after the moved decl is removed. */
+function sourceUsesSymbol(checker: ts.TypeChecker, srcSf: ts.SourceFile, declStmt: ts.Statement, name: string): boolean {
+  const nameNode = declNameNode(declStmt);
+  const declSym = nameNode ? checker.getSymbolAtLocation(nameNode) : undefined;
+  let used = false;
+  for (const stmt of srcSf.statements) {
+    if (stmt === declStmt || ts.isImportDeclaration(stmt)) continue;
+    const walk = (n: ts.Node): void => {
+      if (used) return;
+      if (ts.isIdentifier(n) && n.text === name && checker.getSymbolAtLocation(n) === declSym) { used = true; return; }
+      n.forEachChild(walk);
+    };
+    walk(stmt);
+  }
+  return used;
 }
 
 /** Resolve a relative import specifier from an importer file to a normalized module key. */
@@ -231,12 +271,32 @@ export function analyzeMove(
   const srcKey = normalizePath(srcSf.fileName);
   const importers = collectImporters(sourceFiles, srcKey, input.name);
   if ("reason" in importers) return reject(importers.reason);
-  // Task 5 fills in the specifier / split-out fields; this task records identity + style.
-  const importerRewrites: ImporterRewrite[] = importers.hits.map((h) => ({
-    importerPath: h.importerPath,
-    importStatementIndex: h.statementIndex,
-    style: h.bindingNames.length === 1 ? "path-rewrite" : "split-out"
-  }));
+  // Turn each importer hit into a concrete OFFSET-FREE rewrite intent. The apply
+  // step re-parses each importer's stored ImportDeclaration payload and recomputes
+  // payload-relative offsets, so we emit semantic intents (specifier strings /
+  // names / new statement text), never module-relative spans.
+  const importerRewrites: ImporterRewrite[] = importers.hits.map((h) => {
+    const spec = h.importDecl.moduleSpecifier as ts.StringLiteral;
+    const originalSpecifierText = spec.text; // without quotes
+    const quote = h.sf.text[spec.getStart(h.sf)] ?? '"';
+    const newRel = rewrittenSpecifier(h.importerPath, input.targetPath, originalSpecifierText);
+    if (h.bindingNames.length === 1) {
+      return {
+        importerPath: h.importerPath,
+        importStatementIndex: h.statementIndex,
+        style: "path-rewrite" as const,
+        oldSpecifier: `${quote}${originalSpecifierText}${quote}`,
+        newSpecifier: `${quote}${newRel}${quote}`
+      };
+    }
+    return {
+      importerPath: h.importerPath,
+      importStatementIndex: h.statementIndex,
+      style: "split-out" as const,
+      removeName: input.name,
+      newImportText: `import { ${input.name} } from ${quote}${newRel}${quote};`
+    };
+  });
 
   return {
     ok: true,
@@ -245,6 +305,6 @@ export function analyzeMove(
     declPayload: srcSf.text.slice(stmt.getStart(srcSf), stmt.getEnd()),
     sourceChildIndex: input.declChildIndex,
     importerRewrites,
-    sourceStillUses: false
+    sourceStillUses: sourceUsesSymbol(checker, srcSf, stmt, input.name)
   };
 }
