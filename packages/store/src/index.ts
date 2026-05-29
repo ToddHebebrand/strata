@@ -132,6 +132,7 @@ export {
   queuePendingOp,
   rollback,
   startupRecoverOpenTransactions,
+  trackDeletedEdgeForRestore,
   trackDeletedNodeForRestore,
   trackInsertedNode,
   type PendingOp,

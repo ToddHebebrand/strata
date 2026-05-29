@@ -3,7 +3,13 @@ import { findNodeById, listChildren, modulePathOf } from "./nodes";
 import type { Db } from "./schema";
 import { appendChildStatement } from "./appendChildStatement";
 import { resolveDeclarationNameIdentifier } from "./declarationName";
-import { queuePendingOp, trackDeletedNodeForRestore, type TxHandle } from "./transactions";
+import {
+  queuePendingOp,
+  trackDeletedEdgeForRestore,
+  trackDeletedNodeForRestore,
+  type TxHandle
+} from "./transactions";
+import type { Reference } from "./references";
 import { analyzeMove, type ImporterRewrite } from "./moveAnalysis";
 
 export interface MoveDeclarationManifest {
@@ -81,6 +87,24 @@ export function move_declaration(
   // Delete from source: the declaration node + its Identifier children + their
   // reference edges. Track every deleted row for rollback restore.
   const idChildren = listChildren(db, declarationId).filter((c) => c.kind === "Identifier");
+  const deletedIds = [...idChildren, decl].map((ch) => ch.id);
+
+  // Capture every reference edge touching any node about to be deleted, in a
+  // single query, BEFORE the delete — so rollback can re-insert them verbatim.
+  // A single SELECT over the full id set (rather than per-node) naturally
+  // de-duplicates edges whose BOTH endpoints are in the delete set (e.g. an
+  // internal edge from one identifier to the decl name); a per-node capture
+  // would double-count those.
+  const placeholders = deletedIds.map(() => "?").join(", ");
+  const capturedEdges = db
+    .prepare(
+      `SELECT from_node_id AS fromNodeId, to_node_id AS toNodeId, kind
+       FROM node_references
+       WHERE from_node_id IN (${placeholders}) OR to_node_id IN (${placeholders})`
+    )
+    .all(...deletedIds, ...deletedIds) as Reference[];
+  trackDeletedEdgeForRestore(tx, capturedEdges);
+
   const delEdges = db.prepare(
     `DELETE FROM node_references WHERE from_node_id = ? OR to_node_id = ?`
   );
