@@ -1,0 +1,98 @@
+import { describe, expect, it } from "vitest";
+import { ingestBatch } from "@strata/ingest";
+import {
+  openDb, insertNodes, insertReferences, begin,
+  move_declaration, find_declarations, get_references, listModules, loadModule, nodeId
+} from "@strata/store";
+import { render } from "@strata/render";
+import { buildAnalysisContext, commit } from "../src/validate";
+
+function seed(inputs: { path: string; text: string }[]) {
+  const batch = ingestBatch(inputs);
+  const db = openDb(":memory:");
+  insertNodes(db, batch.allNodes);
+  insertReferences(db, batch.references);
+  return db;
+}
+function renderAll(db: ReturnType<typeof openDb>) {
+  return listModules(db).map((m) => {
+    const loaded = loadModule(db, m.id);
+    return { path: m.payload, text: render(loaded.module, loaded.children) };
+  });
+}
+function nodeIds(db: ReturnType<typeof openDb>) {
+  return new Set((db.prepare(`SELECT id FROM nodes`).all() as { id: string }[]).map((r) => r.id));
+}
+function refKeys(db: ReturnType<typeof openDb>) {
+  return new Set((db.prepare(`SELECT from_node_id f, to_node_id t, kind k FROM node_references`).all() as any[]).map((r) => `${r.f}|${r.t}|${r.k}`));
+}
+
+describe("move_declaration commit (integration)", () => {
+  it("moves a symbol imported by 2 modules; commits clean; importers resolve to the new decl; re-ingest equivalent", () => {
+    const db = seed([
+      { path: "/project/a.ts", text: `export type Id = string | number;\n` },
+      { path: "/project/shared.ts", text: `export const VERSION = 1;\n` },
+      { path: "/project/c.ts", text: `import { Id } from "./a";\nexport const y: Id = "1";\n` },
+      { path: "/project/d.ts", text: `import { Id } from "./a";\nexport const z: Id = 2;\n` }
+    ]);
+    const declId = nodeId("/project/a.ts", [0], "TypeAliasDeclaration");
+    const targetId = nodeId("/project/shared.ts", [], "Module");
+    const tx = begin(db, "t");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    const manifest = move_declaration(db, tx, declId, targetId, renderedByPath, options);
+    expect(manifest.importersRewritten).toHaveLength(2);
+
+    expect(commit(db, tx).ok).toBe(true);
+
+    // Found in the target, not the source.
+    const found = find_declarations(db, { name: "Id" });
+    expect(found).toHaveLength(1);
+    expect(found[0]!.id).toBe(manifest.newDeclarationId);
+    // Both importers' uses resolve to the new declaration (real edges).
+    expect(get_references(db, found[0]!.id).length).toBeGreaterThanOrEqual(2);
+
+    // Re-ingest equivalence: committed graph == clean re-ingest of rendered text.
+    const live = nodeIds(db), liveR = refKeys(db);
+    const batch = ingestBatch(renderAll(db));
+    const reNodes = new Set(batch.allNodes.map((n) => n.id));
+    const reRefs = new Set(batch.references.map((r) => `${r.fromNodeId}|${r.toNodeId}|${r.kind}`));
+    expect([...reNodes].filter((i) => !live.has(i))).toEqual([]);
+    expect([...live].filter((i) => !reNodes.has(i))).toEqual([]);
+    expect([...reRefs].filter((r) => !liveR.has(r))).toEqual([]);
+    expect([...liveR].filter((r) => !reRefs.has(r))).toEqual([]);
+    db.close();
+  });
+
+  it("mixed-import importer (split-out) commits clean and resolves", () => {
+    const db = seed([
+      { path: "/project/a.ts", text: `export type Id = string;\nexport type Other = number;\n` },
+      { path: "/project/shared.ts", text: `export const VERSION = 1;\n` },
+      { path: "/project/c.ts", text: `import { Id, Other } from "./a";\nexport const y: Id = "1";\nexport const z: Other = 2;\n` }
+    ]);
+    const declId = nodeId("/project/a.ts", [0], "TypeAliasDeclaration");
+    const targetId = nodeId("/project/shared.ts", [], "Module");
+    const tx = begin(db, "t");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    move_declaration(db, tx, declId, targetId, renderedByPath, options);
+    expect(commit(db, tx).ok).toBe(true);
+    expect(find_declarations(db, { name: "Id" })).toHaveLength(1);
+    expect(find_declarations(db, { name: "Other" })).toHaveLength(1); // untouched
+    db.close();
+  });
+
+  it("rolls back cleanly when the move would not type-check", () => {
+    const db = seed([
+      { path: "/project/a.ts", text: `export const NEEDED = 5;\nexport function uses(): number { return NEEDED; }\n` },
+      { path: "/project/b.ts", text: `export const x = 1;\n` }
+    ]);
+    // move `uses` which depends on source-local NEEDED → analyzeMove rejects (self-contained gate).
+    const declId = nodeId("/project/a.ts", [1], "FunctionDeclaration");
+    const targetId = nodeId("/project/b.ts", [], "Module");
+    const tx = begin(db, "t");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    expect(() => move_declaration(db, tx, declId, targetId, renderedByPath, options)).toThrow(/NEEDED|self-contained|depends/i);
+    expect(commit(db, tx).ok).toBe(true); // empty tx commits fine; nothing moved
+    expect(find_declarations(db, { name: "uses" })).toHaveLength(1); // still in a.ts
+    db.close();
+  });
+});
