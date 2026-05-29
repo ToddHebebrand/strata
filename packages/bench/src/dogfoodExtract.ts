@@ -234,10 +234,13 @@ async function runBaselineArm(
     vitestPassed: result.resultQuality.vitestPassed,
     flagsText,
     verification,
+    // Quality floor is tsc-clean + extraction-performed, SYMMETRIC with the
+    // substrate arm's tsc-only gate. vitestPassed is informational only: a
+    // corpus may ship a pre-existing failing test (e.g. examples/medium's T05
+    // half-open-interval fixture), so full-suite vitest is not a clean gate and
+    // would unfairly fail the baseline for a failure unrelated to the task.
     qualityPass:
-      result.resultQuality.tscClean &&
-      result.resultQuality.vitestPassed &&
-      (verification?.extractionPerformed ?? false),
+      result.resultQuality.tscClean && (verification?.extractionPerformed ?? false),
     cost: costFromLog(result.log.events)
   };
 }
@@ -348,7 +351,7 @@ export function renderDogfoodExtractMarkdown(result: DogfoodExtractResult): stri
     `- **N=1, single paired trial.** Not a bench round. Do not generalize to "extract_function wins/loses by N%".`
   );
   lines.push(
-    `- **Behavior not test-gated for this task.** examples/medium has no test covering parseArgs, so vitest passing is not a behavior check here on either arm. The quality floor is tsc-clean + structural extraction. extract_function guarantees semantic preservation for accepted spans by construction (hazard rejections + validate); the baseline's behavior-preservation rests on the agent + tsc and is not test-verified for this corpus.`
+    `- **Behavior not test-gated for this task.** examples/medium has no test covering parseArgs, so vitest is not a behavior check here on either arm. The quality floor is tsc-clean + structural extraction (symmetric across arms). Note: examples/medium also ships a PRE-EXISTING failing test (the T05 half-open-interval fixture in dateRange.test.ts), so the baseline's full-suite vitest=false is unrelated to the extraction and is reported as informational only, not a quality failure. extract_function guarantees semantic preservation for accepted spans by construction (hazard rejections + validate); the baseline's preservation rests on the agent + tsc.`
   );
   lines.push(
     `- **Single-site refactor.** extract is one site; file tools may match or beat it on tool count. The substrate's distinctive value is that the extracted function is immediately graph-traceable for follow-on ops (rename/add_parameter/find callers) — not necessarily this single edit.`
