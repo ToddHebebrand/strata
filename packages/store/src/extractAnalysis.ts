@@ -161,6 +161,94 @@ function inferParams(ctx: SpanContext): ExtractParam[] {
   return params;
 }
 
+interface DeclaredBinding {
+  symbol: ts.Symbol;
+  name: string;
+  declKind: "const" | "let";
+}
+
+/** Bindings (variables, nested fn/class names) declared at any depth in the span. */
+function collectSpanDeclarations(ctx: SpanContext): DeclaredBinding[] {
+  const out: DeclaredBinding[] = [];
+  const add = (nameNode: ts.Node, declKind: "const" | "let") => {
+    if (!ts.isIdentifier(nameNode)) return; // v1: skip destructuring binding patterns
+    const symbol = ctx.checker.getSymbolAtLocation(nameNode);
+    if (symbol) out.push({ symbol, name: symbol.getName(), declKind });
+  };
+  const walk = (node: ts.Node): void => {
+    if (ts.isVariableStatement(node)) {
+      const flags = node.declarationList.flags;
+      const declKind = flags & ts.NodeFlags.Const ? "const" : "let";
+      for (const d of node.declarationList.declarations) add(d.name, declKind);
+    } else if (
+      (ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) &&
+      node.name
+    ) {
+      add(node.name, "const");
+    }
+    node.forEachChild(walk);
+  };
+  for (const stmt of ctx.spanStmts) walk(stmt);
+  return out;
+}
+
+/** True if any identifier after the span (within the parent) resolves to `symbol`. */
+function isReferencedAfterSpan(ctx: SpanContext, symbol: ts.Symbol): boolean {
+  let found = false;
+  const walk = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isIdentifier(node) &&
+      node.getStart(ctx.sf) >= ctx.spanEnd &&
+      ctx.checker.getSymbolAtLocation(node) === symbol
+    ) {
+      found = true;
+      return;
+    }
+    node.forEachChild(walk);
+  };
+  walk(ctx.parent.body!);
+  return found;
+}
+
+function inferReturns(ctx: SpanContext): ExtractReturn[] {
+  const returns: ExtractReturn[] = [];
+  const seen = new Set<ts.Symbol>();
+  for (const decl of collectSpanDeclarations(ctx)) {
+    if (seen.has(decl.symbol)) continue;
+    if (!isReferencedAfterSpan(ctx, decl.symbol)) continue;
+    seen.add(decl.symbol);
+    const type = ctx.checker.typeToString(
+      ctx.checker.getTypeOfSymbolAtLocation(decl.symbol, ctx.parent),
+      ctx.parent
+    );
+    returns.push({ name: decl.name, type, declKind: decl.declKind });
+  }
+  return returns;
+}
+
+function buildReturnType(returns: ExtractReturn[], isAsync: boolean): string {
+  let base: string;
+  if (returns.length === 0) base = "void";
+  else if (returns.length === 1) base = returns[0]!.type;
+  else base = `{ ${returns.map((r) => `${r.name}: ${r.type}`).join("; ")} }`;
+  return isAsync ? `Promise<${base}>` : base;
+}
+
+function buildCallSiteText(
+  name: string,
+  params: ExtractParam[],
+  returns: ExtractReturn[],
+  isAsync: boolean
+): string {
+  const args = params.map((p) => p.name).join(", ");
+  const call = `${isAsync ? "await " : ""}${name}(${args})`;
+  if (returns.length === 0) return `${call};`;
+  if (returns.length === 1) return `${returns[0]!.declKind} ${returns[0]!.name} = ${call};`;
+  const declKind = returns.every((r) => r.declKind === "const") ? "const" : "let";
+  return `${declKind} { ${returns.map((r) => r.name).join(", ")} } = ${call};`;
+}
+
 /**
  * Analyze a candidate extraction. Returns a plan with inferred params/returns/
  * async, or a rejection with a specific reason. Pure: no DB access, no writes.
@@ -177,14 +265,14 @@ export function analyzeExtraction(
   if ("ok" in ctx) return ctx; // rejection
 
   const params = inferParams(ctx);
-
-  // Returns + async + hazards arrive in Tasks 3-4. For now: no returns, sync.
+  const returns = inferReturns(ctx);
+  const isAsync = false; // await detection arrives in Task 4
   return {
     ok: true,
     params,
-    returns: [],
-    isAsync: false,
-    returnType: "void",
-    callSiteText: `${name}(${params.map((p) => p.name).join(", ")});`
+    returns,
+    isAsync,
+    returnType: buildReturnType(returns, isAsync),
+    callSiteText: buildCallSiteText(name, params, returns, isAsync)
   };
 }
