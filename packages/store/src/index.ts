@@ -71,6 +71,11 @@ export {
   type ImporterRewrite
 } from "./moveAnalysis";
 export {
+  move_declaration,
+  moveDeclaration,
+  type MoveDeclarationManifest
+} from "./moveDeclaration";
+export {
   find_declarations_in_module,
   findDeclarationsInModule,
   list_module_exports,
