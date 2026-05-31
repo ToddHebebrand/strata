@@ -110,6 +110,45 @@ function isMemberPropertyName(id: ts.Identifier): boolean {
   return ts.isPropertyAccessExpression(p) && p.name === id;
 }
 
+/**
+ * If `id` is the callee of a CallExpression — possibly through parenthesized /
+ * as / satisfies / non-null wrappers (`(id as any)(…)`, `(id)(…)`) — return that
+ * CallExpression; else null. Unwrapping lets us validate arity/spread on uses
+ * that aren't *plain* direct calls (and reject them with a precise reason).
+ */
+function enclosingCalleeCall(id: ts.Identifier): ts.CallExpression | null {
+  let cur: ts.Node = id;
+  let p = cur.parent;
+  while (
+    p &&
+    (ts.isParenthesizedExpression(p) ||
+      ts.isAsExpression(p) ||
+      ts.isSatisfiesExpression(p) ||
+      ts.isNonNullExpression(p))
+  ) {
+    cur = p;
+    p = p.parent;
+  }
+  if (p && ts.isCallExpression(p) && p.expression === cur) return p;
+  return null;
+}
+
+/** True when `id` is a named-import binding: `import { id }` / `import { x as id }` / default-clause name. */
+function isNamedImportBinding(id: ts.Identifier): boolean {
+  const p = id.parent;
+  return ts.isImportSpecifier(p) || ts.isImportClause(p);
+}
+
+/**
+ * Index of the top-level statement (direct child of the SourceFile) that
+ * contains `node`. Walks up the parent chain until the parent is the SourceFile.
+ */
+function topLevelStatementIndexOf(sf: ts.SourceFile, node: ts.Node): number {
+  let cur: ts.Node = node;
+  while (cur.parent && cur.parent !== sf) cur = cur.parent;
+  return sf.statements.indexOf(cur as ts.Statement);
+}
+
 export function analyzeInline(
   rendered: Map<string, string>,
   options: ts.CompilerOptions,
@@ -179,6 +218,71 @@ export function analyzeInline(
   scan(norm.bodyExpr);
   if (bodyReason) return reject(bodyReason);
 
-  // Tasks 4-6 fill these.
-  return { ok: true, name: input.name, callSites: [], importerStrips: [] };
+  // --- Reference discovery + call classification. Every value-position use of
+  // the function across the rendered program must be the callee of a direct call
+  // with matching arity and no spread arg. The declaration's own name and
+  // named-import bindings are partitioned out (importers handled in Task 6). ---
+  interface CallRecord {
+    sf: ts.SourceFile;
+    call: ts.CallExpression;
+    callSitePath: string;
+    callSiteStatementIndex: number;
+  }
+  const callRecords: CallRecord[] = [];
+  let refReason: string | null = null;
+  for (const file of sourceFiles.values()) {
+    const visit = (node: ts.Node): void => {
+      if (refReason) return;
+      if (ts.isIdentifier(node) && node.text === input.name && !isMemberPropertyName(node)) {
+        let sym = checker.getSymbolAtLocation(node);
+        if (sym && sym.flags & ts.SymbolFlags.Alias) { try { sym = checker.getAliasedSymbol(sym); } catch { /* keep */ } }
+        if (sym && fnSym && sym === fnSym) {
+          // It's a reference to our function. Classify by parent.
+          if (node === fnNameNode) {
+            /* the declaration itself */
+          } else if (isNamedImportBinding(node)) {
+            /* importer; handled in Task 6 */
+          } else {
+            const call = enclosingCalleeCall(node);
+            if (!call) {
+              refReason = `inline: ${input.name} is used as a value (not a direct call) at ${normalizePath(file.fileName)}; v1 inlines only direct calls`;
+              return;
+            }
+            if (call.arguments.some((a) => ts.isSpreadElement(a))) {
+              refReason = `inline: ${input.name} is called with a spread argument; cannot map args to params`; return;
+            }
+            if (call.arguments.length !== norm.params.length) {
+              refReason = `inline: a call to ${input.name} has ${call.arguments.length} args but the function takes ${norm.params.length} (arity mismatch)`; return;
+            }
+            // Only a PLAIN identifier callee `name(args)` can be located + spliced
+            // by the apply step. A wrapped callee (`(name as any)(args)`) that
+            // passes arity is refused — apply can't cleanly splice through a cast.
+            if (call.expression !== node) {
+              refReason = `inline: ${input.name} is called through a cast/parenthesized expression at ${normalizePath(file.fileName)}; v1 inlines only plain direct calls`;
+              return;
+            }
+            callRecords.push({
+              sf: file,
+              call,
+              callSitePath: normalizePath(file.fileName),
+              callSiteStatementIndex: topLevelStatementIndexOf(file, call)
+            });
+          }
+        }
+      }
+      node.forEachChild(visit);
+    };
+    visit(file);
+  }
+  if (refReason) return reject(refReason);
+
+  // Task 5 fills replacementText (argument purity + hygienic substitution).
+  const callSites: SubstitutionIntent[] = callRecords.map((c) => ({
+    callSitePath: c.callSitePath,
+    callSiteStatementIndex: c.callSiteStatementIndex,
+    replacementText: ""
+  }));
+
+  // Task 6 fills these.
+  return { ok: true, name: input.name, callSites, importerStrips: [] };
 }
