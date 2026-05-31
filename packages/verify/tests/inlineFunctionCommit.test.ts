@@ -1,0 +1,92 @@
+import { describe, expect, it } from "vitest";
+import { ingestBatch } from "@strata/ingest";
+import {
+  openDb, insertNodes, insertReferences, begin,
+  inline_function, find_declarations, listModules, loadModule, nodeId
+} from "@strata/store";
+import { render } from "@strata/render";
+import { buildAnalysisContext, commit } from "../src/validate";
+
+function seed(inputs: { path: string; text: string }[]) {
+  const batch = ingestBatch(inputs);
+  const db = openDb(":memory:");
+  insertNodes(db, batch.allNodes);
+  insertReferences(db, batch.references);
+  return db;
+}
+function renderAll(db: ReturnType<typeof openDb>) {
+  return listModules(db).map((m) => { const l = loadModule(db, m.id); return { path: m.payload, text: render(l.module, l.children) }; });
+}
+function nodeIds(db: ReturnType<typeof openDb>) { return new Set((db.prepare(`SELECT id FROM nodes`).all() as { id: string }[]).map((r) => r.id)); }
+function refKeys(db: ReturnType<typeof openDb>) { return new Set((db.prepare(`SELECT from_node_id f, to_node_id t, kind k FROM node_references`).all() as any[]).map((r) => `${r.f}|${r.t}|${r.k}`)); }
+
+describe("inline_function commit (integration)", () => {
+  it("inlines a function called by 2 modules; commits clean; declaration gone; re-ingest equivalent", () => {
+    const db = seed([
+      { path: "/project/a.ts", text: `export function add(a: number, b: number): number { return a + b; }\n` },
+      { path: "/project/b.ts", text: `import { add } from "./a";\nexport const y = add(1, 2);\n` },
+      { path: "/project/c.ts", text: `import { add } from "./a";\nexport const z = add(3, 4);\n` }
+    ]);
+    const fnId = nodeId("/project/a.ts", [0], "FunctionDeclaration");
+    const tx = begin(db, "t");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    const manifest = inline_function(db, tx, fnId, renderedByPath, options);
+    expect(manifest.callSitesInlined).toBe(2);
+
+    expect(commit(db, tx).ok).toBe(true);
+    expect(find_declarations(db, { name: "add" })).toHaveLength(0); // gone
+
+    // Re-ingest equivalence.
+    const live = nodeIds(db), liveR = refKeys(db);
+    const batch = ingestBatch(renderAll(db));
+    const reNodes = new Set(batch.allNodes.map((n) => n.id));
+    const reRefs = new Set(batch.references.map((r) => `${r.fromNodeId}|${r.toNodeId}|${r.kind}`));
+    expect([...reNodes].filter((i) => !live.has(i))).toEqual([]);
+    expect([...live].filter((i) => !reNodes.has(i))).toEqual([]);
+    expect([...reRefs].filter((r) => !liveR.has(r))).toEqual([]);
+    expect([...liveR].filter((r) => !reRefs.has(r))).toEqual([]);
+    db.close();
+  });
+
+  it("importer that imports AND calls the function commits clean (sole-binding strip + call splice in one module)", () => {
+    const db = seed([
+      { path: "/project/a.ts", text: `export function dbl(n: number): number { return n * 2; }\n` },
+      { path: "/project/b.ts", text: `import { dbl } from "./a";\nexport const y = dbl(21);\n` }
+    ]);
+    const fnId = nodeId("/project/a.ts", [0], "FunctionDeclaration");
+    const tx = begin(db, "t");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    inline_function(db, tx, fnId, renderedByPath, options);
+    expect(commit(db, tx).ok).toBe(true);
+    expect(find_declarations(db, { name: "dbl" })).toHaveLength(0);
+    db.close();
+  });
+
+  it("mixed-importer (split binding) commits clean and leaves the sibling import", () => {
+    const db = seed([
+      { path: "/project/a.ts", text: `export function dbl(n: number): number { return n * 2; }\nexport const OTHER = 5;\n` },
+      { path: "/project/b.ts", text: `import { dbl, OTHER } from "./a";\nexport const y = dbl(OTHER);\n` }
+    ]);
+    const fnId = nodeId("/project/a.ts", [0], "FunctionDeclaration");
+    const tx = begin(db, "t");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    inline_function(db, tx, fnId, renderedByPath, options);
+    expect(commit(db, tx).ok).toBe(true);
+    expect(find_declarations(db, { name: "OTHER" })).toHaveLength(1); // untouched
+    db.close();
+  });
+
+  it("rolls back cleanly when a non-self-contained inline is refused", () => {
+    const db = seed([
+      { path: "/project/a.ts", text: `const K = 3;\nexport function f(n: number): number { return n * K; }\n` },
+      { path: "/project/b.ts", text: `import { f } from "./a";\nexport const y = f(2);\n` }
+    ]);
+    const fnId = nodeId("/project/a.ts", [1], "FunctionDeclaration");
+    const tx = begin(db, "t");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    expect(() => inline_function(db, tx, fnId, renderedByPath, options)).toThrow(/K|self-contained|scope/i);
+    expect(commit(db, tx).ok).toBe(true); // empty tx
+    expect(find_declarations(db, { name: "f" })).toHaveLength(1); // still there
+    db.close();
+  });
+});
