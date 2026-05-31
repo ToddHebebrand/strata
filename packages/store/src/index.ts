@@ -77,6 +77,15 @@ export {
   type MoveDeclarationManifest
 } from "./moveDeclaration";
 export {
+  analyzeInline,
+  type InlineResult,
+  type InlinePlan,
+  type InlineRejection,
+  type InlineInput,
+  type SubstitutionIntent,
+  type ImporterStrip
+} from "./inlineAnalysis";
+export {
   find_declarations_in_module,
   findDeclarationsInModule,
   list_module_exports,
