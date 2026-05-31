@@ -133,6 +133,52 @@ export function analyzeInline(
     if (p.initializer) return reject(`inline: ${input.name} has a default-valued parameter; v1 supports plain identifier params only`);
   }
 
-  // Tasks 3-6 fill these.
+  // --- Body scan: reject this/super/arguments/await, recursion, and any free
+  // variable that is not a parameter or a global/lib symbol (self-containment). ---
+
+  // Resolve the function's own symbol (the declaration name) for recursion detection.
+  const fnNameNode = declNameNodeForInline(stmt);
+  const fnSym = fnNameNode ? checker.getSymbolAtLocation(fnNameNode) : undefined;
+
+  // Collect the parameter symbols.
+  const paramSyms = new Set<ts.Symbol>();
+  for (const p of norm.params) {
+    const s = checker.getSymbolAtLocation(p.name);
+    if (s) paramSyms.add(s);
+  }
+
+  let bodyReason: string | null = null;
+  const scan = (node: ts.Node): void => {
+    if (bodyReason) return;
+    if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword) {
+      bodyReason = `inline: ${input.name} body uses this/super; not safe to inline`; return;
+    }
+    if (ts.isIdentifier(node) && node.text === "arguments") {
+      bodyReason = `inline: ${input.name} body uses arguments; not safe to inline`; return;
+    }
+    if (ts.isAwaitExpression(node)) {
+      bodyReason = `inline: ${input.name} body uses await; v1 does not inline async expression bodies`; return;
+    }
+    if (ts.isIdentifier(node) && !isMemberPropertyName(node)) {
+      let sym = checker.getSymbolAtLocation(node);
+      if (sym && sym.flags & ts.SymbolFlags.Alias) { try { sym = checker.getAliasedSymbol(sym); } catch { /* keep */ } }
+      const decl = sym?.declarations?.[0];
+      if (sym && fnSym && sym === fnSym) { bodyReason = `inline: ${input.name} is recursive; cannot inline`; return; }
+      if (decl) {
+        const declSf = decl.getSourceFile();
+        const inLib = declSf.isDeclarationFile;
+        const isParam = sym ? paramSyms.has(sym) : false;
+        if (!inLib && !isParam) {
+          bodyReason = `inline: ${input.name} body references \`${sym!.getName()}\` which is not a parameter or global (v1 inlines only self-contained expression bodies)`;
+          return;
+        }
+      }
+    }
+    node.forEachChild(scan);
+  };
+  scan(norm.bodyExpr);
+  if (bodyReason) return reject(bodyReason);
+
+  // Tasks 4-6 fill these.
   return { ok: true, name: input.name, callSites: [], importerStrips: [] };
 }
