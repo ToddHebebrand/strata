@@ -86,6 +86,11 @@ export {
   type ImporterStrip
 } from "./inlineAnalysis";
 export {
+  inline_function,
+  inlineFunction,
+  type InlineFunctionManifest
+} from "./inlineFunction";
+export {
   find_declarations_in_module,
   findDeclarationsInModule,
   list_module_exports,
