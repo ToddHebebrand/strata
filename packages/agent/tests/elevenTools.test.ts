@@ -7,12 +7,12 @@ import {
   STRATA_TOOL_NAMES
 } from "../src/tools";
 
-describe("agent surface (19 tools after L2 semantic_search)", () => {
-  it("registers exactly nineteen tools including the discovery, semantic-search, and mutation surfaces", () => {
+describe("agent surface (20 tools after inline_function)", () => {
+  it("registers exactly twenty tools including the discovery, semantic-search, and mutation surfaces", () => {
     const db = openDb(":memory:");
     try {
       const tools = createStrataTools({ db, actor: "t" });
-      expect(tools).toHaveLength(19);
+      expect(tools).toHaveLength(20);
       const names = tools.map((t) => t.name).sort();
       expect(names).toContain("add_import");
       expect(names).toContain("add_parameter");
@@ -20,6 +20,7 @@ describe("agent surface (19 tools after L2 semantic_search)", () => {
       expect(names).toContain("create_function");
       expect(names).toContain("extract_function");
       expect(names).toContain("find_declarations_in_module");
+      expect(names).toContain("inline_function");
       expect(names).toContain("list_module_exports");
       expect(names).toContain("move_declaration");
       expect(names).toContain("read_test_file");
@@ -38,6 +39,7 @@ describe("agent surface (19 tools after L2 semantic_search)", () => {
       "create_function",
       "extract_function",
       "find_declarations_in_module",
+      "inline_function",
       "list_module_exports",
       "move_declaration",
       "read_test_file",
@@ -47,7 +49,7 @@ describe("agent surface (19 tools after L2 semantic_search)", () => {
       expect(STRATA_TOOL_NAMES).toContain(name);
       expect(STRATA_QUALIFIED_TOOL_NAMES).toContain(`mcp__strata__${name}`);
     }
-    expect(STRATA_TOOL_NAMES).toHaveLength(19);
+    expect(STRATA_TOOL_NAMES).toHaveLength(20);
   });
 
   it("prompt describes each mutation and choosing the right mutation", () => {

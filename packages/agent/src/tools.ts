@@ -15,6 +15,7 @@ import {
   find_declarations,
   find_declarations_in_module,
   get_references,
+  inline_function,
   isVecAvailable,
   list_module_exports,
   move_declaration,
@@ -438,6 +439,17 @@ export function createStrataTools(
     }
   );
 
+  const inlineFunctionTool = tool(
+    "inline_function",
+    "Inline an expression-body function (function declaration or `const f = (…) => <expr>`) into EVERY call site: each call `f(args)` is replaced by the function's body with arguments substituted for parameters (parenthesized), the declaration is deleted, and it is stripped from every importer — all in one operation in the open transaction you pass. You give only the function's node ID. Because it rewrites every reference, this is a bulk operation; the function's node ID is gone after commit. You do NOT, and must not, hand-edit call sites or importers afterward — they are already rewritten. The tool REFUSES, with a specific reason, anything it cannot prove safe: a body that is not a single returned expression; a body referencing source-local or imported symbols (v1 inlines only self-contained bodies using params + globals); `this`/`await`/recursion; non-identifier params or generics; ANY call site whose arguments are not syntactically pure (a call/await/assignment in an argument — inlining could change evaluation); a call with the wrong arity or a spread argument; or any non-call reference to the function (used as a value/callback, re-exported, default/namespace-imported, or dynamically imported). It is all-or-nothing: if any call site is unsafe, nothing is mutated. Requires an open transaction; mutates the overlay only.",
+    { tx: txHandleSchema, function_id: nodeIdSchema },
+    async (args) => {
+      const { renderedByPath, options } = buildAnalysisContext(ctx.db, args.tx as TxHandle);
+      const manifest = inline_function(ctx.db, args.tx as TxHandle, args.function_id, renderedByPath, options);
+      return textResult({ ok: true, ...manifest });
+    }
+  );
+
   const replaceBodyTool = tool(
     "replace_body",
     "Replace a function declaration's entire body with new code you provide, including the surrounding braces. Requires an open transaction; mutates the overlay only. This is the low-level tool for body logic changes that are not a rename, a parameter change, or a return-type change. It does not analyze the new body's references; rely on validate to confirm the new body type-checks before you commit.",
@@ -533,6 +545,7 @@ export function createStrataTools(
     createFunctionTool,
     extractFunctionTool,
     moveDeclarationTool,
+    inlineFunctionTool,
     replaceBodyTool,
     validateTool,
     commitTransactionTool,
@@ -556,6 +569,7 @@ export const STRATA_TOOL_NAMES = [
   "create_function",
   "extract_function",
   "move_declaration",
+  "inline_function",
   "replace_body",
   "validate",
   "commit_transaction",

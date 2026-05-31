@@ -197,6 +197,7 @@ describe("strata tools drive the spine through the shared context", () => {
           "find_declarations",
           "find_declarations_in_module",
           "get_references",
+          "inline_function",
           "list_module_exports",
           "move_declaration",
           "read_node",
