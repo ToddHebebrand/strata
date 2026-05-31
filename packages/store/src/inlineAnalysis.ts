@@ -149,6 +149,19 @@ function topLevelStatementIndexOf(sf: ts.SourceFile, node: ts.Node): number {
   return sf.statements.indexOf(cur as ts.Statement);
 }
 
+/** Resolve a relative import specifier from an importer file to a normalized module key. */
+function resolveSpecifier(importerPath: string, specifier: string): string | null {
+  if (!specifier.startsWith(".")) return null; // bare/package — not our module
+  const dir = path.dirname(normalizePath(importerPath));
+  return normalizePath(path.join(dir, specifier));
+}
+
+/** True if two module keys refer to the same file, ignoring a .ts/.tsx/.js/.mjs extension. */
+function sameModule(a: string, b: string): boolean {
+  const strip = (p: string) => p.replace(/\.(ts|tsx|js|mjs)$/, "");
+  return strip(a) === strip(b);
+}
+
 function isAssignmentOperator(k: ts.SyntaxKind): boolean {
   return k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment;
 }
@@ -381,6 +394,40 @@ export function analyzeInline(
     });
   }
 
-  // Task 6 fills these.
-  return { ok: true, name: input.name, callSites, importerStrips: [] };
+  // --- Importer strip plan. Every module importing the (soon-deleted) function
+  // via a named import must have that binding removed: a sole binding → remove
+  // the whole import statement; a mixed import → remove just the binding. ---
+  const fnModuleKey = normalizePath(sf.fileName);
+  const importerStrips: ImporterStrip[] = [];
+  for (const [importerKey, file] of sourceFiles) {
+    if (sameModule(importerKey, fnModuleKey)) continue;
+    for (let i = 0; i < file.statements.length; i++) {
+      const s = file.statements[i]!;
+      if (!ts.isImportDeclaration(s) || !s.moduleSpecifier || !ts.isStringLiteral(s.moduleSpecifier)) continue;
+      const resolved = resolveSpecifier(importerKey, s.moduleSpecifier.text);
+      if (!resolved || !sameModule(resolved, fnModuleKey)) continue;
+      const clause = s.importClause;
+      if (!clause) continue; // side-effect import — doesn't bind the symbol
+      const bindings = clause.namedBindings;
+      // Belt-and-suspenders: a namespace import of the function module could hide
+      // an `ns.<name>(…)` call that the reference walk skips (member-property
+      // names aren't free vars). Refuse rather than delete the function and leave
+      // such a call dangling.
+      if (bindings && ts.isNamespaceImport(bindings)) {
+        return reject(`inline: ${importerKey} uses a namespace import (import * as ${bindings.name.text}) of ${input.name}'s module; v1 inlines only named-import call sites`);
+      }
+      if (!bindings || !ts.isNamedImports(bindings)) continue;
+      const names = bindings.elements.map((e) => e.name.text);
+      if (!names.includes(input.name)) continue;
+      const soleBinding = !clause.name && names.length === 1;
+      importerStrips.push({
+        importerPath: importerKey,
+        importStatementIndex: i,
+        style: soleBinding ? "removed-statement" : "removed-binding",
+        ...(soleBinding ? {} : { removeName: input.name })
+      });
+    }
+  }
+
+  return { ok: true, name: input.name, callSites, importerStrips };
 }
