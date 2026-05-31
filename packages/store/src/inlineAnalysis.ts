@@ -149,6 +149,79 @@ function topLevelStatementIndexOf(sf: ts.SourceFile, node: ts.Node): number {
   return sf.statements.indexOf(cur as ts.Statement);
 }
 
+function isAssignmentOperator(k: ts.SyntaxKind): boolean {
+  return k >= ts.SyntaxKind.FirstAssignment && k <= ts.SyntaxKind.LastAssignment;
+}
+
+/**
+ * Syntactically pure: identifier, literal, this, or member-access / operator
+ * chain over those. Rejects anything containing a call / new / await / yield /
+ * assignment / inc-dec / arrow / function-expression / tagged-template — i.e.
+ * anything whose duplication or reordering during inlining could change
+ * evaluation. Conservative by design: a false "impure" only refuses a call site
+ * with a clear reason; a false "pure" must never happen.
+ */
+function isPureArg(node: ts.Expression): boolean {
+  let pure = true;
+  const walk = (n: ts.Node): void => {
+    if (!pure) return;
+    if (
+      ts.isCallExpression(n) ||
+      ts.isNewExpression(n) ||
+      ts.isAwaitExpression(n) ||
+      ts.isYieldExpression(n) ||
+      (ts.isBinaryExpression(n) && isAssignmentOperator(n.operatorToken.kind)) ||
+      (ts.isPrefixUnaryExpression(n) &&
+        (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken)) ||
+      ts.isPostfixUnaryExpression(n) ||
+      ts.isArrowFunction(n) ||
+      ts.isFunctionExpression(n) ||
+      ts.isTaggedTemplateExpression(n)
+    ) {
+      pure = false;
+      return;
+    }
+    n.forEachChild(walk);
+  };
+  walk(node);
+  return pure;
+}
+
+/**
+ * Build the inlined replacement expression: substitute each parameter's argument
+ * text into the body expression (hygienic, by SYMBOL — an identifier in the body
+ * is replaced iff its symbol is a parameter), then parenthesize the whole result
+ * so operator precedence is preserved at the call site. Edits are applied
+ * right-to-left on the body's own text so offsets stay stable.
+ */
+function buildReplacement(
+  checker: ts.TypeChecker,
+  fnSf: ts.SourceFile,
+  bodyExpr: ts.Expression,
+  paramSyms: ts.Symbol[],
+  argTexts: string[]
+): string {
+  const symToArg = new Map<ts.Symbol, string>();
+  paramSyms.forEach((s, i) => symToArg.set(s, argTexts[i]!));
+  const base = bodyExpr.getStart(fnSf);
+  let text = bodyExpr.getText(fnSf);
+  const edits: { start: number; end: number; with: string }[] = [];
+  const walk = (n: ts.Node): void => {
+    if (ts.isIdentifier(n) && !isMemberPropertyName(n)) {
+      const sym = checker.getSymbolAtLocation(n);
+      if (sym && symToArg.has(sym)) {
+        edits.push({ start: n.getStart(fnSf) - base, end: n.getEnd() - base, with: symToArg.get(sym)! });
+        return;
+      }
+    }
+    n.forEachChild(walk);
+  };
+  walk(bodyExpr);
+  edits.sort((a, b) => b.start - a.start);
+  for (const e of edits) text = text.slice(0, e.start) + e.with + text.slice(e.end);
+  return `(${text})`;
+}
+
 export function analyzeInline(
   rendered: Map<string, string>,
   options: ts.CompilerOptions,
@@ -276,12 +349,37 @@ export function analyzeInline(
   }
   if (refReason) return reject(refReason);
 
-  // Task 5 fills replacementText (argument purity + hygienic substitution).
-  const callSites: SubstitutionIntent[] = callRecords.map((c) => ({
-    callSitePath: c.callSitePath,
-    callSiteStatementIndex: c.callSiteStatementIndex,
-    replacementText: ""
-  }));
+  // --- Argument purity + hygienic substitution. For each call site, require
+  // every argument to be syntactically pure (inlining duplicates/reorders args,
+  // so effectful args could change behavior), then build the parenthesized
+  // inlined expression by substituting each parameter's argument text. ---
+
+  // Ordered parameter symbols (substitution must map argument i → param i).
+  const paramSymsOrdered: ts.Symbol[] = [];
+  for (const p of norm.params) {
+    const s = checker.getSymbolAtLocation(p.name);
+    if (!s) return reject(`inline: could not resolve parameter symbol for ${input.name}`);
+    paramSymsOrdered.push(s);
+  }
+
+  const callSites: SubstitutionIntent[] = [];
+  for (const c of callRecords) {
+    const args = [...c.call.arguments];
+    for (const arg of args) {
+      if (!isPureArg(arg)) {
+        return reject(
+          `inline: a call to ${input.name} passes a non-pure argument (${arg.getText(c.sf)}); inlining could change evaluation, so it is refused`
+        );
+      }
+    }
+    const argTexts = args.map((a) => a.getText(c.sf));
+    const replacementText = buildReplacement(checker, sf, norm.bodyExpr, paramSymsOrdered, argTexts);
+    callSites.push({
+      callSitePath: c.callSitePath,
+      callSiteStatementIndex: c.callSiteStatementIndex,
+      replacementText
+    });
+  }
 
   // Task 6 fills these.
   return { ok: true, name: input.name, callSites, importerStrips: [] };
