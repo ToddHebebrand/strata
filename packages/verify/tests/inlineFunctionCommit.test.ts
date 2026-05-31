@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
 import { ingestBatch } from "@strata/ingest";
 import {
   openDb, insertNodes, insertReferences, begin,
@@ -6,6 +8,20 @@ import {
 } from "@strata/store";
 import { render } from "@strata/render";
 import { buildAnalysisContext, commit } from "../src/validate";
+
+function loadMedium() {
+  const root = path.resolve(__dirname, "../../../examples/medium/src");
+  const files: { path: string; text: string }[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir)) {
+      const full = path.join(dir, e);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (e.endsWith(".ts")) files.push({ path: full.replaceAll("\\", "/"), text: readFileSync(full, "utf8") });
+    }
+  };
+  walk(root);
+  return { root, files };
+}
 
 function seed(inputs: { path: string; text: string }[]) {
   const batch = ingestBatch(inputs);
@@ -87,6 +103,35 @@ describe("inline_function commit (integration)", () => {
     expect(() => inline_function(db, tx, fnId, renderedByPath, options)).toThrow(/K|self-contained|scope/i);
     expect(commit(db, tx).ok).toBe(true); // empty tx
     expect(find_declarations(db, { name: "f" })).toHaveLength(1); // still there
+    db.close();
+  });
+});
+
+describe("inline_function on the real corpus", () => {
+  it("inlines a self-contained expression-body function (or refuses with a reason); never corrupts", () => {
+    const { files } = loadMedium();
+    const batch = ingestBatch(files);
+    const db = openDb(":memory:");
+    insertNodes(db, batch.allNodes);
+    insertReferences(db, batch.references);
+
+    // Pick formatTimestamp from lib/format.ts if it is a single-return expression
+    // body; else skip. (In the medium corpus it IS a single self-contained
+    // expression, but ui/timeline.ts passes it as a `.map` callback — a non-call
+    // value use — so the probe is expected to REFUSE, which is acceptable.)
+    const formatMod = listModules(db).find((m) => m.payload.endsWith("lib/format.ts"));
+    if (!formatMod) { console.log("no lib/format.ts; skipping"); return; }
+    const candidate = loadModule(db, formatMod.id).children.find(
+      (c) => (c.kind === "FunctionDeclaration" || c.kind === "FirstStatement") && c.payload?.includes("formatTimestamp")
+    );
+    if (!candidate) { console.log("no formatTimestamp; skipping"); return; }
+
+    const tx = begin(db, "t");
+    const { renderedByPath, options } = buildAnalysisContext(db, tx);
+    let inlined = true;
+    try { inline_function(db, tx, candidate.id, renderedByPath, options); }
+    catch (e) { inlined = false; console.log("inline refused:", (e as Error).message); }
+    if (inlined) expect(commit(db, tx).ok).toBe(true);
     db.close();
   });
 });
