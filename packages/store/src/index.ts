@@ -62,6 +62,7 @@ export {
 } from "./addParameter";
 export { add_import, addImport, type AddImportResult } from "./addImport";
 export { appendChildStatement } from "./appendChildStatement";
+export { removeChildStatement } from "./removeChildStatement";
 export {
   analyzeMove,
   type MoveResult,

@@ -1,21 +1,16 @@
 import ts from "typescript";
 import path from "node:path";
-import { findNodeById, insertNodes, listChildren, listModules, modulePathOf } from "./nodes";
-import type { NodeRow } from "./nodes";
+import { findNodeById, listChildren, listModules, modulePathOf } from "./nodes";
 import type { Db } from "./schema";
-import { nodeId } from "./ids";
 import { appendChildStatement } from "./appendChildStatement";
+import { removeChildStatement } from "./removeChildStatement";
 import { add_import } from "./addImport";
 import { resolveDeclarationNameIdentifier } from "./declarationName";
 import {
   queuePendingOp,
   queueTextSpanEdit,
-  trackDeletedEdgeForRestore,
-  trackDeletedNodeForRestore,
-  trackInsertedNode,
   type TxHandle
 } from "./transactions";
-import type { Reference } from "./references";
 import { analyzeMove, type ImporterRewrite } from "./moveAnalysis";
 
 export interface MoveDeclarationManifest {
@@ -153,129 +148,10 @@ export function move_declaration(
 
   // Delete from source: the declaration node + its Identifier children + their
   // reference edges, AND re-index the surviving siblings (statements with
-  // childIndex > deletedIndex, plus the EndOfFileTrivia node) DOWN by one.
-  //
-  // A node's id is `nodeId(modulePath, [childIndex], kind)`, so removing the
-  // decl at index K leaves a gap: surviving siblings keep stale ids at their
-  // old (too-high) childIndex. A clean re-ingest of the now-shorter module
-  // would place them one slot lower. Without re-indexing, (a) the EOF node's id
-  // is stale → re-ingest equivalence fails, and (b) at commit, refreshReferenceEdges
-  // resolves a surviving sibling at its CORRECT (lowered) index → a fresh edge
-  // references an id absent from `nodes` → FOREIGN KEY constraint failed.
-  //
-  // This is symmetric to appendChildStatement's EOF up-shift on insert.
-  const sourceModuleId = decl.parentId; // source module id (NOT the target)
-  const deletedIndex = decl.childIndex; // the freed slot
-
-  const idChildren = listChildren(db, declarationId).filter((c) => c.kind === "Identifier");
-  const deletedIds = [...idChildren, decl].map((ch) => ch.id);
-
-  // Surviving siblings: every source-module child past the decl, ascending by
-  // childIndex. This INCLUDES the EndOfFileTrivia node and any surviving
-  // statements. (Use the SOURCE module id, not the target.)
-  const survivors = listChildren(db, sourceModuleId)
-    .filter((c) => c.childIndex !== null && c.childIndex > deletedIndex)
-    .sort((a, b) => a.childIndex! - b.childIndex!);
-
-  // Capture every reference edge touching any decl-subtree node about to be
-  // deleted, in a single query, BEFORE the delete — so rollback can re-insert
-  // them verbatim. A single SELECT over the full id set (rather than per-node)
-  // naturally de-duplicates edges whose BOTH endpoints are in the delete set
-  // (e.g. an internal edge from one identifier to the decl name); a per-node
-  // capture would double-count those.
-  const placeholders = deletedIds.map(() => "?").join(", ");
-  const capturedEdges = db
-    .prepare(
-      `SELECT from_node_id AS fromNodeId, to_node_id AS toNodeId, kind
-       FROM node_references
-       WHERE from_node_id IN (${placeholders}) OR to_node_id IN (${placeholders})`
-    )
-    .all(...deletedIds, ...deletedIds) as Reference[];
-  trackDeletedEdgeForRestore(tx, capturedEdges);
-
-  const delEdges = db.prepare(
-    `DELETE FROM node_references WHERE from_node_id = ? OR to_node_id = ?`
-  );
-  const delNode = db.prepare(`DELETE FROM nodes WHERE id = ?`);
-
-  // Plan the re-indexed survivor rows BEFORE any deletion so we can capture each
-  // survivor's old row + its Identifier children + their edges for rollback.
-  interface SurvivorPlan {
-    oldNode: NodeRow;
-    oldIdentifiers: NodeRow[];
-    newRow: NodeRow;
-  }
-  const survivorPlans: SurvivorPlan[] = survivors.map((s) => {
-    const newChildIndex = s.childIndex! - 1;
-    const newId = nodeId(sourceModulePath, [newChildIndex], s.kind);
-    const oldIdentifiers = listChildren(db, s.id).filter((c) => c.kind === "Identifier");
-    return {
-      oldNode: s,
-      oldIdentifiers,
-      newRow: {
-        id: newId,
-        kind: s.kind,
-        parentId: sourceModuleId,
-        childIndex: newChildIndex,
-        payload: s.payload // payload UNCHANGED
-      }
-    };
-  });
-
-  // Capture survivor edges for rollback: every edge touching a survivor node or
-  // any of its Identifier children. (refreshReferenceEdges re-resolves these at
-  // commit since the survivor is re-inserted as a tracked-inserted node and the
-  // source module is dirty; but rollback must restore the pre-move edges.)
-  const survivorEdgeIds = survivorPlans.flatMap((p) => [
-    p.oldNode.id,
-    ...p.oldIdentifiers.map((i) => i.id)
-  ]);
-  if (survivorEdgeIds.length > 0) {
-    const sph = survivorEdgeIds.map(() => "?").join(", ");
-    const survivorEdges = db
-      .prepare(
-        `SELECT from_node_id AS fromNodeId, to_node_id AS toNodeId, kind
-         FROM node_references
-         WHERE from_node_id IN (${sph}) OR to_node_id IN (${sph})`
-      )
-      .all(...survivorEdgeIds, ...survivorEdgeIds) as Reference[];
-    trackDeletedEdgeForRestore(tx, survivorEdges);
-  }
-
-  // Collision-freedom: DELETE every old row first (decl subtree + every survivor
-  // node and its identifiers), THEN INSERT every re-indexed survivor row. Since
-  // all old rows are gone before any new row goes in, no derived id can collide
-  // with a still-present old row regardless of index order.
-  const drop = db.transaction(() => {
-    // 1. Delete the decl node + its Identifier children + their edges.
-    for (const ch of [...idChildren, decl]) {
-      trackDeletedNodeForRestore(tx, ch);
-      delEdges.run(ch.id, ch.id);
-      delNode.run(ch.id);
-    }
-    // 2. Delete every survivor's old row + its Identifier children + their edges.
-    for (const plan of survivorPlans) {
-      for (const ident of plan.oldIdentifiers) {
-        trackDeletedNodeForRestore(tx, ident);
-        delEdges.run(ident.id, ident.id);
-        delNode.run(ident.id);
-      }
-      trackDeletedNodeForRestore(tx, plan.oldNode);
-      delEdges.run(plan.oldNode.id, plan.oldNode.id);
-      delNode.run(plan.oldNode.id);
-    }
-    // 3. Insert every re-indexed survivor row (no Identifier children emitted
-    //    here: planMaterialization + emitIdentifiersForInserted re-emit them at
-    //    the corrected childIndex at commit, and refreshReferenceEdges re-resolves
-    //    their edges over the now-dirty source module. The EndOfFileTrivia node is
-    //    skipped for identifier emission by planMaterialization — re-inserting it
-    //    at the corrected index just fixes its stale id, which is all it needs).
-    for (const plan of survivorPlans) {
-      insertNodes(db, [plan.newRow]);
-      trackInsertedNode(tx, plan.newRow.id);
-    }
-  });
-  drop();
+  // childIndex > deletedIndex, plus the EndOfFileTrivia node) DOWN by one. This
+  // is symmetric to appendChildStatement's EOF up-shift on insert, and is shared
+  // verbatim with inline_function via the removeChildStatement helper.
+  removeChildStatement(db, tx, decl.parentId, decl.childIndex);
 
   // Importer rewrites + back-import. analyzeMove emitted OFFSET-FREE intents in
   // rendered-MODULE coordinates; here we apply them against each importer's
