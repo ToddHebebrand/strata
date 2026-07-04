@@ -1,6 +1,6 @@
 # When does a structural substrate beat files? Measuring an agent-native alternative to the file abstraction
 
-*Status: DRAFT (2026-07-03) — for operator review before publication. Every number below is sourced from [`RESULTS.md`](RESULTS.md) and [`../decisions.md`](../decisions.md); N is stated everywhere because most of it is small.*
+*Todd Hebebrand · July 2026 · [github.com/ToddHebebrand/strata](https://github.com/ToddHebebrand/strata) · MIT. Every number below is sourced from [`RESULTS.md`](RESULTS.md) and the append-only decision log ([`decisions.md`](../decisions.md)); N is stated everywhere because most of it is small.*
 
 ## The bet
 
@@ -100,7 +100,3 @@ node packages/cli/dist/cli.js agent examples/medium "Rename the exported interfa
 ```
 
 The full design ([`strata-design.md`](../strata-design.md)), the complete decision trail including every falsified lever ([`decisions.md`](../decisions.md)), and the detailed results ([`RESULTS.md`](RESULTS.md)) are in the repo.
-
----
-
-*Draft notes for the operator (delete before publishing): (1) title has two alternates — "Files are a human interface: measuring what agents do with a structural one" / "A coding agent with no filesystem: what it wins, loses, and proves"; (2) the Opus-baseline-thrash anecdote is N=2 — keep the "indicative" hedge if retained; (3) needs the demo video link and the license badge once those exist; (4) consider a single figure: the T03 token distributions as two non-overlapping dot strips — it's the whole argument in one image.*

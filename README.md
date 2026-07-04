@@ -18,6 +18,8 @@ Disjoint distributions, ~3.5× fewer tokens, ~2.2× faster, both 3/3 success wit
 
 **Honest scope:** the rename-class win is robust and model-independent. Behavioral-gate extensions and one precisely-bounded negative on a per-callsite expressiveness task (`add_parameter`) are documented in **[`docs/RESULTS.md`](docs/RESULTS.md)**; the full decision trail is in **[`decisions.md`](decisions.md)**.
 
+**📄 The write-up — [When does a structural substrate beat files?](docs/write-up.md)** — is the narrative version: the result, the task-class boundary, where it sits in prior art, and why the numbers are trustworthy.
+
 ## Architecture
 
 ```
