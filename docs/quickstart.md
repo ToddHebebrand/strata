@@ -11,7 +11,7 @@ git clone <this-repo>
 cd Strata
 pnpm install
 pnpm -r build
-pnpm -r test                      # ~250 passing, 2 key-gated skipped
+pnpm -r test                      # ~400 passing, 2 key-gated skipped
 ```
 
 You now have the CLI built at `packages/cli/dist/cli.js`. Wherever this doc says `strata`, use `node packages/cli/dist/cli.js`.
@@ -38,6 +38,42 @@ node packages/cli/dist/cli.js ingest-batch examples/medium /tmp/medium.db
 ```
 
 The store at `/tmp/medium.db` now contains every node from `examples/medium/src/**/*.ts`. The operation log is empty (no mutations yet).
+
+## 2.5 Poke the substrate by hand (no key)
+
+The "persistent, queryable node graph" claim is checkable directly. The exploration commands take a corpus directory (ephemeral in-memory ingest) or a persisted `.db` (like `/tmp/medium.db` above) and chain through node IDs:
+
+```bash
+node packages/cli/dist/cli.js modules examples/medium
+```
+
+```
+ID                DECLS  MODULE
+a74fb961a099c24f  10     examples/medium/src/cli.ts
+36b87a02617425a6  1      examples/medium/src/clock.ts
+...
+```
+
+Find a declaration by name, then inspect it with the ID the previous command printed:
+
+```bash
+node packages/cli/dist/cli.js find examples/medium User
+node packages/cli/dist/cli.js show examples/medium a074a656322cd0c7
+node packages/cli/dist/cli.js refs examples/medium a074a656322cd0c7
+```
+
+`refs` is the part files can't do — every *resolved* reference to `User` across the corpus, including type positions and JSDoc, with same-spelling string literals correctly absent:
+
+```
+ID                KIND  MODULE                              CONTEXT
+4933b7d50864cd69  type  examples/medium/src/index.ts        export type { User } from "./types/user.ts";
+9e60f482f141fc19  type  examples/medium/src/users/greet.ts  import type { User } from "../types/user.ts";
+636faf4f69105634  type  examples/medium/src/users/greet.ts  export function greet(user: User): string {
+...
+15 references across 6 modules
+```
+
+IDs are deterministic for an unchanged corpus, so the chain works across invocations without a persisted db. Add `--json` to any command to pipe into `jq`. `exports <source> <modulePath>` lists one module's top-level declarations; `search <source> "<query>"` does semantic search once a persisted db has embeddings (see the L2 section below).
 
 ## 3. Run the agent on a real corpus
 

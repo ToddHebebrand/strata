@@ -52,7 +52,7 @@ For a hands-on walkthrough that takes you from clone to "I see L1 working" with 
 ```bash
 pnpm install
 pnpm -r build
-pnpm -r test                                          # 255 passing, 2 key-gated skipped
+pnpm -r test                                          # ~400 passing, 2 key-gated skipped
 ```
 
 Round-trip a single TypeScript file through the substrate (no key, no network):
@@ -66,6 +66,23 @@ Run the rename acceptance (programmatic, no key):
 ```bash
 node packages/cli/dist/cli.js t03 examples/medium
 ```
+
+### Explore the graph (no key, no network)
+
+Six read-only commands expose the substrate's query primitives to a human. `<source>` is either a corpus directory (ingested ephemerally into memory — zero setup) or a persisted `.db`:
+
+```bash
+strata() { node packages/cli/dist/cli.js "$@"; }
+
+strata modules examples/medium                    # every module + its node ID (alias: ls)
+strata exports examples/medium lib/format.ts      # one module's top-level declarations
+strata find    examples/medium User               # find declarations by name [--kind interface|type-alias|class|function|variable]
+strata show    examples/medium <nodeId>           # a node's source text + structure
+strata refs    examples/medium <nodeId>           # every resolved reference, across modules
+strata search  examples/medium "date helpers"     # semantic search (needs embeddings; see below)
+```
+
+The workflow is a chain: discovery commands (`modules`/`exports`/`find`) print node IDs; you paste one into inspection commands (`show`/`refs`). IDs are deterministic for an unchanged corpus directory, so the chain works even without a persisted db. `refs` is the capability files can't offer — the resolved reference graph, including type positions and JSDoc, with string-literal look-alikes correctly excluded. Every command takes `--json` for piping to `jq`.
 
 ### Run the agent on a real corpus
 

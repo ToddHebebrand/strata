@@ -9,6 +9,11 @@ import ts from "typescript";
 import { runAgentCommand } from "./commands/agent";
 import { runBaselineCommand } from "./commands/baseline";
 import { runEmbed } from "./commands/embed";
+import {
+  EXPLORE_USAGE,
+  isExploreCommand,
+  runExplore
+} from "./commands/explore";
 import { runIngestBatch } from "./commands/ingestBatch";
 import { runRename } from "./commands/rename";
 import { describeSdkToolSchema } from "./commands/sdkSmoke";
@@ -167,8 +172,39 @@ function costFromLog(result: {
     : null;
 }
 
+function printGroupedUsage(): void {
+  console.error(
+    [
+      "strata — structural code substrate for AI agents",
+      "",
+      "Explore a store (read-only; <source> = corpus dir or persisted .db):",
+      ...EXPLORE_USAGE.split("\n").map((line) => (line ? `  ${line}` : line)),
+      "",
+      "Agent and research/harness commands:",
+      '  strata agent <corpusRoot> "<prompt>" [--db <path>] [--reset] [--print] [--no-index] [--model <id>] [--max-turns N] [--wall-ms N]',
+      '  strata baseline <corpusRoot> "<prompt>" [--keep-tree] [--print] [--model <id>] [--max-turns N] [--wall-ms N]',
+      "  strata embed <corpusRoot> --db <dbPath>",
+      "  strata ingest-batch <rootDir> <dbPath>",
+      "  strata roundtrip <input.ts>",
+      "  strata rename <dbPath> <declarationId> <newName>",
+      "  strata t03 <examples/medium dir>",
+      "  strata sdk-smoke"
+    ].join("\n")
+  );
+}
+
 async function asyncMain(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
+  if (command === "help" || command === "--help" || command === undefined) {
+    printGroupedUsage();
+    return command === undefined ? 1 : 0;
+  }
+  if (isExploreCommand(command)) {
+    const result = await runExplore([command, ...rest]);
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    return result.code;
+  }
   if (command === "embed") {
     const positional: string[] = [];
     let dbPath: string | undefined;
@@ -322,9 +358,7 @@ function main(argv: string[]): number {
     return 0;
   }
 
-  console.error(
-    "Usage: strata roundtrip <input.ts> | ingest-batch <rootDir> <dbPath> | rename <dbPath> <declarationId> <newName> | t03 <examples/medium dir> | sdk-smoke | agent <corpusRoot> \"<prompt>\" [--db <path>] [--reset] [--print] [--no-index] | baseline <corpusRoot> \"<prompt>\" [--keep-tree] [--print] | embed <corpusRoot> --db <dbPath>"
-  );
+  printGroupedUsage();
   return 1;
 }
 

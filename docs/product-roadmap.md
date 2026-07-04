@@ -71,11 +71,16 @@ Specs: [`docs/specs/2026-05-26-three-layer-codebase-index-design.md`](specs/2026
 
 Known follow-up hardening (deferred from PR review, none state-corrupting): L2 in-session staleness after rename, group `embeddingProvider`+`taskPrompt` on ctx into one `semanticIndex?` field, `embed` CLI returning `{ok:false,reason}` instead of throwing, multi-module commit-pattern tests, content-changed re-embed tests, k-cap tests, OpenAI HTTP error-path tests, batching boundary tests, non-`src/` module-path branches.
 
-### Iteration 3 — Make it usable by someone else
+### Iteration 3 — Make it usable by someone else (in progress)
 
 Goal: someone who isn't us can clone the repo, follow a README, and use Strata.
 
-Only after iterations 1 and 2 have landed. This is the iteration where the CLI surface, README, demo, and OSS-release prep happen — not before. Premature polish on an empty product is what we're trying to avoid.
+- [x] **Exploration CLI** (spec: [`docs/superpowers/specs/2026-05-31-strata-explore-cli-design.md`](superpowers/specs/2026-05-31-strata-explore-cli-design.md), shipped 2026-07-03). Six read-only commands — `modules`/`ls`, `exports`, `find`, `show`, `refs`, `search` — over corpus dirs (ephemeral ingest) or persisted `.db`s, all with `--json`, plus a grouped `strata help`. `refs` (the resolved reference graph) is the flagship output. Zero new store logic; key-free tests in `packages/cli/tests/explore.test.ts`; README "Explore the graph" section + quickstart § 2.5.
+- [ ] **Demo recording** — the one remaining Phase-5 human deliverable. The explore chain (`modules → find → show → refs`) then an agent rename is the natural 5-minute arc.
+- [ ] **Packaging / global binary / npm publish** (separate gap, deliberately after the demo).
+- [ ] **License choice** before public release.
+
+Remaining polish happens here — not before. Premature polish on an empty product is what we're trying to avoid.
 
 ### Iteration 4 — Write-up
 

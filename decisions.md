@@ -7,6 +7,20 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-03 — Exploration CLI shipped (Iteration 3 first sub-project): six read-only human commands over the store's query primitives
+
+**What shipped:** `packages/cli/src/commands/explore/` per the approved spec (`docs/superpowers/specs/2026-05-31-strata-explore-cli-design.md`): `modules` (alias `ls`), `exports`, `find [--kind]`, `show`, `refs`, `search [-k]`, each accepting a corpus directory (ephemeral `:memory:` ingest via the shared tree-walk, skipping `node_modules`/`.git`/`dist`) or a persisted `.db`, each supporting `--json`. Dispatch + a grouped `strata help` separating exploration from research/harness commands. Zero new store logic — commands map 1:1 onto `listModules`/`list_module_exports`/`find_declarations`/`read_node`/`get_references`/`semantic_search`.
+
+**Notable implementation choices within the spec:**
+- Commands return a uniform `{code, stdout, stderr}` (`CommandResult`) and the dispatcher prints — so the 16 key-free tests in `packages/cli/tests/explore.test.ts` call `runExplore()` in-process (fast) plus one spawn test against the built dist for dispatch/help wiring.
+- The persisted-db test proves the spec's ID-chain property end-to-end: `find` against the corpus directory and against an `ingest-batch` db yield identical node IDs (deterministic position-derived IDs; same absolute module paths).
+- `refs` context lines skip leading line/block comments so a JSDoc'd statement shows its first *code* line, not `/**` (surfaced by driving the real output on `examples/medium`).
+- `search` degrades along three explicit paths (vec unavailable / no embeddings in store / no `STRATA_EMBED_API_KEY`), all exit 1 with the same actionable hint, matching the spec's no-crash requirement.
+
+**Design-doc impact:** none — read-only surface over existing primitives; files-not-first-class holds (the corpus-dir argument is an ingest source, exactly like `strata agent`'s; module paths appear as display metadata only).
+
+**Revisit when:** packaging/global-binary work starts (the `strata()` shell-function workaround in the README goes away), or a user needs pagination/watch mode (explicit YAGNI in the spec).
+
 ## 2026-07-03 — System prompt now instructs single-transaction batching for multi-mutation tasks (compound-ceremony lever, prompt-level, unvalidated)
 
 **Context:** The 2026-05-29 compound extract dogfood diagnosed the substrate's compound-task overhead as per-op **transaction + validate + commit ceremony** (3 ops → 3 commits, 16 tool calls, 208% of baseline cost). Reviewing `STRATA_SYSTEM_PROMPT` against that transcript: the "transaction model" section said "a transaction groups related structural changes" but never told the agent to batch several related mutations into ONE transaction, and "Verify before commit" mandated validate **after every mutation** — the prompt was effectively prescribing the measured ceremony.
