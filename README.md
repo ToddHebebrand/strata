@@ -142,4 +142,4 @@ Not production-grade; not multi-language; not multi-client. Out-of-scope items (
 
 ## License
 
-(Choose before public release.)
+[MIT](LICENSE)
