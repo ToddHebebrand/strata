@@ -82,11 +82,13 @@ Goal: someone who isn't us can clone the repo, follow a README, and use Strata.
 
 Remaining polish happens here — not before. Premature polish on an empty product is what we're trying to avoid.
 
-### Iteration 4 — Write-up
+### Iteration 4 — Write-up (draft in review)
 
 Goal: the architectural argument is publishable.
 
-Architecture write-up, results post (T03 win + honest gaps + what the rename-class win implies), demo capture.
+- [x] **Results-post draft** — [`docs/write-up.md`](write-up.md) (2026-07-03). Framing: "when does a structural substrate beat files" — the bulk-propagation/single-site-synthesis taxonomy as the contribution, the T01 negative as a sharpened boundary, methodology as credibility, and the hybrid-agent implication stated explicitly. Awaiting operator review/edit before publication.
+- [ ] Demo capture (see Iteration 3).
+- [ ] Publication venue + final edit pass (operator).
 
 ## What not to do
 
