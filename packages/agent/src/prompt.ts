@@ -27,6 +27,8 @@ Mutations require an open transaction. A transaction groups related structural c
 
 The lifecycle is: open a transaction, explore as needed, mutate, validate, and then either commit or roll back. A transaction should never be abandoned. Do not leave one open at the end of the task. Do not start overlapping transactions for one logical change unless the task genuinely requires separate attempts.
 
+The converse also holds: when one task asks for several related structural changes, make them inside a single transaction — apply every mutation, validate the combined pending state, and commit once. Do not open a fresh transaction per mutation. Commit validates the whole pending state either way, so per-mutation transactions multiply validation and commit overhead without adding safety, and they fragment one logical change across several history entries.
+
 commit_transaction validates before finalizing. If diagnostics exist, it refuses to finalize and returns the problem information. Validation failure is not a reason to force the commit; it is a reason to inspect what went wrong, make a corrective structural change if one is available, or roll back and reassess.
 
 The operation log is canonical history. A successful mutation is not just a changed payload; it is an operation recorded with the transaction that produced it. This is why you use mutation tools instead of trying to patch rendered text.
@@ -43,7 +45,7 @@ Exploration is bounded. Once you have located the declaration the task targets a
 
 ## Verify before commit
 
-After a mutation, call validate on the open transaction. validate returns diagnostics for the pending state. An empty list means the pending graph renders and type-checks cleanly under the verifier. Diagnostics include enough mapped information to reason about where the problem belongs.
+After completing the mutations for a change, call validate on the open transaction. validate returns diagnostics for the pending state. An empty list means the pending graph renders and type-checks cleanly under the verifier. Diagnostics include enough mapped information to reason about where the problem belongs. When a task involves several related mutations, one validate over the combined pending state is normally enough; validate after an individual mutation only when its outcome genuinely determines what you do next.
 
 Do not commit after a failed validate. First, inspect the diagnostics. If the problem can be resolved with another structural mutation in the same transaction, do that and validate again. If the approach is wrong or the available tools cannot repair it, use rollback_transaction and reassess from committed state.
 

@@ -7,6 +7,20 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-03 — System prompt now instructs single-transaction batching for multi-mutation tasks (compound-ceremony lever, prompt-level, unvalidated)
+
+**Context:** The 2026-05-29 compound extract dogfood diagnosed the substrate's compound-task overhead as per-op **transaction + validate + commit ceremony** (3 ops → 3 commits, 16 tool calls, 208% of baseline cost). Reviewing `STRATA_SYSTEM_PROMPT` against that transcript: the "transaction model" section said "a transaction groups related structural changes" but never told the agent to batch several related mutations into ONE transaction, and "Verify before commit" mandated validate **after every mutation** — the prompt was effectively prescribing the measured ceremony.
+
+**Decided:** Two general (non-task-specific, no-recipe) prompt edits in `packages/agent/src/prompt.ts`: (1) the transaction-model section now states the converse explicitly — several related changes go in a single transaction, validate the combined pending state, commit once; per-mutation transactions multiply overhead without adding safety and fragment one logical change across history entries. (2) "Verify before commit" now reads "after completing the mutations for a change" with per-mutation validate reserved for when an individual outcome genuinely determines the next step. Prompt stays within the 2000–5000-token test budget; all prompt assertions are pattern-based and unchanged.
+
+**Why:** Attacks the measured overhead directly at the cheapest layer. This is NOT a re-opening of the falsified T01 prompt lever — that lever targeted tool *trust/legibility* (agent ignoring add_parameter's fan-out); this targets ceremony *count* on multi-step tasks, a different failure surface diagnosed from a different transcript.
+
+**Honest status:** unvalidated. The falsifiable product question is "does single-transaction batching reduce compound-task cost?" — answerable by re-running the compound `dogfood:extract` form (operator, keyed). Prediction: fewer commits/validates and lower cost on compound tasks, but it does NOT change the class conclusion — single-site synthesis still lacks bulk leverage and is still not expected to beat file tools.
+
+**Design-doc impact:** none — prompt iteration is within `strata-design.md` § System prompt ("drafted and iterated").
+
+**Revisit when:** the keyed compound re-run lands (record the paired numbers here), or a transcript shows the agent over-batching unrelated changes into one transaction (the entry's guardrail: "one logical change" still bounds the batch).
+
 ## 2026-05-30 — inline_function v1 shipped: inline an expression-body function at every call site, all-or-nothing, shared removeChildStatement, hygienic AST substitution
 
 **(a) v1 surface and accepted forms.** `inline_function(function_id)` — the **20th** structural agent tool. Pure `analyzeInline` lives in `@strata/store` (the caller passes rendered context via `buildAnalysisContext`, the same seam `move_declaration`/`extract_function` use); the apply path is `inlineFunction.ts`. It replaces every call site `f(args)` with the function's body (arguments substituted for parameters, parenthesized), deletes the declaration, and strips it from every importer. It is the inverse of `extract_function` and a sibling of `move_declaration`. Four accepted **expression-body** forms, all normalized to `{ params, bodyExpr }`: a `function f(...) { return <expr>; }` declaration; `const f = (...) => <expr>` (concise body); `const f = (...) => { return <expr>; }`; and `const f = function(...) { return <expr>; }`.
