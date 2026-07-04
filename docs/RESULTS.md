@@ -1,6 +1,18 @@
 # Strata — Results
 
-*The complete, honest story. Status: 2026-05-17 — **research concluded**. Authoritative decision trail: [`decisions.md`](../decisions.md). Architecture: [`strata-design.md`](../strata-design.md).*
+*The complete, honest story. Status: 2026-05-17 — **research concluded** (see the 2026-07-03 addendum below for what was built after that date). Authoritative decision trail: [`decisions.md`](../decisions.md). Architecture: [`strata-design.md`](../strata-design.md).*
+
+## Addendum (2026-07-03): what changed after "research concluded"
+
+The body of this document is the research-phase record as it stood on 2026-05-17 and is preserved unedited. After that date the project shifted from measurement to product iteration (CLAUDE.md orientation change, 2026-05-26), and the following landed — all recorded in [`decisions.md`](../decisions.md) and [`docs/product-roadmap.md`](product-roadmap.md):
+
+- **Arbitrary prompts + persistence (iteration 1).** `strata agent <corpus> "<prompt>" --db <path>` runs any natural-language task against any TypeScript corpus, with the node graph and operation log persisted across sessions. Real external dogfood: `unjs/defu`.
+- **Tool surface grew from 8 to 20 (iteration 2)**, including `extract_function`, `move_declaration`, `inline_function`, `create_function`, `add_import`, `list_module_exports`, `semantic_search`.
+- **The cost-win taxonomy sharpened (keyed paired dogfoods, N=1 each).** The substrate's cost edge is specific to **bulk propagation over many existing references**: rename (T03, 3.5× fewer tokens, N=3), cross-module move (~48% cheaper), parameter fan-out. Single-site synthesis is the opposite class: extract_function *lost* to file tools (+21% simple, +108% compound) because per-op transaction ceremony has no bulk leverage to amortize against. This refines — does not contradict — the research-phase result, and it is the honest framing for any product claim.
+- **Three-layer codebase index (iteration 2.5).** L1 static module index (always-on prompt injection), L2 `sqlite-vec` semantic search, L3 operation-log-as-memory. Mechanisms validated end-to-end; magnitude claims await larger-corpus runs.
+- The "5× tokens on T05" reading below is **stale**: with the iteration-2+ tool surface and L1, a paired N=1 run put the substrate at ~51% of baseline *cost* on T05 (cache pricing dominates; see decisions.md 2026-05-27).
+
+Test-count references in this document ("206 passing") reflect the 2026-05-17 snapshot; the suite has grown since — `pnpm -r test` is authoritative.
 
 ## The thesis
 

@@ -22,7 +22,7 @@ Disjoint distributions, ~3.5× fewer tokens, ~2.2× faster, both 3/3 success wit
 
 ```
 agent  (@strata/agent)   headless Claude Agent SDK, structural tools only, no fs
-  └─ tools (17)          query · transaction · structural mutation · validate · semantic_search
+  └─ tools (20)          query · transaction · structural mutation · validate · semantic_search
 store  (@strata/store)   SQLite node graph + edges + operation log + transactions
   └─ vector index        sqlite-vec; declaration + commit-pattern embeddings (optional)
 ingest (@strata/ingest)  TypeScript → nodes (TS Compiler API)
@@ -32,6 +32,8 @@ bench  (@strata/bench)   substrate vs. file-baseline harness, distributions
 ```
 
 Files are not first-class: they exist only as transient render artifacts for `tsc`. The operation log is canonical history (no git-style commits inside the store). See [`strata-design.md`](strata-design.md) for the full design and [`decisions.md`](decisions.md) for the append-only record of every build-time decision and divergence.
+
+For a visual map of the current implementation, see [`docs/architecture-visual-guide.md`](docs/architecture-visual-guide.md).
 
 ## Three-layer codebase index
 
