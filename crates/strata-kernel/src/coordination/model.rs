@@ -65,13 +65,17 @@ pub enum TicketState {
     Ready,
     Claimed,
     Completed,
+    NeedsDecision,
     Cancelled,
     Failed,
 }
 
 impl TicketState {
     fn is_terminal(&self) -> bool {
-        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
+        matches!(
+            self,
+            Self::Completed | Self::NeedsDecision | Self::Cancelled | Self::Failed
+        )
     }
 }
 

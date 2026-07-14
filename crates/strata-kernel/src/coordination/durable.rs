@@ -4,8 +4,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use super::{
-    ChangeSetRecord, ChangeSetState, CoordinationEvent, CoordinationEventKind, CoordinationTicket,
-    IntentRecord, ReadyOffer, TicketState,
+    ChangeSetRecord, ChangeSetState, ClaimHandle, CoordinationEvent, CoordinationEventKind,
+    CoordinationTicket, IntentRecord, ReadyOffer, TicketState,
 };
 use crate::storage::{read_current_generation_in_write_txn, read_u64_metadata};
 
@@ -14,6 +14,8 @@ const INTENTS: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination
 const TICKETS: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_tickets");
 const READY_OFFERS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("coordination_ready_offers");
+const ACTIVE_CLAIMS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("coordination_active_claims");
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("coordination_events");
 const EVENT_IDS: TableDefinition<&str, u64> = TableDefinition::new("coordination_event_ids");
 const EVENT_CURSORS: TableDefinition<&str, u64> =
@@ -51,11 +53,23 @@ pub struct CoordinationTableCounts {
     pub intents: u64,
     pub tickets: u64,
     pub ready_offers: u64,
+    pub active_claims: u64,
     pub events: u64,
     pub event_ids: u64,
     pub event_cursors: u64,
     pub submission_idempotency: u64,
     pub metadata: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct LifecycleTransition {
+    pub change_sets: Vec<(Option<ChangeSetRecord>, Option<ChangeSetRecord>)>,
+    pub tickets: Vec<(Option<CoordinationTicket>, Option<CoordinationTicket>)>,
+    pub offers: Vec<(Option<ReadyOffer>, Option<ReadyOffer>)>,
+    pub claims: Vec<(Option<ClaimHandle>, Option<ClaimHandle>)>,
+    pub events: Vec<CoordinationEvent>,
+    pub expected_metadata: CoordinationMetadataState,
+    pub next_metadata: CoordinationMetadataState,
 }
 
 pub struct CoordinationDurable<'a> {
@@ -471,6 +485,293 @@ impl<'a> CoordinationDurable<'a> {
         Ok(())
     }
 
+    pub(crate) fn persist_lifecycle(&self, transition: &LifecycleTransition) -> Result<()> {
+        let write = self
+            .database
+            .begin_write()
+            .context("begin coordination lifecycle transaction")?;
+        let durable_metadata = {
+            let metadata = write
+                .open_table(META)
+                .context("open coordination metadata")?;
+            CoordinationMetadataState {
+                next_queue_sequence: read_u64_metadata(&metadata, NEXT_QUEUE_SEQUENCE)?,
+                current_event_sequence: read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
+            }
+        };
+        if durable_metadata != transition.expected_metadata {
+            bail!("coordination metadata changed while preparing lifecycle transition");
+        }
+        if transition.next_metadata.next_queue_sequence
+            < transition.expected_metadata.next_queue_sequence
+            || transition.next_metadata.current_event_sequence
+                < transition.expected_metadata.current_event_sequence
+        {
+            bail!("coordination metadata cannot move backward");
+        }
+
+        {
+            let table = write
+                .open_table(CHANGE_SETS)
+                .context("open change sets table")?;
+            for (before, after) in &transition.change_sets {
+                let id = update_id(
+                    before.as_ref().map(|record| record.change_set_id.as_str()),
+                    after.as_ref().map(|record| record.change_set_id.as_str()),
+                    "change set",
+                )?;
+                if let Some(record) = after {
+                    record.validate().map_err(anyhow::Error::msg)?;
+                }
+                let current = table
+                    .get(id)
+                    .context("read lifecycle change set")?
+                    .map(|value| decode(value.value(), "change set"))
+                    .transpose()?;
+                if current != *before {
+                    bail!("change set {id} changed while preparing lifecycle transition");
+                }
+            }
+        }
+        {
+            let table = write.open_table(TICKETS).context("open tickets table")?;
+            for (before, after) in &transition.tickets {
+                let id = update_id(
+                    before.as_ref().map(|record| record.ticket_id.as_str()),
+                    after.as_ref().map(|record| record.ticket_id.as_str()),
+                    "ticket",
+                )?;
+                if let Some(record) = after {
+                    record.validate().map_err(anyhow::Error::msg)?;
+                }
+                let current = table
+                    .get(id)
+                    .context("read lifecycle ticket")?
+                    .map(|value| decode(value.value(), "ticket"))
+                    .transpose()?;
+                if current != *before {
+                    bail!("ticket {id} changed while preparing lifecycle transition");
+                }
+            }
+        }
+        {
+            let table = write
+                .open_table(READY_OFFERS)
+                .context("open ready offers table")?;
+            for (before, after) in &transition.offers {
+                let id = update_id(
+                    before.as_ref().map(|record| record.offer_id.as_str()),
+                    after.as_ref().map(|record| record.offer_id.as_str()),
+                    "ready offer",
+                )?;
+                if let Some(record) = after {
+                    record.validate().map_err(anyhow::Error::msg)?;
+                }
+                let current = table
+                    .get(id)
+                    .context("read lifecycle ready offer")?
+                    .map(|value| decode(value.value(), "ready offer"))
+                    .transpose()?;
+                if current != *before {
+                    bail!("ready offer {id} changed while preparing lifecycle transition");
+                }
+            }
+        }
+        {
+            let table = write
+                .open_table(ACTIVE_CLAIMS)
+                .context("open active claims table")?;
+            for (before, after) in &transition.claims {
+                let id = update_id(
+                    before.as_ref().map(|record| record.claim_id.as_str()),
+                    after.as_ref().map(|record| record.claim_id.as_str()),
+                    "active claim",
+                )?;
+                if let Some(record) = after {
+                    record.validate().map_err(anyhow::Error::msg)?;
+                }
+                let current = table
+                    .get(id)
+                    .context("read lifecycle active claim")?
+                    .map(|value| decode(value.value(), "active claim"))
+                    .transpose()?;
+                if current != *before {
+                    bail!("active claim {id} changed while preparing lifecycle transition");
+                }
+            }
+        }
+
+        let current_graph_generation = read_current_generation_in_write_txn(&write)?;
+        let mut expected_sequence = transition
+            .expected_metadata
+            .current_event_sequence
+            .checked_add(1)
+            .context("coordination event sequence overflow")?;
+        {
+            let events = write.open_table(EVENTS).context("open events table")?;
+            let event_ids = write.open_table(EVENT_IDS).context("open event ID table")?;
+            for event in &transition.events {
+                event.validate().map_err(anyhow::Error::msg)?;
+                if event.sequence != expected_sequence {
+                    bail!(
+                        "coordination event sequence {} does not match expected {expected_sequence}",
+                        event.sequence
+                    );
+                }
+                if event.graph_generation != current_graph_generation {
+                    bail!("coordination event graph generation is not current");
+                }
+                if events.get(event.sequence)?.is_some()
+                    || event_ids.get(event.event_id.as_str())?.is_some()
+                {
+                    bail!("coordination event already exists: {}", event.event_id);
+                }
+                expected_sequence = expected_sequence
+                    .checked_add(1)
+                    .context("coordination event sequence overflow")?;
+            }
+        }
+        let final_event_sequence = expected_sequence - 1;
+        if transition.next_metadata.current_event_sequence != final_event_sequence {
+            bail!("next coordination event sequence does not match lifecycle events");
+        }
+
+        {
+            let mut table = write
+                .open_table(CHANGE_SETS)
+                .context("open change sets table")?;
+            for (before, after) in &transition.change_sets {
+                let id = update_id(
+                    before.as_ref().map(|record| record.change_set_id.as_str()),
+                    after.as_ref().map(|record| record.change_set_id.as_str()),
+                    "change set",
+                )?;
+                if let Some(record) = after {
+                    let bytes = encode(record, "change set")?;
+                    table.insert(id, bytes.as_slice())?;
+                } else {
+                    table.remove(id)?;
+                }
+            }
+        }
+        {
+            let mut table = write.open_table(TICKETS).context("open tickets table")?;
+            for (before, after) in &transition.tickets {
+                let id = update_id(
+                    before.as_ref().map(|record| record.ticket_id.as_str()),
+                    after.as_ref().map(|record| record.ticket_id.as_str()),
+                    "ticket",
+                )?;
+                if let Some(record) = after {
+                    let bytes = encode(record, "ticket")?;
+                    table.insert(id, bytes.as_slice())?;
+                } else {
+                    table.remove(id)?;
+                }
+            }
+        }
+        {
+            let mut table = write
+                .open_table(READY_OFFERS)
+                .context("open ready offers table")?;
+            for (before, after) in &transition.offers {
+                let id = update_id(
+                    before.as_ref().map(|record| record.offer_id.as_str()),
+                    after.as_ref().map(|record| record.offer_id.as_str()),
+                    "ready offer",
+                )?;
+                if let Some(record) = after {
+                    let bytes = encode(record, "ready offer")?;
+                    table.insert(id, bytes.as_slice())?;
+                } else {
+                    table.remove(id)?;
+                }
+            }
+        }
+        {
+            let mut table = write
+                .open_table(ACTIVE_CLAIMS)
+                .context("open active claims table")?;
+            for (before, after) in &transition.claims {
+                let id = update_id(
+                    before.as_ref().map(|record| record.claim_id.as_str()),
+                    after.as_ref().map(|record| record.claim_id.as_str()),
+                    "active claim",
+                )?;
+                if let Some(record) = after {
+                    let bytes = encode(record, "active claim")?;
+                    table.insert(id, bytes.as_slice())?;
+                } else {
+                    table.remove(id)?;
+                }
+            }
+        }
+        {
+            let mut events = write.open_table(EVENTS).context("open events table")?;
+            let mut event_ids = write.open_table(EVENT_IDS).context("open event ID table")?;
+            for event in &transition.events {
+                let bytes = encode(event, "coordination event")?;
+                events.insert(event.sequence, bytes.as_slice())?;
+                event_ids.insert(event.event_id.as_str(), event.sequence)?;
+            }
+        }
+        {
+            let mut metadata = write
+                .open_table(META)
+                .context("open coordination metadata")?;
+            let queue = transition.next_metadata.next_queue_sequence.to_le_bytes();
+            let events = transition
+                .next_metadata
+                .current_event_sequence
+                .to_le_bytes();
+            metadata.insert(NEXT_QUEUE_SEQUENCE, queue.as_slice())?;
+            metadata.insert(CURRENT_EVENT_SEQUENCE, events.as_slice())?;
+        }
+        write
+            .commit()
+            .context("commit coordination lifecycle transaction")
+    }
+
+    pub(crate) fn invalidate_ready_offers_on_open(&self) -> Result<()> {
+        let offers = self.ready_offers()?;
+        if offers.is_empty() {
+            return Ok(());
+        }
+        let tickets = self.active_tickets()?;
+        let metadata = self.metadata_state()?;
+        let mut transition = LifecycleTransition {
+            change_sets: Vec::new(),
+            tickets: Vec::new(),
+            offers: Vec::new(),
+            claims: Vec::new(),
+            events: Vec::new(),
+            expected_metadata: metadata,
+            next_metadata: metadata,
+        };
+        for offer in offers {
+            let ticket = tickets
+                .iter()
+                .find(|ticket| ticket.ready_offer_id.as_deref() == Some(offer.offer_id.as_str()))
+                .with_context(|| format!("ready offer {} has no ticket", offer.offer_id))?;
+            let mut next_ticket = ticket.clone();
+            next_ticket.state = TicketState::Queued;
+            next_ticket.ready_offer_id = None;
+            let change_set = self
+                .change_set(&offer.change_set_id)?
+                .with_context(|| format!("missing change set {}", offer.change_set_id))?;
+            let mut next_change_set = change_set.clone();
+            next_change_set.state = ChangeSetState::Queued;
+            transition
+                .change_sets
+                .push((Some(change_set), Some(next_change_set)));
+            transition
+                .tickets
+                .push((Some(ticket.clone()), Some(next_ticket)));
+            transition.offers.push((Some(offer), None));
+        }
+        self.persist_lifecycle(&transition)
+    }
+
     pub fn change_set(&self, id: &str) -> Result<Option<ChangeSetRecord>> {
         let read = self
             .database
@@ -520,7 +821,10 @@ impl<'a> CoordinationDurable<'a> {
             let ticket: CoordinationTicket = decode(value.value(), "ticket")?;
             if !matches!(
                 ticket.state,
-                TicketState::Completed | TicketState::Cancelled | TicketState::Failed
+                TicketState::Completed
+                    | TicketState::NeedsDecision
+                    | TicketState::Cancelled
+                    | TicketState::Failed
             ) {
                 tickets.push(ticket);
             }
@@ -546,6 +850,33 @@ impl<'a> CoordinationDurable<'a> {
         }
         offers.sort_by(|left: &ReadyOffer, right| left.offer_id.cmp(&right.offer_id));
         Ok(offers)
+    }
+
+    #[doc(hidden)]
+    pub fn ticket(&self, id: &str) -> Result<Option<CoordinationTicket>> {
+        let read = self.database.begin_read().context("begin ticket read")?;
+        let table = read.open_table(TICKETS).context("open tickets table")?;
+        let Some(value) = table.get(id).context("read ticket")? else {
+            return Ok(None);
+        };
+        decode(value.value(), "ticket").map(Some)
+    }
+
+    pub fn active_claims(&self) -> Result<Vec<ClaimHandle>> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin active-claim scan")?;
+        let table = read
+            .open_table(ACTIVE_CLAIMS)
+            .context("open active claims table")?;
+        let mut claims = Vec::new();
+        for entry in table.iter().context("iterate active claims")? {
+            let (_, value) = entry.context("read active-claim entry")?;
+            claims.push(decode(value.value(), "active claim")?);
+        }
+        claims.sort_by(|left: &ClaimHandle, right| left.claim_id.cmp(&right.claim_id));
+        Ok(claims)
     }
 
     #[doc(hidden)]
@@ -599,6 +930,7 @@ impl<'a> CoordinationDurable<'a> {
             intents: read.open_table(INTENTS)?.len()?,
             tickets: read.open_table(TICKETS)?.len()?,
             ready_offers: read.open_table(READY_OFFERS)?.len()?,
+            active_claims: read.open_table(ACTIVE_CLAIMS)?.len()?,
             events: read.open_table(EVENTS)?.len()?,
             event_ids: read.open_table(EVENT_IDS)?.len()?,
             event_cursors: read.open_table(EVENT_CURSORS)?.len()?,
@@ -655,6 +987,11 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
     );
     drop(
         write
+            .open_table(ACTIVE_CLAIMS)
+            .context("create active claims table")?,
+    );
+    drop(
+        write
             .open_table(EVENTS)
             .context("create coordination events table")?,
     );
@@ -705,6 +1042,17 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
 
 fn encode<T: Serialize>(value: &T, label: &str) -> Result<Vec<u8>> {
     serde_json::to_vec(value).with_context(|| format!("encode {label}"))
+}
+
+fn update_id<'a>(before: Option<&'a str>, after: Option<&'a str>, label: &str) -> Result<&'a str> {
+    match (before, after) {
+        (Some(before), Some(after)) if before == after => Ok(before),
+        (Some(id), None) | (None, Some(id)) => Ok(id),
+        (Some(before), Some(after)) => {
+            bail!("{label} update changes identity from {before} to {after}")
+        }
+        (None, None) => bail!("{label} update has no before or after record"),
+    }
 }
 
 fn decode<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T> {

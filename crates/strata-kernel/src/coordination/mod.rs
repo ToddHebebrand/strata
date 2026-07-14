@@ -1,4 +1,5 @@
 mod analyzer;
+mod coordinator;
 mod durable;
 mod model;
 mod scheduler;
@@ -8,6 +9,7 @@ pub use analyzer::{
     canonical_scope_fingerprint, classify_scope_change, required_delta_authority,
     validate_delta_containment,
 };
+pub use coordinator::{BeginChangeSet, READY_OFFER_TTL_TICKS};
 pub(crate) use durable::ensure_coordination_schema;
 pub use durable::{
     CoordinationDurable, CoordinationFailpoint, CoordinationMetadataState, CoordinationTableCounts,

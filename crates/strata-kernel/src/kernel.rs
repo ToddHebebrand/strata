@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::{
     DurableStore, FenceClaim, GraphGeneration, GraphSnapshot, Publication, PublishOutcome,
+    SchedulerState,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,10 +38,11 @@ pub enum PublishFailpoint {
 }
 
 pub struct Kernel {
-    store: DurableStore,
+    pub(crate) store: DurableStore,
     live: RwLock<Arc<GraphGeneration>>,
     publish_lock: Mutex<()>,
     service_epoch: u64,
+    pub(crate) scheduler: Mutex<SchedulerState>,
 }
 
 impl Kernel {
@@ -59,7 +61,11 @@ impl Kernel {
             digest: graph.digest().to_owned(),
             service_epoch,
         };
-        Ok((Self::from_parts(store, graph, service_epoch), report))
+        let scheduler = SchedulerState::recover(Vec::new(), Vec::new(), Vec::new())?;
+        Ok((
+            Self::from_parts(store, graph, service_epoch, scheduler),
+            report,
+        ))
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<(Self, RecoveryReport)> {
@@ -117,6 +123,12 @@ impl Kernel {
             );
         }
 
+        store.coordination().invalidate_ready_offers_on_open()?;
+        let scheduler = SchedulerState::recover(
+            store.coordination().active_tickets()?,
+            store.coordination().ready_offers()?,
+            store.coordination().active_claims()?,
+        )?;
         let graph = Arc::new(graph);
         let report = RecoveryReport {
             snapshot_generation,
@@ -125,7 +137,10 @@ impl Kernel {
             digest: graph.digest().to_owned(),
             service_epoch,
         };
-        Ok((Self::from_parts(store, graph, service_epoch), report))
+        Ok((
+            Self::from_parts(store, graph, service_epoch, scheduler),
+            report,
+        ))
     }
 
     pub fn snapshot(&self) -> Arc<GraphGeneration> {
@@ -232,12 +247,18 @@ impl Kernel {
         self.service_epoch
     }
 
-    fn from_parts(store: DurableStore, graph: Arc<GraphGeneration>, service_epoch: u64) -> Self {
+    fn from_parts(
+        store: DurableStore,
+        graph: Arc<GraphGeneration>,
+        service_epoch: u64,
+        scheduler: SchedulerState,
+    ) -> Self {
         Self {
             store,
             live: RwLock::new(graph),
             publish_lock: Mutex::new(()),
             service_epoch,
+            scheduler: Mutex::new(scheduler),
         }
     }
 }

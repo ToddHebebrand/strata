@@ -30,7 +30,10 @@ impl SchedulerState {
             validate_ticket_scope(&ticket)?;
             if matches!(
                 ticket.state,
-                TicketState::Completed | TicketState::Cancelled | TicketState::Failed
+                TicketState::Completed
+                    | TicketState::NeedsDecision
+                    | TicketState::Cancelled
+                    | TicketState::Failed
             ) {
                 bail!(
                     "terminal ticket {} cannot be recovered into the active scheduler",
@@ -123,7 +126,10 @@ impl SchedulerState {
                     }
                     state.active.insert(claim_id.to_owned(), scope(ticket));
                 }
-                TicketState::Completed | TicketState::Cancelled | TicketState::Failed => {
+                TicketState::Completed
+                | TicketState::NeedsDecision
+                | TicketState::Cancelled
+                | TicketState::Failed => {
                     unreachable!("terminal tickets were rejected before recovery validation")
                 }
             }
@@ -351,6 +357,7 @@ impl SchedulerState {
             next_state,
             TicketState::Queued
                 | TicketState::Completed
+                | TicketState::NeedsDecision
                 | TicketState::Cancelled
                 | TicketState::Failed
         ) {
@@ -424,6 +431,10 @@ impl SchedulerState {
         self.offers.values()
     }
 
+    pub fn tickets(&self) -> impl Iterator<Item = &CoordinationTicket> {
+        self.tickets.values()
+    }
+
     pub fn ticket_for_offer(&self, offer_id: &str) -> Option<&CoordinationTicket> {
         self.tickets
             .values()
@@ -432,6 +443,42 @@ impl SchedulerState {
 
     pub fn active_scope(&self, claim_id: &str) -> Option<&BTreeSet<String>> {
         self.active.get(claim_id)
+    }
+
+    pub fn requeue_with_scope(
+        &mut self,
+        offer_id: &str,
+        scope_fingerprint: String,
+        reservation_keys: Vec<String>,
+    ) -> Result<CoordinationTicket> {
+        if scope_fingerprint.is_empty() || reservation_keys.iter().any(String::is_empty) {
+            bail!("requeued scope must be non-empty and valid");
+        }
+        let ticket_id = self.expire_offer(offer_id)?;
+        let sequence = self.sequence_for_ticket(&ticket_id)?;
+        let ticket = self
+            .tickets
+            .get_mut(&sequence)
+            .expect("ticket sequence was just resolved");
+        ticket.scope_fingerprint = scope_fingerprint;
+        ticket.reservation_keys = reservation_keys;
+        validate_ticket_scope(ticket)?;
+        Ok(ticket.clone())
+    }
+
+    pub fn cancel_ticket(&mut self, ticket_id: &str) -> Result<()> {
+        let sequence = self.sequence_for_ticket(ticket_id)?;
+        let ticket = self
+            .tickets
+            .remove(&sequence)
+            .expect("ticket sequence was just resolved");
+        if let Some(offer_id) = ticket.ready_offer_id {
+            self.offers.remove(&offer_id);
+        }
+        if let Some(claim_id) = ticket.active_claim_id {
+            self.active.remove(&claim_id);
+        }
+        Ok(())
     }
 
     fn ensure_ticket_is_runnable(&self, sequence: u64) -> Result<()> {
@@ -537,7 +584,7 @@ fn validate_claim_matches_ticket(
     if let Some(offer) = offer
         && (claim.offer_id != offer.offer_id
             || claim.service_epoch != offer.service_epoch
-            || claim.graph_generation != offer.graph_generation)
+            || claim.graph_generation < offer.graph_generation)
     {
         bail!(
             "active claim {} does not match ready offer {}",

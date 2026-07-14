@@ -7,6 +7,16 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-14 — Coordination tickets represent `NeedsDecision` explicitly
+
+**Context:** Task 5 initially terminalized a scheduler ticket as `Failed` when claim-time reanalysis required agent judgment, because Task 1's fixed `TicketState` list omitted a `NeedsDecision` variant even though `ChangeSetState` and lifecycle events distinguish that outcome.
+
+**Decided:** Add the schema-v1 camel-case `TicketState::NeedsDecision` terminal state and use it for both dynamic-expansion-limit and material-scope-change outcomes. `Failed` remains reserved for actual execution or coordination failure.
+
+**Why / what was tried first:** Encoding these outcomes as `Failed` kept them out of the active scheduler but collapsed a deliberate governance handoff into an error. The explicit terminal state preserves durable lifecycle meaning while still releasing the scheduler hold.
+
+**Design-doc impact:** None. `strata-design.md` does not enumerate ticket wire states; this corrects the coordination plan/model omission.
+
 ## 2026-07-14 — Redb kernel spike passes; coordination scheduler unblocked
 
 **Context:** The 2026-07-13 coordination-kernel decision made redb conditional on a bounded stop/go proof over `examples/medium`. The required properties were atomic publication of graph delta + operation + event + ticket + fencing state, complete-old-or-new recovery at tested publication boundaries, snapshot-plus-operation replay with per-generation digest verification, immutable concurrent readers, stale-token/service-epoch rejection, and separate persistence versus in-memory publication timings.

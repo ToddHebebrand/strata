@@ -322,13 +322,32 @@ fn terminal_states_cannot_transition_back_to_nonterminal_states() {
         .unwrap();
     assert_eq!(change_set.state, ChangeSetState::NeedsDecision);
 
-    let mut ticket = ticket();
-    ticket.state = TicketState::Completed;
-    let error = ticket.transition_to(TicketState::Ready).unwrap_err();
+    let mut terminal_ticket = ticket();
+    terminal_ticket.state = TicketState::Completed;
+    let error = terminal_ticket
+        .transition_to(TicketState::Ready)
+        .unwrap_err();
     assert!(error.contains("ticket:1"));
     assert!(error.contains("Completed"));
     assert!(error.contains("Ready"));
 
-    ticket.transition_to(TicketState::Cancelled).unwrap();
-    assert_eq!(ticket.state, TicketState::Cancelled);
+    terminal_ticket
+        .transition_to(TicketState::Cancelled)
+        .unwrap();
+    assert_eq!(terminal_ticket.state, TicketState::Cancelled);
+
+    assert_eq!(
+        serde_json::to_string(&TicketState::NeedsDecision).unwrap(),
+        r#""needsDecision""#
+    );
+
+    let mut needs_decision = ticket();
+    needs_decision
+        .transition_to(TicketState::NeedsDecision)
+        .unwrap();
+    let error = needs_decision
+        .transition_to(TicketState::Queued)
+        .unwrap_err();
+    assert!(error.contains("NeedsDecision"));
+    assert!(error.contains("Queued"));
 }
