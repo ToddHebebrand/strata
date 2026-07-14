@@ -13,6 +13,7 @@
   },
   "scripts": {
     "build": "tsc -b",
+    "export:kernel-snapshot": "node dist/exportKernelSnapshotCli.js",
     "test": "vitest run"
   },
   "dependencies": {
