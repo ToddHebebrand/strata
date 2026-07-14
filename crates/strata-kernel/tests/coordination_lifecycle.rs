@@ -37,12 +37,11 @@ impl IntentAnalyzer for SequencedAnalyzer {
         _intent: &IntentRecord,
     ) -> anyhow::Result<IntentAnalysis> {
         let index = self.calls.fetch_add(1, Ordering::SeqCst);
-        self.analyses
-            .lock()
-            .unwrap()
+        let analyses = self.analyses.lock().unwrap();
+        analyses
             .get(index)
             .cloned()
-            .or_else(|| self.analyses.lock().unwrap().last().cloned())
+            .or_else(|| analyses.last().cloned())
             .context("missing sequenced analysis")
     }
 }
@@ -343,11 +342,21 @@ fn material_scope_change_needs_decision_and_cancellation_unblocks_waiters() {
         kernel.submit_change_set("waiting", &waiting, 3).unwrap(),
         SubmissionOutcome::Queued { .. }
     ));
-    let cancelled = kernel.cancel_change_set("blocker", 4).unwrap();
-    assert_eq!(cancelled.state, ChangeSetState::Cancelled);
-    let offers = kernel.reconsider_tickets(4).unwrap();
-    assert_eq!(offers.len(), 1);
-    assert_eq!(offers[0].change_set_id, "waiting");
+    let cancellation = kernel.cancel_change_set("blocker", 4).unwrap();
+    assert_eq!(cancellation.change_set.state, ChangeSetState::Cancelled);
+    assert_eq!(cancellation.ready_offers.len(), 1);
+    let waiting_offer = &cancellation.ready_offers[0];
+    assert_eq!(waiting_offer.change_set_id, "waiting");
+    let claim = kernel
+        .claim_ready(
+            &waiting_offer.offer_id,
+            &waiting_offer.claim_token,
+            &waiting,
+            5,
+        )
+        .unwrap();
+    assert!(matches!(claim, ClaimOutcome::Claimed(_)));
+    assert!(kernel.reconsider_tickets(5).unwrap().is_empty());
     drop(kernel);
     let store = DurableStore::open(&path).unwrap();
     assert_eq!(

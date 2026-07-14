@@ -24,6 +24,13 @@ pub struct BeginChangeSet {
     pub submission_idempotency_key: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancellationOutcome {
+    pub change_set: ChangeSetRecord,
+    pub ready_offers: Vec<ReadyOffer>,
+}
+
 impl Kernel {
     pub fn begin_change_set(&self, input: BeginChangeSet) -> Result<ChangeSetRecord> {
         let _scheduler = self
@@ -210,15 +217,7 @@ impl Kernel {
         if offer.claim_token != claim_token {
             bail!("ready offer {offer_id} claim token does not match");
         }
-        if offer.service_epoch != self.service_epoch() {
-            bail!("ready offer {offer_id} belongs to a stale service epoch");
-        }
-        if now_tick >= offer.expires_at_tick {
-            bail!(
-                "ready offer {offer_id} expired at tick {}",
-                offer.expires_at_tick
-            );
-        }
+        validate_offer_context(&offer, self.service_epoch(), now_tick)?;
 
         let graph = self.snapshot();
         let durable = self.store.coordination();
@@ -466,8 +465,8 @@ impl Kernel {
     pub fn cancel_change_set(
         &self,
         change_set_id: &str,
-        _now_tick: u64,
-    ) -> Result<ChangeSetRecord> {
+        now_tick: u64,
+    ) -> Result<CancellationOutcome> {
         let mut scheduler = self
             .scheduler
             .lock()
@@ -483,7 +482,10 @@ impl Kernel {
                 | ChangeSetState::Cancelled
                 | ChangeSetState::Failed
         ) {
-            return Ok(before_change_set);
+            return Ok(CancellationOutcome {
+                change_set: before_change_set,
+                ready_offers: Vec::new(),
+            });
         }
         let graph = self.snapshot();
         let metadata = durable.metadata_state()?;
@@ -500,12 +502,15 @@ impl Kernel {
             graph.generation(),
         )?;
 
+        let before_scheduler = scheduler.clone();
         let mut next_scheduler = scheduler.clone();
+        let mut cancelled_ticket_id = None;
         if let Some(before_ticket) = scheduler
             .tickets()
             .find(|ticket| ticket.change_set_id == change_set_id)
             .cloned()
         {
+            cancelled_ticket_id = Some(before_ticket.ticket_id.clone());
             if let Some(offer_id) = &before_ticket.ready_offer_id {
                 let offer = scheduler
                     .offer(offer_id)
@@ -531,10 +536,70 @@ impl Kernel {
                 .push((Some(before_ticket), Some(terminal_ticket)));
         }
 
+        let selected = next_scheduler.select_ready()?;
+        let mut ready_offers = Vec::new();
+        for ticket_id in &selected {
+            let ticket = next_scheduler
+                .ticket(ticket_id)
+                .cloned()
+                .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
+            let offer = make_offer(&ticket, self.service_epoch(), graph.generation(), now_tick)?;
+            next_scheduler.mark_ready(ticket_id, offer.clone())?;
+            let before = durable
+                .change_set(&offer.change_set_id)?
+                .with_context(|| format!("missing change set {}", offer.change_set_id))?;
+            let mut after = before.clone();
+            after.state = ChangeSetState::Ready;
+            transition.change_sets.push((Some(before), Some(after)));
+            transition.offers.push((None, Some(offer.clone())));
+            append_event(
+                &mut transition,
+                CoordinationEventKind::IntentReady,
+                &offer.change_set_id,
+                graph.generation(),
+            )?;
+            ready_offers.push(offer);
+        }
+        transition.tickets.extend(
+            scheduler_ticket_updates(&before_scheduler, &next_scheduler)
+                .into_iter()
+                .filter(|(before, after)| {
+                    let id = before
+                        .as_ref()
+                        .or(after.as_ref())
+                        .map(|ticket| ticket.ticket_id.as_str());
+                    id != cancelled_ticket_id.as_deref()
+                }),
+        );
+
         durable.persist_lifecycle(&transition)?;
         *scheduler = next_scheduler;
-        Ok(after_change_set)
+        Ok(CancellationOutcome {
+            change_set: after_change_set,
+            ready_offers,
+        })
     }
+}
+
+fn validate_offer_context(
+    offer: &ReadyOffer,
+    current_service_epoch: u64,
+    now_tick: u64,
+) -> Result<()> {
+    if offer.service_epoch != current_service_epoch {
+        bail!(
+            "ready offer {} belongs to a stale service epoch",
+            offer.offer_id
+        );
+    }
+    if now_tick >= offer.expires_at_tick {
+        bail!(
+            "ready offer {} expired at tick {}",
+            offer.offer_id,
+            offer.expires_at_tick
+        );
+    }
+    Ok(())
 }
 
 fn make_offer(
@@ -621,4 +686,28 @@ fn scheduler_ticket_updates(
             (old != new).then_some((old, new))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offer_context_rejects_a_stale_service_epoch_directly() {
+        let offer = ReadyOffer::new(
+            SCHEMA_VERSION,
+            "offer",
+            "change-set",
+            7,
+            3,
+            "scope",
+            "token",
+            30,
+            None,
+        )
+        .unwrap();
+
+        let error = validate_offer_context(&offer, 8, 10).unwrap_err();
+        assert!(error.to_string().contains("stale service epoch"));
+    }
 }
