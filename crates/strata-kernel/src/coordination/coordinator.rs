@@ -648,6 +648,7 @@ impl Kernel {
             candidate_builder,
             now_tick,
             CoordinatedPublishFailpoint::None,
+            None,
         )
     }
 
@@ -661,7 +662,35 @@ impl Kernel {
         now_tick: u64,
         failpoint: CoordinatedPublishFailpoint,
     ) -> Result<PublicationReport> {
-        self.publish_claimed_inner(claim, analyzer, candidate_builder, now_tick, failpoint)
+        self.publish_claimed_inner(
+            claim,
+            analyzer,
+            candidate_builder,
+            now_tick,
+            failpoint,
+            None,
+        )
+    }
+
+    /// Test synchronization point for observing an idempotency miss before lock acquisition.
+    #[doc(hidden)]
+    #[cfg(feature = "redb-spike-api")]
+    pub fn publish_claimed_with_entry_hook(
+        &self,
+        claim: &ClaimHandle,
+        analyzer: &dyn IntentAnalyzer,
+        candidate_builder: &dyn CandidateBuilder,
+        now_tick: u64,
+        after_outer_idempotency_lookup: &dyn Fn(),
+    ) -> Result<PublicationReport> {
+        self.publish_claimed_inner(
+            claim,
+            analyzer,
+            candidate_builder,
+            now_tick,
+            CoordinatedPublishFailpoint::None,
+            Some(after_outer_idempotency_lookup),
+        )
     }
 
     fn publish_claimed_inner(
@@ -671,10 +700,14 @@ impl Kernel {
         candidate_builder: &dyn CandidateBuilder,
         now_tick: u64,
         failpoint: CoordinatedPublishFailpoint,
+        after_outer_idempotency_lookup: Option<&dyn Fn()>,
     ) -> Result<PublicationReport> {
         let idempotency_key = coordination_commit_key(&claim.change_set_id);
         if let Some(report) = self.committed_publication_report(&idempotency_key)? {
             return Ok(report);
+        }
+        if let Some(hook) = after_outer_idempotency_lookup {
+            hook();
         }
 
         let mut scheduler = self

@@ -52,3 +52,14 @@ Prepended the required `decisions.md` entry: `publish_claimed` accepts host `now
 - GREEN full default: `cargo test -p strata-kernel` — 49 passed, 0 failed, including the default API-sealing trybuild test.
 - GREEN full feature: `cargo test -p strata-kernel --features redb-spike-api` — 97 passed, 0 failed.
 - Final hygiene gate: `cargo fmt --all`; default and feature `cargo clippy -p strata-kernel --all-targets -- -D warnings`; both full test commands — all passed in one combined run.
+
+### Deterministic duplicate-finishing re-review
+
+- RED: the strengthened feature test failed to compile with `no method named publish_claimed_with_entry_hook found for struct Arc<Kernel>` before the synchronization hook existed.
+- GREEN targeted: `cargo test -p strata-kernel --features redb-spike-api --test coordination_publication concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original_commit` — 1 passed, 0 failed.
+- The second caller now blocks at a hidden feature-gated hook after its outer idempotency miss and before scheduler-lock acquisition. The first builder is released only after the test observes the duplicate at that hook, deterministically exercising the inner duplicate check while preserving the default API surface.
+- GREEN focused default: `cargo test -p strata-kernel --test coordination_publication` — 9 passed, 0 failed; the hook-dependent race test is feature-gated so default commit authority remains sealed.
+- GREEN focused feature: `cargo test -p strata-kernel --features redb-spike-api --test coordination_publication` — 11 passed, 0 failed.
+- GREEN full default: `cargo test -p strata-kernel` — 48 passed, 0 failed, including the API-sealing trybuild test.
+- GREEN full feature: `cargo test -p strata-kernel --features redb-spike-api` — 97 passed, 0 failed.
+- Final hygiene gate: `cargo fmt --all`; strict default and feature Clippy over all targets; both full test commands — all passed in one combined run.

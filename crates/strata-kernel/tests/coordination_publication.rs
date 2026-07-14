@@ -1,5 +1,7 @@
+#[cfg(feature = "redb-spike-api")]
+use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 #[cfg(feature = "redb-spike-api")]
@@ -81,6 +83,7 @@ impl CandidateBuilder for RecordingBuilder {
     }
 }
 
+#[cfg(feature = "redb-spike-api")]
 struct BlockingBuilder {
     calls: AtomicUsize,
     delta: GraphDelta,
@@ -88,6 +91,7 @@ struct BlockingBuilder {
     release: Arc<Barrier>,
 }
 
+#[cfg(feature = "redb-spike-api")]
 impl CandidateBuilder for BlockingBuilder {
     fn build_candidate(
         &self,
@@ -256,6 +260,7 @@ fn claimed_composite_publication_is_kernel_owned_atomic_and_idempotent_after_reo
     assert!(retry_after_reopen.already_published);
 }
 
+#[cfg(feature = "redb-spike-api")]
 #[test]
 fn concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original_commit() {
     let directory = tempdir().unwrap();
@@ -285,20 +290,32 @@ fn concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original
         })
     };
     entered.wait();
-    let second_started = Arc::new(Barrier::new(2));
+    let duplicate_inside = Arc::new(Barrier::new(2));
+    let allow_duplicate_to_lock = Arc::new(Barrier::new(2));
     let second = {
         let kernel = kernel.clone();
         let analyzer = analyzer.clone();
         let builder = builder.clone();
         let claim = claim.clone();
-        let second_started = second_started.clone();
+        let duplicate_inside = duplicate_inside.clone();
+        let allow_duplicate_to_lock = allow_duplicate_to_lock.clone();
         std::thread::spawn(move || {
-            second_started.wait();
-            kernel.publish_claimed(&claim, analyzer.as_ref(), builder.as_ref(), 3)
+            let after_outer_idempotency_lookup = || {
+                duplicate_inside.wait();
+                allow_duplicate_to_lock.wait();
+            };
+            kernel.publish_claimed_with_entry_hook(
+                &claim,
+                analyzer.as_ref(),
+                builder.as_ref(),
+                3,
+                &after_outer_idempotency_lookup,
+            )
         })
     };
-    second_started.wait();
+    duplicate_inside.wait();
     release.wait();
+    allow_duplicate_to_lock.wait();
 
     let first = first.join().unwrap().unwrap();
     let second = second.join().unwrap().unwrap();
