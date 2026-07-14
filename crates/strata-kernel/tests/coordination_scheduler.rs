@@ -284,6 +284,110 @@ fn recovery_fails_closed_on_corrupt_cardinality_and_overlap() {
 }
 
 #[test]
+fn recovery_rejects_ready_ticket_overlapping_older_queued_ticket() {
+    let older = ticket("older", 1, &["symbol:A"]);
+    let (younger, younger_offer) = ready_records(ticket("younger", 2, &["symbol:A"]));
+
+    let error =
+        SchedulerState::recover(vec![older, younger], vec![younger_offer], vec![]).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("older overlapping queued ticket")
+    );
+}
+
+#[test]
+fn recovery_rejects_claimed_ticket_overlapping_older_queued_ticket() {
+    let older = ticket("older", 1, &["symbol:A"]);
+    let (younger, younger_claim) = claimed_records(ticket("younger", 2, &["symbol:A"]));
+
+    let error =
+        SchedulerState::recover(vec![older, younger], vec![], vec![younger_claim]).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("older overlapping queued ticket")
+    );
+}
+
+#[test]
+fn enqueue_rejects_older_queued_ticket_beneath_younger_ready_ticket() {
+    let (younger, younger_offer) = ready_records(ticket("younger", 2, &["symbol:A"]));
+    let mut scheduler =
+        SchedulerState::recover(vec![younger], vec![younger_offer], vec![]).unwrap();
+
+    let error = scheduler
+        .enqueue(ticket("older", 1, &["symbol:A"]))
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("younger overlapping Ready ticket")
+    );
+}
+
+#[test]
+fn enqueue_rejects_older_queued_ticket_beneath_younger_claimed_ticket() {
+    let (younger, younger_claim) = claimed_records(ticket("younger", 2, &["symbol:A"]));
+    let mut scheduler =
+        SchedulerState::recover(vec![younger], vec![], vec![younger_claim]).unwrap();
+
+    let error = scheduler
+        .enqueue(ticket("older", 1, &["symbol:A"]))
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("younger overlapping Claimed ticket")
+    );
+}
+
+#[test]
+fn recovery_accepts_older_queued_ticket_disjoint_from_younger_ready_and_claimed_tickets() {
+    let older = ticket("older", 1, &["symbol:A"]);
+    let (ready, ready_offer) = ready_records(ticket("ready", 2, &["symbol:B"]));
+    let (claimed, claimed_handle) = claimed_records(ticket("claimed", 3, &["symbol:C"]));
+
+    let scheduler = SchedulerState::recover(
+        vec![older, ready, claimed],
+        vec![ready_offer],
+        vec![claimed_handle],
+    )
+    .unwrap();
+
+    assert_eq!(
+        scheduler.ticket("older").unwrap().state,
+        TicketState::Queued
+    );
+}
+
+#[test]
+fn enqueue_accepts_older_queued_ticket_disjoint_from_younger_ready_and_claimed_tickets() {
+    let (ready, ready_offer) = ready_records(ticket("ready", 2, &["symbol:B"]));
+    let (claimed, claimed_handle) = claimed_records(ticket("claimed", 3, &["symbol:C"]));
+    let mut scheduler = SchedulerState::recover(
+        vec![ready, claimed],
+        vec![ready_offer],
+        vec![claimed_handle],
+    )
+    .unwrap();
+
+    scheduler
+        .enqueue(ticket("older", 1, &["symbol:A"]))
+        .unwrap();
+
+    assert_eq!(
+        scheduler.ticket("older").unwrap().state,
+        TicketState::Queued
+    );
+}
+
+#[test]
 fn claim_and_release_validate_complete_scope_and_transition_atomically() {
     let queued = ticket("work", 1, &["symbol:A", "node:X"]);
     let mut scheduler = SchedulerState::recover(vec![queued.clone()], vec![], vec![]).unwrap();

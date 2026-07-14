@@ -154,6 +154,7 @@ impl SchedulerState {
                 }
             }
         }
+        ensure_nonqueued_tickets_do_not_overlap_older_queued_tickets(&state.tickets)?;
 
         Ok(state)
     }
@@ -176,6 +177,25 @@ impl SchedulerState {
             existing.ticket_id == ticket.ticket_id || existing.change_set_id == ticket.change_set_id
         }) {
             bail!("ticket {} is already enqueued", ticket.ticket_id);
+        }
+        let keys = scope(&ticket);
+        if let Some((_, younger)) =
+            self.tickets
+                .range(ticket.queue_sequence..)
+                .find(|(_, younger)| {
+                    matches!(younger.state, TicketState::Ready | TicketState::Claimed)
+                        && younger
+                            .reservation_keys
+                            .iter()
+                            .any(|key| keys.contains(key))
+                })
+        {
+            bail!(
+                "older overlapping queued ticket {} precedes younger overlapping {:?} ticket {}",
+                ticket.ticket_id,
+                younger.state,
+                younger.ticket_id
+            );
         }
         self.tickets.insert(ticket.queue_sequence, ticket);
         Ok(())
@@ -538,6 +558,29 @@ fn ensure_pairwise_disjoint(
             if !entries[left].1.is_disjoint(entries[right].1) {
                 bail!("{label}: {} and {}", entries[left].0, entries[right].0);
             }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_nonqueued_tickets_do_not_overlap_older_queued_tickets(
+    tickets: &BTreeMap<u64, CoordinationTicket>,
+) -> Result<()> {
+    for (sequence, ticket) in tickets {
+        if !matches!(ticket.state, TicketState::Ready | TicketState::Claimed) {
+            continue;
+        }
+        let keys = scope(ticket);
+        if let Some((_, older)) = tickets.range(..*sequence).find(|(_, older)| {
+            older.state == TicketState::Queued
+                && older.reservation_keys.iter().any(|key| keys.contains(key))
+        }) {
+            bail!(
+                "older overlapping queued ticket {} precedes younger overlapping {:?} ticket {}",
+                older.ticket_id,
+                ticket.state,
+                ticket.ticket_id
+            );
         }
     }
     Ok(())
