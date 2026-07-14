@@ -7,7 +7,7 @@ use super::{
     ChangeSetRecord, ChangeSetState, CoordinationEvent, CoordinationEventKind, CoordinationTicket,
     IntentRecord, ReadyOffer, TicketState,
 };
-use crate::storage::read_u64_metadata;
+use crate::storage::{read_current_generation_in_write_txn, read_u64_metadata};
 
 const CHANGE_SETS: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_change_sets");
 const INTENTS: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_intents");
@@ -15,6 +15,7 @@ const TICKETS: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination
 const READY_OFFERS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("coordination_ready_offers");
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("coordination_events");
+const EVENT_IDS: TableDefinition<&str, u64> = TableDefinition::new("coordination_event_ids");
 const EVENT_CURSORS: TableDefinition<&str, u64> =
     TableDefinition::new("coordination_event_cursors");
 const SUBMISSION_IDEMPOTENCY: TableDefinition<&str, &str> =
@@ -51,6 +52,7 @@ pub struct CoordinationTableCounts {
     pub tickets: u64,
     pub ready_offers: u64,
     pub events: u64,
+    pub event_ids: u64,
     pub event_cursors: u64,
     pub submission_idempotency: u64,
     pub metadata: u64,
@@ -116,6 +118,16 @@ impl<'a> CoordinationDurable<'a> {
         }
 
         record.validate().map_err(anyhow::Error::msg)?;
+        if record.state != ChangeSetState::Draft
+            || !record.intent_ids.is_empty()
+            || record.inferred_scope.is_some()
+            || record.queue_sequence.is_some()
+            || record.expansion_count != 0
+            || record.blocking_change_set_id.is_some()
+            || record.committed_generation.is_some()
+        {
+            bail!("new change set must be a pristine Draft");
+        }
         let encoded = encode(record, "change set")?;
         {
             let mut change_sets = write
@@ -326,6 +338,7 @@ impl<'a> CoordinationDurable<'a> {
                 read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
             )
         };
+        let current_graph_generation = read_current_generation_in_write_txn(&write)?;
         if ticket.queue_sequence != next_queue_sequence {
             bail!(
                 "ticket queue sequence {} does not match next queue sequence {next_queue_sequence}",
@@ -340,6 +353,39 @@ impl<'a> CoordinationDurable<'a> {
                 "event sequence {} does not match next event sequence {next_event_sequence}",
                 event.sequence
             );
+        }
+        let canonical_change_set = ChangeSetRecord {
+            schema_version: durable_change_set.schema_version,
+            change_set_id: durable_change_set.change_set_id.clone(),
+            actor: durable_change_set.actor.clone(),
+            reasoning: durable_change_set.reasoning.clone(),
+            base_generation: durable_change_set.base_generation,
+            state: ChangeSetState::Queued,
+            submission_idempotency_key: durable_change_set.submission_idempotency_key.clone(),
+            intent_ids: durable_change_set.intent_ids.clone(),
+            inferred_scope: Some(scope.clone()),
+            queue_sequence: Some(next_queue_sequence),
+            expansion_count: 0,
+            blocking_change_set_id: None,
+            committed_generation: None,
+        };
+        let canonical_ticket = CoordinationTicket {
+            schema_version: ticket.schema_version,
+            ticket_id: ticket.ticket_id.clone(),
+            change_set_id: change_set.change_set_id.clone(),
+            state: TicketState::Queued,
+            scope_fingerprint: scope.scope_fingerprint.clone(),
+            reservation_keys: scope.reservation_keys.clone(),
+            queue_sequence: next_queue_sequence,
+            age_rounds: 0,
+            ready_offer_id: None,
+            active_claim_id: None,
+        };
+        if *change_set != canonical_change_set
+            || *ticket != canonical_ticket
+            || event.graph_generation != current_graph_generation
+        {
+            bail!("records do not describe a canonical Draft-to-Queued transition");
         }
         let following_queue_sequence = next_queue_sequence
             .checked_add(1)
@@ -367,6 +413,16 @@ impl<'a> CoordinationDurable<'a> {
                 );
             }
         }
+        {
+            let event_ids = write.open_table(EVENT_IDS).context("open event ID table")?;
+            if event_ids
+                .get(event.event_id.as_str())
+                .context("read coordination event ID")?
+                .is_some()
+            {
+                bail!("coordination event ID already exists: {}", event.event_id);
+            }
+        }
 
         let change_set_bytes = encode(change_set, "change set")?;
         let ticket_bytes = encode(ticket, "ticket")?;
@@ -389,6 +445,11 @@ impl<'a> CoordinationDurable<'a> {
             .context("open events table")?
             .insert(event.sequence, event_bytes.as_slice())
             .context("write coordination event")?;
+        write
+            .open_table(EVENT_IDS)
+            .context("open event ID table")?
+            .insert(event.event_id.as_str(), event.sequence)
+            .context("write coordination event ID")?;
         {
             let mut metadata = write
                 .open_table(META)
@@ -539,6 +600,7 @@ impl<'a> CoordinationDurable<'a> {
             tickets: read.open_table(TICKETS)?.len()?,
             ready_offers: read.open_table(READY_OFFERS)?.len()?,
             events: read.open_table(EVENTS)?.len()?,
+            event_ids: read.open_table(EVENT_IDS)?.len()?,
             event_cursors: read.open_table(EVENT_CURSORS)?.len()?,
             submission_idempotency: read.open_table(SUBMISSION_IDEMPOTENCY)?.len()?,
             metadata: read.open_table(META)?.len()?,
@@ -596,6 +658,35 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
             .open_table(EVENTS)
             .context("create coordination events table")?,
     );
+    {
+        let events = write
+            .open_table(EVENTS)
+            .context("open coordination events table")?;
+        let mut event_ids = write
+            .open_table(EVENT_IDS)
+            .context("create coordination event ID table")?;
+        for entry in events.iter().context("iterate coordination events")? {
+            let (sequence, value) = entry.context("read coordination event entry")?;
+            let sequence = sequence.value();
+            let event: CoordinationEvent = decode(value.value(), "coordination event")?;
+            if let Some(existing) = event_ids
+                .get(event.event_id.as_str())
+                .context("read coordination event ID")?
+            {
+                if existing.value() != sequence {
+                    bail!(
+                        "coordination event ID {} maps to both sequences {} and {sequence}",
+                        event.event_id,
+                        existing.value()
+                    );
+                }
+            } else {
+                event_ids
+                    .insert(event.event_id.as_str(), sequence)
+                    .context("backfill coordination event ID")?;
+            }
+        }
+    }
     drop(
         write
             .open_table(EVENT_CURSORS)

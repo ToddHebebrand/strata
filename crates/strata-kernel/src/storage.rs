@@ -659,6 +659,13 @@ pub(crate) fn read_u64_metadata(
     Ok(u64::from_le_bytes(bytes))
 }
 
+pub(crate) fn read_current_generation_in_write_txn(write: &WriteTransaction) -> Result<u64> {
+    let metadata = write
+        .open_table(META)
+        .context("open graph metadata table")?;
+    read_u64_metadata(&metadata, CURRENT_GENERATION)
+}
+
 #[cfg(test)]
 #[derive(Debug, Eq, PartialEq)]
 struct TableCounts {
