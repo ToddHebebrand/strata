@@ -60,8 +60,11 @@ scheduler `FAIL`.
   test-analyzer proofs, not real TypeScript semantic or validation evidence.
 - Row 12 distinguishes default Rust raw-publication API sealing from deferred
   transport/authentication and Node worker process isolation.
-- Existing-resource versions are documented as payload/reference content hashes;
-  graph generation remains separate authority. Global generation hashing would
+- Node-resource versions are documented as hashes of `(NodeRecord,
+  appeared_at_generation)` (ordinary nodes use 0; the scripted newly appearing
+  callsite source node uses its appearance generation). Reference resources hash
+  the complete `ReferenceRecord` without generation. Global graph generation
+  remains separate authority; hashing it into every existing resource would
   incorrectly turn unrelated disjoint commits into material scope changes.
 - `decisions.md` records the pass, baseline exception, scope/version clarification,
   and deferred bridge/service/live boundaries.

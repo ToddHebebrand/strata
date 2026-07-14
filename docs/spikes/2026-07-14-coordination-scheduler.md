@@ -71,7 +71,7 @@ As recorded by the preceding redb gate, the extractor accepts an unsafe `let arg
 
 ## Scope derivation clarification
 
-The test analyzer hashes the complete selected `NodeRecord` or `ReferenceRecord` to version an existing resource. The immutable `GraphGeneration`, ready offer, and claim separately carry generation authority. Hashing the global graph generation into every existing-resource version would change every version after an unrelated publication, turn disjoint progress into a material scope change, and falsify acceptance item 1. The only generation component included in a resource hash is the selected appearance generation of the deliberately scripted newly added callsite reference. This resolves the plan phrase “payload SHA-256 values plus graph generation” in favor of the accepted disjoint-progress invariant; it does not change the production schema.
+The test analyzer versions node resources by hashing `(NodeRecord, appeared_at_generation)`: ordinary fixture nodes use appearance generation 0, while the deliberately scripted newly appearing callsite source node uses its actual appearance generation. Reference resources hash the complete `ReferenceRecord` without a generation component. The immutable `GraphGeneration`, ready offer, and claim separately carry global generation authority. Hashing the global graph generation into every existing-resource version would change every version after an unrelated publication, turn disjoint progress into a material scope change, and falsify acceptance item 1. This resolves the plan phrase “payload SHA-256 values plus graph generation” in favor of the accepted disjoint-progress invariant; it does not change the production schema.
 
 ## Bounded correctness result
 
