@@ -7,6 +7,24 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-14 — Coordination scheduler passes; TypeScript validation bridge unblocked
+
+**Context:** The approved Phase-6 scheduler plan required a deterministic, key-free proof of typed intent records, graph-inferred semantic scopes, all-or-ticket scheduling, durable tickets/events, FIFO fairness, fresh-state wakeups, fencing, restart recovery, delta containment, and atomic claimed publication before production TypeScript analyzers or a Node validation bridge could begin.
+
+**Evidence:** At implementation commit `1410eaa44db618a29a2398cd08c6503c3281d4fa`, formatting and strict default/`redb-spike-api` Clippy passed. The default kernel suite passed 59 tests and the feature suite passed 109. The deterministic acceptance harness uses the committed ingest-derived `examples/medium` graph (1,282 nodes, 614 references), derives scopes from typed `RenameSymbol`/`AddParameter` parameters plus graph records rather than intent IDs or client keys, and passed disjoint progress, same-symbol fresh decision, inferred reference overlap, dynamic expansion/requeue, FIFO aging, restart/event cursor, malicious-delta containment, and composite atomic-publication cases. Default compile-fail coverage proves raw Rust publication authority is sealed; feature tests preserve the bounded redb crash/replay/fencing proof. Full evidence is in `docs/spikes/2026-07-14-coordination-scheduler.md`.
+
+**Baseline exception:** `pnpm -r build`, ingest build, and all 8 ingest tests passed. `pnpm -r test` reproduced exactly the authorized pre-scheduler `@strata/verify` failure at `extractFunctionCommit.test.ts:228`: the extractor accepts an unsafe `let args` span, then the commit gate rejects diagnostic TS2454 (`args` used before assignment). Store passed 177/177, render 13/13, ingest 8/8, and verify passed 69/70 before the recursive run stopped. The scheduler work did not modify that path, so the known analyzer-test mismatch is recorded and is not classified as a scheduler failure.
+
+**Decided:** The bounded coordination scheduler is `PASS`. Only the roadmap's **Coordination kernel** item is complete. This unlocks a separate TypeScript validation-bridge plan; it does not complete the **Two-operation proof**, full **Key-free acceptance**, multi-client service authority boundary, or **Live falsifiable comparison**, and it does not authorize model spend. The existing SQLite product path remains supported.
+
+**Scope/version clarification:** Existing-resource versions in the deterministic analyzer are SHA-256 hashes of the complete selected node/reference payload. Graph generation remains separate claim and publication authority. Hashing the global generation into every existing-resource version would make unrelated publications change every scope, incorrectly classify disjoint work as material drift, and falsify disjoint progress. Only the deliberately scripted newly appeared callsite reference includes its selected appearance generation in its resource version. This resolves ambiguous plan wording without changing the production schema.
+
+**Boundaries:** Rows 1–5 are scheduler-level proofs using an intent-and-graph-derived test analyzer, not production TypeScript rename/add-parameter semantics. Real analyzers, candidate generation, bounded rendering, tsc/vitest validation, result binding, worker-crash behavior, transport/authentication, process isolation, and live agent comparison remain unimplemented. Redb crash claims remain bounded to the explicit tested boundaries; engine-internal commit instructions are not fault-injected.
+
+**Design-doc impact:** None. This advances the approved Phase-6 sequence without changing its architecture or acceptance boundaries.
+
+**Revisit when:** The TypeScript validation bridge either proves real `rename_symbol`/`add_parameter` analysis and grouped validation or falsifies an assumption that the scheduler-level harness could not exercise.
+
 ## 2026-07-14 — Claimed publication takes the host logical tick for atomic successor offers
 
 **Context:** The Task-7 plan showed `Kernel::publish_claimed` without the logical tick used by submit, claim, and cancel. Claimed publication releases the active scope and must create newly eligible successor offers in the same atomic graph-and-coordination transaction.
