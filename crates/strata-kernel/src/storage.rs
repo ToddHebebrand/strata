@@ -339,8 +339,10 @@ impl DurableStore {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
-    use crate::SCHEMA_VERSION;
+    use crate::{FenceClaim, OperationRecord, SCHEMA_VERSION, TicketRecord};
     use tempfile::tempdir;
 
     fn empty_snapshot() -> GraphSnapshot {
@@ -349,6 +351,42 @@ mod tests {
             generation: 0,
             nodes: vec![],
             references: vec![],
+        }
+    }
+
+    fn invalid_sequence_publication() -> Publication {
+        Publication {
+            schema_version: SCHEMA_VERSION,
+            idempotency_key: "publish:invalid-sequence".into(),
+            delta: GraphDelta {
+                schema_version: SCHEMA_VERSION,
+                base_generation: 0,
+                changes: vec![],
+            },
+            operation: OperationRecord {
+                operation_id: "operation:invalid".into(),
+                change_set_id: "change-set:invalid".into(),
+                actor: "agent:test".into(),
+                kind: "RenameSymbol".into(),
+                reasoning: "exercise atomic rejection".into(),
+                affected_node_ids: vec!["node:clock".into()],
+            },
+            ticket: TicketRecord {
+                ticket_id: "ticket:invalid".into(),
+                state: "published".into(),
+                scope_fingerprint: "scope:clock".into(),
+            },
+            event: EventRecord {
+                event_id: "event:invalid".into(),
+                sequence: 2,
+                kind: "PublicationCommitted".into(),
+                graph_generation: 1,
+                payload_json: "{}".into(),
+            },
+            fence: FenceClaim {
+                service_epoch: 0,
+                resource_tokens: BTreeMap::new(),
+            },
         }
     }
 
@@ -388,5 +426,20 @@ mod tests {
 
         let error = store.current_generation().unwrap_err();
         assert!(error.to_string().contains("exactly eight bytes"));
+    }
+
+    #[test]
+    fn rejected_publication_preserves_generation_and_every_table_count() {
+        let directory = tempdir().unwrap();
+        let store = DurableStore::create(directory.path().join("kernel.redb")).unwrap();
+        store.seed(&empty_snapshot()).unwrap();
+        let generation_before = store.test_current_generation().unwrap();
+        let counts_before = store.table_counts().unwrap();
+
+        let error = store.publish(&invalid_sequence_publication()).unwrap_err();
+
+        assert!(error.to_string().contains("event sequence"));
+        assert_eq!(store.test_current_generation().unwrap(), generation_before);
+        assert_eq!(store.table_counts().unwrap(), counts_before);
     }
 }
