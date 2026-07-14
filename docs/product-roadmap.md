@@ -90,7 +90,7 @@ Goal: the architectural argument is publishable.
 - [ ] Demo capture (see Iteration 3).
 - [ ] Publication venue + final edit pass (operator).
 
-### Iteration 5 — Multi-agent coordination kernel (approved, not started)
+### Iteration 5 — Multi-agent coordination kernel (in progress)
 
 Goal: test Strata's original motivation directly — multiple agents sharing one canonical structural codebase without Git branches, worktrees, or manual text merges.
 

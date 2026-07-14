@@ -4,11 +4,11 @@
 
 **Executed:** 2026-07-14
 
-**Implementation commit:** `62bd6c7e866ee416aaa207c43a1a696a73d68c12`
+**Implementation commit:** `b9f51707334feeab1e301de80a65b5eed77f3bf2`
 
 **Corpus:** `examples/medium`
 
-The bounded redb spike passed its stop/go gate. Atomic publication, digest-verified crash recovery and snapshot replay, concurrent immutable readers, and stale fencing rejection all passed on the real corpus. This result unblocks a separate coordination-scheduler plan; it does not claim that the scheduler, validation bridge, multi-client service, or live agent experiment exists.
+The bounded redb spike passed its stop/go gate. Atomic publication, digest-verified recovery at the four tested boundaries adjacent to the redb transaction and memory swap, snapshot replay, concurrent immutable readers, and stale fencing rejection all passed on the real corpus. This result unblocks a separate coordination-scheduler plan; it does not claim that the scheduler, validation bridge, multi-client service, or live agent experiment exists.
 
 ## Toolchains
 
@@ -57,16 +57,16 @@ pnpm --version
 pnpm exec tsc --version
 ```
 
-The publication helper reported 16 affected `User` identifier nodes. The ingest build and all 7 ingest tests passed. `cargo fmt`, clippy with warnings denied, and all 34 kernel tests passed after the final measurement-interface correction. The full pnpm build passed.
+The publication helper reported `affectedNodeCount: 16` for `User` identifier nodes. The ingest build and all 8 ingest tests passed. `cargo fmt`, clippy with warnings denied, and all 35 kernel tests passed against the final reviewed code. The full pnpm build passed.
 
-`pnpm -r test` reproduced one authorized, pre-existing failure in `@strata/verify`: 69 of 70 verify tests passed, with `tests/extractFunctionCommit.test.ts:228` expecting an unsafe real-corpus extraction to commit. The analyzer accepts extraction of `let args`, then the commit gate correctly rejects TypeScript diagnostic 2454 (`args` used before assignment). Before the recursive run stopped, store passed 177/177, render 13/13, and ingest 7/7. This defect was reproduced before the spike, is unrelated to Rust/redb, and was not changed or counted as a durability, recovery, reader, or fencing failure.
+`pnpm -r test` reproduced one authorized, pre-existing failure in `@strata/verify`: 69 of 70 verify tests passed, with `tests/extractFunctionCommit.test.ts:228` expecting an unsafe real-corpus extraction to commit. The analyzer accepts extraction of `let args`, then the commit gate correctly rejects TypeScript diagnostic 2454 (`args` used before assignment). Before the recursive run stopped, store passed 177/177, render 13/13, and ingest 8/8. This defect was reproduced before the spike, is unrelated to Rust/redb, and was not changed or counted as a durability, recovery, reader, or fencing failure.
 
 ## Seed evidence
 
 Unedited JSON output:
 
 ```json
-{"command":"seed","digest":"ba789c618092f9df9bbbb5d34ee16f0c45effb023659a226e4fcccd271f64eea","generation":0,"nodeCount":1282,"redbFileBytes":1056768,"referenceCount":614,"seedNs":219865083,"serviceEpoch":1}
+{"command":"seed","digest":"ba789c618092f9df9bbbb5d34ee16f0c45effb023659a226e4fcccd271f64eea","generation":0,"nodeCount":1282,"redbFileBytes":1056768,"referenceCount":614,"seedNs":150911625,"serviceEpoch":1}
 ```
 
 ## Measurement evidence
@@ -76,46 +76,46 @@ There was no performance pass threshold and no SQLite comparison. Each run used 
 Run 1, unedited JSON output:
 
 ```json
-{"averageNs":51761714,"command":"measure","currentNodeCount":1282,"currentReferenceCount":614,"digest":"852364175e42878099d8eaf8b6311f3ab89ae26968649786bbfd2e4a2ae47075","generation":100,"initialNodeCount":1282,"initialReferenceCount":614,"iterations":100,"memoryPublishNs":{"max":4209,"p50":1667,"p95":2583},"publicationPersistenceNs":{"max":44742584,"p50":10388041,"p95":32618709},"recoveryNs":51815583,"redbFileBytes":1585152,"replayedOperations":0,"totalNs":5176171459}
+{"averageNs":30785742,"command":"measure","currentNodeCount":1282,"currentReferenceCount":614,"digest":"852364175e42878099d8eaf8b6311f3ab89ae26968649786bbfd2e4a2ae47075","generation":100,"initialNodeCount":1282,"initialReferenceCount":614,"iterations":100,"memoryPublishNs":{"max":2708,"p50":1541,"p95":2000},"publicationPersistenceNs":{"max":50198917,"p50":6394500,"p95":17940042},"recoveryNs":34777542,"redbFileBytes":1585152,"replayedOperations":0,"totalNs":3078574250}
 ```
 
 Run 2, unedited JSON output:
 
 ```json
-{"averageNs":47476803,"command":"measure","currentNodeCount":1282,"currentReferenceCount":614,"digest":"92d27bf0ddce39023c2f6cb5f4fb15de53f00a2bb81426d452940bfe6f5968fe","generation":200,"initialNodeCount":1282,"initialReferenceCount":614,"iterations":100,"memoryPublishNs":{"max":13083,"p50":1667,"p95":2291},"publicationPersistenceNs":{"max":68120708,"p50":9510709,"p95":29801084},"recoveryNs":3056953750,"redbFileBytes":2375680,"replayedOperations":100,"totalNs":4747680375}
+{"averageNs":27145831,"command":"measure","currentNodeCount":1282,"currentReferenceCount":614,"digest":"92d27bf0ddce39023c2f6cb5f4fb15de53f00a2bb81426d452940bfe6f5968fe","generation":200,"initialNodeCount":1282,"initialReferenceCount":614,"iterations":100,"memoryPublishNs":{"max":4042,"p50":1500,"p95":2084},"publicationPersistenceNs":{"max":19622459,"p50":6505916,"p95":9786292},"recoveryNs":1582604583,"redbFileBytes":2375680,"replayedOperations":100,"totalNs":2714583125}
 ```
 
 Run 3, unedited JSON output:
 
 ```json
-{"averageNs":57354635,"command":"measure","currentNodeCount":1282,"currentReferenceCount":614,"digest":"75f8e21ea237b8b519f7328004a1a6fce24e750a03faa581be4fdd5304ea0d52","generation":300,"initialNodeCount":1282,"initialReferenceCount":614,"iterations":100,"memoryPublishNs":{"max":15500,"p50":1666,"p95":2625},"publicationPersistenceNs":{"max":81661250,"p50":18546583,"p95":41839541},"recoveryNs":4467036958,"redbFileBytes":2375680,"replayedOperations":200,"totalNs":5735463500}
+{"averageNs":27256439,"command":"measure","currentNodeCount":1282,"currentReferenceCount":614,"digest":"75f8e21ea237b8b519f7328004a1a6fce24e750a03faa581be4fdd5304ea0d52","generation":300,"initialNodeCount":1282,"initialReferenceCount":614,"iterations":100,"memoryPublishNs":{"max":12000,"p50":1542,"p95":2042},"publicationPersistenceNs":{"max":13256458,"p50":6635125,"p95":8632166},"recoveryNs":3060455541,"redbFileBytes":2375680,"replayedOperations":200,"totalNs":2725643958}
 ```
 
-The three runs advanced generation 0 → 100 → 200 → 300 and retained 1,282 nodes and 614 references. Publication-persistence p50 was 9.51–18.55 ms; p95 was 29.80–41.84 ms; max was 44.74–81.66 ms. The separate in-memory generation-swap p50 was 1.666–1.667 µs, p95 was 2.291–2.625 µs, and max was 4.209–15.500 µs. These are observations from three unoptimized development-build runs, not production claims.
+The three runs advanced generation 0 → 100 → 200 → 300 and retained 1,282 nodes and 614 references. Publication-persistence p50 was 6.39–6.64 ms; p95 was 8.63–17.94 ms; max was 13.26–50.20 ms. The separate in-memory generation-swap p50 was 1.500–1.542 µs, p95 was 2.000–2.084 µs, and max was 2.708–12.000 µs. These are observations from three unoptimized development-build runs, not production claims.
 
 ## Redb spike gate
 
 | Required property | Evidence | Result |
 |---|---|---|
 | Atomic graph delta + operation + event + ticket + fence publication | `storage_atomic::publication_is_atomic_and_durable_across_reopen`; rejected-publication table-count tests | PASS |
-| Process termination at every publication boundary | `crash_recovery::process_crashes_recover_only_durably_committed_generations` | PASS |
-| Snapshot plus later-operation replay | `recovery::restart_recovers_latest_snapshot_and_replays_later_deltas` plus corruption/missing-delta rejection tests | PASS |
+| All-or-none durable recovery at the four tested boundaries adjacent to the redb transaction and memory swap | `crash_recovery::process_crashes_recover_only_durably_committed_generations` | PASS |
+| Snapshot plus later-operation replay | `recovery::restart_recovers_latest_snapshot_and_replays_later_deltas` plus per-generation digest and corruption/missing-delta rejection tests | PASS |
 | Concurrent immutable readers during publication | `concurrent_readers::eight_readers_never_observe_a_torn_generation` | PASS |
 | Stale fencing token and pre-restart epoch rejection | six `fencing` tests, including token supersession and restart invalidation | PASS |
 | Persistence latency separated from memory publication | three 100-publication JSON records above; nearest-rank distribution unit test | PASS |
 
 ## Crash-boundary outcomes
 
-The child-process failure-injection test killed publication at all four boundaries, reopened the database independently, replayed durable state, and compared the recovered digest with the expected complete generation.
+The child-process failure-injection test terminated publication at four explicit boundaries adjacent to the redb write transaction and in-memory swap. It then reopened the database independently, replayed durable state, and asserted the complete durable tuple—generation/digest, graph delta, operation, event, ticket, idempotency record, and fence consumption—matched either the old or new publication state as appropriate.
 
 | Failpoint | Durable recovery outcome | Result |
 |---|---|---|
-| `beforeRedbTransaction` | complete old generation | PASS |
-| `insideRedbTransaction` | complete old generation; open write transaction rolled back | PASS |
-| `afterRedbCommitBeforeMemoryPublish` | complete new generation recovered from redb | PASS |
-| `afterMemoryPublish` | complete new generation | PASS |
+| `beforeRedbTransaction` | immediately before the redb write transaction: complete old durable tuple | PASS |
+| `insideRedbTransaction` | inside the write transaction before commit: complete old durable tuple after rollback | PASS |
+| `afterRedbCommitBeforeMemoryPublish` | immediately after commit and before memory swap: complete new durable tuple recovered from redb | PASS |
+| `afterMemoryPublish` | after memory swap: complete new durable tuple | PASS |
 
-No boundary produced partial graph, operation, event, ticket, or fencing state.
+No tested adjacent boundary produced a partial durable tuple. The test does **not** terminate the process during redb's internal commit implementation, so this spike makes no claim about fault injection at instructions inside that engine-controlled commit operation; redb's own transaction atomicity is relied upon there.
 
 ## Approved deterministic acceptance matrix
 
@@ -130,7 +130,7 @@ This table preserves all twelve items from the approved design. Only the bounded
 | 5 | Older wide rename cannot be starved by newer small edits | FIFO aging and all-or-ticket scheduler | not part of redb spike — gated by approved follow-on plan |
 | 6 | Stale fencing tokens and old service epochs cannot publish | `tests/fencing.rs` | PASS |
 | 7 | Queued tickets and unacknowledged events survive restart | Durable scheduler lifecycle and event cursors | not part of redb spike — gated by approved follow-on plan |
-| 8 | Failure injection yields a complete old or new generation, never partial state | `tests/crash_recovery.rs`; `tests/storage_atomic.rs` | PASS |
+| 8 | Failure injection yields a complete old or new generation, never partial state | `tests/crash_recovery.rs`; `tests/storage_atomic.rs` | PASS at four tested adjacent boundaries; redb commit internals not fault-injected |
 | 9 | Snapshot-plus-operation replay produces equivalent graph/index state and digest | `tests/recovery.rs`; `tests/examples_medium_fixture.rs` | PASS |
 | 10 | Two changes valid only together commit as one change set | Composite scheduler + validation bridge | not part of redb spike — gated by approved follow-on plan |
 | 11 | Duplicate event delivery is harmless through event IDs and acknowledged cursors | Durable event subscription/cursor protocol | not part of redb spike — gated by approved follow-on plan |
