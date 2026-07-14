@@ -6,9 +6,11 @@ mod storage;
 
 pub use coordination::{
     ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEvent,
-    CoordinationEventKind, CoordinationTicket, DynamicExpansionPolicy, EventCursor,
-    IdempotencyClass, InferredScope, IntentParameters, IntentRecord, ReadyOffer, ResourceVersion,
-    SubmissionOutcome, TicketState,
+    CoordinationEventKind, CoordinationTicket, DeltaAuthority, DynamicExpansionPolicy, EventCursor,
+    IdempotencyClass, InferredScope, IntentAnalysis, IntentAnalyzer, IntentParameters,
+    IntentRecord, ReadyOffer, ResourceVersion, ScopeChange, SubmissionOutcome, TicketState,
+    analyze_change_set, canonical_scope_fingerprint, classify_scope_change,
+    required_delta_authority, validate_delta_containment,
 };
 pub use graph::GraphGeneration;
 pub use kernel::{Kernel, PublicationReport, PublishFailpoint, RecoveryReport};
