@@ -6,13 +6,18 @@ mod storage;
 
 pub use coordination::{
     BeginChangeSet, CancellationOutcome, CandidateBuilder, ChangeSetRecord, ChangeSetState,
-    ClaimHandle, ClaimOutcome, CoordinationDurable, CoordinationEvent, CoordinationEventKind,
-    CoordinationFailpoint, CoordinationMetadataState, CoordinationTableCounts, CoordinationTicket,
-    CreateDraftOutcome, DeltaAuthority, DynamicExpansionPolicy, EventCursor, IdempotencyClass,
-    InferredScope, IntentAnalysis, IntentAnalyzer, IntentParameters, IntentRecord,
+    ClaimHandle, ClaimOutcome, CoordinationDurable, CoordinationError, CoordinationEvent,
+    CoordinationEventKind, CoordinationFailpoint, CoordinationMetadataState,
+    CoordinationTableCounts, CoordinationTicket, CreateDraftOutcome, DynamicExpansionPolicy,
+    EventCursor, IdempotencyClass, InferredScope, IntentParameters, IntentRecord,
     MAX_WAKE_AFFECTED_NODE_IDS, READY_OFFER_TTL_TICKS, ReadyOffer, ResourceVersion, SchedulerState,
-    ScopeChange, SubmissionOutcome, TicketState, analyze_change_set, canonical_scope_fingerprint,
-    classify_scope_change, required_delta_authority, validate_delta_containment,
+    ScopeChange, SubmissionOutcome, TicketState, canonical_scope_fingerprint,
+    classify_scope_change, validate_delta_containment,
+};
+#[cfg(feature = "coordination-test-api")]
+pub use coordination::{
+    DeltaAuthority, IntentAnalysis, TestSemanticProvider, analyze_change_set,
+    required_delta_authority,
 };
 pub use graph::GraphGeneration;
 #[cfg(feature = "redb-spike-api")]

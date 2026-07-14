@@ -1,0 +1,29 @@
+error[E0432]: unresolved imports `strata_kernel::IntentAnalysis`, `strata_kernel::IntentAnalyzer`, `strata_kernel::TestSemanticProvider`
+ --> tests/ui/semantic_authority_is_sealed.rs:1:21
+  |
+1 | use strata_kernel::{IntentAnalysis, IntentAnalyzer, TestSemanticProvider};
+  |                     ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^ no `TestSemanticProvider` in the root
+  |                     |               |
+  |                     |               no `IntentAnalyzer` in the root
+  |                     no `IntentAnalysis` in the root
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  |     DeltaAuthority, IntentAnalysis, TestSemanticProvider, analyze_change_set,
+  |                     ^^^^^^^^^^^^^^
+note: the item is gated behind the `coordination-test-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "coordination-test-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  |     DeltaAuthority, IntentAnalysis, TestSemanticProvider, analyze_change_set,
+  |                                     ^^^^^^^^^^^^^^^^^^^^
+note: the item is gated behind the `coordination-test-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "coordination-test-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

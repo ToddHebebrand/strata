@@ -7,9 +7,9 @@ use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use strata_kernel::{
     BeginChangeSet, CandidateBuilder, ChangeSetRecord, DynamicExpansionPolicy, GraphChange,
-    GraphDelta, GraphGeneration, GraphSnapshot, IdempotencyClass, IntentAnalysis, IntentAnalyzer,
-    IntentParameters, IntentRecord, Kernel, NodeRecord, ReferenceRecord, ResourceVersion,
-    SCHEMA_VERSION,
+    GraphDelta, GraphGeneration, GraphSnapshot, IdempotencyClass, IntentAnalysis, IntentParameters,
+    IntentRecord, Kernel, NodeRecord, ReferenceRecord, ResourceVersion, SCHEMA_VERSION,
+    TestSemanticProvider,
 };
 
 const SNAPSHOT_JSON: &str = include_str!("../fixtures/examples-medium.snapshot.json");
@@ -99,7 +99,7 @@ impl GraphDerivedAnalyzer {
     }
 }
 
-impl IntentAnalyzer for GraphDerivedAnalyzer {
+impl TestSemanticProvider for GraphDerivedAnalyzer {
     fn analyze(&self, graph: &GraphGeneration, intent: &IntentRecord) -> Result<IntentAnalysis> {
         match &intent.parameters {
             IntentParameters::RenameSymbol { declaration_id, .. } => {

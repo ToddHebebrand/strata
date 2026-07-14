@@ -2,14 +2,15 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use redb::{ReadableDatabase, TableDefinition};
 use serde_json::Value;
 use strata_kernel::{
     BeginChangeSet, ChangeSetState, ClaimOutcome, CoordinationEventKind, CoordinationFailpoint,
     DurableStore, DynamicExpansionPolicy, GraphGeneration, GraphSnapshot, IdempotencyClass,
-    IntentAnalysis, IntentAnalyzer, IntentParameters, IntentRecord, Kernel, ResourceVersion,
-    SCHEMA_VERSION, SubmissionOutcome, TicketState,
+    IntentAnalysis, IntentParameters, IntentRecord, Kernel, ResourceVersion, SCHEMA_VERSION,
+    SubmissionOutcome, TestSemanticProvider, TicketState,
 };
 use tempfile::tempdir;
 
@@ -17,7 +18,7 @@ const GRAPH_META: TableDefinition<&str, &[u8]> = TableDefinition::new("graph_met
 
 struct TargetAnalyzer;
 
-impl IntentAnalyzer for TargetAnalyzer {
+impl TestSemanticProvider for TargetAnalyzer {
     fn analyze(
         &self,
         _graph: &GraphGeneration,
@@ -40,7 +41,7 @@ impl IntentAnalyzer for TargetAnalyzer {
 }
 
 fn create_kernel(path: &Path) -> Kernel {
-    Kernel::create(
+    Kernel::create_with_test_semantics(
         path,
         GraphSnapshot {
             schema_version: SCHEMA_VERSION,
@@ -48,6 +49,7 @@ fn create_kernel(path: &Path) -> Kernel {
             nodes: vec![],
             references: vec![],
         },
+        Arc::new(TargetAnalyzer),
     )
     .unwrap()
     .0
@@ -71,9 +73,7 @@ fn begin_and_submit(kernel: &Kernel, id: &str, target: &str, now_tick: u64) -> S
             },
         )
         .unwrap();
-    kernel
-        .submit_change_set(id, &TargetAnalyzer, now_tick)
-        .unwrap()
+    kernel.submit_change_set(id, now_tick).unwrap()
 }
 
 fn raw_service_epoch(path: &Path) -> u64 {
@@ -137,7 +137,7 @@ fn events_replay_with_stable_ids_and_monotonic_isolated_client_cursors() {
     assert!(kernel.ack_events("client:A", 3).is_err());
 
     drop(kernel);
-    let (reopened, _) = Kernel::open(&path).unwrap();
+    let (reopened, _) = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
     let client_a_after_restart = reopened.events_after("client:A", 0, 100).unwrap();
     assert_eq!(client_a_after_restart.len(), 1);
     assert_eq!(
@@ -163,7 +163,7 @@ fn queued_tickets_and_unacknowledged_events_survive_restart() {
     assert_eq!(before.len(), 3);
     drop(kernel);
 
-    let (reopened, _) = Kernel::open(&path).unwrap();
+    let (reopened, _) = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
     let after = reopened.events_after("client:reader", 0, 100).unwrap();
     drop(reopened);
     let store = DurableStore::open(&path).unwrap();
@@ -204,12 +204,7 @@ fn restart_requeues_ready_and_executing_work_once_and_leaves_terminal_records_un
             other => panic!("expected ready work, got {other:?}"),
         };
     let ClaimOutcome::Claimed(_) = kernel
-        .claim_ready(
-            &executing_offer.offer_id,
-            &executing_offer.claim_token,
-            &TargetAnalyzer,
-            3,
-        )
+        .claim_ready(&executing_offer.offer_id, &executing_offer.claim_token, 3)
         .unwrap()
     else {
         panic!("expected executing claim")
@@ -243,16 +238,12 @@ fn restart_requeues_ready_and_executing_work_once_and_leaves_terminal_records_un
     let prior_terminal_ticket = durable.ticket(&terminal_ticket_id).unwrap().unwrap();
     drop(store);
 
-    let (reopened, report) = Kernel::open(&path).unwrap();
+    let (reopened, report) =
+        Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
     assert_eq!(report.service_epoch, old_epoch + 1);
     assert!(
         reopened
-            .claim_ready(
-                &ready_offer.offer_id,
-                &ready_offer.claim_token,
-                &TargetAnalyzer,
-                6,
-            )
+            .claim_ready(&ready_offer.offer_id, &ready_offer.claim_token, 6,)
             .is_err()
     );
     let recovery_events = reopened
@@ -329,12 +320,7 @@ fn failed_restart_recovery_is_atomic_and_the_next_open_applies_it_once() {
     };
     assert!(matches!(
         kernel
-            .claim_ready(
-                &executing_offer.offer_id,
-                &executing_offer.claim_token,
-                &TargetAnalyzer,
-                3,
-            )
+            .claim_ready(&executing_offer.offer_id, &executing_offer.claim_token, 3,)
             .unwrap(),
         ClaimOutcome::Claimed(_)
     ));
@@ -373,7 +359,8 @@ fn failed_restart_recovery_is_atomic_and_the_next_open_applies_it_once() {
     assert_eq!(durable.active_claims().unwrap(), vec![claim]);
     drop(store);
 
-    let (reopened, report) = Kernel::open(&path).unwrap();
+    let (reopened, report) =
+        Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
     assert_eq!(report.service_epoch, old_epoch + 1);
     let recovery_events = reopened.events_after("client:retry", 4, 100).unwrap();
     assert_eq!(recovery_events.len(), 2);
@@ -384,7 +371,8 @@ fn failed_restart_recovery_is_atomic_and_the_next_open_applies_it_once() {
     );
     drop(reopened);
 
-    let (reopened_again, second_report) = Kernel::open(&path).unwrap();
+    let (reopened_again, second_report) =
+        Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
     assert_eq!(second_report.service_epoch, report.service_epoch + 1);
     assert_eq!(
         reopened_again

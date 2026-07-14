@@ -6,13 +6,13 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::analyzer::analyze_change_set;
 use super::durable::{CoordinationMetadataState, LifecycleTransition};
 use super::{
     CandidateBuilder, ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome,
     CoordinationEvent, CoordinationEventKind, CoordinationTicket, CreateDraftOutcome,
-    DynamicExpansionPolicy, EventCursor, IntentAnalyzer, IntentParameters, IntentRecord,
-    ReadyOffer, SchedulerState, ScopeChange, SubmissionOutcome, TicketState, analyze_change_set,
-    classify_scope_change,
+    DynamicExpansionPolicy, EventCursor, IntentParameters, IntentRecord, ReadyOffer,
+    SchedulerState, ScopeChange, SubmissionOutcome, TicketState, classify_scope_change,
 };
 use crate::model::{FenceClaim, Publication};
 use crate::storage::{CoordinatedCommit, CoordinatedPublishFailpoint, PublishOutcome};
@@ -138,9 +138,9 @@ impl Kernel {
     pub fn submit_change_set(
         &self,
         change_set_id: &str,
-        analyzer: &dyn IntentAnalyzer,
         now_tick: u64,
     ) -> Result<SubmissionOutcome> {
+        let semantic_provider = self.semantic_provider()?;
         let mut scheduler = self
             .scheduler
             .lock()
@@ -154,7 +154,7 @@ impl Kernel {
         }
         let graph = self.snapshot();
         let intents = durable.intents_for(change_set_id)?;
-        let scope = analyze_change_set(&graph, &intents, analyzer)?;
+        let scope = analyze_change_set(&graph, &intents, semantic_provider)?;
         let metadata = durable.metadata_state()?;
         let queue_sequence = metadata.next_queue_sequence;
         let next_queue_sequence = queue_sequence
@@ -253,9 +253,9 @@ impl Kernel {
         &self,
         offer_id: &str,
         claim_token: &str,
-        analyzer: &dyn IntentAnalyzer,
         now_tick: u64,
     ) -> Result<ClaimOutcome> {
+        let semantic_provider = self.semantic_provider()?;
         let mut scheduler = self
             .scheduler
             .lock()
@@ -286,7 +286,7 @@ impl Kernel {
             .as_ref()
             .context("ready change set has no inferred scope")?;
         let intents = durable.intents_for(&offer.change_set_id)?;
-        let next_scope = analyze_change_set(&graph, &intents, analyzer)?;
+        let next_scope = analyze_change_set(&graph, &intents, semantic_provider)?;
         let scope_change = classify_scope_change(before_scope, &next_scope);
         let before_ticket = scheduler
             .ticket_for_offer(offer_id)
@@ -638,13 +638,11 @@ impl Kernel {
     pub fn publish_claimed(
         &self,
         claim: &ClaimHandle,
-        analyzer: &dyn IntentAnalyzer,
         candidate_builder: &dyn CandidateBuilder,
         now_tick: u64,
     ) -> Result<PublicationReport> {
         self.publish_claimed_inner(
             claim,
-            analyzer,
             candidate_builder,
             now_tick,
             CoordinatedPublishFailpoint::None,
@@ -657,19 +655,11 @@ impl Kernel {
     pub fn publish_claimed_with_failpoint(
         &self,
         claim: &ClaimHandle,
-        analyzer: &dyn IntentAnalyzer,
         candidate_builder: &dyn CandidateBuilder,
         now_tick: u64,
         failpoint: CoordinatedPublishFailpoint,
     ) -> Result<PublicationReport> {
-        self.publish_claimed_inner(
-            claim,
-            analyzer,
-            candidate_builder,
-            now_tick,
-            failpoint,
-            None,
-        )
+        self.publish_claimed_inner(claim, candidate_builder, now_tick, failpoint, None)
     }
 
     /// Test synchronization point for observing an idempotency miss before lock acquisition.
@@ -678,14 +668,12 @@ impl Kernel {
     pub fn publish_claimed_with_entry_hook(
         &self,
         claim: &ClaimHandle,
-        analyzer: &dyn IntentAnalyzer,
         candidate_builder: &dyn CandidateBuilder,
         now_tick: u64,
         after_outer_idempotency_lookup: &dyn Fn(),
     ) -> Result<PublicationReport> {
         self.publish_claimed_inner(
             claim,
-            analyzer,
             candidate_builder,
             now_tick,
             CoordinatedPublishFailpoint::None,
@@ -696,12 +684,12 @@ impl Kernel {
     fn publish_claimed_inner(
         &self,
         claim: &ClaimHandle,
-        analyzer: &dyn IntentAnalyzer,
         candidate_builder: &dyn CandidateBuilder,
         now_tick: u64,
         failpoint: CoordinatedPublishFailpoint,
         after_outer_idempotency_lookup: Option<&dyn Fn()>,
     ) -> Result<PublicationReport> {
+        let semantic_provider = self.semantic_provider()?;
         let idempotency_key = coordination_commit_key(&claim.change_set_id);
         if let Some(report) = self.committed_publication_report(&idempotency_key)? {
             return Ok(report);
@@ -736,7 +724,7 @@ impl Kernel {
             .as_ref()
             .context("executing change set has no inferred scope")?;
         let intents = durable.intents_for(&claim.change_set_id)?;
-        let fresh_scope = analyze_change_set(&graph, &intents, analyzer)?;
+        let fresh_scope = analyze_change_set(&graph, &intents, semantic_provider)?;
         match classify_scope_change(previous_scope, &fresh_scope) {
             ScopeChange::Unchanged => {}
             scope_change => {
@@ -844,7 +832,7 @@ impl Kernel {
                     .as_ref()
                     .context("queued successor has no inferred scope")?;
                 let successor_intents = durable.intents_for(&ticket.change_set_id)?;
-                let fresh = analyze_change_set(&next, &successor_intents, analyzer)?;
+                let fresh = analyze_change_set(&next, &successor_intents, semantic_provider)?;
                 let scope_change = classify_scope_change(previous_scope, &fresh);
                 any_scope_change |= scope_change != ScopeChange::Unchanged;
                 analyses.push((ticket, durable_before, current, fresh, scope_change));

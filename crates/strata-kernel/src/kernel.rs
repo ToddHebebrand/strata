@@ -5,6 +5,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 
+use crate::coordination::{CoordinationError, SemanticProvider};
+#[cfg(feature = "coordination-test-api")]
+use crate::coordination::{TestSemanticAdapter, TestSemanticProvider};
 #[cfg(feature = "redb-spike-api")]
 use crate::model::{FenceClaim, Publication};
 use crate::storage::DurableStore;
@@ -47,12 +50,30 @@ pub struct Kernel {
     pub(crate) publish_lock: Mutex<()>,
     service_epoch: u64,
     pub(crate) scheduler: Mutex<SchedulerState>,
+    semantic_provider: Option<Arc<dyn SemanticProvider>>,
 }
 
 impl Kernel {
     pub fn create(
         path: impl AsRef<Path>,
         initial: GraphSnapshot,
+    ) -> Result<(Self, RecoveryReport)> {
+        Self::create_inner(path, initial, None)
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub fn create_with_test_semantics(
+        path: impl AsRef<Path>,
+        initial: GraphSnapshot,
+        provider: Arc<dyn TestSemanticProvider>,
+    ) -> Result<(Self, RecoveryReport)> {
+        Self::create_inner(path, initial, Some(Arc::new(TestSemanticAdapter(provider))))
+    }
+
+    fn create_inner(
+        path: impl AsRef<Path>,
+        initial: GraphSnapshot,
+        semantic_provider: Option<Arc<dyn SemanticProvider>>,
     ) -> Result<(Self, RecoveryReport)> {
         let graph = Arc::new(GraphGeneration::from_snapshot(initial.clone())?);
         let store = DurableStore::create(path)?;
@@ -67,12 +88,27 @@ impl Kernel {
         };
         let scheduler = SchedulerState::recover(Vec::new(), Vec::new(), Vec::new())?;
         Ok((
-            Self::from_parts(store, graph, service_epoch, scheduler),
+            Self::from_parts(store, graph, service_epoch, scheduler, semantic_provider),
             report,
         ))
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<(Self, RecoveryReport)> {
+        Self::open_inner(path, None)
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub fn open_with_test_semantics(
+        path: impl AsRef<Path>,
+        provider: Arc<dyn TestSemanticProvider>,
+    ) -> Result<(Self, RecoveryReport)> {
+        Self::open_inner(path, Some(Arc::new(TestSemanticAdapter(provider))))
+    }
+
+    fn open_inner(
+        path: impl AsRef<Path>,
+        semantic_provider: Option<Arc<dyn SemanticProvider>>,
+    ) -> Result<(Self, RecoveryReport)> {
         let store = DurableStore::open(path)?;
         let snapshot = store.latest_snapshot()?;
         let snapshot_generation = snapshot.generation;
@@ -141,7 +177,7 @@ impl Kernel {
             service_epoch,
         };
         Ok((
-            Self::from_parts(store, graph, service_epoch, scheduler),
+            Self::from_parts(store, graph, service_epoch, scheduler, semantic_provider),
             report,
         ))
     }
@@ -254,6 +290,12 @@ impl Kernel {
         self.service_epoch
     }
 
+    pub(crate) fn semantic_provider(&self) -> Result<&dyn SemanticProvider> {
+        self.semantic_provider
+            .as_deref()
+            .ok_or_else(|| anyhow::Error::new(CoordinationError::SemanticProviderUnavailable))
+    }
+
     #[doc(hidden)]
     #[cfg(feature = "redb-spike-api")]
     pub fn fence_state(&self, resource: &str) -> Result<(Option<u64>, Option<u64>)> {
@@ -265,6 +307,7 @@ impl Kernel {
         graph: Arc<GraphGeneration>,
         service_epoch: u64,
         scheduler: SchedulerState,
+        semantic_provider: Option<Arc<dyn SemanticProvider>>,
     ) -> Self {
         Self {
             store,
@@ -272,6 +315,7 @@ impl Kernel {
             publish_lock: Mutex::new(()),
             service_epoch,
             scheduler: Mutex::new(scheduler),
+            semantic_provider,
         }
     }
 }

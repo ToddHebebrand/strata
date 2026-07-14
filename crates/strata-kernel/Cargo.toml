@@ -6,7 +6,8 @@ rust-version = "1.89"
 
 [features]
 default = []
-redb-spike-api = []
+coordination-test-api = []
+redb-spike-api = ["coordination-test-api"]
 
 [lib]
 name = "strata_kernel"

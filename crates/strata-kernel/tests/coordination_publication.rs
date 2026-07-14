@@ -1,3 +1,5 @@
+#![cfg(feature = "coordination-test-api")]
+
 #[cfg(feature = "redb-spike-api")]
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -9,9 +11,9 @@ use strata_kernel::CoordinatedPublishFailpoint;
 use strata_kernel::{
     BeginChangeSet, CandidateBuilder, ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome,
     CoordinationEventKind, DynamicExpansionPolicy, GraphChange, GraphDelta, GraphGeneration,
-    GraphSnapshot, IdempotencyClass, IntentAnalysis, IntentAnalyzer, IntentParameters,
-    IntentRecord, Kernel, MAX_WAKE_AFFECTED_NODE_IDS, PublicationReport, ResourceVersion,
-    SCHEMA_VERSION, SubmissionOutcome, TicketState,
+    GraphSnapshot, IdempotencyClass, IntentAnalysis, IntentParameters, IntentRecord, Kernel,
+    MAX_WAKE_AFFECTED_NODE_IDS, PublicationReport, ResourceVersion, SCHEMA_VERSION,
+    SubmissionOutcome, TestSemanticProvider, TicketState,
 };
 use tempfile::tempdir;
 
@@ -32,9 +34,13 @@ impl SequencedAnalyzer {
     fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
+
+    fn extend(&self, analyses: impl IntoIterator<Item = IntentAnalysis>) {
+        self.analyses.lock().unwrap().extend(analyses);
+    }
 }
 
-impl IntentAnalyzer for SequencedAnalyzer {
+impl TestSemanticProvider for SequencedAnalyzer {
     fn analyze(
         &self,
         _graph: &GraphGeneration,
@@ -166,12 +172,7 @@ fn user_scope(snapshot: &GraphSnapshot) -> Vec<String> {
     ]
 }
 
-fn begin_submit_claim(
-    kernel: &Kernel,
-    id: &str,
-    analyzer: &dyn IntentAnalyzer,
-    tick: u64,
-) -> ClaimHandle {
+fn begin_submit_claim(kernel: &Kernel, id: &str, tick: u64) -> ClaimHandle {
     kernel
         .begin_change_set(BeginChangeSet {
             change_set_id: id.into(),
@@ -189,13 +190,11 @@ fn begin_submit_claim(
             },
         )
         .unwrap();
-    let SubmissionOutcome::Ready { offer, .. } =
-        kernel.submit_change_set(id, analyzer, tick).unwrap()
-    else {
+    let SubmissionOutcome::Ready { offer, .. } = kernel.submit_change_set(id, tick).unwrap() else {
         panic!("expected ready change set")
     };
     let ClaimOutcome::Claimed(claim) = kernel
-        .claim_ready(&offer.offer_id, &offer.claim_token, analyzer, tick + 1)
+        .claim_ready(&offer.offer_id, &offer.claim_token, tick + 1)
         .unwrap()
     else {
         panic!("expected claimed change set")
@@ -208,30 +207,29 @@ fn claimed_composite_publication_is_kernel_owned_atomic_and_idempotent_after_reo
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let snapshot = fixture();
-    let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
     let scope = user_scope(&snapshot);
     let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 6]);
-    let claim = begin_submit_claim(&kernel, "rename-user", &analyzer, 10);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer.clone()))
+            .unwrap();
+    let claim = begin_submit_claim(&kernel, "rename-user", 10);
     let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
 
-    let report = kernel
-        .publish_claimed(&claim, &analyzer, &builder, 20)
-        .unwrap();
+    let report = kernel.publish_claimed(&claim, &builder, 20).unwrap();
     assert_eq!(report.generation, 1);
     assert!(!report.already_published);
     assert_eq!(builder.calls(), 1);
     assert_eq!(kernel.snapshot().generation(), 1);
 
-    let retry = kernel
-        .publish_claimed(&claim, &analyzer, &builder, 21)
-        .unwrap();
+    let retry = kernel.publish_claimed(&claim, &builder, 21).unwrap();
     assert_eq!(retry.generation, report.generation);
     assert_eq!(retry.digest, report.digest);
     assert!(retry.already_published);
     assert_eq!(builder.calls(), 1, "committed retries must not rebuild");
     drop(kernel);
 
-    let (reopened, recovered) = Kernel::open(&path).unwrap();
+    let (reopened, recovered) =
+        Kernel::open_with_test_semantics(&path, Arc::new(analyzer.clone())).unwrap();
     assert_eq!(recovered.generation, 1);
     let durable = reopened.change_set("rename-user").unwrap().unwrap();
     assert_eq!(durable.state, ChangeSetState::Committed);
@@ -252,9 +250,7 @@ fn claimed_composite_publication_is_kernel_owned_atomic_and_idempotent_after_reo
             .count(),
         1
     );
-    let retry_after_reopen = reopened
-        .publish_claimed(&claim, &analyzer, &builder, 30)
-        .unwrap();
+    let retry_after_reopen = reopened.publish_claimed(&claim, &builder, 30).unwrap();
     assert_eq!(retry_after_reopen.generation, 1);
     assert_eq!(retry_after_reopen.digest, report.digest);
     assert!(retry_after_reopen.already_published);
@@ -266,11 +262,12 @@ fn concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let snapshot = fixture();
-    let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
-    let kernel = Arc::new(kernel);
     let scope = user_scope(&snapshot);
     let analyzer = Arc::new(SequencedAnalyzer::new(vec![analysis(&scope); 5]));
-    let claim = begin_submit_claim(&kernel, "concurrent-duplicate", analyzer.as_ref(), 0);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), analyzer.clone()).unwrap();
+    let kernel = Arc::new(kernel);
+    let claim = begin_submit_claim(&kernel, "concurrent-duplicate", 0);
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     let builder = Arc::new(BlockingBuilder {
@@ -282,19 +279,15 @@ fn concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original
 
     let first = {
         let kernel = kernel.clone();
-        let analyzer = analyzer.clone();
         let builder = builder.clone();
         let claim = claim.clone();
-        std::thread::spawn(move || {
-            kernel.publish_claimed(&claim, analyzer.as_ref(), builder.as_ref(), 2)
-        })
+        std::thread::spawn(move || kernel.publish_claimed(&claim, builder.as_ref(), 2))
     };
     entered.wait();
     let duplicate_inside = Arc::new(Barrier::new(2));
     let allow_duplicate_to_lock = Arc::new(Barrier::new(2));
     let second = {
         let kernel = kernel.clone();
-        let analyzer = analyzer.clone();
         let builder = builder.clone();
         let claim = claim.clone();
         let duplicate_inside = duplicate_inside.clone();
@@ -306,7 +299,6 @@ fn concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original
             };
             kernel.publish_claimed_with_entry_hook(
                 &claim,
-                analyzer.as_ref(),
                 builder.as_ref(),
                 3,
                 &after_outer_idempotency_lookup,
@@ -341,13 +333,18 @@ fn retry_after_a_later_disjoint_generation_returns_the_earlier_generation_and_di
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let snapshot = fixture();
-    let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
     let first_scope = user_scope(&snapshot);
-    let first_analyzer = SequencedAnalyzer::new(vec![analysis(&first_scope); 4]);
-    let first_claim = begin_submit_claim(&kernel, "earlier", &first_analyzer, 0);
+    let first_analyzer = SequencedAnalyzer::new(vec![analysis(&first_scope); 3]);
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        snapshot.clone(),
+        Arc::new(first_analyzer.clone()),
+    )
+    .unwrap();
+    let first_claim = begin_submit_claim(&kernel, "earlier", 0);
     let first_builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
     let first = kernel
-        .publish_claimed(&first_claim, &first_analyzer, &first_builder, 2)
+        .publish_claimed(&first_claim, &first_builder, 2)
         .unwrap();
 
     let second_id = "308079c405a147d0";
@@ -362,12 +359,11 @@ fn retry_after_a_later_disjoint_generation_returns_the_earlier_generation_and_di
     if let Some(parent_id) = &second_node.parent_id {
         second_scope.push(format!("node:{parent_id}"));
     }
-    let second_analyzer = SequencedAnalyzer::new(vec![analysis(&second_scope); 4]);
-    let second_claim = begin_submit_claim(&kernel, "later", &second_analyzer, 3);
+    first_analyzer.extend(vec![analysis(&second_scope); 3]);
+    let second_claim = begin_submit_claim(&kernel, "later", 3);
     let second = kernel
         .publish_claimed(
             &second_claim,
-            &second_analyzer,
             &PassiveBuilder(GraphDelta {
                 schema_version: SCHEMA_VERSION,
                 base_generation: 1,
@@ -380,7 +376,7 @@ fn retry_after_a_later_disjoint_generation_returns_the_earlier_generation_and_di
     let events_before_retry = kernel.events_after("later-audit", 0, 50).unwrap();
 
     let retry = kernel
-        .publish_claimed(&first_claim, &first_analyzer, &first_builder, 6)
+        .publish_claimed(&first_claim, &first_builder, 6)
         .unwrap();
     assert!(retry.already_published);
     assert_eq!(retry.generation, 1);
@@ -397,10 +393,12 @@ fn stale_claim_and_rogue_delta_are_rejected_without_side_effects() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let snapshot = fixture();
-    let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
     let scope = user_scope(&snapshot);
     let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 8]);
-    let claim = begin_submit_claim(&kernel, "contained", &analyzer, 0);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer.clone()))
+            .unwrap();
+    let claim = begin_submit_claim(&kernel, "contained", 0);
 
     for stale in [
         ClaimHandle {
@@ -421,11 +419,7 @@ fn stale_claim_and_rogue_delta_are_rejected_without_side_effects() {
         },
     ] {
         let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
-        assert!(
-            kernel
-                .publish_claimed(&stale, &analyzer, &builder, 2)
-                .is_err()
-        );
+        assert!(kernel.publish_claimed(&stale, &builder, 2).is_err());
         assert_eq!(builder.calls(), 0);
         assert_eq!(kernel.snapshot().generation(), 0);
     }
@@ -464,9 +458,7 @@ fn stale_claim_and_rogue_delta_are_rejected_without_side_effects() {
     ];
     for rogue in rogue_deltas {
         let builder = RecordingBuilder::new(rogue);
-        let error = kernel
-            .publish_claimed(&claim, &analyzer, &builder, 3)
-            .unwrap_err();
+        let error = kernel.publish_claimed(&claim, &builder, 3).unwrap_err();
         assert!(error.to_string().contains("outside inferred scope"));
         assert_eq!(kernel.snapshot().generation(), 0);
         assert_eq!(
@@ -481,10 +473,12 @@ fn builder_wrong_schema_and_base_are_rejected_before_graph_coordination_or_fence
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let snapshot = fixture();
-    let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
     let scope = user_scope(&snapshot);
     let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 6]);
-    let claim = begin_submit_claim(&kernel, "bad-candidate", &analyzer, 0);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer.clone()))
+            .unwrap();
+    let claim = begin_submit_claim(&kernel, "bad-candidate", 0);
 
     let mut wrong_schema = user_delta(&snapshot, "export interface Account {}");
     wrong_schema.schema_version = SCHEMA_VERSION + 1;
@@ -495,7 +489,7 @@ fn builder_wrong_schema_and_base_are_rejected_before_graph_coordination_or_fence
         (wrong_base, "base generation"),
     ] {
         let error = kernel
-            .publish_claimed(&claim, &analyzer, &PassiveBuilder(delta), 2)
+            .publish_claimed(&claim, &PassiveBuilder(delta), 2)
             .unwrap_err();
         assert!(error.to_string().contains(expected));
         assert_eq!(kernel.snapshot().generation(), 0);
@@ -522,7 +516,6 @@ fn publication_reanalysis_happens_before_builder_and_changed_scope_needs_decisio
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let snapshot = fixture();
-    let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
     let old_scope = user_scope(&snapshot);
     let mut changed_scope = old_scope.clone();
     changed_scope.push("node:308079c405a147d0".into());
@@ -531,12 +524,13 @@ fn publication_reanalysis_happens_before_builder_and_changed_scope_needs_decisio
         analysis(&old_scope),
         analysis(&changed_scope),
     ]);
-    let claim = begin_submit_claim(&kernel, "reanalyze", &analyzer, 0);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer.clone()))
+            .unwrap();
+    let claim = begin_submit_claim(&kernel, "reanalyze", 0);
     let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
 
-    let error = kernel
-        .publish_claimed(&claim, &analyzer, &builder, 2)
-        .unwrap_err();
+    let error = kernel.publish_claimed(&claim, &builder, 2).unwrap_err();
     assert!(error.to_string().contains("scope changed"));
     assert_eq!(analyzer.calls(), 3);
     assert_eq!(builder.calls(), 0);
@@ -552,15 +546,19 @@ fn material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter(
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let snapshot = fixture();
-    let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
     let old_scope = user_scope(&snapshot);
     let material_scope = vec!["node:308079c405a147d0".into()];
     let changing = SequencedAnalyzer::new(vec![
         analysis(&old_scope),
         analysis(&old_scope),
+        analysis(&old_scope),
         analysis(&material_scope),
+        analysis(&old_scope),
     ]);
-    let claim = begin_submit_claim(&kernel, "material", &changing, 0);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(changing.clone()))
+            .unwrap();
+    let claim = begin_submit_claim(&kernel, "material", 0);
 
     kernel
         .begin_change_set(BeginChangeSet {
@@ -579,18 +577,13 @@ fn material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter(
             },
         )
         .unwrap();
-    let waiter_analyzer = SequencedAnalyzer::new(vec![analysis(&old_scope); 2]);
     assert!(matches!(
-        kernel
-            .submit_change_set("material-waiter", &waiter_analyzer, 1)
-            .unwrap(),
+        kernel.submit_change_set("material-waiter", 1).unwrap(),
         SubmissionOutcome::Queued { .. }
     ));
 
     let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
-    let error = kernel
-        .publish_claimed(&claim, &changing, &builder, 10)
-        .unwrap_err();
+    let error = kernel.publish_claimed(&claim, &builder, 10).unwrap_err();
     assert!(error.to_string().contains("scope changed"));
     assert_eq!(builder.calls(), 0);
     assert_eq!(
@@ -610,7 +603,7 @@ fn material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter(
         10 + strata_kernel::READY_OFFER_TTL_TICKS
     );
     let ClaimOutcome::Claimed(_) = kernel
-        .claim_ready(&offer.offer_id, &offer.claim_token, &waiter_analyzer, 11)
+        .claim_ready(&offer.offer_id, &offer.claim_token, 11)
         .unwrap()
     else {
         panic!("terminal release successor should be immediately claimable")
@@ -622,9 +615,11 @@ fn two_intents_publish_one_aggregate_operation_and_generation() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let snapshot = fixture();
-    let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
     let scope = user_scope(&snapshot);
     let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 10]);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer.clone()))
+            .unwrap();
     kernel
         .begin_change_set(BeginChangeSet {
             change_set_id: "composite".into(),
@@ -644,21 +639,18 @@ fn two_intents_publish_one_aggregate_operation_and_generation() {
             )
             .unwrap();
     }
-    let SubmissionOutcome::Ready { offer, .. } =
-        kernel.submit_change_set("composite", &analyzer, 0).unwrap()
+    let SubmissionOutcome::Ready { offer, .. } = kernel.submit_change_set("composite", 0).unwrap()
     else {
         panic!("expected ready")
     };
     let ClaimOutcome::Claimed(claim) = kernel
-        .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 1)
+        .claim_ready(&offer.offer_id, &offer.claim_token, 1)
         .unwrap()
     else {
         panic!("expected claim")
     };
     let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Customer {}"));
-    let PublicationReport { generation, .. } = kernel
-        .publish_claimed(&claim, &analyzer, &builder, 2)
-        .unwrap();
+    let PublicationReport { generation, .. } = kernel.publish_claimed(&claim, &builder, 2).unwrap();
     assert_eq!(generation, 1);
     let operation = kernel.operation(1).unwrap().unwrap();
     assert_eq!(operation.change_set_id, "composite");
@@ -672,10 +664,15 @@ fn commit_atomically_wakes_successor_with_a_fresh_thirty_tick_offer() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let snapshot = fixture();
-    let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
     let scope = user_scope(&snapshot);
     let blocker_analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 4]);
-    let blocker = begin_submit_claim(&kernel, "blocker", &blocker_analyzer, 0);
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        snapshot.clone(),
+        Arc::new(blocker_analyzer.clone()),
+    )
+    .unwrap();
+    let blocker = begin_submit_claim(&kernel, "blocker", 0);
 
     kernel
         .begin_change_set(BeginChangeSet {
@@ -694,18 +691,13 @@ fn commit_atomically_wakes_successor_with_a_fresh_thirty_tick_offer() {
             },
         )
         .unwrap();
-    let successor_analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 2]);
     assert!(matches!(
-        kernel
-            .submit_change_set("successor", &successor_analyzer, 2)
-            .unwrap(),
+        kernel.submit_change_set("successor", 2).unwrap(),
         SubmissionOutcome::Queued { .. }
     ));
 
     let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
-    kernel
-        .publish_claimed(&blocker, &blocker_analyzer, &builder, 100)
-        .unwrap();
+    kernel.publish_claimed(&blocker, &builder, 100).unwrap();
     let successor = kernel.change_set("successor").unwrap().unwrap();
     assert_eq!(successor.state, ChangeSetState::Ready);
     assert_eq!(successor.blocking_change_set_id.as_deref(), Some("blocker"));
@@ -734,7 +726,6 @@ fn wake_event_context_is_bounded_while_canonical_operation_keeps_every_affected_
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let snapshot = fixture();
-    let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
     let selected = snapshot
         .nodes
         .iter()
@@ -756,16 +747,17 @@ fn wake_event_context_is_bounded_while_canonical_operation_keeps_every_affected_
         .collect();
     let scope = scope.into_iter().collect::<Vec<_>>();
     let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 4]);
-    let claim = begin_submit_claim(&kernel, "bounded-context", &analyzer, 0);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer.clone()))
+            .unwrap();
+    let claim = begin_submit_claim(&kernel, "bounded-context", 0);
     let builder = RecordingBuilder::new(GraphDelta {
         schema_version: SCHEMA_VERSION,
         base_generation: 0,
         changes,
     });
 
-    kernel
-        .publish_claimed(&claim, &analyzer, &builder, 2)
-        .unwrap();
+    kernel.publish_claimed(&claim, &builder, 2).unwrap();
     let operation = kernel.operation(1).unwrap().unwrap();
     assert_eq!(
         operation.affected_node_ids.len(),
@@ -799,10 +791,12 @@ fn failure_after_in_transaction_fence_mutation_rolls_back_fences_graph_and_coord
         let directory = tempdir().unwrap();
         let path = directory.path().join("kernel.redb");
         let snapshot = fixture();
-        let (kernel, _) = Kernel::create(&path, snapshot.clone()).unwrap();
         let scope = user_scope(&snapshot);
         let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 4]);
-        let claim = begin_submit_claim(&kernel, "rollback", &analyzer, 0);
+        let (kernel, _) =
+            Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer.clone()))
+                .unwrap();
+        let claim = begin_submit_claim(&kernel, "rollback", 0);
         kernel
             .begin_change_set(BeginChangeSet {
                 change_set_id: "rollback-successor".into(),
@@ -820,20 +814,18 @@ fn failure_after_in_transaction_fence_mutation_rolls_back_fences_graph_and_coord
                 },
             )
             .unwrap();
-        let successor_analyzer = SequencedAnalyzer::new(vec![analysis(&scope)]);
         assert!(matches!(
-            kernel
-                .submit_change_set("rollback-successor", &successor_analyzer, 1)
-                .unwrap(),
+            kernel.submit_change_set("rollback-successor", 1).unwrap(),
             SubmissionOutcome::Queued { .. }
         ));
         let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
         kernel
-            .publish_claimed_with_failpoint(&claim, &analyzer, &builder, 2, failpoint)
+            .publish_claimed_with_failpoint(&claim, &builder, 2, failpoint)
             .unwrap_err();
         drop(kernel);
 
-        let (reopened, recovered) = Kernel::open(&path).unwrap();
+        let (reopened, recovered) =
+            Kernel::open_with_test_semantics(&path, Arc::new(analyzer.clone())).unwrap();
         assert_eq!(recovered.generation, 0, "failpoint case {case}");
         assert_eq!(
             reopened.change_set("rollback").unwrap().unwrap().state,

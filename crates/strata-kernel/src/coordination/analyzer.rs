@@ -1,5 +1,6 @@
 use super::{
     DynamicExpansionPolicy, IdempotencyClass, InferredScope, IntentRecord, ResourceVersion,
+    SemanticProvider,
 };
 use crate::{GraphChange, GraphDelta, GraphGeneration};
 use anyhow::{Result, bail};
@@ -7,10 +8,6 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
-
-pub trait IntentAnalyzer: Send + Sync {
-    fn analyze(&self, graph: &GraphGeneration, intent: &IntentRecord) -> Result<IntentAnalysis>;
-}
 
 /// Builds only a candidate graph delta. Publication authority and every audit,
 /// coordination, fencing, and idempotency record remain kernel-owned.
@@ -46,10 +43,10 @@ pub struct DeltaAuthority {
     pub reservation_coverage: Vec<String>,
 }
 
-pub fn analyze_change_set(
+pub(crate) fn analyze_change_set(
     graph: &GraphGeneration,
     intents: &[IntentRecord],
-    analyzer: &dyn IntentAnalyzer,
+    provider: &dyn SemanticProvider,
 ) -> Result<InferredScope> {
     if intents.is_empty() {
         bail!("change-set analysis requires at least one intent");
@@ -63,7 +60,7 @@ pub fn analyze_change_set(
     let mut idempotency_class = IdempotencyClass::ReplaySafe;
 
     for intent in intents {
-        let analysis = analyzer.analyze(graph, intent)?;
+        let analysis = provider.analyze(graph, intent)?;
         read_set.extend(analysis.read_set);
         write_set.extend(analysis.write_set);
         validation_set.extend(analysis.validation_set);

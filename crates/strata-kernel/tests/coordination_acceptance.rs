@@ -1,7 +1,10 @@
+#![cfg(feature = "coordination-test-api")]
+
 #[path = "support/coordination.rs"]
 mod coordination_support;
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use coordination_support::{
     FailingProbeBuilder, FixedDeltaBuilder, GraphDerivedAnalyzer, MediumCoordinationFixture,
@@ -162,12 +165,17 @@ fn disjoint_work_is_ready_together_and_commits_after_fresh_claims_in_either_orde
     for order in [["user", "parse"], ["parse", "user"]] {
         let directory = tempdir().unwrap();
         let path = directory.path().join("kernel.redb");
-        let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
         let analyzer = GraphDerivedAnalyzer::new();
+        let (kernel, _) = Kernel::create_with_test_semantics(
+            &path,
+            fixture.snapshot().clone(),
+            Arc::new(analyzer.clone()),
+        )
+        .unwrap();
         begin_with_intents(&kernel, "user", [rename(&user_id, "Account")]).unwrap();
         begin_with_intents(&kernel, "parse", [rename(&parse_id, "parseTokens")]).unwrap();
-        let user_offer = ready(kernel.submit_change_set("user", &analyzer, 0).unwrap());
-        let parse_offer = ready(kernel.submit_change_set("parse", &analyzer, 0).unwrap());
+        let user_offer = ready(kernel.submit_change_set("user", 0).unwrap());
+        let parse_offer = ready(kernel.submit_change_set("parse", 0).unwrap());
         let user_scope = kernel
             .change_set("user")
             .unwrap()
@@ -190,19 +198,13 @@ fn disjoint_work_is_ready_together_and_commits_after_fresh_claims_in_either_orde
             };
             let claim = claimed(
                 kernel
-                    .claim_ready(
-                        &offer.offer_id,
-                        &offer.claim_token,
-                        &analyzer,
-                        1 + index as u64,
-                    )
+                    .claim_ready(&offer.offer_id, &offer.claim_token, 1 + index as u64)
                     .unwrap(),
             );
             assert_eq!(claim.graph_generation, index as u64);
             let report = kernel
                 .publish_claimed(
                     &claim,
-                    &analyzer,
                     &NodePatchBuilder::new(vec![(node_id.clone(), format!("\n// committed-{id}"))]),
                     10 + index as u64,
                 )
@@ -227,24 +229,23 @@ fn same_symbol_is_fifo_then_wakes_with_bounded_context_and_needs_fresh_decision(
     let user_id = fixture.declaration_named("User").id.clone();
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
     let analyzer = GraphDerivedAnalyzer::new();
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(analyzer.clone()),
+    )
+    .unwrap();
 
     begin_with_intents(&kernel, "first", [rename(&user_id, "Account")]).unwrap();
-    let first_offer = ready(kernel.submit_change_set("first", &analyzer, 0).unwrap());
+    let first_offer = ready(kernel.submit_change_set("first", 0).unwrap());
     let first_claim = claimed(
         kernel
-            .claim_ready(
-                &first_offer.offer_id,
-                &first_offer.claim_token,
-                &analyzer,
-                1,
-            )
+            .claim_ready(&first_offer.offer_id, &first_offer.claim_token, 1)
             .unwrap(),
     );
     begin_with_intents(&kernel, "second", [rename(&user_id, "Customer")]).unwrap();
-    let SubmissionOutcome::Queued { ticket } =
-        kernel.submit_change_set("second", &analyzer, 1).unwrap()
+    let SubmissionOutcome::Queued { ticket } = kernel.submit_change_set("second", 1).unwrap()
     else {
         panic!("same-symbol successor must queue")
     };
@@ -260,7 +261,6 @@ fn same_symbol_is_fifo_then_wakes_with_bounded_context_and_needs_fresh_decision(
     kernel
         .publish_claimed(
             &first_claim,
-            &analyzer,
             &NodePatchBuilder::new(vec![(user_id.clone(), "\n// Account".into())]),
             2,
         )
@@ -314,8 +314,13 @@ fn publication_reanalyzes_unchanged_successor_and_emits_its_fresh_fingerprint() 
     let greet_id = fixture.declaration_named("greet").id.clone();
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
     let analyzer = GraphDerivedAnalyzer::new();
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(analyzer.clone()),
+    )
+    .unwrap();
 
     begin_with_intents(
         &kernel,
@@ -323,33 +328,21 @@ fn publication_reanalyzes_unchanged_successor_and_emits_its_fresh_fingerprint() 
         [coordination_support::add_parameter(&greet_id)],
     )
     .unwrap();
-    let blocker_offer = ready(
-        kernel
-            .submit_change_set("reference-blocker", &analyzer, 0)
-            .unwrap(),
-    );
+    let blocker_offer = ready(kernel.submit_change_set("reference-blocker", 0).unwrap());
     let blocker_claim = claimed(
         kernel
-            .claim_ready(
-                &blocker_offer.offer_id,
-                &blocker_offer.claim_token,
-                &analyzer,
-                1,
-            )
+            .claim_ready(&blocker_offer.offer_id, &blocker_offer.claim_token, 1)
             .unwrap(),
     );
     begin_with_intents(&kernel, "fresh-waiter", [rename(&user_id, "Account")]).unwrap();
     assert!(matches!(
-        kernel
-            .submit_change_set("fresh-waiter", &analyzer, 1)
-            .unwrap(),
+        kernel.submit_change_set("fresh-waiter", 1).unwrap(),
         SubmissionOutcome::Queued { .. }
     ));
 
     kernel
         .publish_claimed(
             &blocker_claim,
-            &analyzer,
             &NodePatchBuilder::new(vec![(greet_id, "\n// blocker committed".into())]),
             2,
         )
@@ -397,22 +390,18 @@ fn publication_persists_expanded_successor_scope_before_issuing_ready_authority(
     });
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(analyzer.clone()),
+    )
+    .unwrap();
 
     begin_with_intents(&kernel, "expansion-blocker", [rename(&user_id, "Account")]).unwrap();
-    let blocker_offer = ready(
-        kernel
-            .submit_change_set("expansion-blocker", &analyzer, 0)
-            .unwrap(),
-    );
+    let blocker_offer = ready(kernel.submit_change_set("expansion-blocker", 0).unwrap());
     let blocker_claim = claimed(
         kernel
-            .claim_ready(
-                &blocker_offer.offer_id,
-                &blocker_offer.claim_token,
-                &analyzer,
-                0,
-            )
+            .claim_ready(&blocker_offer.offer_id, &blocker_offer.claim_token, 0)
             .unwrap(),
     );
     begin_with_intents(
@@ -422,16 +411,13 @@ fn publication_persists_expanded_successor_scope_before_issuing_ready_authority(
     )
     .unwrap();
     assert!(matches!(
-        kernel
-            .submit_change_set("wake-expanded", &analyzer, 0)
-            .unwrap(),
+        kernel.submit_change_set("wake-expanded", 0).unwrap(),
         SubmissionOutcome::Queued { .. }
     ));
 
     kernel
         .publish_claimed(
             &blocker_claim,
-            &analyzer,
             &NodePatchBuilder::new(vec![(user_id, "\n// expansion blocker".into())]),
             1,
         )
@@ -509,17 +495,17 @@ fn reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutat
 
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(analyzer.clone()),
+    )
+    .unwrap();
     begin_with_intents(&kernel, "blocker", [rename(&user_id, "Account")]).unwrap();
-    let blocker_offer = ready(kernel.submit_change_set("blocker", &analyzer, 0).unwrap());
+    let blocker_offer = ready(kernel.submit_change_set("blocker", 0).unwrap());
     let blocker_claim = claimed(
         kernel
-            .claim_ready(
-                &blocker_offer.offer_id,
-                &blocker_offer.claim_token,
-                &analyzer,
-                0,
-            )
+            .claim_ready(&blocker_offer.offer_id, &blocker_offer.claim_token, 0)
             .unwrap(),
     );
     begin_with_intents(
@@ -528,8 +514,7 @@ fn reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutat
         [coordination_support::add_parameter(&greet_id)],
     )
     .unwrap();
-    let SubmissionOutcome::Queued { ticket } =
-        kernel.submit_change_set("expanding", &analyzer, 0).unwrap()
+    let SubmissionOutcome::Queued { ticket } = kernel.submit_change_set("expanding", 0).unwrap()
     else {
         panic!("reference-overlapping add-parameter must queue")
     };
@@ -549,7 +534,6 @@ fn reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutat
     kernel
         .publish_claimed(
             &blocker_claim,
-            &analyzer,
             &NodePatchBuilder::new(vec![(user_id, "\n// rename blocker".into())]),
             1,
         )
@@ -565,25 +549,15 @@ fn reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutat
         [rename(&disjoint_id, "isInsideRange")],
     )
     .unwrap();
-    let advancer_offer = ready(
-        kernel
-            .submit_change_set("generation-advancer", &analyzer, 2)
-            .unwrap(),
-    );
+    let advancer_offer = ready(kernel.submit_change_set("generation-advancer", 2).unwrap());
     let advancer_claim = claimed(
         kernel
-            .claim_ready(
-                &advancer_offer.offer_id,
-                &advancer_offer.claim_token,
-                &analyzer,
-                3,
-            )
+            .claim_ready(&advancer_offer.offer_id, &advancer_offer.claim_token, 3)
             .unwrap(),
     );
     kernel
         .publish_claimed(
             &advancer_claim,
-            &analyzer,
             &NodePatchBuilder::new(vec![(disjoint_id, "\n// advance generation".into())]),
             4,
         )
@@ -593,12 +567,7 @@ fn reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutat
         "\n// stale add-parameter candidate".into(),
     )]);
     let outcome = kernel
-        .claim_ready(
-            &expanding_offer.offer_id,
-            &expanding_offer.claim_token,
-            &analyzer,
-            5,
-        )
+        .claim_ready(&expanding_offer.offer_id, &expanding_offer.claim_token, 5)
         .unwrap();
     let ClaimOutcome::Requeued { ticket, event } = outcome else {
         panic!("new callsite must expand and requeue before execution")
@@ -674,18 +643,19 @@ fn malicious_node_and_reference_deltas_are_contained_with_zero_side_effects() {
     for (case, rogue_delta) in [("rogue-node", node_delta), ("retarget", reference_delta)] {
         let directory = tempdir().unwrap();
         let path = directory.path().join("kernel.redb");
-        let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
         let analyzer = GraphDerivedAnalyzer::new();
+        let (kernel, _) = Kernel::create_with_test_semantics(
+            &path,
+            fixture.snapshot().clone(),
+            Arc::new(analyzer.clone()),
+        )
+        .unwrap();
         let change_set_id = format!("contained-{case}");
         begin_with_intents(&kernel, &change_set_id, [rename(&parse_id, "parseTokens")]).unwrap();
-        let offer = ready(
-            kernel
-                .submit_change_set(&change_set_id, &analyzer, 0)
-                .unwrap(),
-        );
+        let offer = ready(kernel.submit_change_set(&change_set_id, 0).unwrap());
         let claim = claimed(
             kernel
-                .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 1)
+                .claim_ready(&offer.offer_id, &offer.claim_token, 1)
                 .unwrap(),
         );
         let before_digest = kernel.snapshot().digest().to_owned();
@@ -698,7 +668,7 @@ fn malicious_node_and_reference_deltas_are_contained_with_zero_side_effects() {
             .unwrap();
 
         let error = kernel
-            .publish_claimed(&claim, &analyzer, &FixedDeltaBuilder(rogue_delta), 2)
+            .publish_claimed(&claim, &FixedDeltaBuilder(rogue_delta), 2)
             .unwrap_err();
         assert!(error.to_string().contains("outside inferred scope"));
         assert_eq!(kernel.snapshot().generation(), 0);
@@ -728,9 +698,7 @@ fn malicious_node_and_reference_deltas_are_contained_with_zero_side_effects() {
         }
 
         let probe = FailingProbeBuilder::new();
-        let error = kernel
-            .publish_claimed(&claim, &analyzer, &probe, 3)
-            .unwrap_err();
+        let error = kernel.publish_claimed(&claim, &probe, 3).unwrap_err();
         assert!(error.to_string().contains("probe candidate reached"));
         assert_eq!(probe.calls(), 1, "same claim must remain scheduler-usable");
         assert_eq!(kernel.snapshot().digest(), before_digest);
@@ -740,7 +708,8 @@ fn malicious_node_and_reference_deltas_are_contained_with_zero_side_effects() {
         );
         drop(kernel);
 
-        let (reopened, recovered) = Kernel::open(&path).unwrap();
+        let (reopened, recovered) =
+            Kernel::open_with_test_semantics(&path, Arc::new(analyzer.clone())).unwrap();
         assert_eq!(recovered.generation, 0);
         assert_eq!(recovered.digest, before_digest);
         assert!(reopened.operation(1).unwrap().is_none());
@@ -824,13 +793,14 @@ fn older_wide_ticket_ages_without_starvation_while_only_disjoint_work_passes() {
 
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(analyzer.clone()),
+    )
+    .unwrap();
     begin_with_intents(&kernel, "active-small", [rename(&user_id, "HeldUser")]).unwrap();
-    let _active_offer = ready(
-        kernel
-            .submit_change_set("active-small", &analyzer, 0)
-            .unwrap(),
-    );
+    let _active_offer = ready(kernel.submit_change_set("active-small", 0).unwrap());
     begin_with_intents(
         &kernel,
         "older-wide",
@@ -838,9 +808,7 @@ fn older_wide_ticket_ages_without_starvation_while_only_disjoint_work_passes() {
     )
     .unwrap();
     assert!(matches!(
-        kernel
-            .submit_change_set("older-wide", &analyzer, 0)
-            .unwrap(),
+        kernel.submit_change_set("older-wide", 0).unwrap(),
         SubmissionOutcome::Queued { .. }
     ));
 
@@ -850,9 +818,7 @@ fn older_wide_ticket_ages_without_starvation_while_only_disjoint_work_passes() {
             let id = format!("newer-overlap-{index}");
             begin_with_intents(&kernel, &id, [rename(&user_id, &format!("User{index}"))]).unwrap();
             assert!(matches!(
-                kernel
-                    .submit_change_set(&id, &analyzer, index as u64 + 1)
-                    .unwrap(),
+                kernel.submit_change_set(&id, index as u64 + 1).unwrap(),
                 SubmissionOutcome::Queued { .. }
             ));
             overlapping_ids.push(id);
@@ -865,25 +831,15 @@ fn older_wide_ticket_ages_without_starvation_while_only_disjoint_work_passes() {
                 [rename(&node_id, &format!("Disjoint{index}"))],
             )
             .unwrap();
-            let offer = ready(
-                kernel
-                    .submit_change_set(&id, &analyzer, index as u64 + 1)
-                    .unwrap(),
-            );
+            let offer = ready(kernel.submit_change_set(&id, index as u64 + 1).unwrap());
             let claim = claimed(
                 kernel
-                    .claim_ready(
-                        &offer.offer_id,
-                        &offer.claim_token,
-                        &analyzer,
-                        index as u64 + 2,
-                    )
+                    .claim_ready(&offer.offer_id, &offer.claim_token, index as u64 + 2)
                     .unwrap(),
             );
             kernel
                 .publish_claimed(
                     &claim,
-                    &analyzer,
                     &NodePatchBuilder::new(vec![(node_id, format!("\n// disjoint-{index}"))]),
                     index as u64 + 3,
                 )
@@ -907,7 +863,7 @@ fn older_wide_ticket_ages_without_starvation_while_only_disjoint_work_passes() {
         .expect("the oldest wide ticket must be offered immediately on release");
     let wide_claim = claimed(
         kernel
-            .claim_ready(&wide_offer.offer_id, &wide_offer.claim_token, &analyzer, 51)
+            .claim_ready(&wide_offer.offer_id, &wide_offer.claim_token, 51)
             .unwrap(),
     );
     assert_eq!(wide_claim.change_set_id, "older-wide");
@@ -925,18 +881,19 @@ fn restart_preserves_ticket_event_identity_invalidates_offers_and_keeps_cursors_
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let analyzer = GraphDerivedAnalyzer::new();
-    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(analyzer.clone()),
+    )
+    .unwrap();
     begin_with_intents(
         &kernel,
         "ready-before-restart",
         [rename(&user_id, "Account")],
     )
     .unwrap();
-    let old_offer = ready(
-        kernel
-            .submit_change_set("ready-before-restart", &analyzer, 0)
-            .unwrap(),
-    );
+    let old_offer = ready(kernel.submit_change_set("ready-before-restart", 0).unwrap());
     begin_with_intents(
         &kernel,
         "queued-before-restart",
@@ -945,7 +902,7 @@ fn restart_preserves_ticket_event_identity_invalidates_offers_and_keeps_cursors_
     .unwrap();
     assert!(matches!(
         kernel
-            .submit_change_set("queued-before-restart", &analyzer, 0)
+            .submit_change_set("queued-before-restart", 0)
             .unwrap(),
         SubmissionOutcome::Queued { .. }
     ));
@@ -966,7 +923,8 @@ fn restart_preserves_ticket_event_identity_invalidates_offers_and_keeps_cursors_
         .collect();
     drop(kernel);
 
-    let (reopened, report) = Kernel::open(&path).unwrap();
+    let (reopened, report) =
+        Kernel::open_with_test_semantics(&path, Arc::new(analyzer.clone())).unwrap();
     assert!(report.service_epoch > old_offer.service_epoch);
     assert_eq!(
         reopened
@@ -992,7 +950,7 @@ fn restart_preserves_ticket_event_identity_invalidates_offers_and_keeps_cursors_
     );
     assert!(
         reopened
-            .claim_ready(&old_offer.offer_id, &old_offer.claim_token, &analyzer, 1)
+            .claim_ready(&old_offer.offer_id, &old_offer.claim_token, 1)
             .unwrap_err()
             .to_string()
             .contains("does not exist")
@@ -1036,8 +994,13 @@ fn composite_change_set_publishes_two_real_nodes_in_exactly_one_generation() {
     let parse_id = fixture.declaration_named("parseArgs").id.clone();
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
     let analyzer = GraphDerivedAnalyzer::new();
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(analyzer.clone()),
+    )
+    .unwrap();
     begin_with_intents(
         &kernel,
         "composite",
@@ -1047,16 +1010,15 @@ fn composite_change_set_publishes_two_real_nodes_in_exactly_one_generation() {
         ],
     )
     .unwrap();
-    let offer = ready(kernel.submit_change_set("composite", &analyzer, 0).unwrap());
+    let offer = ready(kernel.submit_change_set("composite", 0).unwrap());
     let claim = claimed(
         kernel
-            .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 1)
+            .claim_ready(&offer.offer_id, &offer.claim_token, 1)
             .unwrap(),
     );
     let report = kernel
         .publish_claimed(
             &claim,
-            &analyzer,
             &NodePatchBuilder::new(vec![
                 (user_id.clone(), "\n// composite-user".into()),
                 (parse_id.clone(), "\n// composite-parse".into()),
@@ -1104,8 +1066,13 @@ fn composite_precommit_failure_exposes_neither_real_node_change() {
     let parse_id = fixture.declaration_named("parseArgs").id.clone();
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
     let analyzer = GraphDerivedAnalyzer::new();
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(analyzer.clone()),
+    )
+    .unwrap();
     begin_with_intents(
         &kernel,
         "composite-failure",
@@ -1115,14 +1082,10 @@ fn composite_precommit_failure_exposes_neither_real_node_change() {
         ],
     )
     .unwrap();
-    let offer = ready(
-        kernel
-            .submit_change_set("composite-failure", &analyzer, 0)
-            .unwrap(),
-    );
+    let offer = ready(kernel.submit_change_set("composite-failure", 0).unwrap());
     let claim = claimed(
         kernel
-            .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 1)
+            .claim_ready(&offer.offer_id, &offer.claim_token, 1)
             .unwrap(),
     );
     let before_digest = kernel.snapshot().digest().to_owned();
@@ -1139,7 +1102,6 @@ fn composite_precommit_failure_exposes_neither_real_node_change() {
         kernel
             .publish_claimed_with_failpoint(
                 &claim,
-                &analyzer,
                 &builder,
                 2,
                 CoordinatedPublishFailpoint::BeforeCommit,
@@ -1200,7 +1162,8 @@ fn composite_precommit_failure_exposes_neither_real_node_change() {
     }
     drop(store);
 
-    let (reopened, recovered) = Kernel::open(&path).unwrap();
+    let (reopened, recovered) =
+        Kernel::open_with_test_semantics(&path, Arc::new(analyzer.clone())).unwrap();
     assert_eq!(recovered.generation, 0);
     assert_eq!(recovered.digest, before_digest);
     assert_eq!(reopened.snapshot().node(&user_id).unwrap(), &before_user);

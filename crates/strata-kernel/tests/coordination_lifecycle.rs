@@ -7,8 +7,8 @@ use anyhow::Context;
 use strata_kernel::{
     BeginChangeSet, ChangeSetState, ClaimOutcome, CoordinationEventKind, DurableStore,
     DynamicExpansionPolicy, GraphGeneration, GraphSnapshot, IdempotencyClass, IntentAnalysis,
-    IntentAnalyzer, IntentParameters, IntentRecord, Kernel, READY_OFFER_TTL_TICKS, ResourceVersion,
-    SCHEMA_VERSION, SubmissionOutcome, TicketState,
+    IntentParameters, IntentRecord, Kernel, READY_OFFER_TTL_TICKS, ResourceVersion, SCHEMA_VERSION,
+    SubmissionOutcome, TestSemanticProvider, TicketState,
 };
 use tempfile::tempdir;
 use uuid::Uuid;
@@ -32,7 +32,7 @@ impl SequencedAnalyzer {
     }
 }
 
-impl IntentAnalyzer for SequencedAnalyzer {
+impl TestSemanticProvider for SequencedAnalyzer {
     fn analyze(
         &self,
         _graph: &GraphGeneration,
@@ -63,8 +63,8 @@ fn analysis(keys: &[&str], max_expansions: u32) -> IntentAnalysis {
     }
 }
 
-fn kernel(path: &std::path::Path) -> Kernel {
-    Kernel::create(
+fn kernel(path: &std::path::Path, analyzer: SequencedAnalyzer) -> Kernel {
+    Kernel::create_with_test_semantics(
         path,
         GraphSnapshot {
             schema_version: SCHEMA_VERSION,
@@ -72,6 +72,7 @@ fn kernel(path: &std::path::Path) -> Kernel {
             nodes: vec![],
             references: vec![],
         },
+        Arc::new(analyzer),
     )
     .unwrap()
     .0
@@ -100,11 +101,10 @@ fn begin_and_add(kernel: &Kernel, id: &str) {
 fn submit_ready(
     kernel: &Kernel,
     id: &str,
-    analyzer: &dyn IntentAnalyzer,
     now_tick: u64,
 ) -> (strata_kernel::CoordinationTicket, strata_kernel::ReadyOffer) {
     begin_and_add(kernel, id);
-    match kernel.submit_change_set(id, analyzer, now_tick).unwrap() {
+    match kernel.submit_change_set(id, now_tick).unwrap() {
         SubmissionOutcome::Ready { ticket, offer } => (ticket, offer),
         other => panic!("expected ready submission, got {other:?}"),
     }
@@ -114,9 +114,13 @@ fn submit_ready(
 fn submit_atomically_persists_ready_offer_and_holds_full_priority_scope() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let kernel = kernel(&path);
-    let first_analyzer = SequencedAnalyzer::new(vec![analysis(&["symbol:A", "node:X"], 3)]);
-    let (first_ticket, first_offer) = submit_ready(&kernel, "first", &first_analyzer, 10);
+    let analyzer = SequencedAnalyzer::new(vec![
+        analysis(&["symbol:A", "node:X"], 3),
+        analysis(&["node:X"], 3),
+        analysis(&["symbol:B"], 3),
+    ]);
+    let kernel = kernel(&path, analyzer.clone());
+    let (first_ticket, first_offer) = submit_ready(&kernel, "first", 10);
 
     assert_eq!(first_ticket.state, TicketState::Ready);
     assert_eq!(
@@ -134,8 +138,7 @@ fn submit_atomically_persists_ready_offer_and_holds_full_priority_scope() {
     Uuid::parse_str(&first_offer.claim_token).expect("claim token must be opaque UUID data");
 
     begin_and_add(&kernel, "overlap");
-    let overlap = SequencedAnalyzer::new(vec![analysis(&["node:X"], 3)]);
-    let overlap_ticket = match kernel.submit_change_set("overlap", &overlap, 11).unwrap() {
+    let overlap_ticket = match kernel.submit_change_set("overlap", 11).unwrap() {
         SubmissionOutcome::Queued { ticket } => ticket,
         other => panic!("expected queued overlap, got {other:?}"),
     };
@@ -143,8 +146,7 @@ fn submit_atomically_persists_ready_offer_and_holds_full_priority_scope() {
     assert!(overlap_ticket.ready_offer_id.is_none());
     assert!(overlap_ticket.active_claim_id.is_none());
 
-    let disjoint = SequencedAnalyzer::new(vec![analysis(&["symbol:B"], 3)]);
-    let (disjoint_ticket, _) = submit_ready(&kernel, "disjoint", &disjoint, 12);
+    let (disjoint_ticket, _) = submit_ready(&kernel, "disjoint", 12);
     assert_eq!(disjoint_ticket.state, TicketState::Ready);
 
     drop(kernel);
@@ -171,26 +173,21 @@ fn submit_atomically_persists_ready_offer_and_holds_full_priority_scope() {
 fn claim_validation_failures_leave_the_offer_claimable_exactly_once() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let kernel = kernel(&path);
     let analyzer = SequencedAnalyzer::new(vec![analysis(&["symbol:A"], 3); 3]);
-    let (_, offer) = submit_ready(&kernel, "claimable", &analyzer, 5);
+    let kernel = kernel(&path, analyzer.clone());
+    let (_, offer) = submit_ready(&kernel, "claimable", 5);
 
     let wrong = kernel
-        .claim_ready(&offer.offer_id, "wrong-token", &analyzer, 6)
+        .claim_ready(&offer.offer_id, "wrong-token", 6)
         .unwrap_err();
     assert!(wrong.to_string().contains("claim token"));
     let expired = kernel
-        .claim_ready(
-            &offer.offer_id,
-            &offer.claim_token,
-            &analyzer,
-            offer.expires_at_tick,
-        )
+        .claim_ready(&offer.offer_id, &offer.claim_token, offer.expires_at_tick)
         .unwrap_err();
     assert!(expired.to_string().contains("expired"));
 
     let claimed = kernel
-        .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 6)
+        .claim_ready(&offer.offer_id, &offer.claim_token, 6)
         .unwrap();
     let ClaimOutcome::Claimed(claim) = claimed else {
         panic!("expected claim")
@@ -198,7 +195,7 @@ fn claim_validation_failures_leave_the_offer_claimable_exactly_once() {
     Uuid::parse_str(&claim.claim_id).expect("claim ID must be fresh opaque UUID data");
     assert_eq!(claim.reservation_keys, vec!["symbol:A"]);
     let duplicate = kernel
-        .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 6)
+        .claim_ready(&offer.offer_id, &offer.claim_token, 6)
         .unwrap_err();
     assert!(duplicate.to_string().contains("does not exist"));
     assert_eq!(analyzer.calls(), 2, "invalid claims must not run analysis");
@@ -219,16 +216,17 @@ fn claim_validation_failures_leave_the_offer_claimable_exactly_once() {
 fn reopening_invalidates_prior_epoch_offers_before_exposing_the_kernel() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let first = kernel(&path);
     let analyzer = SequencedAnalyzer::new(vec![analysis(&["symbol:A"], 3)]);
-    let (_, offer) = submit_ready(&first, "stale", &analyzer, 1);
+    let first = kernel(&path, analyzer.clone());
+    let (_, offer) = submit_ready(&first, "stale", 1);
     let old_epoch = first.service_epoch();
     drop(first);
 
-    let (reopened, _) = Kernel::open(&path).unwrap();
+    let (reopened, _) =
+        Kernel::open_with_test_semantics(&path, Arc::new(analyzer.clone())).unwrap();
     assert!(reopened.service_epoch() > old_epoch);
     let error = reopened
-        .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 2)
+        .claim_ready(&offer.offer_id, &offer.claim_token, 2)
         .unwrap_err();
     assert!(error.to_string().contains("does not exist"));
 }
@@ -237,9 +235,9 @@ fn reopening_invalidates_prior_epoch_offers_before_exposing_the_kernel() {
 fn expiry_consumes_old_offer_and_atomically_reoffers_the_oldest_ticket() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let kernel = kernel(&path);
     let analyzer = SequencedAnalyzer::new(vec![analysis(&["symbol:A"], 3)]);
-    let (_, offer) = submit_ready(&kernel, "expiring", &analyzer, 10);
+    let kernel = kernel(&path, analyzer.clone());
+    let (_, offer) = submit_ready(&kernel, "expiring", 10);
 
     assert!(kernel.expire_ready_offers(39).unwrap().is_empty());
     assert_eq!(
@@ -247,12 +245,7 @@ fn expiry_consumes_old_offer_and_atomically_reoffers_the_oldest_ticket() {
         vec![offer.offer_id.clone()]
     );
     let stale = kernel
-        .claim_ready(
-            &offer.offer_id,
-            &offer.claim_token,
-            &analyzer,
-            offer.expires_at_tick,
-        )
+        .claim_ready(&offer.offer_id, &offer.claim_token, offer.expires_at_tick)
         .unwrap_err();
     assert!(stale.to_string().contains("does not exist"));
     assert!(
@@ -267,7 +260,6 @@ fn expiry_consumes_old_offer_and_atomically_reoffers_the_oldest_ticket() {
 fn claim_reanalyzes_and_strict_expansion_requeues_three_times_then_needs_decision() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let kernel = kernel(&path);
     let analyzer = SequencedAnalyzer::new(vec![
         analysis(&["symbol:A"], 3),
         analysis(&["symbol:A", "node:1"], 3),
@@ -275,16 +267,12 @@ fn claim_reanalyzes_and_strict_expansion_requeues_three_times_then_needs_decisio
         analysis(&["symbol:A", "node:1", "node:2", "node:3"], 3),
         analysis(&["symbol:A", "node:1", "node:2", "node:3", "node:4"], 3),
     ]);
-    let (expanding_ticket, mut offer) = submit_ready(&kernel, "expanding", &analyzer, 0);
+    let kernel = kernel(&path, analyzer.clone());
+    let (expanding_ticket, mut offer) = submit_ready(&kernel, "expanding", 0);
 
     for expansion_count in 1..=3 {
         let outcome = kernel
-            .claim_ready(
-                &offer.offer_id,
-                &offer.claim_token,
-                &analyzer,
-                expansion_count,
-            )
+            .claim_ready(&offer.offer_id, &offer.claim_token, expansion_count)
             .unwrap();
         let ClaimOutcome::Requeued { ticket, event } = outcome else {
             panic!("expansion {expansion_count} should requeue")
@@ -297,7 +285,7 @@ fn claim_reanalyzes_and_strict_expansion_requeues_three_times_then_needs_decisio
     }
 
     let outcome = kernel
-        .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 20)
+        .claim_ready(&offer.offer_id, &offer.claim_token, 20)
         .unwrap();
     let ClaimOutcome::NeedsDecision { change_set, event } = outcome else {
         panic!("fourth expansion should require a decision")
@@ -323,12 +311,17 @@ fn claim_reanalyzes_and_strict_expansion_requeues_three_times_then_needs_decisio
 fn material_scope_change_needs_decision_and_cancellation_unblocks_waiters() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let kernel = kernel(&path);
-    let changing =
-        SequencedAnalyzer::new(vec![analysis(&["symbol:A"], 3), analysis(&["symbol:B"], 3)]);
-    let (changing_ticket, offer) = submit_ready(&kernel, "changing", &changing, 0);
+    let changing = SequencedAnalyzer::new(vec![
+        analysis(&["symbol:A"], 3),
+        analysis(&["symbol:B"], 3),
+        analysis(&["node:X"], 3),
+        analysis(&["node:X"], 3),
+        analysis(&["node:X"], 3),
+    ]);
+    let kernel = kernel(&path, changing.clone());
+    let (changing_ticket, offer) = submit_ready(&kernel, "changing", 0);
     let outcome = kernel
-        .claim_ready(&offer.offer_id, &offer.claim_token, &changing, 1)
+        .claim_ready(&offer.offer_id, &offer.claim_token, 1)
         .unwrap();
     let ClaimOutcome::NeedsDecision { change_set, event } = outcome else {
         panic!("material change should require a decision")
@@ -336,12 +329,10 @@ fn material_scope_change_needs_decision_and_cancellation_unblocks_waiters() {
     assert_eq!(change_set.state, ChangeSetState::NeedsDecision);
     assert_eq!(event.kind, CoordinationEventKind::IntentNeedsDecision);
 
-    let blocker = SequencedAnalyzer::new(vec![analysis(&["node:X"], 3)]);
-    let _ = submit_ready(&kernel, "blocker", &blocker, 2);
+    let _ = submit_ready(&kernel, "blocker", 2);
     begin_and_add(&kernel, "waiting");
-    let waiting = SequencedAnalyzer::new(vec![analysis(&["node:X"], 3)]);
     assert!(matches!(
-        kernel.submit_change_set("waiting", &waiting, 3).unwrap(),
+        kernel.submit_change_set("waiting", 3).unwrap(),
         SubmissionOutcome::Queued { .. }
     ));
     let cancellation = kernel.cancel_change_set("blocker", 4).unwrap();
@@ -350,12 +341,7 @@ fn material_scope_change_needs_decision_and_cancellation_unblocks_waiters() {
     let waiting_offer = &cancellation.ready_offers[0];
     assert_eq!(waiting_offer.change_set_id, "waiting");
     let claim = kernel
-        .claim_ready(
-            &waiting_offer.offer_id,
-            &waiting_offer.claim_token,
-            &waiting,
-            5,
-        )
+        .claim_ready(&waiting_offer.offer_id, &waiting_offer.claim_token, 5)
         .unwrap();
     assert!(matches!(claim, ClaimOutcome::Claimed(_)));
     assert!(kernel.reconsider_tickets(5).unwrap().is_empty());
@@ -376,7 +362,7 @@ fn material_scope_change_needs_decision_and_cancellation_unblocks_waiters() {
 fn begin_reuses_the_submission_key_without_creating_a_second_draft() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let kernel = kernel(&path);
+    let kernel = kernel(&path, SequencedAnalyzer::new(Vec::new()));
     let input = BeginChangeSet {
         change_set_id: "original".into(),
         actor: "agent:test".into(),
@@ -397,11 +383,11 @@ fn begin_reuses_the_submission_key_without_creating_a_second_draft() {
 fn claim_handle_serialization_contains_scope_but_no_fencing_or_publication_data() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
-    let kernel = kernel(&path);
     let analyzer = SequencedAnalyzer::new(vec![analysis(&["symbol:A"], 3); 2]);
-    let (_, offer) = submit_ready(&kernel, "serialized", &analyzer, 0);
+    let kernel = kernel(&path, analyzer);
+    let (_, offer) = submit_ready(&kernel, "serialized", 0);
     let ClaimOutcome::Claimed(claim) = kernel
-        .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 1)
+        .claim_ready(&offer.offer_id, &offer.claim_token, 1)
         .unwrap()
     else {
         panic!("expected claim")

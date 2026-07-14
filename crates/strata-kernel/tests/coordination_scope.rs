@@ -1,18 +1,20 @@
+#![cfg(feature = "coordination-test-api")]
+
 use anyhow::Context;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use strata_kernel::{
     DynamicExpansionPolicy, GraphChange, GraphDelta, GraphGeneration, GraphSnapshot,
-    IdempotencyClass, InferredScope, IntentAnalysis, IntentAnalyzer, IntentParameters,
-    IntentRecord, NodeRecord, ReferenceRecord, ResourceVersion, SCHEMA_VERSION, ScopeChange,
+    IdempotencyClass, InferredScope, IntentAnalysis, IntentParameters, IntentRecord, NodeRecord,
+    ReferenceRecord, ResourceVersion, SCHEMA_VERSION, ScopeChange, TestSemanticProvider,
     analyze_change_set, canonical_scope_fingerprint, classify_scope_change,
     required_delta_authority, validate_delta_containment,
 };
 
 struct StaticAnalyzer(BTreeMap<String, IntentAnalysis>);
 
-impl IntentAnalyzer for StaticAnalyzer {
+impl TestSemanticProvider for StaticAnalyzer {
     fn analyze(
         &self,
         _: &GraphGeneration,

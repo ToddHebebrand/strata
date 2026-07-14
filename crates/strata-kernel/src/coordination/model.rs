@@ -2,6 +2,41 @@ use crate::SCHEMA_VERSION;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CoordinationError {
+    SemanticProviderUnavailable,
+    OptimisticRetryExhausted { attempts: u32 },
+    CandidateDigestMismatch,
+    AttemptDigestMismatch,
+    LeaseExpired,
+}
+
+impl std::fmt::Display for CoordinationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SemanticProviderUnavailable => {
+                write!(formatter, "semantic provider is unavailable")
+            }
+            Self::OptimisticRetryExhausted { attempts } => {
+                write!(
+                    formatter,
+                    "optimistic coordination retry exhausted after {attempts} attempts"
+                )
+            }
+            Self::CandidateDigestMismatch => {
+                write!(formatter, "candidate digest does not match its delta")
+            }
+            Self::AttemptDigestMismatch => write!(
+                formatter,
+                "attempt id was reused with a different candidate digest"
+            ),
+            Self::LeaseExpired => write!(formatter, "coordination authority lease has expired"),
+        }
+    }
+}
+
+impl std::error::Error for CoordinationError {}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
