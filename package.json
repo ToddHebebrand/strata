@@ -8,7 +8,9 @@
   ],
   "scripts": {
     "build": "pnpm -r build",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "kernel:build": "cargo build -p strata-kernel",
+    "kernel:test": "cargo test -p strata-kernel"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.118",
