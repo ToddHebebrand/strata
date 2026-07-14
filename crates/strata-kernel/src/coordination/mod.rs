@@ -1,6 +1,7 @@
 mod analyzer;
 mod durable;
 mod model;
+mod scheduler;
 
 pub use analyzer::{
     DeltaAuthority, IntentAnalysis, IntentAnalyzer, ScopeChange, analyze_change_set,
@@ -18,3 +19,4 @@ pub use model::{
     IdempotencyClass, InferredScope, IntentParameters, IntentRecord, ReadyOffer, ResourceVersion,
     SubmissionOutcome, TicketState,
 };
+pub use scheduler::SchedulerState;
