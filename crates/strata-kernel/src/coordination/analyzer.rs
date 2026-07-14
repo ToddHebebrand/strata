@@ -147,7 +147,10 @@ pub fn classify_scope_change(old: &InferredScope, new: &InferredScope) -> ScopeC
         || old_validation != new_validation
         || old_reservations != new_reservations;
 
-    if all_old_entries_remain && adds_scope {
+    let governance_unchanged = old.dynamic_expansion_policy == new.dynamic_expansion_policy
+        && old.idempotency_class == new.idempotency_class;
+
+    if all_old_entries_remain && adds_scope && governance_unchanged {
         ScopeChange::Expanded
     } else {
         ScopeChange::MateriallyChanged

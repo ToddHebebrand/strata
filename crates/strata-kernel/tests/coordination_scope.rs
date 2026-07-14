@@ -190,8 +190,12 @@ fn scope_change_classifies_unchanged_expanded_and_material_replacements() {
     let old = analyze_change_set(&seed_graph(), &[rename()], &analyzer()).unwrap();
     assert_eq!(classify_scope_change(&old, &old), ScopeChange::Unchanged);
 
-    let expanded =
-        analyze_change_set(&seed_graph(), &[rename(), add_parameter()], &analyzer()).unwrap();
+    let mut expanded = old.clone();
+    expanded
+        .validation_set
+        .push(resource("node:additional", "1"));
+    expanded.reservation_keys.push("node:additional".into());
+    expanded.scope_fingerprint = canonical_scope_fingerprint(&expanded).unwrap();
     assert_eq!(
         classify_scope_change(&old, &expanded),
         ScopeChange::Expanded
@@ -210,6 +214,34 @@ fn scope_change_classifies_unchanged_expanded_and_material_replacements() {
     removed_key.scope_fingerprint = canonical_scope_fingerprint(&removed_key).unwrap();
     assert_eq!(
         classify_scope_change(&expanded, &removed_key),
+        ScopeChange::MateriallyChanged
+    );
+}
+
+#[test]
+fn scope_expansion_with_a_policy_change_is_material() {
+    let old = analyze_change_set(&seed_graph(), &[rename()], &analyzer()).unwrap();
+    let mut expanded = old.clone();
+    expanded.reservation_keys.push("node:additional".into());
+    expanded.dynamic_expansion_policy = DynamicExpansionPolicy::NeedsDecision;
+    expanded.scope_fingerprint = canonical_scope_fingerprint(&expanded).unwrap();
+
+    assert_eq!(
+        classify_scope_change(&old, &expanded),
+        ScopeChange::MateriallyChanged
+    );
+}
+
+#[test]
+fn scope_expansion_with_an_idempotency_change_is_material() {
+    let old = analyze_change_set(&seed_graph(), &[rename()], &analyzer()).unwrap();
+    let mut expanded = old.clone();
+    expanded.reservation_keys.push("node:additional".into());
+    expanded.idempotency_class = IdempotencyClass::RequiresDecision;
+    expanded.scope_fingerprint = canonical_scope_fingerprint(&expanded).unwrap();
+
+    assert_eq!(
+        classify_scope_change(&old, &expanded),
         ScopeChange::MateriallyChanged
     );
 }
