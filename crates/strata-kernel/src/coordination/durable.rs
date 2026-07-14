@@ -36,6 +36,7 @@ const RESOURCE_CLOCKS: TableDefinition<&str, u64> =
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_metadata");
 const NEXT_QUEUE_SEQUENCE: &str = "next_queue_sequence";
 const CURRENT_EVENT_SEQUENCE: &str = "current_event_sequence";
+const SCHEDULER_REVISION: &str = "scheduler_revision";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateDraftOutcome {
@@ -55,6 +56,7 @@ pub enum CoordinationFailpoint {
 pub struct CoordinationMetadataState {
     pub next_queue_sequence: u64,
     pub current_event_sequence: u64,
+    pub scheduler_revision: u64,
 }
 
 #[doc(hidden)]
@@ -264,6 +266,7 @@ impl<'a> CoordinationDurable<'a> {
             CoordinationMetadataState {
                 next_queue_sequence: read_u64_metadata(&metadata, NEXT_QUEUE_SEQUENCE)?,
                 current_event_sequence: read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
+                scheduler_revision: read_u64_metadata(&metadata, SCHEDULER_REVISION)?,
             }
         };
         let mut transition = LifecycleTransition {
@@ -421,6 +424,17 @@ impl<'a> CoordinationDurable<'a> {
         }
         if consumed_offers.len() != offers.len() || consumed_claims.len() != claims.len() {
             bail!("coordination authority table contains an orphaned record");
+        }
+        if !transition.change_sets.is_empty()
+            || !transition.tickets.is_empty()
+            || !transition.offers.is_empty()
+            || !transition.claims.is_empty()
+        {
+            transition.next_metadata.scheduler_revision = transition
+                .expected_metadata
+                .scheduler_revision
+                .checked_add(1)
+                .context("scheduler revision overflow")?;
         }
 
         self.persist_lifecycle_in_write_txn(&write, &transition)?;
@@ -704,13 +718,14 @@ impl<'a> CoordinationDurable<'a> {
             }
         }
 
-        let (next_queue_sequence, current_event_sequence) = {
+        let (next_queue_sequence, current_event_sequence, scheduler_revision) = {
             let metadata = write
                 .open_table(META)
                 .context("open coordination metadata")?;
             (
                 read_u64_metadata(&metadata, NEXT_QUEUE_SEQUENCE)?,
                 read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
+                read_u64_metadata(&metadata, SCHEDULER_REVISION)?,
             )
         };
         let current_graph_generation = read_current_generation_in_write_txn(&write)?;
@@ -765,6 +780,9 @@ impl<'a> CoordinationDurable<'a> {
         let following_queue_sequence = next_queue_sequence
             .checked_add(1)
             .context("coordination queue sequence overflow")?;
+        let next_scheduler_revision = scheduler_revision
+            .checked_add(1)
+            .context("scheduler revision overflow")?;
         {
             let tickets = write.open_table(TICKETS).context("open tickets table")?;
             if tickets
@@ -831,12 +849,16 @@ impl<'a> CoordinationDurable<'a> {
                 .context("open coordination metadata")?;
             let queue_bytes = following_queue_sequence.to_le_bytes();
             let event_bytes = next_event_sequence.to_le_bytes();
+            let revision_bytes = next_scheduler_revision.to_le_bytes();
             metadata
                 .insert(NEXT_QUEUE_SEQUENCE, queue_bytes.as_slice())
                 .context("advance queue sequence")?;
             metadata
                 .insert(CURRENT_EVENT_SEQUENCE, event_bytes.as_slice())
                 .context("advance coordination event sequence")?;
+            metadata
+                .insert(SCHEDULER_REVISION, revision_bytes.as_slice())
+                .context("advance scheduler revision")?;
         }
 
         if failpoint == CoordinationFailpoint::BeforeCommit {
@@ -878,6 +900,7 @@ impl<'a> CoordinationDurable<'a> {
             CoordinationMetadataState {
                 next_queue_sequence: read_u64_metadata(&metadata, NEXT_QUEUE_SEQUENCE)?,
                 current_event_sequence: read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
+                scheduler_revision: read_u64_metadata(&metadata, SCHEDULER_REVISION)?,
             }
         };
         if durable_metadata != transition.expected_metadata {
@@ -889,6 +912,22 @@ impl<'a> CoordinationDurable<'a> {
                 < transition.expected_metadata.current_event_sequence
         {
             bail!("coordination metadata cannot move backward");
+        }
+        let lifecycle_changed = !transition.change_sets.is_empty()
+            || !transition.tickets.is_empty()
+            || !transition.offers.is_empty()
+            || !transition.claims.is_empty();
+        let expected_next_revision = if lifecycle_changed {
+            transition
+                .expected_metadata
+                .scheduler_revision
+                .checked_add(1)
+                .context("scheduler revision overflow")?
+        } else {
+            transition.expected_metadata.scheduler_revision
+        };
+        if transition.next_metadata.scheduler_revision != expected_next_revision {
+            bail!("scheduler revision must advance exactly once per lifecycle transition");
         }
 
         {
@@ -1111,9 +1150,12 @@ impl<'a> CoordinationDurable<'a> {
                 .next_metadata
                 .current_event_sequence
                 .to_le_bytes();
+            let revision = transition.next_metadata.scheduler_revision.to_le_bytes();
             metadata.insert(NEXT_QUEUE_SEQUENCE, queue.as_slice())?;
             on_write()?;
             metadata.insert(CURRENT_EVENT_SEQUENCE, events.as_slice())?;
+            on_write()?;
+            metadata.insert(SCHEDULER_REVISION, revision.as_slice())?;
             on_write()?;
         }
         Ok(())
@@ -1277,6 +1319,7 @@ impl<'a> CoordinationDurable<'a> {
         Ok(CoordinationMetadataState {
             next_queue_sequence: read_u64_metadata(&metadata, NEXT_QUEUE_SEQUENCE)?,
             current_event_sequence: read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
+            scheduler_revision: read_u64_metadata(&metadata, SCHEDULER_REVISION)?,
         })
     }
 
@@ -1332,6 +1375,18 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
                 .context("initialize current event sequence")?;
         } else {
             read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?;
+        }
+        if metadata
+            .get(SCHEDULER_REVISION)
+            .context("read scheduler revision")?
+            .is_none()
+        {
+            let zero = 0_u64.to_le_bytes();
+            metadata
+                .insert(SCHEDULER_REVISION, zero.as_slice())
+                .context("initialize scheduler revision")?;
+        } else {
+            read_u64_metadata(&metadata, SCHEDULER_REVISION)?;
         }
     }
     drop(

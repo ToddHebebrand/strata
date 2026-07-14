@@ -1,0 +1,10 @@
+error[E0624]: method `mark_ready` is private
+  --> tests/ui/ready_offer_is_planner_private.rs:30:15
+   |
+30 |     scheduler.mark_ready("ticket", offer).unwrap();
+   |               ^^^^^^^^^^ private method
+   |
+  ::: src/coordination/scheduler.rs
+   |
+   |     pub(super) fn mark_ready(&mut self, ticket_id: &str, offer: ReadyOffer) -> Result<()> {
+   |     ------------------------------------------------------------------------------------- private method defined here

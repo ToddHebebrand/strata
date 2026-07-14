@@ -263,7 +263,10 @@ fn claim_reanalyzes_and_strict_expansion_requeues_three_times_then_needs_decisio
     let analyzer = SequencedAnalyzer::new(vec![
         analysis(&["symbol:A"], 3),
         analysis(&["symbol:A", "node:1"], 3),
+        analysis(&["symbol:A", "node:1"], 3),
         analysis(&["symbol:A", "node:1", "node:2"], 3),
+        analysis(&["symbol:A", "node:1", "node:2"], 3),
+        analysis(&["symbol:A", "node:1", "node:2", "node:3"], 3),
         analysis(&["symbol:A", "node:1", "node:2", "node:3"], 3),
         analysis(&["symbol:A", "node:1", "node:2", "node:3", "node:4"], 3),
     ]);
@@ -293,7 +296,7 @@ fn claim_reanalyzes_and_strict_expansion_requeues_three_times_then_needs_decisio
     assert_eq!(change_set.state, ChangeSetState::NeedsDecision);
     assert_eq!(change_set.expansion_count, 3);
     assert_eq!(event.kind, CoordinationEventKind::IntentNeedsDecision);
-    assert_eq!(analyzer.calls(), 5);
+    assert_eq!(analyzer.calls(), 8);
     drop(kernel);
     let store = DurableStore::open(&path).unwrap();
     assert_eq!(

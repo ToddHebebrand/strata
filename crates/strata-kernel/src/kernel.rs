@@ -95,7 +95,13 @@ impl Kernel {
             digest: graph.digest().to_owned(),
             service_epoch,
         };
-        let scheduler = SchedulerState::recover(Vec::new(), Vec::new(), Vec::new())?;
+        let scheduler_revision = store.coordination().metadata_state()?.scheduler_revision;
+        let scheduler = SchedulerState::recover_with_revision(
+            scheduler_revision,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )?;
         Ok((
             Self::from_parts(
                 store,
@@ -179,7 +185,9 @@ impl Kernel {
         }
 
         let service_epoch = store.begin_service_epoch_and_recover_coordination()?;
-        let scheduler = SchedulerState::recover(
+        let scheduler_revision = store.coordination().metadata_state()?.scheduler_revision;
+        let scheduler = SchedulerState::recover_with_revision(
+            scheduler_revision,
             store.coordination().active_tickets()?,
             store.coordination().ready_offers()?,
             store.coordination().active_claims()?,
@@ -195,17 +203,23 @@ impl Kernel {
             digest: graph.digest().to_owned(),
             service_epoch,
         };
-        Ok((
-            Self::from_parts(
-                store,
-                graph,
-                resource_clocks,
-                service_epoch,
-                scheduler,
-                semantic_provider,
-            ),
-            report,
-        ))
+        let plan_after_recovery = semantic_provider.is_some();
+        let kernel = Self::from_parts(
+            store,
+            graph,
+            resource_clocks,
+            service_epoch,
+            scheduler,
+            semantic_provider,
+        );
+        if plan_after_recovery {
+            kernel.plan_and_apply_readiness(
+                0,
+                crate::coordination::TransitionCause::Restart,
+                None,
+            )?;
+        }
+        Ok((kernel, report))
     }
 
     pub fn snapshot(&self) -> Arc<GraphGeneration> {
@@ -235,6 +249,22 @@ impl Kernel {
             .into_iter()
             .map(|dependency| (dependency.resource_key, dependency.clock))
             .collect())
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_scheduler_revisions(&self) -> Result<(u64, u64)> {
+        let scheduler = self
+            .scheduler
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+        Ok((
+            scheduler.revision(),
+            self.store
+                .coordination()
+                .metadata_state()?
+                .scheduler_revision,
+        ))
     }
 
     #[cfg(feature = "redb-spike-api")]

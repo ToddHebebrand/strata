@@ -3,6 +3,7 @@ mod authority;
 mod coordinator;
 mod durable;
 mod model;
+mod planner;
 mod resources;
 mod scheduler;
 
@@ -33,6 +34,7 @@ pub use model::{
     EventCursor, IdempotencyClass, InferredScope, IntentParameters, IntentRecord, ReadyOffer,
     ResourceVersion, SubmissionOutcome, TicketState,
 };
+pub(crate) use planner::{MAX_OPTIMISTIC_RETRIES, TransitionCause};
 pub use resources::DependencyVersion;
 #[cfg(feature = "coordination-test-api")]
 pub use resources::affected_resource_keys;

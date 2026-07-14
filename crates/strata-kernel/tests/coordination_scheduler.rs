@@ -60,6 +60,27 @@ fn claimed_records(mut ticket: CoordinationTicket) -> (CoordinationTicket, Claim
     (ticket, claim)
 }
 
+fn with_ready_offer(
+    scheduler: &SchedulerState,
+    ticket_id: &str,
+    ready_offer: ReadyOffer,
+) -> SchedulerState {
+    let tickets = scheduler
+        .tickets()
+        .cloned()
+        .map(|mut ticket| {
+            if ticket.ticket_id == ticket_id {
+                ticket.state = TicketState::Ready;
+                ticket.ready_offer_id = Some(ready_offer.offer_id.clone());
+            }
+            ticket
+        })
+        .collect();
+    let mut offers = scheduler.offers().cloned().collect::<Vec<_>>();
+    offers.push(ready_offer);
+    SchedulerState::recover(tickets, offers, Vec::new()).unwrap()
+}
+
 #[test]
 fn disjoint_tickets_are_selected_together() {
     let mut scheduler = SchedulerState::recover(
@@ -81,7 +102,7 @@ fn overlapping_tickets_run_in_queue_sequence_order() {
 
     assert_eq!(scheduler.select_ready().unwrap(), vec!["first"]);
     let first_offer = offer(&first);
-    scheduler.mark_ready("first", first_offer.clone()).unwrap();
+    scheduler = with_ready_offer(&scheduler, "first", first_offer.clone());
     scheduler
         .claim(&first_offer.offer_id, claim(&first, &first_offer))
         .unwrap();
@@ -392,7 +413,7 @@ fn claim_and_release_validate_complete_scope_and_transition_atomically() {
     let queued = ticket("work", 1, &["symbol:A", "node:X"]);
     let mut scheduler = SchedulerState::recover(vec![queued.clone()], vec![], vec![]).unwrap();
     let ready_offer = offer(&queued);
-    scheduler.mark_ready("work", ready_offer.clone()).unwrap();
+    scheduler = with_ready_offer(&scheduler, "work", ready_offer.clone());
 
     let mut partial_claim = claim(&queued, &ready_offer);
     partial_claim.reservation_keys = vec!["symbol:A".into()];
@@ -443,7 +464,7 @@ fn every_four_ticket_interleaving_preserves_disjoint_progress_and_fifo() {
 
         for ticket_id in &first_batch {
             let ready_offer = offer(scheduler.ticket(ticket_id).unwrap());
-            scheduler.mark_ready(ticket_id, ready_offer).unwrap();
+            scheduler = with_ready_offer(&scheduler, ticket_id, ready_offer);
             assert_disjoint_holds(&scheduler);
         }
         assert!(scheduler.select_ready().unwrap().is_empty());
@@ -473,9 +494,7 @@ fn every_four_ticket_interleaving_preserves_disjoint_progress_and_fifo() {
         assert_eq!(scheduler.select_ready().unwrap(), vec!["a-young"]);
         let younger = scheduler.ticket("a-young").unwrap().clone();
         let younger_offer = offer(&younger);
-        scheduler
-            .mark_ready("a-young", younger_offer.clone())
-            .unwrap();
+        scheduler = with_ready_offer(&scheduler, "a-young", younger_offer.clone());
         scheduler
             .claim(&younger_offer.offer_id, claim(&younger, &younger_offer))
             .unwrap();

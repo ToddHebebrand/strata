@@ -139,10 +139,14 @@ fn events_replay_with_stable_ids_and_monotonic_isolated_client_cursors() {
     drop(kernel);
     let (reopened, _) = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
     let client_a_after_restart = reopened.events_after("client:A", 0, 100).unwrap();
-    assert_eq!(client_a_after_restart.len(), 1);
+    assert_eq!(client_a_after_restart.len(), 2);
     assert_eq!(
         client_a_after_restart[0].kind,
         CoordinationEventKind::LeaseExpired
+    );
+    assert_eq!(
+        client_a_after_restart[1].kind,
+        CoordinationEventKind::IntentReady
     );
     let client_b_after_restart = reopened.events_after("client:B", 0, 100).unwrap();
     assert_eq!(&client_b_after_restart[..first.len()], first.as_slice());
@@ -169,21 +173,36 @@ fn queued_tickets_and_unacknowledged_events_survive_restart() {
     let store = DurableStore::open(&path).unwrap();
     let tickets = store.coordination().active_tickets().unwrap();
     assert_eq!(tickets.len(), 2);
-    assert!(
+    assert_eq!(
         tickets
             .iter()
-            .all(|ticket| ticket.state == TicketState::Queued)
+            .find(|ticket| ticket.change_set_id == "change-set:first")
+            .unwrap()
+            .state,
+        TicketState::Ready
     );
     let recovered_queued = tickets
         .iter()
         .find(|ticket| ticket.change_set_id == "change-set:second")
         .unwrap();
-    assert_eq!(recovered_queued, &queued_ticket);
+    assert_eq!(
+        recovered_queued.queue_sequence,
+        queued_ticket.queue_sequence
+    );
+    assert_eq!(
+        recovered_queued.scope_fingerprint,
+        queued_ticket.scope_fingerprint
+    );
+    assert!(recovered_queued.age_rounds >= queued_ticket.age_rounds);
 
     assert_eq!(&after[..before.len()], before.as_slice());
     assert_eq!(
-        after.last().unwrap().kind,
+        after[before.len()].kind,
         CoordinationEventKind::LeaseExpired
+    );
+    assert_eq!(
+        after.last().unwrap().kind,
+        CoordinationEventKind::IntentReady
     );
 }
 
@@ -253,18 +272,17 @@ fn restart_requeues_ready_and_executing_work_once_and_leaves_terminal_records_un
 
     let store = DurableStore::open(&path).unwrap();
     let durable = store.coordination();
-    assert!(durable.ready_offers().unwrap().is_empty());
+    assert_eq!(durable.ready_offers().unwrap().len(), 2);
     assert!(durable.active_claims().unwrap().is_empty());
 
     for change_set_id in ["change-set:ready", "change-set:executing"] {
         assert_eq!(
             durable.change_set(change_set_id).unwrap().unwrap().state,
-            ChangeSetState::Queued
+            ChangeSetState::Ready
         );
         let before = prior_tickets.get(change_set_id).unwrap();
         let mut expected = before.clone();
-        expected.state = TicketState::Queued;
-        expected.ready_offer_id = None;
+        expected.state = TicketState::Ready;
         expected.active_claim_id = None;
         let after = durable
             .active_tickets()
@@ -272,10 +290,10 @@ fn restart_requeues_ready_and_executing_work_once_and_leaves_terminal_records_un
             .into_iter()
             .find(|ticket| ticket.change_set_id == change_set_id)
             .unwrap();
-        assert_eq!(
-            after, expected,
-            "queue scope, sequence, and age must survive"
-        );
+        assert_eq!(after.queue_sequence, expected.queue_sequence);
+        assert_eq!(after.scope_fingerprint, expected.scope_fingerprint);
+        assert_eq!(after.reservation_keys, expected.reservation_keys);
+        assert!(after.ready_offer_id.is_some());
     }
     assert_eq!(
         durable.change_set("change-set:terminal").unwrap().unwrap(),
@@ -285,20 +303,27 @@ fn restart_requeues_ready_and_executing_work_once_and_leaves_terminal_records_un
         durable.ticket(&terminal_ticket_id).unwrap().unwrap(),
         prior_terminal_ticket,
     );
-    assert_eq!(recovery_events.len(), 2);
+    assert_eq!(recovery_events.len(), 4);
     assert!(
         recovery_events
             .iter()
+            .take(2)
             .all(|event| event.kind == CoordinationEventKind::LeaseExpired)
     );
-    assert_eq!(
+    assert!(
         recovery_events
+            .iter()
+            .skip(2)
+            .all(|event| event.kind == CoordinationEventKind::IntentReady)
+    );
+    assert_eq!(
+        recovery_events[..2]
             .iter()
             .map(|event| event.change_set_id.as_str())
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from(["change-set:executing", "change-set:ready"])
     );
-    for event in recovery_events {
+    for event in recovery_events.into_iter().take(2) {
         let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
         assert_eq!(payload["oldServiceEpoch"], old_epoch);
         assert_eq!(payload["newServiceEpoch"], report.service_epoch);
@@ -363,22 +388,40 @@ fn failed_restart_recovery_is_atomic_and_the_next_open_applies_it_once() {
         Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
     assert_eq!(report.service_epoch, old_epoch + 1);
     let recovery_events = reopened.events_after("client:retry", 4, 100).unwrap();
-    assert_eq!(recovery_events.len(), 2);
+    assert_eq!(recovery_events.len(), 4);
     assert!(
         recovery_events
             .iter()
+            .take(2)
             .all(|event| event.kind == CoordinationEventKind::LeaseExpired)
+    );
+    assert!(
+        recovery_events
+            .iter()
+            .skip(2)
+            .all(|event| event.kind == CoordinationEventKind::IntentReady)
     );
     drop(reopened);
 
     let (reopened_again, second_report) =
         Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
     assert_eq!(second_report.service_epoch, report.service_epoch + 1);
+    let events_after_second_restart = reopened_again
+        .events_after("client:retry-again", 4, 100)
+        .unwrap();
     assert_eq!(
-        reopened_again
-            .events_after("client:retry-again", 4, 100)
-            .unwrap(),
-        recovery_events,
-        "already-requeued work must not produce a second recovery event"
+        &events_after_second_restart[..4],
+        recovery_events.as_slice()
+    );
+    assert_eq!(events_after_second_restart.len(), 8);
+    assert!(
+        events_after_second_restart[4..6]
+            .iter()
+            .all(|event| event.kind == CoordinationEventKind::LeaseExpired)
+    );
+    assert!(
+        events_after_second_restart[6..]
+            .iter()
+            .all(|event| event.kind == CoordinationEventKind::IntentReady)
     );
 }

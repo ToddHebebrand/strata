@@ -829,7 +829,14 @@ fn failure_after_in_transaction_fence_mutation_rolls_back_fences_graph_and_coord
         assert_eq!(recovered.generation, 0, "failpoint case {case}");
         assert_eq!(
             reopened.change_set("rollback").unwrap().unwrap().state,
-            ChangeSetState::Queued,
+            ChangeSetState::Ready,
+            "failpoint case {case}"
+        );
+        assert!(
+            reopened
+                .ready_offer_for_change_set("rollback")
+                .unwrap()
+                .is_some(),
             "failpoint case {case}"
         );
         assert_eq!(

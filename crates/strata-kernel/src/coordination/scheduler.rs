@@ -5,8 +5,9 @@ use anyhow::{Result, bail};
 
 use super::{ClaimHandle, CoordinationTicket, ReadyOffer, TicketState};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchedulerState {
+    revision: u64,
     tickets: BTreeMap<u64, CoordinationTicket>,
     active: BTreeMap<String, BTreeSet<String>>,
     offers: BTreeMap<String, ReadyOffer>,
@@ -18,7 +19,17 @@ impl SchedulerState {
         offers: Vec<ReadyOffer>,
         claims: Vec<ClaimHandle>,
     ) -> Result<Self> {
+        Self::recover_with_revision(0, tickets, offers, claims)
+    }
+
+    pub(crate) fn recover_with_revision(
+        revision: u64,
+        tickets: Vec<CoordinationTicket>,
+        offers: Vec<ReadyOffer>,
+        claims: Vec<ClaimHandle>,
+    ) -> Result<Self> {
         let mut state = Self {
+            revision,
             tickets: BTreeMap::new(),
             active: BTreeMap::new(),
             offers: BTreeMap::new(),
@@ -165,6 +176,14 @@ impl SchedulerState {
         Ok(state)
     }
 
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub(crate) fn set_revision(&mut self, revision: u64) {
+        self.revision = revision;
+    }
+
     pub fn enqueue(&mut self, ticket: CoordinationTicket) -> Result<()> {
         validate_ticket_scope(&ticket)?;
         if ticket.state != TicketState::Queued
@@ -282,7 +301,8 @@ impl SchedulerState {
         Ok(selected)
     }
 
-    pub fn mark_ready(&mut self, ticket_id: &str, offer: ReadyOffer) -> Result<()> {
+    // `coordination/planner.rs` is the sole caller so Ready authority is centralized.
+    pub(super) fn mark_ready(&mut self, ticket_id: &str, offer: ReadyOffer) -> Result<()> {
         offer.validate().map_err(anyhow::Error::msg)?;
         if self.offers.contains_key(&offer.offer_id) {
             bail!("ready offer {} already exists", offer.offer_id);

@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use super::analyzer::analyze_change_set;
 use super::durable::{CoordinationMetadataState, LifecycleTransition};
+use super::planner::{PlannerSnapshot, plan_readiness};
 use super::{
     CandidateBuilder, ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome,
     CoordinationEvent, CoordinationEventKind, CoordinationTicket, CreateDraftOutcome,
@@ -142,10 +143,6 @@ impl Kernel {
         now_tick: u64,
     ) -> Result<SubmissionOutcome> {
         let semantic_provider = self.semantic_provider()?;
-        let mut scheduler = self
-            .scheduler
-            .lock()
-            .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
         let durable = self.store.coordination();
         let draft = durable
             .change_set(change_set_id)?
@@ -156,7 +153,34 @@ impl Kernel {
         let graph = self.snapshot();
         let intents = durable.intents_for(change_set_id)?;
         let scope = analyze_change_set(&graph, &intents, semantic_provider)?;
+
+        let mut scheduler = self
+            .scheduler
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+        let current_draft = durable
+            .change_set(change_set_id)?
+            .with_context(|| format!("change set {change_set_id} does not exist"))?;
+        if current_draft.state != ChangeSetState::Draft {
+            return Ok(SubmissionOutcome::Duplicate {
+                change_set: current_draft,
+            });
+        }
+        if current_draft != draft || self.snapshot().generation() != graph.generation() {
+            return Err(anyhow::Error::new(
+                super::CoordinationError::OptimisticRetryExhausted {
+                    attempts: super::MAX_OPTIMISTIC_RETRIES,
+                },
+            ));
+        }
         let metadata = durable.metadata_state()?;
+        if scheduler.revision() != metadata.scheduler_revision {
+            return Err(anyhow::Error::new(
+                super::CoordinationError::OptimisticRetryExhausted {
+                    attempts: super::MAX_OPTIMISTIC_RETRIES,
+                },
+            ));
+        }
         let queue_sequence = metadata.next_queue_sequence;
         let next_queue_sequence = queue_sequence
             .checked_add(1)
@@ -180,19 +204,8 @@ impl Kernel {
         let before_scheduler = scheduler.clone();
         let mut next_scheduler = scheduler.clone();
         next_scheduler.enqueue(queued_ticket.clone())?;
-        let selected = next_scheduler.select_ready()?;
-        let mut offers = Vec::new();
-        for ticket_id in &selected {
-            let ticket = next_scheduler
-                .ticket(ticket_id)
-                .cloned()
-                .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
-            let offer = make_offer(&ticket, self.service_epoch(), graph.generation(), now_tick)?;
-            next_scheduler.mark_ready(ticket_id, offer.clone())?;
-            offers.push(offer);
-        }
 
-        let mut transition = transition(metadata);
+        let mut transition = transition(metadata)?;
         transition.next_metadata.next_queue_sequence = next_queue_sequence;
         let queued_event = append_event(
             &mut transition,
@@ -202,44 +215,22 @@ impl Kernel {
         )?;
         debug_assert_eq!(queued_event.kind, CoordinationEventKind::IntentQueued);
 
-        let mut change_set_updates = BTreeMap::new();
-        change_set_updates.insert(
-            change_set_id.to_owned(),
-            (draft.clone(), queued_change_set.clone()),
-        );
-        for offer in &offers {
-            let (before, mut after) = if offer.change_set_id == change_set_id {
-                (draft.clone(), queued_change_set.clone())
-            } else {
-                let before = durable
-                    .change_set(&offer.change_set_id)?
-                    .with_context(|| format!("missing change set {}", offer.change_set_id))?;
-                (before.clone(), before)
-            };
-            after.state = ChangeSetState::Ready;
-            change_set_updates.insert(offer.change_set_id.clone(), (before, after));
-            append_event(
-                &mut transition,
-                CoordinationEventKind::IntentReady,
-                &offer.change_set_id,
-                graph.generation(),
-            )?;
-            transition.offers.push((None, Some(offer.clone())));
-        }
-        transition.change_sets = change_set_updates
-            .into_values()
-            .map(|(before, after)| (Some(before), Some(after)))
-            .collect();
+        transition
+            .change_sets
+            .push((Some(draft), Some(queued_change_set)));
         transition.tickets = scheduler_ticket_updates(&before_scheduler, &next_scheduler);
-
+        next_scheduler.set_revision(transition.next_metadata.scheduler_revision);
         durable.persist_lifecycle(&transition)?;
         *scheduler = next_scheduler;
+        drop(scheduler);
 
-        let ticket = scheduler
-            .tickets()
+        let offers =
+            self.plan_and_apply_readiness(now_tick, super::TransitionCause::Submission, None)?;
+        let ticket = durable
+            .all_tickets()?
+            .into_iter()
             .find(|ticket| ticket.change_set_id == change_set_id)
-            .cloned()
-            .context("submitted ticket missing after durable transition")?;
+            .context("submitted ticket missing after readiness planning")?;
         if let Some(offer) = offers
             .into_iter()
             .find(|offer| offer.change_set_id == change_set_id)
@@ -294,7 +285,7 @@ impl Kernel {
             .cloned()
             .with_context(|| format!("ready offer {offer_id} has no ticket"))?;
         let metadata = durable.metadata_state()?;
-        let mut transition = transition(metadata);
+        let mut transition = transition(metadata)?;
         transition.offers.push((Some(offer.clone()), None));
         let mut next_scheduler = scheduler.clone();
 
@@ -391,19 +382,103 @@ impl Kernel {
             }
         };
 
+        next_scheduler.set_revision(transition.next_metadata.scheduler_revision);
         durable.persist_lifecycle(&transition)?;
         *scheduler = next_scheduler;
         Ok(outcome)
     }
 
     pub fn reconsider_tickets(&self, now_tick: u64) -> Result<Vec<ReadyOffer>> {
-        self.reconsider_with_expired(now_tick, false)
-            .map(|(offers, _)| offers)
+        self.plan_and_apply_readiness(now_tick, super::TransitionCause::Reconsideration, None)
     }
 
     pub fn expire_ready_offers(&self, now_tick: u64) -> Result<Vec<String>> {
         self.reconsider_with_expired(now_tick, true)
             .map(|(_, expired)| expired)
+    }
+
+    pub(crate) fn plan_and_apply_readiness(
+        &self,
+        now_tick: u64,
+        cause: super::TransitionCause,
+        blocking_event_sequence: Option<u64>,
+    ) -> Result<Vec<ReadyOffer>> {
+        for _ in 0..super::MAX_OPTIMISTIC_RETRIES {
+            let snapshot =
+                self.capture_planner_snapshot(now_tick, cause, blocking_event_sequence)?;
+            let plan = plan_readiness(
+                self.semantic_provider()?,
+                snapshot,
+                &self.store.coordination(),
+            )?;
+            let mut scheduler = self
+                .scheduler
+                .lock()
+                .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+            if self.snapshot().generation() != plan.expected_graph_generation
+                || scheduler.revision() != plan.expected_scheduler_revision
+            {
+                continue;
+            }
+            let offers = plan
+                .offers
+                .iter()
+                .map(|planned| {
+                    debug_assert_eq!(
+                        planned.ticket_before.change_set_id,
+                        planned.change_set_before.change_set_id
+                    );
+                    debug_assert_eq!(
+                        planned.ticket_after.change_set_id,
+                        planned.change_set_after.change_set_id
+                    );
+                    planned.offer.clone()
+                })
+                .collect::<Vec<_>>();
+            debug_assert!(
+                plan.requeued
+                    .iter()
+                    .all(|(_, after)| after.state == ChangeSetState::Queued)
+            );
+            debug_assert!(
+                plan.needs_decision
+                    .iter()
+                    .all(|(_, after)| after.state == ChangeSetState::NeedsDecision)
+            );
+            if plan.has_lifecycle_changes() {
+                self.store
+                    .coordination()
+                    .persist_lifecycle(&plan.lifecycle_transition()?)?;
+                *scheduler = plan.next_scheduler;
+            }
+            return Ok(offers);
+        }
+        Err(anyhow::Error::new(
+            super::CoordinationError::OptimisticRetryExhausted {
+                attempts: super::MAX_OPTIMISTIC_RETRIES,
+            },
+        ))
+    }
+
+    fn capture_planner_snapshot(
+        &self,
+        now_tick: u64,
+        cause: super::TransitionCause,
+        blocking_event_sequence: Option<u64>,
+    ) -> Result<PlannerSnapshot> {
+        let scheduler = self
+            .scheduler
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+        Ok(PlannerSnapshot {
+            graph: self.snapshot(),
+            scheduler: scheduler.clone(),
+            scheduler_revision: scheduler.revision(),
+            service_epoch: self.service_epoch(),
+            now_tick,
+            cause,
+            blocking_event_sequence,
+        })
     }
 
     fn reconsider_with_expired(
@@ -451,8 +526,13 @@ impl Kernel {
                 .ticket(ticket_id)
                 .cloned()
                 .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
-            let offer = make_offer(&ticket, self.service_epoch(), graph.generation(), now_tick)?;
-            next_scheduler.mark_ready(ticket_id, offer.clone())?;
+            let offer = super::planner::make_offer(
+                &ticket,
+                self.service_epoch(),
+                graph.generation(),
+                now_tick,
+            )?;
+            super::planner::mark_ready(&mut next_scheduler, ticket_id, offer.clone())?;
             affected_change_sets.insert(offer.change_set_id.clone());
             new_offers.push(offer);
         }
@@ -464,7 +544,7 @@ impl Kernel {
             return Ok((Vec::new(), Vec::new()));
         }
 
-        let mut transition = transition(metadata);
+        let mut transition = transition(metadata)?;
         for offer in &expired_offers {
             transition.offers.push((Some(offer.clone()), None));
             append_event(
@@ -508,6 +588,7 @@ impl Kernel {
                 transition.change_sets.push((Some(before), Some(after)));
             }
         }
+        next_scheduler.set_revision(transition.next_metadata.scheduler_revision);
         durable.persist_lifecycle(&transition)?;
         *scheduler = next_scheduler;
         Ok((new_offers, expired_ids))
@@ -540,7 +621,7 @@ impl Kernel {
         }
         let graph = self.snapshot();
         let metadata = durable.metadata_state()?;
-        let mut transition = transition(metadata);
+        let mut transition = transition(metadata)?;
         let mut after_change_set = before_change_set.clone();
         after_change_set.state = ChangeSetState::Cancelled;
         transition
@@ -594,8 +675,13 @@ impl Kernel {
                 .ticket(ticket_id)
                 .cloned()
                 .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
-            let offer = make_offer(&ticket, self.service_epoch(), graph.generation(), now_tick)?;
-            next_scheduler.mark_ready(ticket_id, offer.clone())?;
+            let offer = super::planner::make_offer(
+                &ticket,
+                self.service_epoch(),
+                graph.generation(),
+                now_tick,
+            )?;
+            super::planner::mark_ready(&mut next_scheduler, ticket_id, offer.clone())?;
             let before = durable
                 .change_set(&offer.change_set_id)?
                 .with_context(|| format!("missing change set {}", offer.change_set_id))?;
@@ -623,6 +709,7 @@ impl Kernel {
                 }),
         );
 
+        next_scheduler.set_revision(transition.next_metadata.scheduler_revision);
         durable.persist_lifecycle(&transition)?;
         *scheduler = next_scheduler;
         Ok(CancellationOutcome {
@@ -789,7 +876,7 @@ impl Kernel {
         next_scheduler.release(&claim.claim_id, TicketState::Completed)?;
 
         let metadata = durable.metadata_state()?;
-        let mut lifecycle = transition(metadata);
+        let mut lifecycle = transition(metadata)?;
         let mut committed_change_set = before_change_set.clone();
         committed_change_set.state = ChangeSetState::Committed;
         committed_change_set.committed_generation = Some(next_generation);
@@ -863,14 +950,18 @@ impl Kernel {
                         fresh.scope_fingerprint.clone(),
                         fresh.reservation_keys.clone(),
                     )?;
-                    let mut offer = make_offer(
+                    let mut offer = super::planner::make_offer(
                         &fresh_ticket,
                         self.service_epoch(),
                         next_generation,
                         now_tick,
                     )?;
                     offer.blocking_event_sequence = Some(committed_event.sequence);
-                    next_scheduler.mark_ready(&ticket.ticket_id, offer.clone())?;
+                    super::planner::mark_ready(
+                        &mut next_scheduler,
+                        &ticket.ticket_id,
+                        offer.clone(),
+                    )?;
                     fresh_ticket = next_scheduler
                         .ticket(&ticket.ticket_id)
                         .cloned()
@@ -1042,6 +1133,7 @@ impl Kernel {
                 resource_tokens: BTreeMap::new(),
             },
         };
+        next_scheduler.set_revision(lifecycle.next_metadata.scheduler_revision);
         let commit = CoordinatedCommit {
             publication,
             lifecycle,
@@ -1159,7 +1251,7 @@ impl Kernel {
             .context("claim has no scheduler ticket")?;
         let durable = self.store.coordination();
         let metadata = durable.metadata_state()?;
-        let mut lifecycle = transition(metadata);
+        let mut lifecycle = transition(metadata)?;
         let mut after_change_set = before_change_set.clone();
         after_change_set.inferred_scope = Some(fresh_scope.clone());
         let terminal = matches!(scope_change, ScopeChange::MateriallyChanged)
@@ -1193,10 +1285,14 @@ impl Kernel {
                     .ticket(&ticket_id)
                     .cloned()
                     .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
-                let mut offer =
-                    make_offer(&ticket, self.service_epoch(), graph_generation, now_tick)?;
+                let mut offer = super::planner::make_offer(
+                    &ticket,
+                    self.service_epoch(),
+                    graph_generation,
+                    now_tick,
+                )?;
                 offer.blocking_event_sequence = Some(terminal_event.sequence);
-                next_scheduler.mark_ready(&ticket_id, offer.clone())?;
+                super::planner::mark_ready(&mut next_scheduler, &ticket_id, offer.clone())?;
                 let before = durable.change_set(&offer.change_set_id)?.with_context(|| {
                     format!("missing successor change set {}", offer.change_set_id)
                 })?;
@@ -1247,6 +1343,7 @@ impl Kernel {
                         .is_some_and(|ticket| ticket.change_set_id != claim.change_set_id)
                 }),
         );
+        next_scheduler.set_revision(lifecycle.next_metadata.scheduler_revision);
         durable.persist_lifecycle(&lifecycle)?;
         *scheduler = next_scheduler;
         Ok(())
@@ -1375,42 +1472,24 @@ fn validate_offer_context(
     Ok(())
 }
 
-fn make_offer(
-    ticket: &CoordinationTicket,
-    service_epoch: u64,
-    graph_generation: u64,
-    now_tick: u64,
-) -> Result<ReadyOffer> {
-    let expires_at_tick = now_tick
-        .checked_add(READY_OFFER_TTL_TICKS)
-        .context("ready offer expiry overflow")?;
-    ReadyOffer::new(
-        SCHEMA_VERSION,
-        Uuid::new_v4().to_string(),
-        ticket.change_set_id.clone(),
-        service_epoch,
-        graph_generation,
-        ticket.scope_fingerprint.clone(),
-        Uuid::new_v4().to_string(),
-        expires_at_tick,
-        None,
-    )
-    .map_err(anyhow::Error::msg)
-}
-
-fn transition(metadata: CoordinationMetadataState) -> LifecycleTransition {
-    LifecycleTransition {
+pub(super) fn transition(metadata: CoordinationMetadataState) -> Result<LifecycleTransition> {
+    let mut next_metadata = metadata;
+    next_metadata.scheduler_revision = metadata
+        .scheduler_revision
+        .checked_add(1)
+        .context("scheduler revision overflow")?;
+    Ok(LifecycleTransition {
         change_sets: Vec::new(),
         tickets: Vec::new(),
         offers: Vec::new(),
         claims: Vec::new(),
         events: Vec::new(),
         expected_metadata: metadata,
-        next_metadata: metadata,
-    }
+        next_metadata,
+    })
 }
 
-fn append_event(
+pub(super) fn append_event(
     transition: &mut LifecycleTransition,
     kind: CoordinationEventKind,
     change_set_id: &str,
@@ -1436,7 +1515,7 @@ fn append_event(
     Ok(event)
 }
 
-fn scheduler_ticket_updates(
+pub(super) fn scheduler_ticket_updates(
     before: &SchedulerState,
     after: &SchedulerState,
 ) -> Vec<(Option<CoordinationTicket>, Option<CoordinationTicket>)> {
@@ -1464,21 +1543,21 @@ fn scheduler_ticket_updates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordination::planner::make_offer;
 
     #[test]
     fn offer_context_rejects_a_stale_service_epoch_directly() {
-        let offer = ReadyOffer::new(
+        let ticket = CoordinationTicket::new(
             SCHEMA_VERSION,
-            "offer",
+            "ticket",
             "change-set",
-            7,
-            3,
+            TicketState::Queued,
             "scope",
-            "token",
-            30,
-            None,
+            vec!["symbol:target".to_owned()],
+            1,
         )
         .unwrap();
+        let offer = make_offer(&ticket, 7, 3, 0).unwrap();
 
         let error = validate_offer_context(&offer, 8, 10).unwrap_err();
         assert!(error.to_string().contains("stale service epoch"));

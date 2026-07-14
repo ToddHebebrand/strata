@@ -719,7 +719,13 @@ fn malicious_node_and_reference_deltas_are_contained_with_zero_side_effects() {
                 .unwrap()
                 .unwrap()
                 .state,
-            TicketState::Queued
+            TicketState::Ready
+        );
+        assert!(
+            reopened
+                .ready_offer_for_change_set(&change_set_id)
+                .unwrap()
+                .is_some()
         );
         let recovered_events = reopened.events_after(&audit_client, 0, 100).unwrap();
         assert!(
@@ -735,8 +741,9 @@ fn malicious_node_and_reference_deltas_are_contained_with_zero_side_effects() {
             before_events
                 .iter()
                 .filter(|event| event.kind == CoordinationEventKind::IntentReady)
-                .count(),
-            "recovery must not expose a new publication wake event"
+                .count()
+                + 1,
+            "restart must add exactly one fresh readiness event, not a publication wake"
         );
         assert!(recovered_events.iter().any(|event| {
             event.change_set_id == change_set_id
@@ -942,12 +949,12 @@ fn restart_preserves_ticket_event_identity_invalidates_offers_and_keeps_cursors_
             .ticket_id,
         queued_ticket_id
     );
-    assert!(
-        reopened
-            .ready_offer_for_change_set("ready-before-restart")
-            .unwrap()
-            .is_none()
-    );
+    let fresh_offer = reopened
+        .ready_offer_for_change_set("ready-before-restart")
+        .unwrap()
+        .expect("restart planner should issue fresh authority");
+    assert_ne!(fresh_offer.offer_id, old_offer.offer_id);
+    assert_eq!(fresh_offer.service_epoch, report.service_epoch);
     assert!(
         reopened
             .claim_ready(&old_offer.offer_id, &old_offer.claim_token, 1)
@@ -1185,8 +1192,9 @@ fn composite_precommit_failure_exposes_neither_real_node_change() {
         before_events
             .iter()
             .filter(|event| event.kind == CoordinationEventKind::IntentReady)
-            .count(),
-        "recovery must not expose a new publication wake event"
+            .count()
+            + 1,
+        "restart must add exactly one fresh readiness event, not a publication wake"
     );
     assert!(recovered_events.iter().any(|event| {
         event.change_set_id == "composite-failure"
@@ -1198,7 +1206,13 @@ fn composite_precommit_failure_exposes_neither_real_node_change() {
             .unwrap()
             .unwrap()
             .state,
-        ChangeSetState::Queued
+        ChangeSetState::Ready
+    );
+    assert!(
+        reopened
+            .ready_offer_for_change_set("composite-failure")
+            .unwrap()
+            .is_some()
     );
     for key in &claim.reservation_keys {
         assert_eq!(reopened.fence_state(key).unwrap(), (None, None));
