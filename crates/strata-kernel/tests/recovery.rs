@@ -8,6 +8,7 @@ use strata_kernel::{
 use tempfile::tempdir;
 
 const DELTAS: TableDefinition<u64, &[u8]> = TableDefinition::new("deltas");
+const SNAPSHOTS: TableDefinition<u64, &[u8]> = TableDefinition::new("snapshots");
 
 fn initial_snapshot() -> GraphSnapshot {
     GraphSnapshot {
@@ -82,7 +83,7 @@ fn publication(generation: u64, payload: &str) -> Publication {
     }
 }
 
-fn seed_two_generations(database_path: &std::path::Path) -> GraphSnapshot {
+fn seed_two_generations(database_path: &std::path::Path) -> (GraphSnapshot, GraphSnapshot) {
     let (kernel, create_report) = Kernel::create(database_path, initial_snapshot()).unwrap();
     assert_eq!(create_report.service_epoch, 1);
 
@@ -95,14 +96,14 @@ fn seed_two_generations(database_path: &std::path::Path) -> GraphSnapshot {
         .unwrap();
     let generation_two = kernel.snapshot().snapshot();
     kernel.write_snapshot(&generation_one).unwrap();
-    generation_two
+    (generation_one, generation_two)
 }
 
 #[test]
 fn restart_recovers_latest_snapshot_and_replays_later_deltas() {
     let directory = tempdir().unwrap();
     let database_path = directory.path().join("kernel.redb");
-    let expected = seed_two_generations(&database_path);
+    let (_, expected) = seed_two_generations(&database_path);
 
     let (reopened, report) = Kernel::open(&database_path).unwrap();
 
@@ -167,6 +168,113 @@ fn restart_rejects_a_delta_whose_base_does_not_match_replay_generation() {
         .expect("opening must fail");
     assert!(
         error.to_string().contains("expected generation 1"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn restart_rejects_a_structurally_valid_delta_that_changes_the_committed_digest() {
+    let directory = tempdir().unwrap();
+    let database_path = directory.path().join("kernel.redb");
+    seed_two_generations(&database_path);
+
+    let database = Database::open(&database_path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut deltas = write.open_table(DELTAS).unwrap();
+        let encoded = deltas.get(2).unwrap().unwrap().value().to_vec();
+        let mut delta: GraphDelta = serde_json::from_slice(&encoded).unwrap();
+        delta.changes = vec![GraphChange::UpsertNode {
+            node: NodeRecord {
+                id: "node:clock".into(),
+                kind: "InterfaceDeclaration".into(),
+                parent_id: None,
+                child_index: Some(0),
+                payload: "export interface CorruptedButValid {}".into(),
+            },
+        }];
+        let corrupted = serde_json::to_vec(&delta).unwrap();
+        deltas.insert(2, corrupted.as_slice()).unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open(&database_path)
+        .err()
+        .expect("opening must fail");
+    assert!(
+        error.to_string().contains("recovered digest"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn restart_rejects_a_structurally_valid_snapshot_with_the_wrong_digest() {
+    let directory = tempdir().unwrap();
+    let database_path = directory.path().join("kernel.redb");
+    seed_two_generations(&database_path);
+
+    let database = Database::open(&database_path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut snapshots = write.open_table(SNAPSHOTS).unwrap();
+        let encoded = snapshots.get(1).unwrap().unwrap().value().to_vec();
+        let mut snapshot: GraphSnapshot = serde_json::from_slice(&encoded).unwrap();
+        snapshot.nodes[0].payload = "export interface CorruptedSnapshot {}".into();
+        let corrupted = serde_json::to_vec(&snapshot).unwrap();
+        snapshots.insert(1, corrupted.as_slice()).unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open(&database_path)
+        .err()
+        .expect("opening must fail");
+    assert!(
+        error.to_string().contains("snapshot digest"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn write_snapshot_rejects_a_valid_historical_snapshot_with_uncommitted_content() {
+    let directory = tempdir().unwrap();
+    let database_path = directory.path().join("kernel.redb");
+    let (mut generation_one, _) = seed_two_generations(&database_path);
+    generation_one.nodes[0].payload = "export interface UncommittedHistory {}".into();
+
+    let (kernel, _) = Kernel::open(&database_path).unwrap();
+    let error = kernel.write_snapshot(&generation_one).unwrap_err();
+
+    assert!(
+        error.to_string().contains("snapshot digest"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn restart_rejects_a_snapshot_whose_key_and_payload_generations_differ() {
+    let directory = tempdir().unwrap();
+    let database_path = directory.path().join("kernel.redb");
+    seed_two_generations(&database_path);
+
+    let database = Database::open(&database_path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut snapshots = write.open_table(SNAPSHOTS).unwrap();
+        let generation_one = snapshots.get(1).unwrap().unwrap().value().to_vec();
+        snapshots.insert(2, generation_one.as_slice()).unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open(&database_path)
+        .err()
+        .expect("opening must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("snapshot key generation 2 does not match payload generation 1"),
         "unexpected error: {error:#}"
     );
 }

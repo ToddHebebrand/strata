@@ -56,6 +56,13 @@ impl Kernel {
         let snapshot = store.latest_snapshot()?;
         let snapshot_generation = snapshot.generation;
         let mut graph = GraphGeneration::from_snapshot(snapshot)?;
+        let expected_snapshot_digest = store.generation_digest(snapshot_generation)?;
+        if graph.digest() != expected_snapshot_digest {
+            bail!(
+                "snapshot digest {} does not match durable digest {expected_snapshot_digest} for generation {snapshot_generation}",
+                graph.digest()
+            );
+        }
         let deltas = store.deltas_after(snapshot_generation)?;
         for (delta_generation, delta) in &deltas {
             let expected_generation = graph.generation();
@@ -81,6 +88,13 @@ impl Kernel {
             bail!(
                 "recovered generation {} does not match durable generation {durable_generation}",
                 graph.generation()
+            );
+        }
+        let expected_recovered_digest = store.generation_digest(durable_generation)?;
+        if graph.digest() != expected_recovered_digest {
+            bail!(
+                "recovered digest {} does not match durable digest {expected_recovered_digest} for generation {durable_generation}",
+                graph.digest()
             );
         }
 
@@ -121,7 +135,7 @@ impl Kernel {
 
         let next = Arc::new(current.apply(&publication.delta)?);
         let persistence_started = Instant::now();
-        let outcome = self.store.publish(&publication)?;
+        let outcome = self.store.publish(&publication, next.digest())?;
         let persistence_ns = persistence_started.elapsed().as_nanos();
         match outcome {
             PublishOutcome::AlreadyPublished { .. } => Ok(PublicationReport {

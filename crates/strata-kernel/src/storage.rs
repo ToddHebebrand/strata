@@ -5,7 +5,10 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::{EventRecord, GraphDelta, GraphSnapshot, OperationRecord, Publication, TicketRecord};
+use crate::{
+    EventRecord, GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord, Publication,
+    TicketRecord,
+};
 
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("graph_metadata");
 const SNAPSHOTS: TableDefinition<u64, &[u8]> = TableDefinition::new("snapshots");
@@ -16,6 +19,7 @@ const TICKETS: TableDefinition<&str, &[u8]> = TableDefinition::new("tickets");
 const IDEMPOTENCY: TableDefinition<&str, u64> = TableDefinition::new("idempotency_keys");
 const FENCES: TableDefinition<&str, u64> = TableDefinition::new("fence_tokens");
 const CONSUMED_FENCES: TableDefinition<&str, u64> = TableDefinition::new("consumed_fence_tokens");
+const GENERATION_DIGESTS: TableDefinition<u64, &str> = TableDefinition::new("generation_digests");
 
 const CURRENT_GENERATION: &str = "current_generation";
 const CURRENT_EVENT_SEQUENCE: &str = "current_event_sequence";
@@ -48,6 +52,9 @@ impl DurableStore {
         if snapshot.generation != 0 {
             bail!("initial snapshot must be generation 0");
         }
+        let digest = GraphGeneration::from_snapshot(snapshot.clone())?
+            .digest()
+            .to_owned();
 
         let write = self
             .database
@@ -82,6 +89,11 @@ impl DurableStore {
             .context("open snapshots table")?
             .insert(0, snapshot_bytes.as_slice())
             .context("write generation-zero snapshot")?;
+        write
+            .open_table(GENERATION_DIGESTS)
+            .context("open generation digests table")?
+            .insert(0, digest.as_str())
+            .context("write generation-zero digest")?;
 
         // Opening a table in a write transaction creates it if absent. Seed establishes the
         // complete schema atomically, including tables used by later coordination tasks.
@@ -109,7 +121,11 @@ impl DurableStore {
         Ok(())
     }
 
-    pub fn publish(&self, publication: &Publication) -> Result<PublishOutcome> {
+    pub fn publish(
+        &self,
+        publication: &Publication,
+        expected_digest: &str,
+    ) -> Result<PublishOutcome> {
         let write = self
             .database
             .begin_write()
@@ -197,6 +213,11 @@ impl DurableStore {
             .context("open idempotency table")?
             .insert(publication.idempotency_key.as_str(), next_generation)
             .context("write idempotency key")?;
+        write
+            .open_table(GENERATION_DIGESTS)
+            .context("open generation digests table")?
+            .insert(next_generation, expected_digest)
+            .context("write generation digest")?;
 
         {
             let mut metadata = write.open_table(META).context("open metadata table")?;
@@ -258,7 +279,15 @@ impl DurableStore {
             .next_back()
             .context("durable store has no graph snapshot")?
             .context("read latest snapshot")?;
-        decode(entry.1.value(), "snapshot")
+        let key_generation = entry.0.value();
+        let snapshot: GraphSnapshot = decode(entry.1.value(), "snapshot")?;
+        if snapshot.generation != key_generation {
+            bail!(
+                "snapshot key generation {key_generation} does not match payload generation {}",
+                snapshot.generation
+            );
+        }
+        Ok(snapshot)
     }
 
     pub fn deltas_after(&self, generation: u64) -> Result<Vec<(u64, GraphDelta)>> {
@@ -304,6 +333,9 @@ impl DurableStore {
     }
 
     pub fn write_snapshot(&self, snapshot: &GraphSnapshot) -> Result<()> {
+        let snapshot_digest = GraphGeneration::from_snapshot(snapshot.clone())?
+            .digest()
+            .to_owned();
         let snapshot_bytes = encode(snapshot, "snapshot")?;
         let write = self
             .database
@@ -315,6 +347,27 @@ impl DurableStore {
             if snapshot.generation > current_generation {
                 bail!(
                     "snapshot generation {} exceeds current generation {current_generation}",
+                    snapshot.generation
+                );
+            }
+        }
+        {
+            let digests = write
+                .open_table(GENERATION_DIGESTS)
+                .context("open generation digests table")?;
+            let expected_digest = digests
+                .get(snapshot.generation)
+                .context("read generation digest")?
+                .with_context(|| {
+                    format!(
+                        "missing durable digest for snapshot generation {}",
+                        snapshot.generation
+                    )
+                })?;
+            if snapshot_digest != expected_digest.value() {
+                bail!(
+                    "snapshot digest {snapshot_digest} does not match durable digest {} for generation {}",
+                    expected_digest.value(),
                     snapshot.generation
                 );
             }
@@ -366,6 +419,21 @@ impl DurableStore {
             .is_some())
     }
 
+    pub fn generation_digest(&self, generation: u64) -> Result<String> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin generation digest read transaction")?;
+        let table = read
+            .open_table(GENERATION_DIGESTS)
+            .context("open generation digests table")?;
+        let digest = table
+            .get(generation)
+            .context("read generation digest")?
+            .with_context(|| format!("missing durable digest for generation {generation}"))?;
+        Ok(digest.value().to_owned())
+    }
+
     fn read_structured<T: DeserializeOwned>(
         &self,
         definition: TableDefinition<u64, &[u8]>,
@@ -415,6 +483,7 @@ struct TableCounts {
     events: u64,
     tickets: u64,
     idempotency: u64,
+    generation_digests: u64,
 }
 
 #[cfg(test)]
@@ -432,6 +501,7 @@ impl DurableStore {
             events: read.open_table(EVENTS)?.len()?,
             tickets: read.open_table(TICKETS)?.len()?,
             idempotency: read.open_table(IDEMPOTENCY)?.len()?,
+            generation_digests: read.open_table(GENERATION_DIGESTS)?.len()?,
         })
     }
 
@@ -508,6 +578,7 @@ mod tests {
                 events: 0,
                 tickets: 0,
                 idempotency: 0,
+                generation_digests: 1,
             }
         );
     }
@@ -539,7 +610,9 @@ mod tests {
         let generation_before = store.test_current_generation().unwrap();
         let counts_before = store.table_counts().unwrap();
 
-        let error = store.publish(&invalid_sequence_publication()).unwrap_err();
+        let error = store
+            .publish(&invalid_sequence_publication(), "must-not-be-written")
+            .unwrap_err();
 
         assert!(error.to_string().contains("event sequence"));
         assert_eq!(store.test_current_generation().unwrap(), generation_before);

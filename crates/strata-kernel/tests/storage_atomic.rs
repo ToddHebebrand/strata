@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use strata_kernel::{
-    DurableStore, EventRecord, FenceClaim, GraphChange, GraphDelta, GraphSnapshot, NodeRecord,
-    OperationRecord, Publication, PublishOutcome, SCHEMA_VERSION, TicketRecord,
+    DurableStore, EventRecord, FenceClaim, GraphChange, GraphDelta, GraphGeneration, GraphSnapshot,
+    NodeRecord, OperationRecord, Publication, PublishOutcome, SCHEMA_VERSION, TicketRecord,
 };
 use tempfile::tempdir;
 
@@ -65,6 +65,15 @@ fn publication(idempotency_key: &str) -> Publication {
     }
 }
 
+fn expected_digest(publication: &Publication) -> String {
+    GraphGeneration::from_snapshot(initial_snapshot())
+        .unwrap()
+        .apply(&publication.delta)
+        .unwrap()
+        .digest()
+        .to_owned()
+}
+
 #[test]
 fn publication_is_atomic_and_durable_across_reopen() {
     let directory = tempdir().unwrap();
@@ -75,7 +84,9 @@ fn publication_is_atomic_and_durable_across_reopen() {
         let store = DurableStore::create(&database_path).unwrap();
         store.seed(&initial_snapshot()).unwrap();
         assert_eq!(
-            store.publish(&publication).unwrap(),
+            store
+                .publish(&publication, &expected_digest(&publication))
+                .unwrap(),
             PublishOutcome::Published { generation: 1 }
         );
     }
@@ -111,7 +122,9 @@ fn duplicate_idempotency_key_returns_original_generation_without_appending() {
 
     let publication = publication("publish:duplicate");
     assert_eq!(
-        store.publish(&publication).unwrap(),
+        store
+            .publish(&publication, &expected_digest(&publication))
+            .unwrap(),
         PublishOutcome::Published { generation: 1 }
     );
 
@@ -121,7 +134,9 @@ fn duplicate_idempotency_key_returns_original_generation_without_appending() {
     duplicate.ticket.ticket_id = "ticket:must-not-be-written".into();
 
     assert_eq!(
-        store.publish(&duplicate).unwrap(),
+        store
+            .publish(&duplicate, &expected_digest(&duplicate))
+            .unwrap(),
         PublishOutcome::AlreadyPublished { generation: 1 }
     );
     assert_eq!(store.current_generation().unwrap(), 1);
@@ -145,7 +160,9 @@ fn failed_validation_leaves_all_publication_tables_unchanged() {
     let mut invalid = publication("publish:invalid-sequence");
     invalid.event.sequence = 2;
 
-    let error = store.publish(&invalid).unwrap_err();
+    let error = store
+        .publish(&invalid, &expected_digest(&invalid))
+        .unwrap_err();
     assert!(error.to_string().contains("event sequence"));
     assert_eq!(store.current_generation().unwrap(), 0);
     assert!(store.operation(1).unwrap().is_none());
