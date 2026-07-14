@@ -225,6 +225,109 @@ impl DurableStore {
         read_metadata(&metadata, CURRENT_GENERATION)
     }
 
+    pub fn begin_service_epoch(&self) -> Result<u64> {
+        let write = self
+            .database
+            .begin_write()
+            .context("begin service epoch transaction")?;
+        let next_epoch = {
+            let mut metadata = write.open_table(META).context("open metadata table")?;
+            let current_epoch = read_metadata(&metadata, SERVICE_EPOCH)?;
+            let next_epoch = current_epoch
+                .checked_add(1)
+                .context("service epoch overflow")?;
+            let bytes = next_epoch.to_le_bytes();
+            metadata
+                .insert(SERVICE_EPOCH, bytes.as_slice())
+                .context("advance service epoch")?;
+            next_epoch
+        };
+        write.commit().context("commit service epoch transaction")?;
+        Ok(next_epoch)
+    }
+
+    pub fn latest_snapshot(&self) -> Result<GraphSnapshot> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin snapshot read transaction")?;
+        let table = read.open_table(SNAPSHOTS).context("open snapshots table")?;
+        let entry = table
+            .iter()
+            .context("iterate snapshots")?
+            .next_back()
+            .context("durable store has no graph snapshot")?
+            .context("read latest snapshot")?;
+        decode(entry.1.value(), "snapshot")
+    }
+
+    pub fn deltas_after(&self, generation: u64) -> Result<Vec<(u64, GraphDelta)>> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin delta scan transaction")?;
+        let metadata = read.open_table(META).context("open metadata table")?;
+        let current_generation = read_metadata(&metadata, CURRENT_GENERATION)?;
+        if generation > current_generation {
+            bail!(
+                "delta scan starts at generation {generation}, beyond current generation {current_generation}"
+            );
+        }
+
+        let table = read.open_table(DELTAS).context("open deltas table")?;
+        let mut expected_generation = generation
+            .checked_add(1)
+            .context("graph generation overflow")?;
+        let mut deltas = Vec::new();
+        for entry in table.iter().context("iterate deltas")? {
+            let (key, value) = entry.context("read delta entry")?;
+            let delta_generation = key.value();
+            if delta_generation <= generation {
+                continue;
+            }
+            if delta_generation != expected_generation {
+                bail!(
+                    "delta log gap: expected generation {expected_generation}, found generation {delta_generation}"
+                );
+            }
+            let delta = decode(value.value(), "delta")?;
+            deltas.push((delta_generation, delta));
+            expected_generation = expected_generation
+                .checked_add(1)
+                .context("graph generation overflow")?;
+        }
+
+        if expected_generation <= current_generation {
+            bail!("delta log gap: expected generation {expected_generation}");
+        }
+        Ok(deltas)
+    }
+
+    pub fn write_snapshot(&self, snapshot: &GraphSnapshot) -> Result<()> {
+        let snapshot_bytes = encode(snapshot, "snapshot")?;
+        let write = self
+            .database
+            .begin_write()
+            .context("begin snapshot write transaction")?;
+        {
+            let metadata = write.open_table(META).context("open metadata table")?;
+            let current_generation = read_metadata(&metadata, CURRENT_GENERATION)?;
+            if snapshot.generation > current_generation {
+                bail!(
+                    "snapshot generation {} exceeds current generation {current_generation}",
+                    snapshot.generation
+                );
+            }
+        }
+        write
+            .open_table(SNAPSHOTS)
+            .context("open snapshots table")?
+            .insert(snapshot.generation, snapshot_bytes.as_slice())
+            .context("write snapshot")?;
+        write.commit().context("commit snapshot transaction")?;
+        Ok(())
+    }
+
     pub fn operation(&self, generation: u64) -> Result<Option<OperationRecord>> {
         self.read_structured(OPERATIONS, generation, "operation")
     }
