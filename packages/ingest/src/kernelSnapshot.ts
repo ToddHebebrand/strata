@@ -21,6 +21,10 @@ export interface KernelSnapshotV1 {
   references: KernelReferenceV1[];
 }
 
+export function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export function toKernelSnapshot(batch: IngestBatchResult): KernelSnapshotV1 {
   return {
     schemaVersion: 1,
@@ -33,14 +37,14 @@ export function toKernelSnapshot(batch: IngestBatchResult): KernelSnapshotV1 {
         childIndex,
         payload
       }))
-      .sort((a, b) => a.id.localeCompare(b.id)),
+      .sort((a, b) => compareCodeUnits(a.id, b.id)),
     references: batch.references
       .map(({ fromNodeId, toNodeId, kind }) => ({ fromNodeId, toNodeId, kind }))
       .sort(
         (a, b) =>
-          a.fromNodeId.localeCompare(b.fromNodeId) ||
-          a.toNodeId.localeCompare(b.toNodeId) ||
-          a.kind.localeCompare(b.kind)
+          compareCodeUnits(a.fromNodeId, b.fromNodeId) ||
+          compareCodeUnits(a.toNodeId, b.toNodeId) ||
+          compareCodeUnits(a.kind, b.kind)
       )
   };
 }

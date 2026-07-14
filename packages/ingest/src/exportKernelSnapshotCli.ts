@@ -8,14 +8,14 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { ingestBatch } from "./batch";
-import { toKernelSnapshot } from "./kernelSnapshot";
+import { compareCodeUnits, toKernelSnapshot } from "./kernelSnapshot";
 
 const SKIPPED_DIRECTORIES = new Set(["node_modules", ".git", "dist"]);
 
 function collectTypeScriptFiles(directory: string): string[] {
   const files: string[] = [];
   for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) =>
-    a.name.localeCompare(b.name)
+    compareCodeUnits(a.name, b.name)
   )) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {

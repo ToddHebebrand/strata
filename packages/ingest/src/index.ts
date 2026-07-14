@@ -54,6 +54,7 @@ export function ingest(sourceText: string, modulePath: string): IngestResult {
 export { emitIdentifiers } from "./identifiers";
 export { ingestBatch, type IngestBatchInput, type IngestBatchResult } from "./batch";
 export {
+  compareCodeUnits,
   toKernelSnapshot,
   type KernelNodeV1,
   type KernelReferenceV1,
