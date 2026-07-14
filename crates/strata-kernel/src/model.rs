@@ -31,7 +31,11 @@ pub struct GraphSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum GraphChange {
     UpsertNode { node: NodeRecord },
     DeleteNode { node_id: String },

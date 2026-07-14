@@ -40,3 +40,21 @@ fn snapshot_and_delta_json_are_versioned_camel_case_and_round_trip() {
         delta
     );
 }
+
+#[test]
+fn delete_change_fields_serialize_as_camel_case() {
+    assert_eq!(
+        serde_json::to_string(&GraphChange::DeleteNode {
+            node_id: "decl".into(),
+        })
+        .unwrap(),
+        r#"{"type":"deleteNode","nodeId":"decl"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&GraphChange::DeleteReference {
+            from_node_id: "use".into(),
+        })
+        .unwrap(),
+        r#"{"type":"deleteReference","fromNodeId":"use"}"#
+    );
+}
