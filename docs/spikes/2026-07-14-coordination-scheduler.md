@@ -1,6 +1,8 @@
-# Coordination scheduler result
+# Coordination scheduler result — superseded
 
-**Decision:** PASS
+**Decision:** SUPERSEDED — the initial PASS was withdrawn after whole-branch review
+
+> The measurements and test results below are preserved as historical evidence. They do not currently satisfy the Coordination kernel gate. The authority and concurrency failures, and the approved correction, are recorded in [`2026-07-14-coordination-authority-concurrency-correction-design.md`](../superpowers/specs/2026-07-14-coordination-authority-concurrency-correction-design.md) and the newest `decisions.md` entry.
 
 **Executed:** 2026-07-14
 
@@ -77,4 +79,4 @@ The test analyzer versions node resources by hashing `(NodeRecord, appeared_at_g
 
 Across the tested scheduler interleavings there were zero partial reservations, lost tickets or events, stale-claim publications, out-of-scope deltas, starvation cases, or non-atomic coordinated publications. Duplicate finishing returns the original generation and digest without rebuilding or appending a second event, including a deterministic racing duplicate and a retry after a later disjoint generation. Malicious node and reference deltas leave graph, ticket, event, operation, scheduler, digest, and fencing state unchanged.
 
-**PASS.** The coordination scheduler is sufficient to unblock a separate TypeScript validation-bridge plan. The two-operation proof, full key-free acceptance, multi-client service boundary, and live falsifiable comparison remain open. This task does not begin or plan the bridge, authorize model spend, or replace the supported SQLite product path.
+**Historical result at the time: PASS. Current gate: SUPERSEDED.** This report originally concluded that the coordination scheduler was sufficient to unblock a separate TypeScript validation-bridge plan. The authority-boundary, disjoint-publication, and lifecycle defects documented in the correction design invalidate that conclusion until the replacement deterministic gates pass. The two-operation proof, full key-free acceptance, multi-client service boundary, and live falsifiable comparison remain open. This task does not begin or plan the bridge, authorize model spend, or replace the supported SQLite product path.

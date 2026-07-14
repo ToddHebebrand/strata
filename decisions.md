@@ -7,6 +7,24 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-14 — Coordination scheduler PASS withdrawn; authority and concurrency correction required
+
+**Context:** Task-scoped reviews approved the scheduler incrementally, but the required final whole-branch review found four integrated failures: default callers could inject the analyzer that minted semantic scope authority; simultaneous disjoint claims were invalidated by an unrelated global-generation advance; candidate construction held the global scheduler/publication locks; and several release paths created Ready authority without fresh trusted analysis. Drafts and claims also lacked a complete deterministic expiry model.
+
+**Falsified evidence:** The prior acceptance test claimed and published disjoint work sequentially in either order. It did not claim both before either publication, so it missed the global-generation failure. Raw-publication compile sealing did not test malicious analyzer injection. Publication-time successor analysis did not cover submission, reconsideration, expiry, cancellation, or claim-time terminal release. Passing durability and containment tests therefore did not establish independent multi-agent progress or kernel-owned semantic authority.
+
+**Independent review:** A read-only, repo-grounded GPT-5.6-sol architecture review compared global serialization, optimistic resource validation, and structural replay/merge. It recommended kernel-owned semantics plus an unlocked prepare/build/revalidate protocol and monotonic resource/index clocks. The recommendation's premises were verified against the exported analyzer traits, exact claim-generation check, builder lock scope, wake paths, and acceptance tests.
+
+**Decided:** The scheduler PASS below is superseded and the TypeScript validation bridge is blocked again. The **Coordination kernel** roadmap item returns to unchecked. The correction will: remove analyzer arguments from client-callable APIs; make default semantic execution unavailable until a kernel-owned TypeScript provider exists; expose deterministic provider injection only behind a research feature; run candidate construction outside global locks; validate dependency clocks rather than global generation; centralize every Ready transition behind fresh analysis; and add deterministic draft/claim expiry.
+
+**Why:** These properties are the coordination hypothesis itself. Preserving a PASS by calling them future service concerns would leave clients able to mint authority and would serialize or strand the exact disjoint work Strata is intended to enable.
+
+**Design:** `docs/superpowers/specs/2026-07-14-coordination-authority-concurrency-correction-design.md`.
+
+**Unaffected findings:** The bounded redb durability/replay/fencing spike remains a PASS. The existing SQLite product path and single-agent bulk-propagation results are unchanged. The scheduler's existing FIFO, recovery, event, and atomic-commit tests remain useful regression evidence but are insufficient for a PASS until the correction gate succeeds.
+
+**Design-doc impact:** This corrects the implementation boundary to match the approved coordination design: the kernel owns semantic analyzers, validation does not hold the commit sequencer, and disjoint work remains runnable. `strata-design.md` needs no architectural change.
+
 ## 2026-07-14 — Coordination scheduler passes; TypeScript validation bridge unblocked
 
 **Context:** The approved Phase-6 scheduler plan required a deterministic, key-free proof of typed intent records, graph-inferred semantic scopes, all-or-ticket scheduling, durable tickets/events, FIFO fairness, fresh-state wakeups, fencing, restart recovery, delta containment, and atomic claimed publication before production TypeScript analyzers or a Node validation bridge could begin.
