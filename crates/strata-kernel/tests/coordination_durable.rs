@@ -1,3 +1,5 @@
+#![cfg(feature = "redb-spike-api")]
+
 use std::path::Path;
 
 use redb::TableDefinition;

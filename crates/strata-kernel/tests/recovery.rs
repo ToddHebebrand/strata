@@ -1,3 +1,5 @@
+#![cfg(feature = "redb-spike-api")]
+
 use redb::{Database, ReadableTable, TableDefinition};
 use strata_kernel::{
     EventRecord, FenceClaim, GraphChange, GraphDelta, GraphSnapshot, Kernel, NodeRecord,

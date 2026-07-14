@@ -12,6 +12,17 @@ pub trait IntentAnalyzer: Send + Sync {
     fn analyze(&self, graph: &GraphGeneration, intent: &IntentRecord) -> Result<IntentAnalysis>;
 }
 
+/// Builds only a candidate graph delta. Publication authority and every audit,
+/// coordination, fencing, and idempotency record remain kernel-owned.
+pub trait CandidateBuilder: Send + Sync {
+    fn build_candidate(
+        &self,
+        graph: &GraphGeneration,
+        change_set: &super::ChangeSetRecord,
+        intents: &[IntentRecord],
+    ) -> Result<GraphDelta>;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntentAnalysis {
     pub read_set: Vec<ResourceVersion>,

@@ -794,10 +794,19 @@ impl<'a> CoordinationDurable<'a> {
             .context("commit coordination lifecycle transaction")
     }
 
-    fn persist_lifecycle_in_write_txn(
+    pub(crate) fn persist_lifecycle_in_write_txn(
         &self,
         write: &WriteTransaction,
         transition: &LifecycleTransition,
+    ) -> Result<()> {
+        self.persist_lifecycle_in_write_txn_with_hook(write, transition, &mut || Ok(()))
+    }
+
+    pub(crate) fn persist_lifecycle_in_write_txn_with_hook(
+        &self,
+        write: &WriteTransaction,
+        transition: &LifecycleTransition,
+        on_write: &mut dyn FnMut() -> Result<()>,
     ) -> Result<()> {
         let durable_metadata = {
             let metadata = write
@@ -961,6 +970,7 @@ impl<'a> CoordinationDurable<'a> {
                 } else {
                     table.remove(id)?;
                 }
+                on_write()?;
             }
         }
         {
@@ -977,6 +987,7 @@ impl<'a> CoordinationDurable<'a> {
                 } else {
                     table.remove(id)?;
                 }
+                on_write()?;
             }
         }
         {
@@ -995,6 +1006,7 @@ impl<'a> CoordinationDurable<'a> {
                 } else {
                     table.remove(id)?;
                 }
+                on_write()?;
             }
         }
         {
@@ -1013,6 +1025,7 @@ impl<'a> CoordinationDurable<'a> {
                 } else {
                     table.remove(id)?;
                 }
+                on_write()?;
             }
         }
         {
@@ -1021,7 +1034,9 @@ impl<'a> CoordinationDurable<'a> {
             for event in &transition.events {
                 let bytes = encode(event, "coordination event")?;
                 events.insert(event.sequence, bytes.as_slice())?;
+                on_write()?;
                 event_ids.insert(event.event_id.as_str(), event.sequence)?;
+                on_write()?;
             }
         }
         {
@@ -1034,7 +1049,9 @@ impl<'a> CoordinationDurable<'a> {
                 .current_event_sequence
                 .to_le_bytes();
             metadata.insert(NEXT_QUEUE_SEQUENCE, queue.as_slice())?;
+            on_write()?;
             metadata.insert(CURRENT_EVENT_SEQUENCE, events.as_slice())?;
+            on_write()?;
         }
         Ok(())
     }
@@ -1082,7 +1099,7 @@ impl<'a> CoordinationDurable<'a> {
     pub fn active_tickets(&self) -> Result<Vec<CoordinationTicket>> {
         let read = self.database.begin_read().context("begin ticket scan")?;
         let table = read.open_table(TICKETS).context("open tickets table")?;
-        let mut tickets = Vec::new();
+        let mut tickets: Vec<CoordinationTicket> = Vec::new();
         for entry in table.iter().context("iterate tickets")? {
             let (_, value) = entry.context("read ticket entry")?;
             let ticket: CoordinationTicket = decode(value.value(), "ticket")?;
@@ -1095,6 +1112,20 @@ impl<'a> CoordinationDurable<'a> {
             ) {
                 tickets.push(ticket);
             }
+        }
+        tickets.sort_by(|left, right| {
+            (left.queue_sequence, &left.ticket_id).cmp(&(right.queue_sequence, &right.ticket_id))
+        });
+        Ok(tickets)
+    }
+
+    pub(crate) fn all_tickets(&self) -> Result<Vec<CoordinationTicket>> {
+        let read = self.database.begin_read().context("begin ticket scan")?;
+        let table = read.open_table(TICKETS).context("open tickets table")?;
+        let mut tickets: Vec<CoordinationTicket> = Vec::new();
+        for entry in table.iter().context("iterate tickets")? {
+            let (_, value) = entry.context("read ticket entry")?;
+            tickets.push(decode(value.value(), "ticket")?);
         }
         tickets.sort_by(|left, right| {
             (left.queue_sequence, &left.ticket_id).cmp(&(right.queue_sequence, &right.ticket_id))

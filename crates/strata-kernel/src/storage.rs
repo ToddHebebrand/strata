@@ -5,11 +5,13 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTran
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::coordination::{CoordinationDurable, ensure_coordination_schema};
-use crate::{
-    EventRecord, FenceClaim, GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord,
-    Publication, PublishFailpoint, TicketRecord,
-};
+use crate::coordination::{CoordinationDurable, LifecycleTransition, ensure_coordination_schema};
+#[cfg(feature = "redb-spike-api")]
+use crate::kernel::PublishFailpoint;
+use crate::model::{FenceClaim, Publication};
+#[cfg(feature = "redb-spike-api")]
+use crate::{EventRecord, TicketRecord};
+use crate::{GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord};
 
 pub(crate) const META: TableDefinition<&str, &[u8]> = TableDefinition::new("graph_metadata");
 const SNAPSHOTS: TableDefinition<u64, &[u8]> = TableDefinition::new("snapshots");
@@ -34,6 +36,21 @@ pub enum PublishOutcome {
 
 pub struct DurableStore {
     database: Database,
+}
+
+pub(crate) struct CoordinatedCommit {
+    pub publication: Publication,
+    pub lifecycle: LifecycleTransition,
+    pub service_epoch: u64,
+    pub reservation_keys: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoordinatedPublishFailpoint {
+    None,
+    AfterFenceMutation,
+    AfterInsert(usize),
+    BeforeCommit,
 }
 
 impl DurableStore {
@@ -131,6 +148,7 @@ impl DurableStore {
         CoordinationDurable::new(&self.database)
     }
 
+    #[cfg(feature = "redb-spike-api")]
     pub fn publish(
         &self,
         publication: &Publication,
@@ -140,6 +158,7 @@ impl DurableStore {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "redb-spike-api")]
     pub fn publish_with_failpoint(
         &self,
         publication: &Publication,
@@ -149,6 +168,7 @@ impl DurableStore {
         self.publish_inner(publication, expected_digest, failpoint)
     }
 
+    #[cfg(feature = "redb-spike-api")]
     fn publish_inner(
         &self,
         publication: &Publication,
@@ -177,6 +197,141 @@ impl DurableStore {
             }
         }
 
+        self.validate_graph_publication_in_txn(&write, publication)?;
+        self.verify_fence_in_write_txn(&write, &publication.fence)?;
+        let next_generation = self.write_graph_publication_in_txn_with_hook(
+            &write,
+            publication,
+            expected_digest,
+            &mut || Ok(()),
+        )?;
+
+        if failpoint == PublishFailpoint::InsideRedbTransaction {
+            std::process::abort();
+        }
+        write.commit().context("commit publication transaction")?;
+        if failpoint == PublishFailpoint::AfterRedbCommitBeforeMemoryPublish {
+            std::process::abort();
+        }
+        Ok(PublishOutcome::Published {
+            generation: next_generation,
+        })
+    }
+
+    pub(crate) fn publish_coordinated(
+        &self,
+        commit: &CoordinatedCommit,
+        expected_digest: &str,
+        failpoint: CoordinatedPublishFailpoint,
+    ) -> Result<PublishOutcome> {
+        let write = self
+            .database
+            .begin_write()
+            .context("begin coordinated publication transaction")?;
+        {
+            let idempotency = write.open_table(IDEMPOTENCY)?;
+            if let Some(generation) =
+                idempotency.get(commit.publication.idempotency_key.as_str())?
+            {
+                return Ok(PublishOutcome::AlreadyPublished {
+                    generation: generation.value(),
+                });
+            }
+        }
+        self.validate_graph_publication_in_txn(&write, &commit.publication)?;
+        self.issue_and_consume_fences_in_write_txn(
+            &write,
+            commit.service_epoch,
+            &commit.reservation_keys,
+        )?;
+        if failpoint == CoordinatedPublishFailpoint::AfterFenceMutation {
+            bail!("coordinated publication failpoint after fence mutation");
+        }
+        let mut insert_count = 0_usize;
+        let mut after_insert = || {
+            insert_count = insert_count
+                .checked_add(1)
+                .context("coordinated insert boundary overflow")?;
+            if failpoint == CoordinatedPublishFailpoint::AfterInsert(insert_count) {
+                bail!("coordinated publication failpoint after insert {insert_count}");
+            }
+            Ok(())
+        };
+        let generation = self.write_graph_publication_in_txn_with_hook(
+            &write,
+            &commit.publication,
+            expected_digest,
+            &mut after_insert,
+        )?;
+        self.coordination()
+            .persist_lifecycle_in_write_txn_with_hook(
+                &write,
+                &commit.lifecycle,
+                &mut after_insert,
+            )?;
+        if failpoint == CoordinatedPublishFailpoint::BeforeCommit {
+            bail!("coordinated publication failpoint before commit");
+        }
+        write
+            .commit()
+            .context("commit coordinated publication transaction")?;
+        Ok(PublishOutcome::Published { generation })
+    }
+
+    fn write_graph_publication_in_txn_with_hook(
+        &self,
+        write: &WriteTransaction,
+        publication: &Publication,
+        expected_digest: &str,
+        on_write: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<u64> {
+        let (_, next_generation, next_event_sequence) =
+            self.validate_graph_publication_in_txn(write, publication)?;
+        let operation = encode(&publication.operation, "operation")?;
+        let delta = encode(&publication.delta, "delta")?;
+        let ticket = encode(&publication.ticket, "ticket")?;
+        let event = encode(&publication.event, "event")?;
+        write
+            .open_table(OPERATIONS)?
+            .insert(next_generation, operation.as_slice())?;
+        on_write()?;
+        write
+            .open_table(DELTAS)?
+            .insert(next_generation, delta.as_slice())?;
+        on_write()?;
+        write
+            .open_table(TICKETS)?
+            .insert(publication.ticket.ticket_id.as_str(), ticket.as_slice())?;
+        on_write()?;
+        write
+            .open_table(EVENTS)?
+            .insert(next_event_sequence, event.as_slice())?;
+        on_write()?;
+        write
+            .open_table(IDEMPOTENCY)?
+            .insert(publication.idempotency_key.as_str(), next_generation)?;
+        on_write()?;
+        write
+            .open_table(GENERATION_DIGESTS)?
+            .insert(next_generation, expected_digest)?;
+        on_write()?;
+        {
+            let mut metadata = write.open_table(META)?;
+            let generation_bytes = next_generation.to_le_bytes();
+            let sequence_bytes = next_event_sequence.to_le_bytes();
+            metadata.insert(CURRENT_GENERATION, generation_bytes.as_slice())?;
+            on_write()?;
+            metadata.insert(CURRENT_EVENT_SEQUENCE, sequence_bytes.as_slice())?;
+            on_write()?;
+        }
+        Ok(next_generation)
+    }
+
+    fn validate_graph_publication_in_txn(
+        &self,
+        write: &WriteTransaction,
+        publication: &Publication,
+    ) -> Result<(u64, u64, u64)> {
         let (current_generation, current_event_sequence) = {
             let metadata = write.open_table(META).context("open metadata table")?;
             (
@@ -184,7 +339,6 @@ impl DurableStore {
                 read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
             )
         };
-
         if publication.delta.base_generation != current_generation {
             bail!(
                 "publication base generation {} does not match current generation {}",
@@ -192,14 +346,12 @@ impl DurableStore {
                 current_generation
             );
         }
-
         let next_generation = current_generation
             .checked_add(1)
             .context("graph generation overflow")?;
         let next_event_sequence = current_event_sequence
             .checked_add(1)
             .context("event sequence overflow")?;
-
         if publication.event.sequence != next_event_sequence {
             bail!(
                 "publication event sequence {} does not match next sequence {}",
@@ -214,69 +366,53 @@ impl DurableStore {
                 next_generation
             );
         }
+        Ok((current_generation, next_generation, next_event_sequence))
+    }
 
-        self.verify_fence_in_write_txn(&write, &publication.fence)?;
-
-        let operation = encode(&publication.operation, "operation")?;
-        let delta = encode(&publication.delta, "delta")?;
-        let ticket = encode(&publication.ticket, "ticket")?;
-        let event = encode(&publication.event, "event")?;
-
-        write
-            .open_table(OPERATIONS)
-            .context("open operations table")?
-            .insert(next_generation, operation.as_slice())
-            .context("write operation")?;
-        write
-            .open_table(DELTAS)
-            .context("open deltas table")?
-            .insert(next_generation, delta.as_slice())
-            .context("write delta")?;
-        write
-            .open_table(TICKETS)
-            .context("open tickets table")?
-            .insert(publication.ticket.ticket_id.as_str(), ticket.as_slice())
-            .context("write ticket")?;
-        write
-            .open_table(EVENTS)
-            .context("open events table")?
-            .insert(next_event_sequence, event.as_slice())
-            .context("write event")?;
-        write
-            .open_table(IDEMPOTENCY)
-            .context("open idempotency table")?
-            .insert(publication.idempotency_key.as_str(), next_generation)
-            .context("write idempotency key")?;
-        write
-            .open_table(GENERATION_DIGESTS)
-            .context("open generation digests table")?
-            .insert(next_generation, expected_digest)
-            .context("write generation digest")?;
-
+    fn issue_and_consume_fences_in_write_txn(
+        &self,
+        write: &WriteTransaction,
+        service_epoch: u64,
+        reservation_keys: &[String],
+    ) -> Result<FenceClaim> {
+        let current_epoch = {
+            let metadata = write.open_table(META)?;
+            read_u64_metadata(&metadata, SERVICE_EPOCH)?
+        };
+        if service_epoch != current_epoch {
+            bail!("stale service epoch {service_epoch}; current service epoch is {current_epoch}");
+        }
+        let resources = reservation_keys
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        if resources.is_empty() {
+            bail!("coordinated publication requires a non-empty reservation scope");
+        }
+        let mut resource_tokens = std::collections::BTreeMap::new();
         {
-            let mut metadata = write.open_table(META).context("open metadata table")?;
-            let generation_bytes = next_generation.to_le_bytes();
-            let sequence_bytes = next_event_sequence.to_le_bytes();
-            metadata
-                .insert(CURRENT_GENERATION, generation_bytes.as_slice())
-                .context("advance current generation")?;
-            metadata
-                .insert(CURRENT_EVENT_SEQUENCE, sequence_bytes.as_slice())
-                .context("advance event sequence")?;
+            let mut fences = write.open_table(FENCES)?;
+            let mut consumed = write.open_table(CONSUMED_FENCES)?;
+            for resource in resources {
+                let current = fences
+                    .get(resource.as_str())?
+                    .map(|value| value.value())
+                    .unwrap_or(0);
+                let next = current
+                    .checked_add(1)
+                    .with_context(|| format!("fence token overflow for {resource}"))?;
+                fences.insert(resource.as_str(), next)?;
+                consumed.insert(resource.as_str(), next)?;
+                resource_tokens.insert(resource, next);
+            }
         }
-
-        if failpoint == PublishFailpoint::InsideRedbTransaction {
-            std::process::abort();
-        }
-        write.commit().context("commit publication transaction")?;
-        if failpoint == PublishFailpoint::AfterRedbCommitBeforeMemoryPublish {
-            std::process::abort();
-        }
-        Ok(PublishOutcome::Published {
-            generation: next_generation,
+        Ok(FenceClaim {
+            service_epoch,
+            resource_tokens,
         })
     }
 
+    #[cfg(feature = "redb-spike-api")]
     pub fn issue_fence(&self, service_epoch: u64, resources: &[String]) -> Result<FenceClaim> {
         let mut resources = resources.to_vec();
         resources.sort();
@@ -324,6 +460,7 @@ impl DurableStore {
         })
     }
 
+    #[cfg(feature = "redb-spike-api")]
     pub fn verify_fence_in_write_txn(
         &self,
         write_txn: &WriteTransaction,
@@ -421,6 +558,7 @@ impl DurableStore {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "redb-spike-api")]
     pub fn begin_service_epoch_and_recover_coordination_with_failpoint(
         &self,
         failpoint: crate::CoordinationFailpoint,
@@ -547,14 +685,17 @@ impl DurableStore {
         self.read_structured(OPERATIONS, generation, "operation")
     }
 
+    #[cfg(feature = "redb-spike-api")]
     pub fn delta(&self, generation: u64) -> Result<Option<GraphDelta>> {
         self.read_structured(DELTAS, generation, "delta")
     }
 
+    #[cfg(feature = "redb-spike-api")]
     pub fn event(&self, sequence: u64) -> Result<Option<EventRecord>> {
         self.read_structured(EVENTS, sequence, "event")
     }
 
+    #[cfg(feature = "redb-spike-api")]
     pub fn ticket(&self, ticket_id: &str) -> Result<Option<TicketRecord>> {
         let read = self
             .database
@@ -567,6 +708,7 @@ impl DurableStore {
         decode(value.value(), "ticket").map(Some)
     }
 
+    #[cfg(feature = "redb-spike-api")]
     pub fn was_published(&self, idempotency_key: &str) -> Result<bool> {
         let read = self
             .database
@@ -597,6 +739,7 @@ impl DurableStore {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "redb-spike-api")]
     pub fn fence_state(&self, resource: &str) -> Result<(Option<u64>, Option<u64>)> {
         let read = self
             .database
@@ -680,7 +823,7 @@ pub(crate) fn read_current_generation_in_write_txn(write: &WriteTransaction) -> 
     read_u64_metadata(&metadata, CURRENT_GENERATION)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "redb-spike-api"))]
 #[derive(Debug, Eq, PartialEq)]
 struct TableCounts {
     operations: u64,
@@ -691,7 +834,7 @@ struct TableCounts {
     generation_digests: u64,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "redb-spike-api"))]
 impl DurableStore {
     fn table_counts(&self) -> Result<TableCounts> {
         use redb::ReadableTableMetadata;
@@ -715,7 +858,7 @@ impl DurableStore {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "redb-spike-api"))]
 mod tests {
     use std::collections::BTreeMap;
 

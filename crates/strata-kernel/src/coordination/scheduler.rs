@@ -393,6 +393,24 @@ impl SchedulerState {
         Ok(())
     }
 
+    pub(crate) fn requeue_claim_with_scope(
+        &mut self,
+        claim_id: &str,
+        scope_fingerprint: String,
+        reservation_keys: Vec<String>,
+    ) -> Result<CoordinationTicket> {
+        let sequence = self.sequence_for_claim(claim_id)?;
+        self.release(claim_id, TicketState::Queued)?;
+        let ticket = self
+            .tickets
+            .get_mut(&sequence)
+            .expect("resolved ticket exists");
+        ticket.scope_fingerprint = scope_fingerprint;
+        ticket.reservation_keys = reservation_keys;
+        validate_ticket_scope(ticket)?;
+        Ok(ticket.clone())
+    }
+
     pub fn expire_offer(&mut self, offer_id: &str) -> Result<String> {
         if !self.offers.contains_key(offer_id) {
             bail!("ready offer {offer_id} does not exist");

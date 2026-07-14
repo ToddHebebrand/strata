@@ -1,3 +1,5 @@
+#![cfg(feature = "redb-spike-api")]
+
 use std::collections::BTreeMap;
 
 use redb::{Database, ReadableDatabase, TableDefinition};

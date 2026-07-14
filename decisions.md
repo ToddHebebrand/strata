@@ -7,6 +7,16 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-14 — Claimed publication takes the host logical tick for atomic successor offers
+
+**Context:** The Task-7 plan showed `Kernel::publish_claimed` without the logical tick used by submit, claim, and cancel. Claimed publication releases the active scope and must create newly eligible successor offers in the same atomic graph-and-coordination transaction.
+
+**Decided:** `Kernel::publish_claimed` accepts a host-supplied `now_tick: u64` and derives every successor offer expiry as `now_tick + READY_OFFER_TTL_TICKS`.
+
+**Why / what was tried first:** Reusing the completed claim's original offer expiry would create successor offers that are already stale or have less than the promised 30-tick lease. Deferring reconsideration until after publication would violate atomic wakeup by committing the release without its newly eligible offers.
+
+**Design-doc impact:** None. The design requires time-limited ready offers and atomic release/notification but does not specify the Rust method signature.
+
 ## 2026-07-14 — Coordination tickets represent `NeedsDecision` explicitly
 
 **Context:** Task 5 initially terminalized a scheduler ticket as `Failed` when claim-time reanalysis required agent judgment, because Task 1's fixed `TicketState` list omitted a `NeedsDecision` variant even though `ChangeSetState` and lifecycle events distinguish that outcome.

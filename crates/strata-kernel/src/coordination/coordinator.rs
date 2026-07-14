@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -6,12 +8,18 @@ use uuid::Uuid;
 
 use super::durable::{CoordinationMetadataState, LifecycleTransition};
 use super::{
-    ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEvent,
-    CoordinationEventKind, CoordinationTicket, CreateDraftOutcome, DynamicExpansionPolicy,
-    EventCursor, IntentAnalyzer, IntentParameters, IntentRecord, ReadyOffer, SchedulerState,
-    ScopeChange, SubmissionOutcome, TicketState, analyze_change_set, classify_scope_change,
+    CandidateBuilder, ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome,
+    CoordinationEvent, CoordinationEventKind, CoordinationTicket, CreateDraftOutcome,
+    DynamicExpansionPolicy, EventCursor, IntentAnalyzer, IntentParameters, IntentRecord,
+    ReadyOffer, SchedulerState, ScopeChange, SubmissionOutcome, TicketState, analyze_change_set,
+    classify_scope_change,
 };
-use crate::{Kernel, SCHEMA_VERSION};
+use crate::model::{FenceClaim, Publication};
+use crate::storage::{CoordinatedCommit, CoordinatedPublishFailpoint, PublishOutcome};
+use crate::{
+    EventRecord, GraphChange, Kernel, OperationRecord, PublicationReport, SCHEMA_VERSION,
+    TicketRecord,
+};
 
 pub const READY_OFFER_TTL_TICKS: u64 = 30;
 
@@ -32,6 +40,32 @@ pub struct CancellationOutcome {
 }
 
 impl Kernel {
+    pub fn change_set(&self, id: &str) -> Result<Option<ChangeSetRecord>> {
+        self.store.coordination().change_set(id)
+    }
+
+    pub fn ticket_for_change_set(&self, id: &str) -> Result<Option<CoordinationTicket>> {
+        Ok(self
+            .store
+            .coordination()
+            .all_tickets()?
+            .into_iter()
+            .find(|ticket| ticket.change_set_id == id))
+    }
+
+    pub fn operation(&self, generation: u64) -> Result<Option<OperationRecord>> {
+        self.store.operation(generation)
+    }
+
+    pub fn ready_offer_for_change_set(&self, id: &str) -> Result<Option<ReadyOffer>> {
+        Ok(self
+            .store
+            .coordination()
+            .ready_offers()?
+            .into_iter()
+            .find(|offer| offer.change_set_id == id))
+    }
+
     pub fn events_after(
         &self,
         client_id: &str,
@@ -594,6 +628,464 @@ impl Kernel {
             ready_offers,
         })
     }
+
+    /// Publishes an executing claim through the only default commit-authority path.
+    ///
+    /// Lock order is scheduler -> publish lock -> redb write transaction -> live write.
+    /// Methods that need a subset of these locks preserve that order; no method may acquire
+    /// scheduler or publish locks while holding the live write lock.
+    pub fn publish_claimed(
+        &self,
+        claim: &ClaimHandle,
+        analyzer: &dyn IntentAnalyzer,
+        candidate_builder: &dyn CandidateBuilder,
+        now_tick: u64,
+    ) -> Result<PublicationReport> {
+        self.publish_claimed_inner(
+            claim,
+            analyzer,
+            candidate_builder,
+            now_tick,
+            CoordinatedPublishFailpoint::None,
+        )
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "redb-spike-api")]
+    pub fn publish_claimed_with_failpoint(
+        &self,
+        claim: &ClaimHandle,
+        analyzer: &dyn IntentAnalyzer,
+        candidate_builder: &dyn CandidateBuilder,
+        now_tick: u64,
+        failpoint: CoordinatedPublishFailpoint,
+    ) -> Result<PublicationReport> {
+        self.publish_claimed_inner(claim, analyzer, candidate_builder, now_tick, failpoint)
+    }
+
+    fn publish_claimed_inner(
+        &self,
+        claim: &ClaimHandle,
+        analyzer: &dyn IntentAnalyzer,
+        candidate_builder: &dyn CandidateBuilder,
+        now_tick: u64,
+        failpoint: CoordinatedPublishFailpoint,
+    ) -> Result<PublicationReport> {
+        let idempotency_key = coordination_commit_key(&claim.change_set_id);
+        if let Some(report) = self.committed_publication_report(&idempotency_key)? {
+            return Ok(report);
+        }
+
+        let mut scheduler = self
+            .scheduler
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+        let _publish = self
+            .publish_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("publication lock is poisoned"))?;
+        if let Some(report) = self.committed_publication_report(&idempotency_key)? {
+            return Ok(report);
+        }
+
+        let graph = self.snapshot();
+        self.validate_executing_claim(&scheduler, claim, graph.generation())?;
+        let durable = self.store.coordination();
+        let before_change_set = durable
+            .change_set(&claim.change_set_id)?
+            .with_context(|| format!("change set {} does not exist", claim.change_set_id))?;
+        if before_change_set.state != ChangeSetState::Executing {
+            bail!("change set {} is not Executing", claim.change_set_id);
+        }
+        let previous_scope = before_change_set
+            .inferred_scope
+            .as_ref()
+            .context("executing change set has no inferred scope")?;
+        let intents = durable.intents_for(&claim.change_set_id)?;
+        let fresh_scope = analyze_change_set(&graph, &intents, analyzer)?;
+        match classify_scope_change(previous_scope, &fresh_scope) {
+            ScopeChange::Unchanged => {}
+            scope_change => {
+                self.persist_changed_publication_scope(
+                    &mut scheduler,
+                    claim,
+                    before_change_set,
+                    fresh_scope,
+                    scope_change,
+                    graph.generation(),
+                )?;
+                bail!("publication scope changed before candidate construction");
+            }
+        }
+
+        let delta = candidate_builder.build_candidate(&graph, &before_change_set, &intents)?;
+        if delta.schema_version != SCHEMA_VERSION {
+            bail!(
+                "candidate delta has unsupported schema version {}",
+                delta.schema_version
+            );
+        }
+        if delta.base_generation != graph.generation() {
+            bail!(
+                "candidate delta base generation {} does not match current generation {}",
+                delta.base_generation,
+                graph.generation()
+            );
+        }
+        super::validate_delta_containment(&graph, &delta, &fresh_scope)
+            .context("candidate delta is outside inferred scope")?;
+        let next = Arc::new(graph.apply(&delta)?);
+        let next_generation = next.generation();
+        let operation_id = format!("operation:{}", uuid::Uuid::new_v4());
+        let affected_node_ids = affected_node_ids(&delta);
+
+        let before_scheduler = scheduler.clone();
+        let mut next_scheduler = scheduler.clone();
+        let before_ticket = next_scheduler
+            .tickets()
+            .find(|ticket| ticket.change_set_id == claim.change_set_id)
+            .cloned()
+            .context("executing claim has no scheduler ticket")?;
+        next_scheduler.release(&claim.claim_id, TicketState::Completed)?;
+        let selected = next_scheduler.select_ready()?;
+
+        let metadata = durable.metadata_state()?;
+        let mut lifecycle = transition(metadata);
+        let mut committed_change_set = before_change_set.clone();
+        committed_change_set.state = ChangeSetState::Committed;
+        committed_change_set.committed_generation = Some(next_generation);
+        lifecycle
+            .change_sets
+            .push((Some(before_change_set.clone()), Some(committed_change_set)));
+        let mut completed_ticket = before_ticket.clone();
+        completed_ticket.state = TicketState::Completed;
+        completed_ticket.active_claim_id = None;
+        completed_ticket.ready_offer_id = None;
+        lifecycle
+            .tickets
+            .push((Some(before_ticket.clone()), Some(completed_ticket)));
+        lifecycle.claims.push((Some(claim.clone()), None));
+        let committed_event = append_event_with_payload(
+            &mut lifecycle,
+            CoordinationEventKind::IntentCommitted,
+            &claim.change_set_id,
+            next_generation,
+            serde_json::json!({
+                "operationId": operation_id,
+                "beforeGeneration": graph.generation(),
+                "afterGeneration": next_generation,
+                "affectedNodeIds": affected_node_ids,
+            })
+            .to_string(),
+        )?;
+
+        for ticket_id in selected {
+            let ticket = next_scheduler
+                .ticket(&ticket_id)
+                .cloned()
+                .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
+            let mut offer = make_offer(&ticket, self.service_epoch(), next_generation, now_tick)?;
+            offer.blocking_event_sequence = Some(committed_event.sequence);
+            next_scheduler.mark_ready(&ticket_id, offer.clone())?;
+            let before = durable
+                .change_set(&offer.change_set_id)?
+                .with_context(|| format!("missing successor change set {}", offer.change_set_id))?;
+            let mut after = before.clone();
+            after.state = ChangeSetState::Ready;
+            after.blocking_change_set_id = Some(claim.change_set_id.clone());
+            lifecycle.change_sets.push((Some(before), Some(after)));
+            lifecycle.offers.push((None, Some(offer.clone())));
+            append_event_with_payload(
+                &mut lifecycle,
+                CoordinationEventKind::IntentReady,
+                &offer.change_set_id,
+                next_generation,
+                serde_json::json!({
+                    "blockingOperationId": operation_id,
+                    "beforeGeneration": graph.generation(),
+                    "afterGeneration": next_generation,
+                    "affectedNodeIds": affected_node_ids,
+                })
+                .to_string(),
+            )?;
+        }
+        lifecycle.tickets.extend(
+            scheduler_ticket_updates(&before_scheduler, &next_scheduler)
+                .into_iter()
+                .filter(|(before, after)| {
+                    before
+                        .as_ref()
+                        .or(after.as_ref())
+                        .is_some_and(|ticket| ticket.ticket_id != before_ticket.ticket_id)
+                }),
+        );
+
+        let publication = Publication {
+            schema_version: SCHEMA_VERSION,
+            idempotency_key,
+            delta,
+            operation: OperationRecord {
+                operation_id: operation_id.clone(),
+                change_set_id: claim.change_set_id.clone(),
+                actor: before_change_set.actor.clone(),
+                kind: if intents.len() == 1 {
+                    intent_kind(&intents[0]).to_owned()
+                } else {
+                    format!("CompositeChangeSet({})", intents.len())
+                },
+                reasoning: before_change_set.reasoning.clone(),
+                affected_node_ids: affected_node_ids.clone(),
+            },
+            ticket: TicketRecord {
+                ticket_id: before_ticket.ticket_id,
+                state: "completed".into(),
+                scope_fingerprint: fresh_scope.scope_fingerprint.clone(),
+            },
+            event: EventRecord {
+                event_id: format!("graph-event:{}", uuid::Uuid::new_v4()),
+                sequence: next_generation,
+                kind: "PublicationCommitted".into(),
+                graph_generation: next_generation,
+                payload_json: serde_json::json!({
+                    "changeSetId": claim.change_set_id,
+                    "operationId": operation_id,
+                })
+                .to_string(),
+            },
+            fence: FenceClaim {
+                service_epoch: self.service_epoch(),
+                resource_tokens: BTreeMap::new(),
+            },
+        };
+        let commit = CoordinatedCommit {
+            publication,
+            lifecycle,
+            service_epoch: self.service_epoch(),
+            reservation_keys: fresh_scope.reservation_keys,
+        };
+        let persistence_started = Instant::now();
+        let outcome = self
+            .store
+            .publish_coordinated(&commit, next.digest(), failpoint)?;
+        let persistence_ns = persistence_started.elapsed().as_nanos();
+        match outcome {
+            PublishOutcome::AlreadyPublished { generation } => {
+                let digest = self.store.generation_digest(generation)?;
+                Ok(PublicationReport {
+                    generation,
+                    digest,
+                    persistence_ns,
+                    memory_publish_ns: 0,
+                    already_published: true,
+                })
+            }
+            PublishOutcome::Published { generation } => {
+                if generation != next_generation {
+                    bail!("durable generation does not match prepared generation");
+                }
+                let memory_started = Instant::now();
+                *self
+                    .live
+                    .write()
+                    .map_err(|_| anyhow::anyhow!("live generation lock is poisoned"))? =
+                    next.clone();
+                let memory_publish_ns = memory_started.elapsed().as_nanos();
+                *scheduler = next_scheduler;
+                Ok(PublicationReport {
+                    generation,
+                    digest: next.digest().to_owned(),
+                    persistence_ns,
+                    memory_publish_ns,
+                    already_published: false,
+                })
+            }
+        }
+    }
+
+    fn committed_publication_report(&self, key: &str) -> Result<Option<PublicationReport>> {
+        let Some(generation) = self.store.idempotency_generation(key)? else {
+            return Ok(None);
+        };
+        Ok(Some(PublicationReport {
+            generation,
+            digest: self.store.generation_digest(generation)?,
+            persistence_ns: 0,
+            memory_publish_ns: 0,
+            already_published: true,
+        }))
+    }
+
+    fn validate_executing_claim(
+        &self,
+        scheduler: &SchedulerState,
+        claim: &ClaimHandle,
+        graph_generation: u64,
+    ) -> Result<()> {
+        if claim.service_epoch != self.service_epoch() {
+            bail!("claim belongs to a stale service epoch");
+        }
+        if claim.graph_generation != graph_generation {
+            bail!("claim belongs to a stale graph generation");
+        }
+        let durable = self.store.coordination();
+        let active = durable
+            .active_claims()?
+            .into_iter()
+            .find(|active| active.claim_id == claim.claim_id)
+            .context("claim is not durably active")?;
+        if active != *claim {
+            bail!("claim does not match durable executing claim");
+        }
+        let ticket = scheduler
+            .tickets()
+            .find(|ticket| ticket.change_set_id == claim.change_set_id)
+            .context("claim has no scheduler ticket")?;
+        if ticket.state != TicketState::Claimed
+            || ticket.active_claim_id.as_deref() != Some(claim.claim_id.as_str())
+            || ticket.scope_fingerprint != claim.scope_fingerprint
+            || ticket.reservation_keys != claim.reservation_keys
+        {
+            bail!("claim does not match scheduler executing state");
+        }
+        Ok(())
+    }
+
+    fn persist_changed_publication_scope(
+        &self,
+        scheduler: &mut SchedulerState,
+        claim: &ClaimHandle,
+        before_change_set: ChangeSetRecord,
+        fresh_scope: super::InferredScope,
+        scope_change: ScopeChange,
+        graph_generation: u64,
+    ) -> Result<()> {
+        let before_scheduler = scheduler.clone();
+        let mut next_scheduler = scheduler.clone();
+        let before_ticket = next_scheduler
+            .tickets()
+            .find(|ticket| ticket.change_set_id == claim.change_set_id)
+            .cloned()
+            .context("claim has no scheduler ticket")?;
+        let metadata = self.store.coordination().metadata_state()?;
+        let mut lifecycle = transition(metadata);
+        let mut after_change_set = before_change_set.clone();
+        after_change_set.inferred_scope = Some(fresh_scope.clone());
+        let terminal = matches!(scope_change, ScopeChange::MateriallyChanged)
+            || matches!(
+                fresh_scope.dynamic_expansion_policy,
+                DynamicExpansionPolicy::NeedsDecision
+            )
+            || before_change_set.expansion_count
+                >= match fresh_scope.dynamic_expansion_policy {
+                    DynamicExpansionPolicy::Requeue { max_expansions } => max_expansions,
+                    DynamicExpansionPolicy::NeedsDecision => 0,
+                };
+        if terminal {
+            next_scheduler.release(&claim.claim_id, TicketState::NeedsDecision)?;
+            after_change_set.state = ChangeSetState::NeedsDecision;
+            let mut after_ticket = before_ticket.clone();
+            after_ticket.state = TicketState::NeedsDecision;
+            after_ticket.active_claim_id = None;
+            lifecycle
+                .tickets
+                .push((Some(before_ticket), Some(after_ticket)));
+            append_event(
+                &mut lifecycle,
+                CoordinationEventKind::IntentNeedsDecision,
+                &claim.change_set_id,
+                graph_generation,
+            )?;
+        } else {
+            let after_ticket = next_scheduler.requeue_claim_with_scope(
+                &claim.claim_id,
+                fresh_scope.scope_fingerprint.clone(),
+                fresh_scope.reservation_keys.clone(),
+            )?;
+            after_change_set.state = ChangeSetState::Queued;
+            after_change_set.expansion_count = after_change_set
+                .expansion_count
+                .checked_add(1)
+                .context("scope expansion count overflow")?;
+            lifecycle
+                .tickets
+                .push((Some(before_ticket), Some(after_ticket)));
+            append_event(
+                &mut lifecycle,
+                CoordinationEventKind::ScopeExpanded,
+                &claim.change_set_id,
+                graph_generation,
+            )?;
+        }
+        lifecycle
+            .change_sets
+            .push((Some(before_change_set), Some(after_change_set)));
+        lifecycle.claims.push((Some(claim.clone()), None));
+        lifecycle.tickets.extend(
+            scheduler_ticket_updates(&before_scheduler, &next_scheduler)
+                .into_iter()
+                .filter(|(before, after)| {
+                    before
+                        .as_ref()
+                        .or(after.as_ref())
+                        .is_some_and(|ticket| ticket.change_set_id != claim.change_set_id)
+                }),
+        );
+        self.store.coordination().persist_lifecycle(&lifecycle)?;
+        *scheduler = next_scheduler;
+        Ok(())
+    }
+}
+
+fn coordination_commit_key(change_set_id: &str) -> String {
+    format!("coordination-commit:{change_set_id}")
+}
+
+fn affected_node_ids(delta: &crate::GraphDelta) -> Vec<String> {
+    let mut ids = BTreeSet::new();
+    for change in &delta.changes {
+        match change {
+            GraphChange::UpsertNode { node } => {
+                ids.insert(node.id.clone());
+            }
+            GraphChange::DeleteNode { node_id } => {
+                ids.insert(node_id.clone());
+            }
+            GraphChange::UpsertReference { reference } => {
+                ids.insert(reference.from_node_id.clone());
+                ids.insert(reference.to_node_id.clone());
+            }
+            GraphChange::DeleteReference { from_node_id } => {
+                ids.insert(from_node_id.clone());
+            }
+        }
+    }
+    ids.into_iter().collect()
+}
+
+fn intent_kind(intent: &IntentRecord) -> &'static str {
+    match intent.parameters {
+        IntentParameters::RenameSymbol { .. } => "RenameSymbol",
+        IntentParameters::AddParameter { .. } => "AddParameter",
+    }
+}
+
+fn append_event_with_payload(
+    transition: &mut LifecycleTransition,
+    kind: CoordinationEventKind,
+    change_set_id: &str,
+    graph_generation: u64,
+    payload_json: String,
+) -> Result<CoordinationEvent> {
+    let event = append_event(transition, kind, change_set_id, graph_generation)?;
+    transition
+        .events
+        .last_mut()
+        .expect("event was appended")
+        .payload_json = payload_json.clone();
+    Ok(CoordinationEvent {
+        payload_json,
+        ..event
+    })
 }
 
 fn validate_offer_context(

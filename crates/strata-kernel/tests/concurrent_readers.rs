@@ -1,3 +1,5 @@
+#![cfg(feature = "redb-spike-api")]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};

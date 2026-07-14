@@ -5,8 +5,8 @@ mod model;
 mod storage;
 
 pub use coordination::{
-    BeginChangeSet, CancellationOutcome, ChangeSetRecord, ChangeSetState, ClaimHandle,
-    ClaimOutcome, CoordinationDurable, CoordinationEvent, CoordinationEventKind,
+    BeginChangeSet, CancellationOutcome, CandidateBuilder, ChangeSetRecord, ChangeSetState,
+    ClaimHandle, ClaimOutcome, CoordinationDurable, CoordinationEvent, CoordinationEventKind,
     CoordinationFailpoint, CoordinationMetadataState, CoordinationTableCounts, CoordinationTicket,
     CreateDraftOutcome, DeltaAuthority, DynamicExpansionPolicy, EventCursor, IdempotencyClass,
     InferredScope, IntentAnalysis, IntentAnalyzer, IntentParameters, IntentRecord,
@@ -15,9 +15,14 @@ pub use coordination::{
     classify_scope_change, required_delta_authority, validate_delta_containment,
 };
 pub use graph::GraphGeneration;
-pub use kernel::{Kernel, PublicationReport, PublishFailpoint, RecoveryReport};
+#[cfg(feature = "redb-spike-api")]
+pub use kernel::PublishFailpoint;
+pub use kernel::{Kernel, PublicationReport, RecoveryReport};
 pub use model::{
-    EventRecord, FenceClaim, GraphChange, GraphDelta, GraphSnapshot, NodeRecord, OperationRecord,
-    Publication, ReferenceRecord, SCHEMA_VERSION, TicketRecord,
+    EventRecord, GraphChange, GraphDelta, GraphSnapshot, NodeRecord, OperationRecord,
+    ReferenceRecord, SCHEMA_VERSION, TicketRecord,
 };
-pub use storage::{DurableStore, PublishOutcome};
+#[cfg(feature = "redb-spike-api")]
+pub use model::{FenceClaim, Publication};
+#[cfg(feature = "redb-spike-api")]
+pub use storage::{CoordinatedPublishFailpoint, DurableStore, PublishOutcome};

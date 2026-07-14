@@ -1,13 +1,16 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
+#[cfg(feature = "redb-spike-api")]
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 
-use crate::{
-    DurableStore, FenceClaim, GraphGeneration, GraphSnapshot, Publication, PublishOutcome,
-    SchedulerState,
-};
+#[cfg(feature = "redb-spike-api")]
+use crate::model::{FenceClaim, Publication};
+use crate::storage::DurableStore;
+#[cfg(feature = "redb-spike-api")]
+use crate::storage::PublishOutcome;
+use crate::{GraphGeneration, GraphSnapshot, SchedulerState};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryReport {
@@ -28,6 +31,7 @@ pub struct PublicationReport {
 }
 
 #[doc(hidden)]
+#[cfg(feature = "redb-spike-api")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublishFailpoint {
     None,
@@ -39,8 +43,8 @@ pub enum PublishFailpoint {
 
 pub struct Kernel {
     pub(crate) store: DurableStore,
-    live: RwLock<Arc<GraphGeneration>>,
-    publish_lock: Mutex<()>,
+    pub(crate) live: RwLock<Arc<GraphGeneration>>,
+    pub(crate) publish_lock: Mutex<()>,
     service_epoch: u64,
     pub(crate) scheduler: Mutex<SchedulerState>,
 }
@@ -149,15 +153,18 @@ impl Kernel {
             .clone()
     }
 
+    #[cfg(feature = "redb-spike-api")]
     pub fn issue_fence(&self, resources: &[String]) -> Result<FenceClaim> {
         self.store.issue_fence(self.service_epoch, resources)
     }
 
+    #[cfg(feature = "redb-spike-api")]
     pub fn publish(&self, publication: Publication) -> Result<PublicationReport> {
         self.publish_inner(publication, PublishFailpoint::None)
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "redb-spike-api")]
     pub fn publish_with_failpoint(
         &self,
         publication: Publication,
@@ -166,6 +173,7 @@ impl Kernel {
         self.publish_inner(publication, failpoint)
     }
 
+    #[cfg(feature = "redb-spike-api")]
     fn publish_inner(
         &self,
         publication: Publication,
@@ -244,6 +252,12 @@ impl Kernel {
 
     pub fn service_epoch(&self) -> u64 {
         self.service_epoch
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "redb-spike-api")]
+    pub fn fence_state(&self, resource: &str) -> Result<(Option<u64>, Option<u64>)> {
+        self.store.fence_state(resource)
     }
 
     fn from_parts(
