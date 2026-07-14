@@ -8,8 +8,8 @@ use super::durable::{CoordinationMetadataState, LifecycleTransition};
 use super::{
     ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEvent,
     CoordinationEventKind, CoordinationTicket, CreateDraftOutcome, DynamicExpansionPolicy,
-    IntentAnalyzer, IntentParameters, IntentRecord, ReadyOffer, SchedulerState, ScopeChange,
-    SubmissionOutcome, TicketState, analyze_change_set, classify_scope_change,
+    EventCursor, IntentAnalyzer, IntentParameters, IntentRecord, ReadyOffer, SchedulerState,
+    ScopeChange, SubmissionOutcome, TicketState, analyze_change_set, classify_scope_change,
 };
 use crate::{Kernel, SCHEMA_VERSION};
 
@@ -32,6 +32,21 @@ pub struct CancellationOutcome {
 }
 
 impl Kernel {
+    pub fn events_after(
+        &self,
+        client_id: &str,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<CoordinationEvent>> {
+        self.store
+            .coordination()
+            .events_after(client_id, after_sequence, limit)
+    }
+
+    pub fn ack_events(&self, client_id: &str, sequence: u64) -> Result<EventCursor> {
+        self.store.coordination().ack_events(client_id, sequence)
+    }
+
     pub fn begin_change_set(&self, input: BeginChangeSet) -> Result<ChangeSetRecord> {
         let _scheduler = self
             .scheduler

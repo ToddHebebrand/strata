@@ -11,7 +11,7 @@ use crate::{
     Publication, PublishFailpoint, TicketRecord,
 };
 
-const META: TableDefinition<&str, &[u8]> = TableDefinition::new("graph_metadata");
+pub(crate) const META: TableDefinition<&str, &[u8]> = TableDefinition::new("graph_metadata");
 const SNAPSHOTS: TableDefinition<u64, &[u8]> = TableDefinition::new("snapshots");
 const OPERATIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("operations");
 const DELTAS: TableDefinition<u64, &[u8]> = TableDefinition::new("deltas");
@@ -24,7 +24,7 @@ const GENERATION_DIGESTS: TableDefinition<u64, &str> = TableDefinition::new("gen
 
 const CURRENT_GENERATION: &str = "current_generation";
 const CURRENT_EVENT_SEQUENCE: &str = "current_event_sequence";
-const SERVICE_EPOCH: &str = "service_epoch";
+pub(crate) const SERVICE_EPOCH: &str = "service_epoch";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublishOutcome {
@@ -413,6 +413,20 @@ impl DurableStore {
         };
         write.commit().context("commit service epoch transaction")?;
         Ok(next_epoch)
+    }
+
+    pub fn begin_service_epoch_and_recover_coordination(&self) -> Result<u64> {
+        self.coordination()
+            .begin_service_epoch_and_recover_coordination()
+    }
+
+    #[doc(hidden)]
+    pub fn begin_service_epoch_and_recover_coordination_with_failpoint(
+        &self,
+        failpoint: crate::CoordinationFailpoint,
+    ) -> Result<u64> {
+        self.coordination()
+            .begin_service_epoch_and_recover_coordination_with_failpoint(failpoint)
     }
 
     pub fn latest_snapshot(&self) -> Result<GraphSnapshot> {

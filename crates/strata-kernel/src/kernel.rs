@@ -70,7 +70,6 @@ impl Kernel {
 
     pub fn open(path: impl AsRef<Path>) -> Result<(Self, RecoveryReport)> {
         let store = DurableStore::open(path)?;
-        let service_epoch = store.begin_service_epoch()?;
         let snapshot = store.latest_snapshot()?;
         let snapshot_generation = snapshot.generation;
         let mut graph = GraphGeneration::from_snapshot(snapshot)?;
@@ -123,7 +122,7 @@ impl Kernel {
             );
         }
 
-        store.coordination().invalidate_ready_offers_on_open()?;
+        let service_epoch = store.begin_service_epoch_and_recover_coordination()?;
         let scheduler = SchedulerState::recover(
             store.coordination().active_tickets()?,
             store.coordination().ready_offers()?,

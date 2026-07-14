@@ -1,13 +1,22 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use anyhow::{Context, Result, bail};
-use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
+use redb::{
+    Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
+    WriteTransaction,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use uuid::Uuid;
 
 use super::{
     ChangeSetRecord, ChangeSetState, ClaimHandle, CoordinationEvent, CoordinationEventKind,
-    CoordinationTicket, IntentRecord, ReadyOffer, TicketState,
+    CoordinationTicket, EventCursor, IntentRecord, ReadyOffer, TicketState,
 };
-use crate::storage::{read_current_generation_in_write_txn, read_u64_metadata};
+use crate::SCHEMA_VERSION;
+use crate::storage::{
+    META as GRAPH_META, SERVICE_EPOCH, read_current_generation_in_write_txn, read_u64_metadata,
+};
 
 const CHANGE_SETS: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_change_sets");
 const INTENTS: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_intents");
@@ -79,6 +88,295 @@ pub struct CoordinationDurable<'a> {
 impl<'a> CoordinationDurable<'a> {
     pub(crate) fn new(database: &'a Database) -> Self {
         Self { database }
+    }
+
+    pub fn events_after(
+        &self,
+        client_id: &str,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<CoordinationEvent>> {
+        if limit == 0 {
+            bail!("coordination event limit must be greater than zero");
+        }
+        EventCursor::new(client_id, 0).map_err(anyhow::Error::msg)?;
+        let read = self
+            .database
+            .begin_read()
+            .context("begin event replay read")?;
+        let acknowledged_sequence = read
+            .open_table(EVENT_CURSORS)
+            .context("open event cursors table")?
+            .get(client_id)
+            .context("read event cursor")?
+            .map(|cursor| cursor.value())
+            .unwrap_or(0);
+        let start = after_sequence.max(acknowledged_sequence);
+        let events = read.open_table(EVENTS).context("open events table")?;
+        let mut replay = Vec::new();
+        for entry in events.iter().context("iterate coordination events")? {
+            let (sequence, value) = entry.context("read coordination event entry")?;
+            if sequence.value() <= start {
+                continue;
+            }
+            replay.push(decode(value.value(), "coordination event")?);
+            if replay.len() == limit {
+                break;
+            }
+        }
+        Ok(replay)
+    }
+
+    pub fn ack_events(&self, client_id: &str, sequence: u64) -> Result<EventCursor> {
+        EventCursor::new(client_id, sequence).map_err(anyhow::Error::msg)?;
+        let write = self
+            .database
+            .begin_write()
+            .context("begin event acknowledgement transaction")?;
+        let current_sequence = {
+            let metadata = write
+                .open_table(META)
+                .context("open coordination metadata")?;
+            read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?
+        };
+        if sequence > current_sequence {
+            bail!(
+                "cannot acknowledge coordination event sequence {sequence} beyond current sequence {current_sequence}"
+            );
+        }
+        let acknowledged_sequence = {
+            let mut cursors = write
+                .open_table(EVENT_CURSORS)
+                .context("open event cursors table")?;
+            let existing = cursors
+                .get(client_id)
+                .context("read event cursor")?
+                .map(|cursor| cursor.value())
+                .unwrap_or(0);
+            let acknowledged = existing.max(sequence);
+            cursors
+                .insert(client_id, acknowledged)
+                .context("write event cursor")?;
+            acknowledged
+        };
+        write
+            .commit()
+            .context("commit event acknowledgement transaction")?;
+        EventCursor::new(client_id, acknowledged_sequence).map_err(anyhow::Error::msg)
+    }
+
+    pub(crate) fn begin_service_epoch_and_recover_coordination(&self) -> Result<u64> {
+        self.begin_service_epoch_and_recover_coordination_inner(CoordinationFailpoint::None)
+    }
+
+    #[doc(hidden)]
+    pub fn begin_service_epoch_and_recover_coordination_with_failpoint(
+        &self,
+        failpoint: CoordinationFailpoint,
+    ) -> Result<u64> {
+        self.begin_service_epoch_and_recover_coordination_inner(failpoint)
+    }
+
+    fn begin_service_epoch_and_recover_coordination_inner(
+        &self,
+        failpoint: CoordinationFailpoint,
+    ) -> Result<u64> {
+        let write = self
+            .database
+            .begin_write()
+            .context("begin service epoch and coordination recovery transaction")?;
+        let (old_epoch, next_epoch) = {
+            let metadata = write
+                .open_table(GRAPH_META)
+                .context("open metadata table")?;
+            let old_epoch = read_u64_metadata(&metadata, SERVICE_EPOCH)?;
+            let next_epoch = old_epoch.checked_add(1).context("service epoch overflow")?;
+            (old_epoch, next_epoch)
+        };
+        let graph_generation = read_current_generation_in_write_txn(&write)?;
+        let coordination_metadata = {
+            let metadata = write
+                .open_table(META)
+                .context("open coordination metadata")?;
+            CoordinationMetadataState {
+                next_queue_sequence: read_u64_metadata(&metadata, NEXT_QUEUE_SEQUENCE)?,
+                current_event_sequence: read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
+            }
+        };
+        let mut transition = LifecycleTransition {
+            change_sets: Vec::new(),
+            tickets: Vec::new(),
+            offers: Vec::new(),
+            claims: Vec::new(),
+            events: Vec::new(),
+            expected_metadata: coordination_metadata,
+            next_metadata: coordination_metadata,
+        };
+
+        let recoverable = {
+            let change_sets = write
+                .open_table(CHANGE_SETS)
+                .context("open change sets table")?;
+            let mut recoverable = BTreeMap::new();
+            for entry in change_sets.iter().context("iterate change sets")? {
+                let (_, value) = entry.context("read change set entry")?;
+                let change_set: ChangeSetRecord = decode(value.value(), "change set")?;
+                if matches!(
+                    change_set.state,
+                    ChangeSetState::Ready | ChangeSetState::Executing
+                ) {
+                    recoverable.insert(change_set.change_set_id.clone(), change_set);
+                }
+            }
+            recoverable
+        };
+
+        let mut tickets_by_change_set = BTreeMap::new();
+        {
+            let tickets = write.open_table(TICKETS).context("open tickets table")?;
+            for entry in tickets.iter().context("iterate tickets")? {
+                let (_, value) = entry.context("read ticket entry")?;
+                let ticket: CoordinationTicket = decode(value.value(), "ticket")?;
+                if recoverable.contains_key(&ticket.change_set_id)
+                    && tickets_by_change_set
+                        .insert(ticket.change_set_id.clone(), ticket)
+                        .is_some()
+                {
+                    bail!("recoverable change set has more than one ticket");
+                }
+            }
+        }
+        if recoverable.len() != tickets_by_change_set.len() {
+            bail!("recoverable change set is missing its ticket");
+        }
+
+        let offers = {
+            let table = write
+                .open_table(READY_OFFERS)
+                .context("open ready offers table")?;
+            let mut records = BTreeMap::new();
+            for entry in table.iter().context("iterate ready offers")? {
+                let (_, value) = entry.context("read ready offer entry")?;
+                let offer: ReadyOffer = decode(value.value(), "ready offer")?;
+                records.insert(offer.offer_id.clone(), offer);
+            }
+            records
+        };
+        let claims = {
+            let table = write
+                .open_table(ACTIVE_CLAIMS)
+                .context("open active claims table")?;
+            let mut records = BTreeMap::new();
+            for entry in table.iter().context("iterate active claims")? {
+                let (_, value) = entry.context("read active claim entry")?;
+                let claim: ClaimHandle = decode(value.value(), "active claim")?;
+                records.insert(claim.claim_id.clone(), claim);
+            }
+            records
+        };
+
+        let mut consumed_offers = BTreeSet::new();
+        let mut consumed_claims = BTreeSet::new();
+        for (change_set_id, change_set) in &recoverable {
+            let ticket = tickets_by_change_set
+                .get(change_set_id)
+                .context("recoverable change set is missing its ticket")?;
+            match change_set.state {
+                ChangeSetState::Ready => {
+                    if ticket.state != TicketState::Ready || ticket.active_claim_id.is_some() {
+                        bail!("Ready change set does not have a matching Ready ticket");
+                    }
+                    let offer_id = ticket
+                        .ready_offer_id
+                        .as_ref()
+                        .context("Ready ticket has no ready offer ID")?;
+                    let offer = offers
+                        .get(offer_id)
+                        .context("Ready ticket refers to a missing offer")?;
+                    if offer.change_set_id != *change_set_id || offer.service_epoch != old_epoch {
+                        bail!("Ready offer does not match its prior-epoch change set");
+                    }
+                    consumed_offers.insert(offer_id.clone());
+                    transition.offers.push((Some(offer.clone()), None));
+                }
+                ChangeSetState::Executing => {
+                    if ticket.state != TicketState::Claimed || ticket.ready_offer_id.is_some() {
+                        bail!("Executing change set does not have a matching Claimed ticket");
+                    }
+                    let claim_id = ticket
+                        .active_claim_id
+                        .as_ref()
+                        .context("Claimed ticket has no active claim ID")?;
+                    let claim = claims
+                        .get(claim_id)
+                        .context("Claimed ticket refers to a missing active claim")?;
+                    if claim.change_set_id != *change_set_id || claim.service_epoch != old_epoch {
+                        bail!("active claim does not match its prior-epoch change set");
+                    }
+                    consumed_claims.insert(claim_id.clone());
+                    transition.claims.push((Some(claim.clone()), None));
+                }
+                _ => unreachable!("recoverable states were filtered above"),
+            }
+
+            let mut next_change_set = change_set.clone();
+            next_change_set.state = ChangeSetState::Queued;
+            let mut next_ticket = ticket.clone();
+            next_ticket.state = TicketState::Queued;
+            next_ticket.ready_offer_id = None;
+            next_ticket.active_claim_id = None;
+            transition
+                .change_sets
+                .push((Some(change_set.clone()), Some(next_change_set)));
+            transition
+                .tickets
+                .push((Some(ticket.clone()), Some(next_ticket)));
+
+            let event_sequence = transition
+                .next_metadata
+                .current_event_sequence
+                .checked_add(1)
+                .context("coordination event sequence overflow")?;
+            let payload_json = serde_json::json!({
+                "oldServiceEpoch": old_epoch,
+                "newServiceEpoch": next_epoch,
+            })
+            .to_string();
+            transition.events.push(
+                CoordinationEvent::new(
+                    SCHEMA_VERSION,
+                    Uuid::new_v4().to_string(),
+                    event_sequence,
+                    CoordinationEventKind::LeaseExpired,
+                    change_set_id,
+                    graph_generation,
+                    payload_json,
+                )
+                .map_err(anyhow::Error::msg)?,
+            );
+            transition.next_metadata.current_event_sequence = event_sequence;
+        }
+        if consumed_offers.len() != offers.len() || consumed_claims.len() != claims.len() {
+            bail!("coordination authority table contains an orphaned record");
+        }
+
+        self.persist_lifecycle_in_write_txn(&write, &transition)?;
+        {
+            let mut metadata = write
+                .open_table(GRAPH_META)
+                .context("open metadata table")?;
+            let bytes = next_epoch.to_le_bytes();
+            metadata
+                .insert(SERVICE_EPOCH, bytes.as_slice())
+                .context("advance service epoch")?;
+        }
+        if failpoint == CoordinationFailpoint::BeforeCommit {
+            bail!("coordination failpoint before commit");
+        }
+        write
+            .commit()
+            .context("commit service epoch and coordination recovery transaction")?;
+        Ok(next_epoch)
     }
 
     pub fn create_draft(&self, record: &ChangeSetRecord) -> Result<CreateDraftOutcome> {
@@ -490,6 +788,17 @@ impl<'a> CoordinationDurable<'a> {
             .database
             .begin_write()
             .context("begin coordination lifecycle transaction")?;
+        self.persist_lifecycle_in_write_txn(&write, transition)?;
+        write
+            .commit()
+            .context("commit coordination lifecycle transaction")
+    }
+
+    fn persist_lifecycle_in_write_txn(
+        &self,
+        write: &WriteTransaction,
+        transition: &LifecycleTransition,
+    ) -> Result<()> {
         let durable_metadata = {
             let metadata = write
                 .open_table(META)
@@ -601,7 +910,7 @@ impl<'a> CoordinationDurable<'a> {
             }
         }
 
-        let current_graph_generation = read_current_generation_in_write_txn(&write)?;
+        let current_graph_generation = read_current_generation_in_write_txn(write)?;
         let mut expected_sequence = transition
             .expected_metadata
             .current_event_sequence
@@ -727,49 +1036,7 @@ impl<'a> CoordinationDurable<'a> {
             metadata.insert(NEXT_QUEUE_SEQUENCE, queue.as_slice())?;
             metadata.insert(CURRENT_EVENT_SEQUENCE, events.as_slice())?;
         }
-        write
-            .commit()
-            .context("commit coordination lifecycle transaction")
-    }
-
-    pub(crate) fn invalidate_ready_offers_on_open(&self) -> Result<()> {
-        let offers = self.ready_offers()?;
-        if offers.is_empty() {
-            return Ok(());
-        }
-        let tickets = self.active_tickets()?;
-        let metadata = self.metadata_state()?;
-        let mut transition = LifecycleTransition {
-            change_sets: Vec::new(),
-            tickets: Vec::new(),
-            offers: Vec::new(),
-            claims: Vec::new(),
-            events: Vec::new(),
-            expected_metadata: metadata,
-            next_metadata: metadata,
-        };
-        for offer in offers {
-            let ticket = tickets
-                .iter()
-                .find(|ticket| ticket.ready_offer_id.as_deref() == Some(offer.offer_id.as_str()))
-                .with_context(|| format!("ready offer {} has no ticket", offer.offer_id))?;
-            let mut next_ticket = ticket.clone();
-            next_ticket.state = TicketState::Queued;
-            next_ticket.ready_offer_id = None;
-            let change_set = self
-                .change_set(&offer.change_set_id)?
-                .with_context(|| format!("missing change set {}", offer.change_set_id))?;
-            let mut next_change_set = change_set.clone();
-            next_change_set.state = ChangeSetState::Queued;
-            transition
-                .change_sets
-                .push((Some(change_set), Some(next_change_set)));
-            transition
-                .tickets
-                .push((Some(ticket.clone()), Some(next_ticket)));
-            transition.offers.push((Some(offer), None));
-        }
-        self.persist_lifecycle(&transition)
+        Ok(())
     }
 
     pub fn change_set(&self, id: &str) -> Result<Option<ChangeSetRecord>> {
