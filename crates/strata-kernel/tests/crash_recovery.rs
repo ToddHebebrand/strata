@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use strata_kernel::{DurableStore, GraphSnapshot, Kernel};
+use strata_kernel::{DurableStore, GraphSnapshot, Kernel, Publication};
 use tempfile::tempdir;
 
 fn binary() -> &'static str {
@@ -55,6 +55,8 @@ fn process_crashes_recover_only_durably_committed_generations() {
             "--out",
             publication_arg,
         ]);
+        let expected_publication: Publication =
+            serde_json::from_slice(&fs::read(&publication).unwrap()).unwrap();
 
         let crashed = run(&[
             "publish",
@@ -72,6 +74,7 @@ fn process_crashes_recover_only_durably_committed_generations() {
 
         let inspected = run_json(&["inspect", "--db", database_arg]);
         let (independently_replayed, report) = Kernel::open(&database).unwrap();
+        let recovered_digest = independently_replayed.snapshot().digest().to_owned();
         assert_eq!(report.generation, expected_generation, "{failpoint}");
         assert_eq!(
             inspected["generation"].as_u64(),
@@ -80,9 +83,69 @@ fn process_crashes_recover_only_durably_committed_generations() {
         );
         assert_eq!(
             inspected["digest"].as_str(),
-            Some(independently_replayed.snapshot().digest()),
+            Some(recovered_digest.as_str()),
             "{failpoint}"
         );
+        drop(independently_replayed);
+
+        let store = DurableStore::open(&database).unwrap();
+        let operation = store.operation(1).unwrap();
+        let delta = store.delta(1).unwrap();
+        let event = store.event(1).unwrap();
+        let ticket = store
+            .ticket(&expected_publication.ticket.ticket_id)
+            .unwrap();
+        let idempotency_generation = store
+            .idempotency_generation(&expected_publication.idempotency_key)
+            .unwrap();
+        let was_published = store
+            .was_published(&expected_publication.idempotency_key)
+            .unwrap();
+        let generation_one_digest = store.generation_digest(1);
+        let (current_fence, consumed_fence) = store.fence_state("symbol:User").unwrap();
+
+        if expected_generation == 0 {
+            assert!(operation.is_none(), "{failpoint}");
+            assert!(delta.is_none(), "{failpoint}");
+            assert!(event.is_none(), "{failpoint}");
+            assert!(ticket.is_none(), "{failpoint}");
+            assert!(idempotency_generation.is_none(), "{failpoint}");
+            assert!(!was_published, "{failpoint}");
+            assert!(generation_one_digest.is_err(), "{failpoint}");
+            assert!(current_fence.is_some_and(|token| token > 0), "{failpoint}");
+            assert_eq!(consumed_fence, None, "{failpoint}");
+        } else {
+            assert_eq!(
+                operation,
+                Some(expected_publication.operation.clone()),
+                "{failpoint}"
+            );
+            assert_eq!(
+                delta,
+                Some(expected_publication.delta.clone()),
+                "{failpoint}"
+            );
+            assert_eq!(
+                event,
+                Some(expected_publication.event.clone()),
+                "{failpoint}"
+            );
+            assert_eq!(
+                ticket,
+                Some(expected_publication.ticket.clone()),
+                "{failpoint}"
+            );
+            assert_eq!(idempotency_generation, Some(1), "{failpoint}");
+            assert!(was_published, "{failpoint}");
+            assert_eq!(
+                generation_one_digest.unwrap(),
+                recovered_digest,
+                "{failpoint}"
+            );
+            assert!(current_fence.is_some_and(|token| token > 0), "{failpoint}");
+            assert!(consumed_fence.is_some_and(|token| token > 0), "{failpoint}");
+            assert_eq!(consumed_fence, current_fence, "{failpoint}");
+        }
     }
 }
 
@@ -97,13 +160,24 @@ fn measure_events_reference_their_same_iteration_operations() {
     let publication_arg = publication.to_str().unwrap();
 
     run_json(&["seed", "--db", database_arg, "--snapshot", fixture_arg]);
-    run_json(&[
+    let publication_summary = run_json(&[
         "make-rename-publication",
         "--snapshot",
         fixture_arg,
         "--out",
         publication_arg,
     ]);
+    let publication_json: Value = serde_json::from_slice(&fs::read(&publication).unwrap()).unwrap();
+    assert_eq!(
+        publication_summary["affectedNodeCount"].as_u64(),
+        Some(
+            publication_json["operation"]["affectedNodeIds"]
+                .as_array()
+                .unwrap()
+                .len() as u64
+        )
+    );
+    assert!(publication_summary.get("affectedNodes").is_none());
     run_json(&[
         "measure",
         "--db",

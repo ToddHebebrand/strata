@@ -557,6 +557,42 @@ impl DurableStore {
             .is_some())
     }
 
+    #[doc(hidden)]
+    pub fn idempotency_generation(&self, idempotency_key: &str) -> Result<Option<u64>> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin idempotency read transaction")?;
+        let table = read
+            .open_table(IDEMPOTENCY)
+            .context("open idempotency table")?;
+        Ok(table
+            .get(idempotency_key)
+            .context("read idempotency generation")?
+            .map(|generation| generation.value()))
+    }
+
+    #[doc(hidden)]
+    pub fn fence_state(&self, resource: &str) -> Result<(Option<u64>, Option<u64>)> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin fence state read transaction")?;
+        let fences = read.open_table(FENCES).context("open fences table")?;
+        let consumed = read
+            .open_table(CONSUMED_FENCES)
+            .context("open consumed fences table")?;
+        let current = fences
+            .get(resource)
+            .with_context(|| format!("read fence token for {resource}"))?
+            .map(|token| token.value());
+        let consumed = consumed
+            .get(resource)
+            .with_context(|| format!("read consumed fence token for {resource}"))?
+            .map(|token| token.value());
+        Ok((current, consumed))
+    }
+
     pub fn generation_digest(&self, generation: u64) -> Result<String> {
         let read = self
             .database

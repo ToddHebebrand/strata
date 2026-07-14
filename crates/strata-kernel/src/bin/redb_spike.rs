@@ -155,7 +155,7 @@ fn make_rename_publication(args: &[String]) -> Result<()> {
     print_json(json!({
         "command": "make-rename-publication",
         "out": output_path,
-        "affectedNodes": affected_node_ids.len(),
+        "affectedNodeCount": affected_node_ids.len(),
     }))
 }
 
