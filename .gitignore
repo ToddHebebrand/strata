@@ -8,6 +8,7 @@ dist/
 .env
 .env.*
 !.env.example
+.worktrees/
 
 # Phase 4 benchmark round artifacts (operator-run; not committed)
 packages/bench/results/*
