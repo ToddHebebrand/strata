@@ -96,7 +96,7 @@ Goal: test Strata's original motivation directly — multiple agents sharing one
 
 Approved design: [`docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md`](superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md).
 
-- [ ] **Redb spike gate.** Rust memory-native graph; atomic operation+delta+event+ticket publication; snapshot+replay recovery; fencing and crash-boundary tests on `examples/medium`.
+- [x] **Redb spike gate.** Rust memory-native graph; atomic operation+delta+event+ticket publication; snapshot+replay recovery; fencing and crash-boundary tests on `examples/medium`. (PASS 2026-07-14; evidence: [`docs/spikes/2026-07-13-redb-kernel-spike.md`](spikes/2026-07-13-redb-kernel-spike.md))
 - [ ] **Coordination kernel.** Typed intents, inferred semantic scopes, all-or-ticket scheduling, durable tickets/events, service epochs, fencing, FIFO aging, and fresh-state wakeups.
 - [ ] **Two-operation proof.** `rename_symbol` (wide closure) and `add_parameter` (dynamic scope) through the Rust kernel while existing TypeScript ingest/render/verify remain authoritative.
 - [ ] **Key-free acceptance.** Zero lost updates, dirty reads, partial commits, and stale-fence publications across deterministic multi-client interleavings and injected crashes.
