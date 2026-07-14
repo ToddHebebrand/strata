@@ -9,7 +9,9 @@ pub use analyzer::{
     analyze_change_set, canonical_scope_fingerprint, classify_scope_change,
     required_delta_authority, validate_delta_containment,
 };
-pub use coordinator::{BeginChangeSet, CancellationOutcome, READY_OFFER_TTL_TICKS};
+pub use coordinator::{
+    BeginChangeSet, CancellationOutcome, MAX_WAKE_AFFECTED_NODE_IDS, READY_OFFER_TTL_TICKS,
+};
 pub use durable::{
     CoordinationDurable, CoordinationFailpoint, CoordinationMetadataState, CoordinationTableCounts,
     CreateDraftOutcome,

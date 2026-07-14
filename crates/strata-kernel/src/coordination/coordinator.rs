@@ -22,6 +22,7 @@ use crate::{
 };
 
 pub const READY_OFFER_TTL_TICKS: u64 = 30;
+pub const MAX_WAKE_AFFECTED_NODE_IDS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -712,7 +713,7 @@ impl Kernel {
                     before_change_set,
                     fresh_scope,
                     scope_change,
-                    graph.generation(),
+                    now_tick,
                 )?;
                 bail!("publication scope changed before candidate construction");
             }
@@ -770,13 +771,13 @@ impl Kernel {
             CoordinationEventKind::IntentCommitted,
             &claim.change_set_id,
             next_generation,
-            serde_json::json!({
-                "operationId": operation_id,
-                "beforeGeneration": graph.generation(),
-                "afterGeneration": next_generation,
-                "affectedNodeIds": affected_node_ids,
-            })
-            .to_string(),
+            bounded_wake_payload(
+                "operationId",
+                &operation_id,
+                graph.generation(),
+                next_generation,
+                &affected_node_ids,
+            ),
         )?;
 
         for ticket_id in selected {
@@ -800,13 +801,13 @@ impl Kernel {
                 CoordinationEventKind::IntentReady,
                 &offer.change_set_id,
                 next_generation,
-                serde_json::json!({
-                    "blockingOperationId": operation_id,
-                    "beforeGeneration": graph.generation(),
-                    "afterGeneration": next_generation,
-                    "affectedNodeIds": affected_node_ids,
-                })
-                .to_string(),
+                bounded_wake_payload(
+                    "blockingOperationId",
+                    &operation_id,
+                    graph.generation(),
+                    next_generation,
+                    &affected_node_ids,
+                ),
             )?;
         }
         lifecycle.tickets.extend(
@@ -957,8 +958,9 @@ impl Kernel {
         before_change_set: ChangeSetRecord,
         fresh_scope: super::InferredScope,
         scope_change: ScopeChange,
-        graph_generation: u64,
+        now_tick: u64,
     ) -> Result<()> {
+        let graph_generation = claim.graph_generation;
         let before_scheduler = scheduler.clone();
         let mut next_scheduler = scheduler.clone();
         let before_ticket = next_scheduler
@@ -966,7 +968,8 @@ impl Kernel {
             .find(|ticket| ticket.change_set_id == claim.change_set_id)
             .cloned()
             .context("claim has no scheduler ticket")?;
-        let metadata = self.store.coordination().metadata_state()?;
+        let durable = self.store.coordination();
+        let metadata = durable.metadata_state()?;
         let mut lifecycle = transition(metadata);
         let mut after_change_set = before_change_set.clone();
         after_change_set.inferred_scope = Some(fresh_scope.clone());
@@ -989,12 +992,37 @@ impl Kernel {
             lifecycle
                 .tickets
                 .push((Some(before_ticket), Some(after_ticket)));
-            append_event(
+            let terminal_event = append_event(
                 &mut lifecycle,
                 CoordinationEventKind::IntentNeedsDecision,
                 &claim.change_set_id,
                 graph_generation,
             )?;
+            let selected = next_scheduler.select_ready()?;
+            for ticket_id in selected {
+                let ticket = next_scheduler
+                    .ticket(&ticket_id)
+                    .cloned()
+                    .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
+                let mut offer =
+                    make_offer(&ticket, self.service_epoch(), graph_generation, now_tick)?;
+                offer.blocking_event_sequence = Some(terminal_event.sequence);
+                next_scheduler.mark_ready(&ticket_id, offer.clone())?;
+                let before = durable.change_set(&offer.change_set_id)?.with_context(|| {
+                    format!("missing successor change set {}", offer.change_set_id)
+                })?;
+                let mut after = before.clone();
+                after.state = ChangeSetState::Ready;
+                after.blocking_change_set_id = Some(claim.change_set_id.clone());
+                lifecycle.change_sets.push((Some(before), Some(after)));
+                lifecycle.offers.push((None, Some(offer.clone())));
+                append_event(
+                    &mut lifecycle,
+                    CoordinationEventKind::IntentReady,
+                    &offer.change_set_id,
+                    graph_generation,
+                )?;
+            }
         } else {
             let after_ticket = next_scheduler.requeue_claim_with_scope(
                 &claim.claim_id,
@@ -1030,7 +1058,7 @@ impl Kernel {
                         .is_some_and(|ticket| ticket.change_set_id != claim.change_set_id)
                 }),
         );
-        self.store.coordination().persist_lifecycle(&lifecycle)?;
+        durable.persist_lifecycle(&lifecycle)?;
         *scheduler = next_scheduler;
         Ok(())
     }
@@ -1067,6 +1095,32 @@ fn intent_kind(intent: &IntentRecord) -> &'static str {
         IntentParameters::RenameSymbol { .. } => "RenameSymbol",
         IntentParameters::AddParameter { .. } => "AddParameter",
     }
+}
+
+fn bounded_wake_payload(
+    operation_field: &str,
+    operation_id: &str,
+    before_generation: u64,
+    after_generation: u64,
+    affected_node_ids: &[String],
+) -> String {
+    let shown = affected_node_ids
+        .iter()
+        .take(MAX_WAKE_AFFECTED_NODE_IDS)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut payload = serde_json::json!({
+        "beforeGeneration": before_generation,
+        "afterGeneration": after_generation,
+        "affectedNodeIds": shown,
+        "totalAffectedNodeCount": affected_node_ids.len(),
+        "affectedNodeIdsTruncated": affected_node_ids.len() > MAX_WAKE_AFFECTED_NODE_IDS,
+    });
+    payload
+        .as_object_mut()
+        .expect("wake payload is an object")
+        .insert(operation_field.into(), operation_id.into());
+    payload.to_string()
 }
 
 fn append_event_with_payload(

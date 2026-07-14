@@ -38,3 +38,17 @@ Prepended the required `decisions.md` entry: `publish_claimed` accepts host `now
 
 - `CandidateBuilder` intentionally has no production implementation; the TypeScript worker bridge remains a later task.
 - The feature-gated failpoint surface is a research harness only. No Node validation, transport, real TypeScript analyzer, or live experiment was added.
+
+## Review fixes
+
+- Terminal scope-change RED: `material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter` failed with `left: Queued`, `right: Ready`; GREEN after persisting terminal release, successor selection, fresh offers, and wake events in the same lifecycle transaction.
+- Bounded wake-context RED: the new test failed with unresolved import `MAX_WAKE_AFFECTED_NODE_IDS`; GREEN after adding the named 64-ID bound and `totalAffectedNodeCount` / `affectedNodeIdsTruncated` metadata while retaining all 65 IDs in the canonical operation record.
+- GREEN focused default: `cargo test -p strata-kernel --test coordination_publication` — 10 passed, 0 failed.
+- GREEN focused feature: `cargo test -p strata-kernel --features redb-spike-api --test coordination_publication` — 11 passed, 0 failed.
+- Added deterministic duplicate-finishing coverage: a barrier holds the first builder while a second caller races; both receive the original generation/digest, the builder runs once, and one committed event is appended.
+- Added earlier-retry-after-later-disjoint-generation coverage: the retry returns its original generation/digest and appends no event.
+- Expanded negative-path coverage: wrong schema/base produce zero graph, coordination, or fence side effects; expanded scope requeues; material scope enters `NeedsDecision` and atomically wakes a newly eligible waiter.
+- Strengthened rollback coverage: each post-fence, insert-boundary, and pre-commit failpoint drops/reopens the database before assertions; a blocked successor proves no partial ready offer/event survived. Successor lifecycle inserts are included in the enumerated insert-boundary sweep.
+- GREEN full default: `cargo test -p strata-kernel` — 49 passed, 0 failed, including the default API-sealing trybuild test.
+- GREEN full feature: `cargo test -p strata-kernel --features redb-spike-api` — 97 passed, 0 failed.
+- Final hygiene gate: `cargo fmt --all`; default and feature `cargo clippy -p strata-kernel --all-targets -- -D warnings`; both full test commands — all passed in one combined run.
