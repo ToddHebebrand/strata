@@ -202,6 +202,9 @@ fn measure(args: &[String]) -> Result<()> {
         publication.event.event_id = format!("{}:measure:{iteration}", template.event.event_id);
         publication.event.sequence = next_generation;
         publication.event.graph_generation = next_generation;
+        publication.event.payload_json = serde_json::to_string(&json!({
+            "operationId": publication.operation.operation_id,
+        }))?;
         publication.fence = kernel.issue_fence(&resources)?;
         last = Some(kernel.publish(publication)?);
     }

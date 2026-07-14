@@ -1,13 +1,50 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::{Arc, mpsc};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use strata_kernel::{
     EventRecord, FenceClaim, GraphChange, GraphDelta, GraphGeneration, GraphSnapshot, Kernel,
     NodeRecord, OperationRecord, Publication, SCHEMA_VERSION, TicketRecord,
 };
 use tempfile::tempdir;
+
+const READER_COUNT: usize = 8;
+const OBSERVATION_DEADLINE: Duration = Duration::from_secs(15);
+
+struct StopReaders(Arc<AtomicBool>);
+
+impl Drop for StopReaders {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+fn wait_for_all_readers(
+    observations: &mpsc::Receiver<(usize, u64)>,
+    target_generation: u64,
+) -> Result<(), String> {
+    let deadline = Instant::now() + OBSERVATION_DEADLINE;
+    let mut readers = BTreeSet::new();
+    while readers.len() < READER_COUNT {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "timed out waiting for every reader to observe generation {target_generation}; observed readers {readers:?}"
+            ));
+        }
+        let (reader_id, generation) = observations.recv_timeout(remaining).map_err(|error| {
+            format!(
+                "failed waiting for every reader to observe generation {target_generation}: {error}; observed readers {readers:?}"
+            )
+        })?;
+        if generation == target_generation {
+            readers.insert(reader_id);
+        }
+    }
+    Ok(())
+}
 
 fn fixture() -> GraphSnapshot {
     serde_json::from_str(include_str!("fixtures/examples-medium.snapshot.json")).unwrap()
@@ -89,18 +126,19 @@ fn eight_readers_never_observe_a_torn_generation() {
     let expected_pairs = Arc::new(expected_pairs);
     let original_node_ids = Arc::new(original_node_ids);
     let stop = Arc::new(AtomicBool::new(false));
-    let start = Arc::new(Barrier::new(9));
+    let _stop_readers = StopReaders(Arc::clone(&stop));
+    let (observation_tx, observation_rx) = mpsc::channel();
 
-    let readers: Vec<_> = (0..8)
-        .map(|_| {
+    let readers: Vec<_> = (0..READER_COUNT)
+        .map(|reader_id| {
             let kernel = Arc::clone(&kernel);
             let expected_pairs = Arc::clone(&expected_pairs);
             let original_node_ids = Arc::clone(&original_node_ids);
             let stop = Arc::clone(&stop);
-            let start = Arc::clone(&start);
+            let observation_tx = observation_tx.clone();
             thread::spawn(move || {
                 let mut observed = Vec::new();
-                start.wait();
+                let mut reported_generations = BTreeSet::new();
                 loop {
                     let live = kernel.snapshot();
                     let materialized = live.snapshot();
@@ -118,6 +156,9 @@ fn eight_readers_never_observe_a_torn_generation() {
                             && node_ids.contains(&reference.to_node_id)
                     }));
                     observed.push(pair);
+                    if reported_generations.insert(live.generation()) {
+                        let _ = observation_tx.send((reader_id, live.generation()));
+                    }
 
                     if stop.load(Ordering::Acquire) {
                         break;
@@ -128,19 +169,33 @@ fn eight_readers_never_observe_a_torn_generation() {
             })
         })
         .collect();
+    drop(observation_tx);
 
-    start.wait();
+    wait_for_all_readers(&observation_rx, 0).unwrap();
+
+    let mut publications = publications.into_iter();
+    let mut first = publications.next().unwrap();
+    first.fence = kernel.issue_fence(&["symbol:reader-proof".into()]).unwrap();
+    kernel.publish(first).unwrap();
+    wait_for_all_readers(&observation_rx, 1).unwrap();
+
     for mut publication in publications {
         publication.fence = kernel.issue_fence(&["symbol:reader-proof".into()]).unwrap();
         kernel.publish(publication).unwrap();
         thread::yield_now();
     }
+    wait_for_all_readers(&observation_rx, 25).unwrap();
     stop.store(true, Ordering::Release);
 
     for reader in readers {
         let observed = reader.join().unwrap();
         assert!(!observed.is_empty());
         assert!(observed.iter().all(|pair| expected_pairs.contains(pair)));
+        let observed_generations: BTreeSet<u64> =
+            observed.iter().map(|(generation, _)| *generation).collect();
+        assert!(observed_generations.contains(&0));
+        assert!(observed_generations.contains(&1));
+        assert!(observed_generations.contains(&25));
     }
     assert_eq!(kernel.snapshot().generation(), 25);
 }

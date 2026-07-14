@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use strata_kernel::Kernel;
+use strata_kernel::{DurableStore, Kernel};
 use tempfile::tempdir;
 
 fn binary() -> &'static str {
@@ -80,6 +80,47 @@ fn process_crashes_recover_only_durably_committed_generations() {
             inspected["digest"].as_str(),
             Some(independently_replayed.snapshot().digest()),
             "{failpoint}"
+        );
+    }
+}
+
+#[test]
+fn measure_events_reference_their_same_iteration_operations() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("kernel.redb");
+    let publication = directory.path().join("rename-publication.json");
+    let database_arg = database.to_str().unwrap();
+    let fixture = fixture();
+    let fixture_arg = fixture.to_str().unwrap();
+    let publication_arg = publication.to_str().unwrap();
+
+    run_json(&["seed", "--db", database_arg, "--snapshot", fixture_arg]);
+    run_json(&[
+        "make-rename-publication",
+        "--snapshot",
+        fixture_arg,
+        "--out",
+        publication_arg,
+    ]);
+    run_json(&[
+        "measure",
+        "--db",
+        database_arg,
+        "--publication",
+        publication_arg,
+        "--iterations",
+        "2",
+    ]);
+
+    let store = DurableStore::open(&database).unwrap();
+    for generation in 1..=2 {
+        let operation = store.operation(generation).unwrap().unwrap();
+        let event = store.event(generation).unwrap().unwrap();
+        let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
+        assert_eq!(
+            payload["operationId"].as_str(),
+            Some(operation.operation_id.as_str()),
+            "generation {generation} event must link to its operation"
         );
     }
 }
