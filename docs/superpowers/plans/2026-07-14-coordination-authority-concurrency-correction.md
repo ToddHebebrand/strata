@@ -332,16 +332,27 @@ pub(crate) fn affected_resource_keys(
     delta: &GraphDelta,
 ) -> Result<BTreeSet<String>> {
     let mut keys = BTreeSet::new();
+    let mut named_owner_ids = BTreeSet::new();
+    let after = graph.apply(delta)?;
     for change in &delta.changes {
         match change {
             GraphChange::UpsertNode { node } => {
                 keys.insert(format!("node:{}", node.id));
-                if let Some(old) = graph.node(&node.id) { add_node_indexes(&mut keys, old)?; }
-                add_node_indexes(&mut keys, node)?;
+                if let Some(old) = graph.node(&node.id) {
+                    add_parent_bucket(&mut keys, old);
+                    add_named_owner_candidate(&mut named_owner_ids, old);
+                }
+                add_parent_bucket(&mut keys, node);
+                add_named_owner_candidate(&mut named_owner_ids, node);
+                named_owner_ids.insert(node.id.clone());
             }
             GraphChange::DeleteNode { node_id } => {
                 keys.insert(format!("node:{node_id}"));
-                if let Some(old) = graph.node(node_id) { add_node_indexes(&mut keys, old)?; }
+                if let Some(old) = graph.node(node_id) {
+                    add_parent_bucket(&mut keys, old);
+                    add_named_owner_candidate(&mut named_owner_ids, old);
+                    named_owner_ids.insert(old.id.clone());
+                }
             }
             GraphChange::UpsertReference { reference } => {
                 keys.insert(format!("edge:{}", reference.from_node_id));
@@ -358,23 +369,48 @@ pub(crate) fn affected_resource_keys(
             }
         }
     }
+    for owner_id in named_owner_ids {
+        add_named_owner_indexes(&mut keys, graph, &owner_id)?;
+        add_named_owner_indexes(&mut keys, &after, &owner_id)?;
+    }
     Ok(keys)
 }
 
-fn add_node_indexes(keys: &mut BTreeSet<String>, node: &NodeRecord) -> Result<()> {
+fn add_parent_bucket(keys: &mut BTreeSet<String>, node: &NodeRecord) {
     let parent = node.parent_id.as_deref().unwrap_or("root");
     keys.insert(format!("children:{parent}"));
-    let payload: serde_json::Value = serde_json::from_str(&node.payload)
-        .with_context(|| format!("node {} payload is not JSON", node.id))?;
-    if let Some(name) = payload.get("name").and_then(serde_json::Value::as_str) {
-        keys.insert(format!("namespace:{parent}:{name}"));
-        keys.insert(format!("absence:{}:{parent}:{name}", node.kind));
+}
+
+fn add_named_owner_candidate(owner_ids: &mut BTreeSet<String>, node: &NodeRecord) {
+    if node.kind == "Identifier" {
+        if let Some(parent_id) = &node.parent_id {
+            owner_ids.insert(parent_id.clone());
+        }
+    }
+}
+
+fn add_named_owner_indexes(
+    keys: &mut BTreeSet<String>,
+    graph: &GraphGeneration,
+    owner_id: &str,
+) -> Result<()> {
+    let Some(owner) = graph.node(owner_id) else { return Ok(()) };
+    let Some(identifier) = graph
+        .nodes()
+        .find(|node| node.parent_id.as_deref() == Some(owner_id) && node.kind == "Identifier")
+    else { return Ok(()) };
+    let payload: serde_json::Value = serde_json::from_str(&identifier.payload)
+        .with_context(|| format!("identifier node {} payload is not JSON", identifier.id))?;
+    if let Some(name) = payload.get("text").and_then(serde_json::Value::as_str) {
+        let container = owner.parent_id.as_deref().unwrap_or("root");
+        keys.insert(format!("namespace:{container}:{name}"));
+        keys.insert(format!("absence:{}:{container}:{name}", owner.kind));
     }
     Ok(())
 }
 ```
 
-Add read-only `GraphGeneration::node` and `reference_from` accessors returning borrowed records.
+Add read-only `GraphGeneration::nodes`, `node`, and `reference_from` accessors returning borrowed records or iterators. Declaration payloads are canonical TypeScript source and must not be parsed for names. Namespace and absence buckets are derived from the owning node, its direct `Identifier` child's JSON `text`, and the owner's parent container. A rename clocks both the old and new namespace/absence keys.
 
 - [ ] **Step 4: Persist clocks and load the in-memory projection**
 
