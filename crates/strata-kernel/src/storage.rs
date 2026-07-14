@@ -5,6 +5,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTran
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::coordination::{CoordinationDurable, ensure_coordination_schema};
 use crate::{
     EventRecord, FenceClaim, GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord,
     Publication, PublishFailpoint, TicketRecord,
@@ -37,18 +38,23 @@ pub struct DurableStore {
 
 impl DurableStore {
     pub fn create(path: impl AsRef<Path>) -> Result<Self> {
-        Ok(Self {
+        let store = Self {
             database: Database::create(path).context("create redb database")?,
-        })
+        };
+        ensure_coordination_schema(&store.database)?;
+        Ok(store)
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Ok(Self {
+        let store = Self {
             database: Database::open(path).context("open redb database")?,
-        })
+        };
+        ensure_coordination_schema(&store.database)?;
+        Ok(store)
     }
 
     pub fn seed(&self, snapshot: &GraphSnapshot) -> Result<()> {
+        ensure_coordination_schema(&self.database)?;
         if snapshot.generation != 0 {
             bail!("initial snapshot must be generation 0");
         }
@@ -96,7 +102,7 @@ impl DurableStore {
             .context("write generation-zero digest")?;
 
         // Opening a table in a write transaction creates it if absent. Seed establishes the
-        // complete schema atomically, including tables used by later coordination tasks.
+        // complete graph-publication schema atomically; coordination uses isolated tables.
         drop(
             write
                 .open_table(OPERATIONS)
@@ -119,6 +125,10 @@ impl DurableStore {
 
         write.commit().context("commit seed transaction")?;
         Ok(())
+    }
+
+    pub fn coordination(&self) -> CoordinationDurable<'_> {
+        CoordinationDurable::new(&self.database)
     }
 
     pub fn publish(
@@ -170,8 +180,8 @@ impl DurableStore {
         let (current_generation, current_event_sequence) = {
             let metadata = write.open_table(META).context("open metadata table")?;
             (
-                read_metadata(&metadata, CURRENT_GENERATION)?,
-                read_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
+                read_u64_metadata(&metadata, CURRENT_GENERATION)?,
+                read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
             )
         };
 
@@ -278,7 +288,7 @@ impl DurableStore {
             .context("begin fence issuance transaction")?;
         {
             let metadata = write.open_table(META).context("open metadata table")?;
-            let current_epoch = read_metadata(&metadata, SERVICE_EPOCH)?;
+            let current_epoch = read_u64_metadata(&metadata, SERVICE_EPOCH)?;
             if service_epoch != current_epoch {
                 bail!(
                     "stale service epoch {service_epoch}; current service epoch is {current_epoch}"
@@ -321,7 +331,7 @@ impl DurableStore {
     ) -> Result<()> {
         {
             let metadata = write_txn.open_table(META).context("open metadata table")?;
-            let current_epoch = read_metadata(&metadata, SERVICE_EPOCH)?;
+            let current_epoch = read_u64_metadata(&metadata, SERVICE_EPOCH)?;
             if claim.service_epoch != current_epoch {
                 bail!(
                     "stale service epoch {}; current service epoch is {current_epoch}",
@@ -381,7 +391,7 @@ impl DurableStore {
             .begin_read()
             .context("begin read transaction")?;
         let metadata = read.open_table(META).context("open metadata table")?;
-        read_metadata(&metadata, CURRENT_GENERATION)
+        read_u64_metadata(&metadata, CURRENT_GENERATION)
     }
 
     pub fn begin_service_epoch(&self) -> Result<u64> {
@@ -391,7 +401,7 @@ impl DurableStore {
             .context("begin service epoch transaction")?;
         let next_epoch = {
             let mut metadata = write.open_table(META).context("open metadata table")?;
-            let current_epoch = read_metadata(&metadata, SERVICE_EPOCH)?;
+            let current_epoch = read_u64_metadata(&metadata, SERVICE_EPOCH)?;
             let next_epoch = current_epoch
                 .checked_add(1)
                 .context("service epoch overflow")?;
@@ -434,7 +444,7 @@ impl DurableStore {
             .begin_read()
             .context("begin delta scan transaction")?;
         let metadata = read.open_table(META).context("open metadata table")?;
-        let current_generation = read_metadata(&metadata, CURRENT_GENERATION)?;
+        let current_generation = read_u64_metadata(&metadata, CURRENT_GENERATION)?;
         if generation > current_generation {
             bail!(
                 "delta scan starts at generation {generation}, beyond current generation {current_generation}"
@@ -481,7 +491,7 @@ impl DurableStore {
             .context("begin snapshot write transaction")?;
         {
             let metadata = write.open_table(META).context("open metadata table")?;
-            let current_generation = read_metadata(&metadata, CURRENT_GENERATION)?;
+            let current_generation = read_u64_metadata(&metadata, CURRENT_GENERATION)?;
             if snapshot.generation > current_generation {
                 bail!(
                     "snapshot generation {} exceeds current generation {current_generation}",
@@ -634,7 +644,7 @@ fn decode<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T> {
     serde_json::from_slice(bytes).with_context(|| format!("decode {label}"))
 }
 
-fn read_metadata(
+pub(crate) fn read_u64_metadata(
     table: &impl ReadableTable<&'static str, &'static [u8]>,
     key: &'static str,
 ) -> Result<u64> {
