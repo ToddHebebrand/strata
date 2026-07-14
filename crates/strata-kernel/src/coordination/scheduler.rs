@@ -411,6 +411,32 @@ impl SchedulerState {
         Ok(ticket.clone())
     }
 
+    pub(crate) fn update_queued_scope(
+        &mut self,
+        ticket_id: &str,
+        scope_fingerprint: String,
+        reservation_keys: Vec<String>,
+    ) -> Result<CoordinationTicket> {
+        if scope_fingerprint.is_empty() || reservation_keys.iter().any(String::is_empty) {
+            bail!("updated queued scope must be non-empty and valid");
+        }
+        let sequence = self.sequence_for_ticket(ticket_id)?;
+        let ticket = self
+            .tickets
+            .get_mut(&sequence)
+            .expect("ticket sequence was just resolved");
+        if ticket.state != TicketState::Queued
+            || ticket.ready_offer_id.is_some()
+            || ticket.active_claim_id.is_some()
+        {
+            bail!("ticket {ticket_id} is not pristine Queued");
+        }
+        ticket.scope_fingerprint = scope_fingerprint;
+        ticket.reservation_keys = reservation_keys;
+        validate_ticket_scope(ticket)?;
+        Ok(ticket.clone())
+    }
+
     pub fn expire_offer(&mut self, offer_id: &str) -> Result<String> {
         if !self.offers.contains_key(offer_id) {
             bail!("ready offer {offer_id} does not exist");

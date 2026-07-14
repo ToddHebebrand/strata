@@ -781,7 +781,6 @@ impl Kernel {
             .cloned()
             .context("executing claim has no scheduler ticket")?;
         next_scheduler.release(&claim.claim_id, TicketState::Completed)?;
-        let selected = next_scheduler.select_ready()?;
 
         let metadata = durable.metadata_state()?;
         let mut lifecycle = transition(metadata);
@@ -813,44 +812,190 @@ impl Kernel {
             ),
         )?;
 
-        for ticket_id in selected {
-            let ticket = next_scheduler
-                .ticket(&ticket_id)
-                .cloned()
-                .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
-            let mut offer = make_offer(&ticket, self.service_epoch(), next_generation, now_tick)?;
-            offer.blocking_event_sequence = Some(committed_event.sequence);
-            next_scheduler.mark_ready(&ticket_id, offer.clone())?;
-            let before = durable
-                .change_set(&offer.change_set_id)?
-                .with_context(|| format!("missing successor change set {}", offer.change_set_id))?;
-            let mut after = before.clone();
-            after.state = ChangeSetState::Ready;
-            after.blocking_change_set_id = Some(claim.change_set_id.clone());
-            lifecycle.change_sets.push((Some(before), Some(after)));
-            lifecycle.offers.push((None, Some(offer.clone())));
-            append_event_with_payload(
-                &mut lifecycle,
-                CoordinationEventKind::IntentReady,
-                &offer.change_set_id,
-                next_generation,
-                bounded_wake_payload(
-                    "blockingOperationId",
-                    &operation_id,
-                    graph.generation(),
-                    next_generation,
-                    &affected_node_ids,
-                ),
-            )?;
+        let mut successor_change_sets: BTreeMap<String, (ChangeSetRecord, ChangeSetRecord)> =
+            BTreeMap::new();
+        let mut terminal_successor_ticket_ids = BTreeSet::new();
+        loop {
+            let selected = next_scheduler.select_ready()?;
+            if selected.is_empty() {
+                break;
+            }
+            let mut analyses = Vec::with_capacity(selected.len());
+            let mut any_scope_change = false;
+            for ticket_id in selected {
+                let ticket = next_scheduler
+                    .ticket(&ticket_id)
+                    .cloned()
+                    .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
+                let (durable_before, current) = if let Some((before, after)) =
+                    successor_change_sets.get(&ticket.change_set_id)
+                {
+                    (before.clone(), after.clone())
+                } else {
+                    let before = durable
+                        .change_set(&ticket.change_set_id)?
+                        .with_context(|| {
+                            format!("missing successor change set {}", ticket.change_set_id)
+                        })?;
+                    (before.clone(), before)
+                };
+                let previous_scope = current
+                    .inferred_scope
+                    .as_ref()
+                    .context("queued successor has no inferred scope")?;
+                let successor_intents = durable.intents_for(&ticket.change_set_id)?;
+                let fresh = analyze_change_set(&next, &successor_intents, analyzer)?;
+                let scope_change = classify_scope_change(previous_scope, &fresh);
+                any_scope_change |= scope_change != ScopeChange::Unchanged;
+                analyses.push((ticket, durable_before, current, fresh, scope_change));
+            }
+
+            if !any_scope_change {
+                for (ticket, durable_before, mut current, fresh, _) in analyses {
+                    let mut fresh_ticket = next_scheduler.update_queued_scope(
+                        &ticket.ticket_id,
+                        fresh.scope_fingerprint.clone(),
+                        fresh.reservation_keys.clone(),
+                    )?;
+                    let mut offer = make_offer(
+                        &fresh_ticket,
+                        self.service_epoch(),
+                        next_generation,
+                        now_tick,
+                    )?;
+                    offer.blocking_event_sequence = Some(committed_event.sequence);
+                    next_scheduler.mark_ready(&ticket.ticket_id, offer.clone())?;
+                    fresh_ticket = next_scheduler
+                        .ticket(&ticket.ticket_id)
+                        .cloned()
+                        .context("freshly offered successor disappeared")?;
+                    debug_assert_eq!(fresh_ticket.scope_fingerprint, fresh.scope_fingerprint);
+                    current.state = ChangeSetState::Ready;
+                    current.inferred_scope = Some(fresh.clone());
+                    current.blocking_change_set_id = Some(claim.change_set_id.clone());
+                    successor_change_sets
+                        .insert(current.change_set_id.clone(), (durable_before, current));
+                    lifecycle.offers.push((None, Some(offer.clone())));
+                    append_event_with_payload(
+                        &mut lifecycle,
+                        CoordinationEventKind::IntentReady,
+                        &offer.change_set_id,
+                        next_generation,
+                        bounded_wake_payload_with_scope(
+                            "blockingOperationId",
+                            &operation_id,
+                            graph.generation(),
+                            next_generation,
+                            &affected_node_ids,
+                            &fresh.scope_fingerprint,
+                        ),
+                    )?;
+                }
+                break;
+            }
+
+            for (ticket, durable_before, mut current, fresh, scope_change) in analyses {
+                if scope_change == ScopeChange::Unchanged {
+                    continue;
+                }
+                let can_requeue_expansion = scope_change == ScopeChange::Expanded
+                    && matches!(
+                        fresh.dynamic_expansion_policy,
+                        DynamicExpansionPolicy::Requeue { max_expansions }
+                            if current.expansion_count < max_expansions
+                    );
+                if can_requeue_expansion {
+                    next_scheduler.update_queued_scope(
+                        &ticket.ticket_id,
+                        fresh.scope_fingerprint.clone(),
+                        fresh.reservation_keys.clone(),
+                    )?;
+                    current.state = ChangeSetState::Queued;
+                    current.inferred_scope = Some(fresh.clone());
+                    current.blocking_change_set_id = Some(claim.change_set_id.clone());
+                    current.expansion_count = current
+                        .expansion_count
+                        .checked_add(1)
+                        .context("successor scope expansion count overflow")?;
+                    successor_change_sets.insert(
+                        current.change_set_id.clone(),
+                        (durable_before, current.clone()),
+                    );
+                    append_event_with_payload(
+                        &mut lifecycle,
+                        CoordinationEventKind::ScopeExpanded,
+                        &current.change_set_id,
+                        next_generation,
+                        bounded_wake_payload_with_scope(
+                            "blockingOperationId",
+                            &operation_id,
+                            graph.generation(),
+                            next_generation,
+                            &affected_node_ids,
+                            &fresh.scope_fingerprint,
+                        ),
+                    )?;
+                } else {
+                    let current_ticket = next_scheduler
+                        .ticket(&ticket.ticket_id)
+                        .cloned()
+                        .context("terminal successor ticket disappeared")?;
+                    next_scheduler.cancel_ticket(&ticket.ticket_id)?;
+                    let mut terminal_ticket = current_ticket;
+                    terminal_ticket.state = TicketState::NeedsDecision;
+                    terminal_ticket.scope_fingerprint = fresh.scope_fingerprint.clone();
+                    terminal_ticket.reservation_keys = fresh.reservation_keys.clone();
+                    terminal_ticket.ready_offer_id = None;
+                    terminal_ticket.active_claim_id = None;
+                    let durable_before_ticket = before_scheduler
+                        .ticket(&ticket.ticket_id)
+                        .cloned()
+                        .context("terminal successor missing before scheduler ticket")?;
+                    lifecycle
+                        .tickets
+                        .push((Some(durable_before_ticket), Some(terminal_ticket)));
+                    terminal_successor_ticket_ids.insert(ticket.ticket_id.clone());
+                    current.state = ChangeSetState::NeedsDecision;
+                    current.inferred_scope = Some(fresh.clone());
+                    current.blocking_change_set_id = Some(claim.change_set_id.clone());
+                    successor_change_sets.insert(
+                        current.change_set_id.clone(),
+                        (durable_before, current.clone()),
+                    );
+                    append_event_with_payload(
+                        &mut lifecycle,
+                        CoordinationEventKind::IntentNeedsDecision,
+                        &current.change_set_id,
+                        next_generation,
+                        bounded_wake_payload_with_scope(
+                            "blockingOperationId",
+                            &operation_id,
+                            graph.generation(),
+                            next_generation,
+                            &affected_node_ids,
+                            &fresh.scope_fingerprint,
+                        ),
+                    )?;
+                }
+            }
         }
+        lifecycle.change_sets.extend(
+            successor_change_sets
+                .into_values()
+                .map(|(before, after)| (Some(before), Some(after))),
+        );
         lifecycle.tickets.extend(
             scheduler_ticket_updates(&before_scheduler, &next_scheduler)
                 .into_iter()
                 .filter(|(before, after)| {
-                    before
+                    let ticket_id = before
                         .as_ref()
                         .or(after.as_ref())
-                        .is_some_and(|ticket| ticket.ticket_id != before_ticket.ticket_id)
+                        .map(|ticket| ticket.ticket_id.as_str());
+                    ticket_id != Some(before_ticket.ticket_id.as_str())
+                        && ticket_id.is_none_or(|ticket_id| {
+                            !terminal_successor_ticket_ids.contains(ticket_id)
+                        })
                 }),
         );
 
@@ -1153,6 +1298,29 @@ fn bounded_wake_payload(
         .as_object_mut()
         .expect("wake payload is an object")
         .insert(operation_field.into(), operation_id.into());
+    payload.to_string()
+}
+
+fn bounded_wake_payload_with_scope(
+    operation_field: &str,
+    operation_id: &str,
+    before_generation: u64,
+    after_generation: u64,
+    affected_node_ids: &[String],
+    scope_fingerprint: &str,
+) -> String {
+    let mut payload: serde_json::Value = serde_json::from_str(&bounded_wake_payload(
+        operation_field,
+        operation_id,
+        before_generation,
+        after_generation,
+        affected_node_ids,
+    ))
+    .expect("kernel-generated wake payload is valid JSON");
+    payload
+        .as_object_mut()
+        .expect("wake payload is an object")
+        .insert("scopeFingerprint".into(), scope_fingerprint.into());
     payload.to_string()
 }
 

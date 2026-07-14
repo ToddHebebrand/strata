@@ -461,3 +461,31 @@ impl CandidateBuilder for FixedDeltaBuilder {
         Ok(self.0.clone())
     }
 }
+
+pub struct FailingProbeBuilder {
+    calls: AtomicUsize,
+}
+
+impl FailingProbeBuilder {
+    pub fn new() -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl CandidateBuilder for FailingProbeBuilder {
+    fn build_candidate(
+        &self,
+        _graph: &GraphGeneration,
+        _change_set: &ChangeSetRecord,
+        _intents: &[IntentRecord],
+    ) -> Result<GraphDelta> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        bail!("probe candidate reached after claim validation")
+    }
+}

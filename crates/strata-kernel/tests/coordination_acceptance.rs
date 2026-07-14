@@ -4,8 +4,8 @@ mod coordination_support;
 use std::collections::BTreeSet;
 
 use coordination_support::{
-    FixedDeltaBuilder, GraphDerivedAnalyzer, MediumCoordinationFixture, NodePatchBuilder,
-    ScriptedCallsite, begin_with_intents, declaration_name, rename,
+    FailingProbeBuilder, FixedDeltaBuilder, GraphDerivedAnalyzer, MediumCoordinationFixture,
+    NodePatchBuilder, ScriptedCallsite, begin_with_intents, declaration_name, rename,
 };
 use serde::Serialize;
 use strata_kernel::{
@@ -17,7 +17,7 @@ use strata_kernel::{
 use tempfile::tempdir;
 
 #[cfg(feature = "redb-spike-api")]
-use strata_kernel::CoordinatedPublishFailpoint;
+use strata_kernel::{CoordinatedPublishFailpoint, DurableStore};
 
 #[test]
 fn scheduler_acceptance_uses_the_real_examples_medium_graph() {
@@ -249,6 +249,13 @@ fn same_symbol_is_fifo_then_wakes_with_bounded_context_and_needs_fresh_decision(
         panic!("same-symbol successor must queue")
     };
     assert_eq!(ticket.state, TicketState::Queued);
+    let stale_fingerprint = kernel
+        .change_set("second")
+        .unwrap()
+        .unwrap()
+        .inferred_scope
+        .unwrap()
+        .scope_fingerprint;
 
     kernel
         .publish_claimed(
@@ -258,47 +265,38 @@ fn same_symbol_is_fifo_then_wakes_with_bounded_context_and_needs_fresh_decision(
             2,
         )
         .unwrap();
-    let second_offer = kernel
-        .ready_offer_for_change_set("second")
-        .unwrap()
-        .expect("first commit must atomically wake the successor");
+    assert!(
+        kernel
+            .ready_offer_for_change_set("second")
+            .unwrap()
+            .is_none(),
+        "materially changed successor must not receive stale ready authority"
+    );
     let events = kernel.events_after("same-symbol-audit", 0, 100).unwrap();
-    let ready_event = events
+    let decision_event = events
         .iter()
         .rev()
         .find(|event| {
-            event.change_set_id == "second" && event.kind == CoordinationEventKind::IntentReady
+            event.change_set_id == "second"
+                && event.kind == CoordinationEventKind::IntentNeedsDecision
         })
         .unwrap();
-    let payload: serde_json::Value = serde_json::from_str(&ready_event.payload_json).unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&decision_event.payload_json).unwrap();
     assert!(payload["blockingOperationId"].as_str().is_some());
     assert_eq!(payload["beforeGeneration"], 0);
     assert_eq!(payload["afterGeneration"], 1);
     assert!(payload["affectedNodeIds"].as_array().unwrap().len() <= MAX_WAKE_AFFECTED_NODE_IDS);
     assert!(payload["totalAffectedNodeCount"].as_u64().is_some());
     assert!(payload["affectedNodeIdsTruncated"].as_bool().is_some());
-    let outcome = kernel
-        .claim_ready(
-            &second_offer.offer_id,
-            &second_offer.claim_token,
-            &analyzer,
-            3,
-        )
-        .unwrap();
-    let ClaimOutcome::NeedsDecision { change_set, event } = outcome else {
-        panic!("stale same-symbol rename must require a fresh decision")
-    };
+    let change_set = kernel.change_set("second").unwrap().unwrap();
     assert_eq!(change_set.state, ChangeSetState::NeedsDecision);
-    assert_eq!(event.kind, CoordinationEventKind::IntentNeedsDecision);
-    assert_ne!(
-        change_set
-            .inferred_scope
-            .as_ref()
-            .unwrap()
-            .scope_fingerprint,
-        second_offer.scope_fingerprint,
-        "claim-time analysis must persist a fresh fingerprint"
-    );
+    let fresh_fingerprint = &change_set
+        .inferred_scope
+        .as_ref()
+        .unwrap()
+        .scope_fingerprint;
+    assert_ne!(fresh_fingerprint, &stale_fingerprint);
+    assert_eq!(payload["scopeFingerprint"], fresh_fingerprint.as_str());
     assert!(
         !kernel
             .snapshot()
@@ -307,6 +305,170 @@ fn same_symbol_is_fifo_then_wakes_with_bounded_context_and_needs_fresh_decision(
             .payload
             .contains("Customer")
     );
+}
+
+#[test]
+fn publication_reanalyzes_unchanged_successor_and_emits_its_fresh_fingerprint() {
+    let fixture = MediumCoordinationFixture::load();
+    let user_id = fixture.declaration_named("User").id.clone();
+    let greet_id = fixture.declaration_named("greet").id.clone();
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
+    let analyzer = GraphDerivedAnalyzer::new();
+
+    begin_with_intents(
+        &kernel,
+        "reference-blocker",
+        [coordination_support::add_parameter(&greet_id)],
+    )
+    .unwrap();
+    let blocker_offer = ready(
+        kernel
+            .submit_change_set("reference-blocker", &analyzer, 0)
+            .unwrap(),
+    );
+    let blocker_claim = claimed(
+        kernel
+            .claim_ready(
+                &blocker_offer.offer_id,
+                &blocker_offer.claim_token,
+                &analyzer,
+                1,
+            )
+            .unwrap(),
+    );
+    begin_with_intents(&kernel, "fresh-waiter", [rename(&user_id, "Account")]).unwrap();
+    assert!(matches!(
+        kernel
+            .submit_change_set("fresh-waiter", &analyzer, 1)
+            .unwrap(),
+        SubmissionOutcome::Queued { .. }
+    ));
+
+    kernel
+        .publish_claimed(
+            &blocker_claim,
+            &analyzer,
+            &NodePatchBuilder::new(vec![(greet_id, "\n// blocker committed".into())]),
+            2,
+        )
+        .unwrap();
+    let offer = kernel
+        .ready_offer_for_change_set("fresh-waiter")
+        .unwrap()
+        .expect("unchanged fresh successor must be offered atomically");
+    let change_set = kernel.change_set("fresh-waiter").unwrap().unwrap();
+    assert_eq!(change_set.state, ChangeSetState::Ready);
+    assert_eq!(
+        change_set
+            .inferred_scope
+            .as_ref()
+            .unwrap()
+            .scope_fingerprint,
+        offer.scope_fingerprint
+    );
+    let event = kernel
+        .events_after("fresh-wake-audit", 0, 100)
+        .unwrap()
+        .into_iter()
+        .rev()
+        .find(|event| {
+            event.change_set_id == "fresh-waiter"
+                && event.kind == CoordinationEventKind::IntentReady
+        })
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&event.payload_json).unwrap();
+    assert_eq!(payload["scopeFingerprint"], offer.scope_fingerprint);
+    assert_eq!(payload["beforeGeneration"], 0);
+    assert_eq!(payload["afterGeneration"], 1);
+}
+
+#[test]
+fn publication_persists_expanded_successor_scope_before_issuing_ready_authority() {
+    let fixture = MediumCoordinationFixture::load();
+    let user_id = fixture.declaration_named("User").id.clone();
+    let greet_id = fixture.declaration_named("greet").id.clone();
+    let extra_callsite = fixture.reference_source_for("formatTimestamp").id.clone();
+    let analyzer = GraphDerivedAnalyzer::with_scripted_callsite(ScriptedCallsite {
+        function_id: greet_id.clone(),
+        node_id: extra_callsite.clone(),
+        appears_after_generation: 1,
+    });
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
+
+    begin_with_intents(&kernel, "expansion-blocker", [rename(&user_id, "Account")]).unwrap();
+    let blocker_offer = ready(
+        kernel
+            .submit_change_set("expansion-blocker", &analyzer, 0)
+            .unwrap(),
+    );
+    let blocker_claim = claimed(
+        kernel
+            .claim_ready(
+                &blocker_offer.offer_id,
+                &blocker_offer.claim_token,
+                &analyzer,
+                0,
+            )
+            .unwrap(),
+    );
+    begin_with_intents(
+        &kernel,
+        "wake-expanded",
+        [coordination_support::add_parameter(&greet_id)],
+    )
+    .unwrap();
+    assert!(matches!(
+        kernel
+            .submit_change_set("wake-expanded", &analyzer, 0)
+            .unwrap(),
+        SubmissionOutcome::Queued { .. }
+    ));
+
+    kernel
+        .publish_claimed(
+            &blocker_claim,
+            &analyzer,
+            &NodePatchBuilder::new(vec![(user_id, "\n// expansion blocker".into())]),
+            1,
+        )
+        .unwrap();
+    let offer = kernel
+        .ready_offer_for_change_set("wake-expanded")
+        .unwrap()
+        .expect("expanded-but-eligible successor must receive only fresh authority");
+    let change_set = kernel.change_set("wake-expanded").unwrap().unwrap();
+    assert_eq!(change_set.state, ChangeSetState::Ready);
+    assert_eq!(change_set.expansion_count, 1);
+    let scope = change_set.inferred_scope.unwrap();
+    assert_eq!(scope.scope_fingerprint, offer.scope_fingerprint);
+    assert!(
+        scope
+            .reservation_keys
+            .contains(&format!("node:{extra_callsite}"))
+    );
+    let events = kernel.events_after("wake-expanded-audit", 0, 100).unwrap();
+    let expanded = events
+        .iter()
+        .find(|event| {
+            event.change_set_id == "wake-expanded"
+                && event.kind == CoordinationEventKind::ScopeExpanded
+        })
+        .unwrap();
+    let ready = events
+        .iter()
+        .find(|event| {
+            event.change_set_id == "wake-expanded"
+                && event.kind == CoordinationEventKind::IntentReady
+        })
+        .unwrap();
+    for event in [expanded, ready] {
+        let payload: serde_json::Value = serde_json::from_str(&event.payload_json).unwrap();
+        assert_eq!(payload["scopeFingerprint"], offer.scope_fingerprint);
+    }
 }
 
 #[test]
@@ -319,7 +481,7 @@ fn reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutat
     let analyzer = GraphDerivedAnalyzer::with_scripted_callsite(ScriptedCallsite {
         function_id: greet_id.clone(),
         node_id: extra_callsite.clone(),
-        appears_after_generation: 1,
+        appears_after_generation: 2,
     });
     let rename_scope = analyze_change_set(
         &graph,
@@ -396,6 +558,36 @@ fn reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutat
         .ready_offer_for_change_set("expanding")
         .unwrap()
         .unwrap();
+    let disjoint_id = fixture.declaration_named("isWithinRange").id.clone();
+    begin_with_intents(
+        &kernel,
+        "generation-advancer",
+        [rename(&disjoint_id, "isInsideRange")],
+    )
+    .unwrap();
+    let advancer_offer = ready(
+        kernel
+            .submit_change_set("generation-advancer", &analyzer, 2)
+            .unwrap(),
+    );
+    let advancer_claim = claimed(
+        kernel
+            .claim_ready(
+                &advancer_offer.offer_id,
+                &advancer_offer.claim_token,
+                &analyzer,
+                3,
+            )
+            .unwrap(),
+    );
+    kernel
+        .publish_claimed(
+            &advancer_claim,
+            &analyzer,
+            &NodePatchBuilder::new(vec![(disjoint_id, "\n// advance generation".into())]),
+            4,
+        )
+        .unwrap();
     let unused_old_candidate = NodePatchBuilder::new(vec![(
         greet_id.clone(),
         "\n// stale add-parameter candidate".into(),
@@ -405,7 +597,7 @@ fn reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutat
             &expanding_offer.offer_id,
             &expanding_offer.claim_token,
             &analyzer,
-            2,
+            5,
         )
         .unwrap();
     let ClaimOutcome::Requeued { ticket, event } = outcome else {
@@ -414,7 +606,7 @@ fn reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutat
     assert_eq!(ticket.state, TicketState::Queued);
     assert_eq!(event.kind, CoordinationEventKind::ScopeExpanded);
     assert_eq!(unused_old_candidate.calls(), 0);
-    assert_eq!(kernel.snapshot().generation(), 1);
+    assert_eq!(kernel.snapshot().generation(), 2);
     assert!(
         !kernel
             .snapshot()
@@ -447,34 +639,19 @@ fn malicious_node_and_reference_deltas_are_contained_with_zero_side_effects() {
     let fixture = MediumCoordinationFixture::load();
     let parse_id = fixture.declaration_named("parseArgs").id.clone();
     let rogue_id = fixture.declaration_named("User").id.clone();
-    let directory = tempdir().unwrap();
-    let path = directory.path().join("kernel.redb");
-    let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
-    let analyzer = GraphDerivedAnalyzer::new();
-    begin_with_intents(&kernel, "contained", [rename(&parse_id, "parseTokens")]).unwrap();
-    let offer = ready(kernel.submit_change_set("contained", &analyzer, 0).unwrap());
-    let claim = claimed(
-        kernel
-            .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 1)
-            .unwrap(),
-    );
-
-    let before_digest = kernel.snapshot().digest().to_owned();
-    let before_events = kernel.events_after("containment-audit", 0, 100).unwrap();
-    let before_change_set = kernel.change_set("contained").unwrap().unwrap();
-    let before_ticket = kernel.ticket_for_change_set("contained").unwrap().unwrap();
-
-    let mut rogue_node = kernel.snapshot().node(&rogue_id).unwrap().clone();
+    let mut rogue_node = fixture
+        .snapshot()
+        .nodes
+        .iter()
+        .find(|node| node.id == rogue_id)
+        .unwrap()
+        .clone();
     rogue_node.payload.push_str("\n// unauthorized");
     let node_delta = GraphDelta {
         schema_version: SCHEMA_VERSION,
         base_generation: 0,
         changes: vec![GraphChange::UpsertNode { node: rogue_node }],
     };
-    let error = kernel
-        .publish_claimed(&claim, &analyzer, &FixedDeltaBuilder(node_delta), 2)
-        .unwrap_err();
-    assert!(error.to_string().contains("outside inferred scope"));
 
     let original_reference = fixture.snapshot().references[0].clone();
     let replacement_target = fixture
@@ -493,26 +670,114 @@ fn malicious_node_and_reference_deltas_are_contained_with_zero_side_effects() {
             },
         }],
     };
-    let error = kernel
-        .publish_claimed(&claim, &analyzer, &FixedDeltaBuilder(reference_delta), 3)
-        .unwrap_err();
-    assert!(error.to_string().contains("outside inferred scope"));
 
-    assert_eq!(kernel.snapshot().generation(), 0);
-    assert_eq!(kernel.snapshot().digest(), before_digest);
-    assert_eq!(
-        kernel.events_after("containment-audit", 0, 100).unwrap(),
-        before_events
-    );
-    assert_eq!(
-        kernel.change_set("contained").unwrap().unwrap(),
-        before_change_set
-    );
-    assert_eq!(
-        kernel.ticket_for_change_set("contained").unwrap().unwrap(),
-        before_ticket
-    );
-    assert!(kernel.operation(1).unwrap().is_none());
+    for (case, rogue_delta) in [("rogue-node", node_delta), ("retarget", reference_delta)] {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("kernel.redb");
+        let (kernel, _) = Kernel::create(&path, fixture.snapshot().clone()).unwrap();
+        let analyzer = GraphDerivedAnalyzer::new();
+        let change_set_id = format!("contained-{case}");
+        begin_with_intents(&kernel, &change_set_id, [rename(&parse_id, "parseTokens")]).unwrap();
+        let offer = ready(
+            kernel
+                .submit_change_set(&change_set_id, &analyzer, 0)
+                .unwrap(),
+        );
+        let claim = claimed(
+            kernel
+                .claim_ready(&offer.offer_id, &offer.claim_token, &analyzer, 1)
+                .unwrap(),
+        );
+        let before_digest = kernel.snapshot().digest().to_owned();
+        let audit_client = format!("containment-audit-{case}");
+        let before_events = kernel.events_after(&audit_client, 0, 100).unwrap();
+        let before_change_set = kernel.change_set(&change_set_id).unwrap().unwrap();
+        let before_ticket = kernel
+            .ticket_for_change_set(&change_set_id)
+            .unwrap()
+            .unwrap();
+
+        let error = kernel
+            .publish_claimed(&claim, &analyzer, &FixedDeltaBuilder(rogue_delta), 2)
+            .unwrap_err();
+        assert!(error.to_string().contains("outside inferred scope"));
+        assert_eq!(kernel.snapshot().generation(), 0);
+        assert_eq!(kernel.snapshot().digest(), before_digest);
+        assert_eq!(
+            kernel.events_after(&audit_client, 0, 100).unwrap(),
+            before_events
+        );
+        assert_eq!(
+            kernel.change_set(&change_set_id).unwrap().unwrap(),
+            before_change_set
+        );
+        let after_ticket = kernel
+            .ticket_for_change_set(&change_set_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_ticket, before_ticket);
+        assert_eq!(after_ticket.state, TicketState::Claimed);
+        assert_eq!(
+            after_ticket.active_claim_id.as_deref(),
+            Some(claim.claim_id.as_str())
+        );
+        assert!(kernel.operation(1).unwrap().is_none());
+        #[cfg(feature = "redb-spike-api")]
+        for key in &claim.reservation_keys {
+            assert_eq!(kernel.fence_state(key).unwrap(), (None, None));
+        }
+
+        let probe = FailingProbeBuilder::new();
+        let error = kernel
+            .publish_claimed(&claim, &analyzer, &probe, 3)
+            .unwrap_err();
+        assert!(error.to_string().contains("probe candidate reached"));
+        assert_eq!(probe.calls(), 1, "same claim must remain scheduler-usable");
+        assert_eq!(kernel.snapshot().digest(), before_digest);
+        assert_eq!(
+            kernel.events_after(&audit_client, 0, 100).unwrap(),
+            before_events
+        );
+        drop(kernel);
+
+        let (reopened, recovered) = Kernel::open(&path).unwrap();
+        assert_eq!(recovered.generation, 0);
+        assert_eq!(recovered.digest, before_digest);
+        assert!(reopened.operation(1).unwrap().is_none());
+        assert_eq!(
+            reopened
+                .ticket_for_change_set(&change_set_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            TicketState::Queued
+        );
+        let recovered_events = reopened.events_after(&audit_client, 0, 100).unwrap();
+        assert!(
+            recovered_events
+                .iter()
+                .all(|event| event.kind != CoordinationEventKind::IntentCommitted)
+        );
+        assert_eq!(
+            recovered_events
+                .iter()
+                .filter(|event| event.kind == CoordinationEventKind::IntentReady)
+                .count(),
+            before_events
+                .iter()
+                .filter(|event| event.kind == CoordinationEventKind::IntentReady)
+                .count(),
+            "recovery must not expose a new publication wake event"
+        );
+        assert!(recovered_events.iter().any(|event| {
+            event.change_set_id == change_set_id
+                && event.kind == CoordinationEventKind::LeaseExpired
+        }));
+        #[cfg(feature = "redb-spike-api")]
+        for key in &claim.reservation_keys {
+            assert_eq!(reopened.fence_state(key).unwrap(), (None, None));
+        }
+    }
 }
 
 #[test]
@@ -861,6 +1126,8 @@ fn composite_precommit_failure_exposes_neither_real_node_change() {
             .unwrap(),
     );
     let before_digest = kernel.snapshot().digest().to_owned();
+    let before_user = kernel.snapshot().node(&user_id).unwrap().clone();
+    let before_parse = kernel.snapshot().node(&parse_id).unwrap().clone();
     let before_events = kernel
         .events_after("composite-failure-audit", 0, 100)
         .unwrap();
@@ -922,5 +1189,55 @@ fn composite_precommit_failure_exposes_neither_real_node_change() {
     );
     for key in &claim.reservation_keys {
         assert_eq!(kernel.fence_state(key).unwrap(), (None, None));
+    }
+    drop(kernel);
+
+    let store = DurableStore::open(&path).unwrap();
+    assert!(store.event(1).unwrap().is_none());
+    assert!(store.operation(1).unwrap().is_none());
+    for key in &claim.reservation_keys {
+        assert_eq!(store.fence_state(key).unwrap(), (None, None));
+    }
+    drop(store);
+
+    let (reopened, recovered) = Kernel::open(&path).unwrap();
+    assert_eq!(recovered.generation, 0);
+    assert_eq!(recovered.digest, before_digest);
+    assert_eq!(reopened.snapshot().node(&user_id).unwrap(), &before_user);
+    assert_eq!(reopened.snapshot().node(&parse_id).unwrap(), &before_parse);
+    assert!(reopened.operation(1).unwrap().is_none());
+    let recovered_events = reopened
+        .events_after("composite-failure-reopen-audit", 0, 100)
+        .unwrap();
+    assert!(
+        recovered_events
+            .iter()
+            .all(|event| event.kind != CoordinationEventKind::IntentCommitted)
+    );
+    assert_eq!(
+        recovered_events
+            .iter()
+            .filter(|event| event.kind == CoordinationEventKind::IntentReady)
+            .count(),
+        before_events
+            .iter()
+            .filter(|event| event.kind == CoordinationEventKind::IntentReady)
+            .count(),
+        "recovery must not expose a new publication wake event"
+    );
+    assert!(recovered_events.iter().any(|event| {
+        event.change_set_id == "composite-failure"
+            && event.kind == CoordinationEventKind::LeaseExpired
+    }));
+    assert_eq!(
+        reopened
+            .change_set("composite-failure")
+            .unwrap()
+            .unwrap()
+            .state,
+        ChangeSetState::Queued
+    );
+    for key in &claim.reservation_keys {
+        assert_eq!(reopened.fence_state(key).unwrap(), (None, None));
     }
 }
