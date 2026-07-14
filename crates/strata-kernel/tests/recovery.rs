@@ -208,7 +208,61 @@ fn restart_rejects_a_structurally_valid_delta_that_changes_the_committed_digest(
         .err()
         .expect("opening must fail");
     assert!(
-        error.to_string().contains("recovered digest"),
+        error.to_string().contains("replayed digest") && error.to_string().contains("generation 2"),
+        "unexpected error: {error:#}"
+    );
+}
+
+#[test]
+fn restart_rejects_a_corrupt_intermediate_delta_even_when_the_final_digest_matches() {
+    let directory = tempdir().unwrap();
+    let database_path = directory.path().join("kernel.redb");
+    {
+        let (kernel, _) = Kernel::create(&database_path, initial_snapshot()).unwrap();
+        let first_fence = kernel.issue_fence(&["symbol:Clock".into()]).unwrap();
+        kernel
+            .publish(publication(
+                0,
+                "export interface TimeSource {}",
+                first_fence,
+            ))
+            .unwrap();
+        let second_fence = kernel.issue_fence(&["symbol:Clock".into()]).unwrap();
+        kernel
+            .publish(publication(
+                1,
+                "export interface SystemClock {}",
+                second_fence,
+            ))
+            .unwrap();
+    }
+
+    let database = Database::open(&database_path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut deltas = write.open_table(DELTAS).unwrap();
+        let encoded = deltas.get(1).unwrap().unwrap().value().to_vec();
+        let mut delta: GraphDelta = serde_json::from_slice(&encoded).unwrap();
+        delta.changes = vec![GraphChange::UpsertNode {
+            node: NodeRecord {
+                id: "node:clock".into(),
+                kind: "InterfaceDeclaration".into(),
+                parent_id: None,
+                child_index: Some(0),
+                payload: "export interface CorruptedIntermediate {}".into(),
+            },
+        }];
+        let corrupted = serde_json::to_vec(&delta).unwrap();
+        deltas.insert(1, corrupted.as_slice()).unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open(&database_path)
+        .err()
+        .expect("opening must fail");
+    assert!(
+        error.to_string().contains("replayed digest") && error.to_string().contains("generation 1"),
         "unexpected error: {error:#}"
     );
 }

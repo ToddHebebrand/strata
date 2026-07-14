@@ -93,6 +93,13 @@ impl Kernel {
                     graph.generation()
                 );
             }
+            let expected_replayed_digest = store.generation_digest(*delta_generation)?;
+            if graph.digest() != expected_replayed_digest {
+                bail!(
+                    "replayed digest {} does not match durable digest {expected_replayed_digest} for generation {delta_generation}",
+                    graph.digest()
+                );
+            }
         }
 
         let durable_generation = store.current_generation()?;
