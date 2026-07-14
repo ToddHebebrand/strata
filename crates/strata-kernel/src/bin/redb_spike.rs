@@ -46,12 +46,23 @@ fn seed(args: &[String]) -> Result<()> {
     let database = required(args, "--db")?;
     let snapshot_path = required(args, "--snapshot")?;
     let snapshot: GraphSnapshot = read_json(snapshot_path, "snapshot")?;
+    let node_count = snapshot.nodes.len();
+    let reference_count = snapshot.references.len();
+    let seed_started = Instant::now();
     let (_, report) = Kernel::create(database, snapshot)?;
+    let seed_ns = seed_started.elapsed().as_nanos();
+    let redb_file_bytes = fs::metadata(database)
+        .with_context(|| format!("stat redb database {database}"))?
+        .len();
     print_json(json!({
         "command": "seed",
         "generation": report.generation,
         "digest": report.digest,
         "serviceEpoch": report.service_epoch,
+        "seedNs": seed_ns,
+        "nodeCount": node_count,
+        "referenceCount": reference_count,
+        "redbFileBytes": redb_file_bytes,
     }))
 }
 
@@ -183,9 +194,14 @@ fn measure(args: &[String]) -> Result<()> {
 
     let template: Publication = read_json(publication_path, "publication")?;
     let resources: Vec<String> = template.fence.resource_tokens.keys().cloned().collect();
-    let (kernel, _) = Kernel::open(database)?;
+    let recovery_started = Instant::now();
+    let (kernel, recovery_report) = Kernel::open(database)?;
+    let recovery_ns = recovery_started.elapsed().as_nanos();
+    let initial_snapshot = kernel.snapshot().snapshot();
     let started = Instant::now();
     let mut last = None;
+    let mut publication_persistence_ns = Vec::with_capacity(iterations as usize);
+    let mut memory_publish_ns = Vec::with_capacity(iterations as usize);
     for iteration in 0..iterations {
         let mut publication = template.clone();
         let base_generation = kernel.snapshot().generation();
@@ -206,18 +222,47 @@ fn measure(args: &[String]) -> Result<()> {
             "operationId": publication.operation.operation_id,
         }))?;
         publication.fence = kernel.issue_fence(&resources)?;
-        last = Some(kernel.publish(publication)?);
+        let report = kernel.publish(publication)?;
+        publication_persistence_ns.push(report.persistence_ns);
+        memory_publish_ns.push(report.memory_publish_ns);
+        last = Some(report);
     }
     let total_ns = started.elapsed().as_nanos();
     let report = last.context("measure completed without a publication")?;
+    let current_snapshot = kernel.snapshot().snapshot();
+    let redb_file_bytes = fs::metadata(database)
+        .with_context(|| format!("stat redb database {database}"))?
+        .len();
     print_json(json!({
         "command": "measure",
         "iterations": iterations,
         "generation": report.generation,
         "digest": report.digest,
+        "recoveryNs": recovery_ns,
+        "replayedOperations": recovery_report.replayed_operations,
+        "initialNodeCount": initial_snapshot.nodes.len(),
+        "initialReferenceCount": initial_snapshot.references.len(),
+        "currentNodeCount": current_snapshot.nodes.len(),
+        "currentReferenceCount": current_snapshot.references.len(),
+        "publicationPersistenceNs": nearest_rank_distribution(publication_persistence_ns),
+        "memoryPublishNs": nearest_rank_distribution(memory_publish_ns),
+        "redbFileBytes": redb_file_bytes,
         "totalNs": total_ns,
         "averageNs": total_ns / u128::from(iterations),
     }))
+}
+
+fn nearest_rank_distribution(mut samples: Vec<u128>) -> serde_json::Value {
+    samples.sort_unstable();
+    let nearest_rank = |percent: usize| {
+        let rank = (percent * samples.len()).div_ceil(100);
+        samples[rank.saturating_sub(1)]
+    };
+    json!({
+        "p50": nearest_rank(50),
+        "p95": nearest_rank(95),
+        "max": samples[samples.len() - 1],
+    })
 }
 
 fn replace_with_authoritative_fence(kernel: &Kernel, publication: &mut Publication) -> Result<()> {

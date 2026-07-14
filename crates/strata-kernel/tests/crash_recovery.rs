@@ -124,3 +124,62 @@ fn measure_events_reference_their_same_iteration_operations() {
         );
     }
 }
+
+fn assert_ordered_distribution(value: &Value, field: &str) {
+    let distribution = &value[field];
+    let p50 = distribution["p50"].as_u64().unwrap();
+    let p95 = distribution["p95"].as_u64().unwrap();
+    let max = distribution["max"].as_u64().unwrap();
+    assert!(p50 <= p95, "{field} p50 must not exceed p95");
+    assert!(p95 <= max, "{field} p95 must not exceed max");
+}
+
+#[test]
+fn seed_and_measure_emit_complete_evidence_metrics() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("kernel.redb");
+    let publication = directory.path().join("rename-publication.json");
+    let database_arg = database.to_str().unwrap();
+    let fixture = fixture();
+    let fixture_arg = fixture.to_str().unwrap();
+    let publication_arg = publication.to_str().unwrap();
+
+    let seeded = run_json(&["seed", "--db", database_arg, "--snapshot", fixture_arg]);
+    assert!(seeded["seedNs"].as_u64().unwrap() > 0);
+    assert!(seeded["nodeCount"].as_u64().unwrap() > 0);
+    assert!(seeded["referenceCount"].as_u64().unwrap() > 0);
+    assert!(seeded["redbFileBytes"].as_u64().unwrap() > 0);
+
+    run_json(&[
+        "make-rename-publication",
+        "--snapshot",
+        fixture_arg,
+        "--out",
+        publication_arg,
+    ]);
+    let measured = run_json(&[
+        "measure",
+        "--db",
+        database_arg,
+        "--publication",
+        publication_arg,
+        "--iterations",
+        "2",
+    ]);
+
+    assert!(measured["recoveryNs"].as_u64().unwrap() > 0);
+    assert_eq!(measured["replayedOperations"].as_u64(), Some(0));
+    assert_eq!(measured["initialNodeCount"], measured["currentNodeCount"]);
+    assert_eq!(
+        measured["initialReferenceCount"],
+        measured["currentReferenceCount"]
+    );
+    assert!(measured["initialNodeCount"].as_u64().unwrap() > 0);
+    assert!(measured["initialReferenceCount"].as_u64().unwrap() > 0);
+    assert!(measured["redbFileBytes"].as_u64().unwrap() > 0);
+    assert_ordered_distribution(&measured, "publicationPersistenceNs");
+    assert_ordered_distribution(&measured, "memoryPublishNs");
+    assert_eq!(measured["generation"].as_u64(), Some(2));
+    assert_eq!(measured["iterations"].as_u64(), Some(2));
+    assert_eq!(measured["digest"].as_str().unwrap().len(), 64);
+}
