@@ -1,8 +1,10 @@
+use std::collections::BTreeSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde_json::Value;
-use strata_kernel::{DurableStore, Kernel};
+use strata_kernel::{DurableStore, GraphSnapshot, Kernel};
 use tempfile::tempdir;
 
 fn binary() -> &'static str {
@@ -143,11 +145,19 @@ fn seed_and_measure_emit_complete_evidence_metrics() {
     let fixture = fixture();
     let fixture_arg = fixture.to_str().unwrap();
     let publication_arg = publication.to_str().unwrap();
+    let fixture_snapshot: GraphSnapshot =
+        serde_json::from_slice(&fs::read(&fixture).unwrap()).unwrap();
 
     let seeded = run_json(&["seed", "--db", database_arg, "--snapshot", fixture_arg]);
     assert!(seeded["seedNs"].as_u64().unwrap() > 0);
-    assert!(seeded["nodeCount"].as_u64().unwrap() > 0);
-    assert!(seeded["referenceCount"].as_u64().unwrap() > 0);
+    assert_eq!(
+        seeded["nodeCount"].as_u64(),
+        Some(fixture_snapshot.nodes.len() as u64)
+    );
+    assert_eq!(
+        seeded["referenceCount"].as_u64(),
+        Some(fixture_snapshot.references.len() as u64)
+    );
     assert!(seeded["redbFileBytes"].as_u64().unwrap() > 0);
 
     run_json(&[
@@ -174,12 +184,74 @@ fn seed_and_measure_emit_complete_evidence_metrics() {
         measured["initialReferenceCount"],
         measured["currentReferenceCount"]
     );
-    assert!(measured["initialNodeCount"].as_u64().unwrap() > 0);
-    assert!(measured["initialReferenceCount"].as_u64().unwrap() > 0);
+    assert_eq!(measured["initialNodeCount"], seeded["nodeCount"]);
+    assert_eq!(measured["initialReferenceCount"], seeded["referenceCount"]);
     assert!(measured["redbFileBytes"].as_u64().unwrap() > 0);
     assert_ordered_distribution(&measured, "publicationPersistenceNs");
     assert_ordered_distribution(&measured, "memoryPublishNs");
     assert_eq!(measured["generation"].as_u64(), Some(2));
     assert_eq!(measured["iterations"].as_u64(), Some(2));
     assert_eq!(measured["digest"].as_str().unwrap().len(), 64);
+}
+
+#[test]
+fn consecutive_measure_runs_publish_distinct_generations_and_records() {
+    let directory = tempdir().unwrap();
+    let database = directory.path().join("kernel.redb");
+    let publication = directory.path().join("rename-publication.json");
+    let database_arg = database.to_str().unwrap();
+    let fixture = fixture();
+    let fixture_arg = fixture.to_str().unwrap();
+    let publication_arg = publication.to_str().unwrap();
+
+    run_json(&["seed", "--db", database_arg, "--snapshot", fixture_arg]);
+    run_json(&[
+        "make-rename-publication",
+        "--snapshot",
+        fixture_arg,
+        "--out",
+        publication_arg,
+    ]);
+    let first = run_json(&[
+        "measure",
+        "--db",
+        database_arg,
+        "--publication",
+        publication_arg,
+        "--iterations",
+        "2",
+    ]);
+    let second = run_json(&[
+        "measure",
+        "--db",
+        database_arg,
+        "--publication",
+        publication_arg,
+        "--iterations",
+        "2",
+    ]);
+
+    assert_eq!(first["generation"].as_u64(), Some(2));
+    assert_eq!(second["generation"].as_u64(), Some(4));
+    for result in [&first, &second] {
+        assert!(result["publicationPersistenceNs"]["p50"].as_u64().unwrap() > 0);
+        assert!(result["memoryPublishNs"]["p50"].as_u64().unwrap() > 0);
+    }
+
+    let store = DurableStore::open(&database).unwrap();
+    let mut operation_ids = BTreeSet::new();
+    let mut event_ids = BTreeSet::new();
+    for generation in 1..=4 {
+        let operation = store.operation(generation).unwrap().unwrap();
+        let event = store.event(generation).unwrap().unwrap();
+        let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
+        assert_eq!(
+            payload["operationId"].as_str(),
+            Some(operation.operation_id.as_str())
+        );
+        operation_ids.insert(operation.operation_id);
+        event_ids.insert(event.event_id);
+    }
+    assert_eq!(operation_ids.len(), 4);
+    assert_eq!(event_ids.len(), 4);
 }

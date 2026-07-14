@@ -202,20 +202,21 @@ fn measure(args: &[String]) -> Result<()> {
     let mut last = None;
     let mut publication_persistence_ns = Vec::with_capacity(iterations as usize);
     let mut memory_publish_ns = Vec::with_capacity(iterations as usize);
-    for iteration in 0..iterations {
+    for _ in 0..iterations {
         let mut publication = template.clone();
         let base_generation = kernel.snapshot().generation();
         let next_generation = base_generation
             .checked_add(1)
             .context("graph generation overflow")?;
+        let identity_suffix = format!("measure:g{next_generation}");
         publication.delta.base_generation = base_generation;
-        publication.idempotency_key = format!("{}:measure:{iteration}", template.idempotency_key);
+        publication.idempotency_key = format!("{}:{identity_suffix}", template.idempotency_key);
         publication.operation.operation_id =
-            format!("{}:measure:{iteration}", template.operation.operation_id);
+            format!("{}:{identity_suffix}", template.operation.operation_id);
         publication.operation.change_set_id =
-            format!("{}:measure:{iteration}", template.operation.change_set_id);
-        publication.ticket.ticket_id = format!("{}:measure:{iteration}", template.ticket.ticket_id);
-        publication.event.event_id = format!("{}:measure:{iteration}", template.event.event_id);
+            format!("{}:{identity_suffix}", template.operation.change_set_id);
+        publication.ticket.ticket_id = format!("{}:{identity_suffix}", template.ticket.ticket_id);
+        publication.event.event_id = format!("{}:{identity_suffix}", template.event.event_id);
         publication.event.sequence = next_generation;
         publication.event.graph_generation = next_generation;
         publication.event.payload_json = serde_json::to_string(&json!({
@@ -313,4 +314,20 @@ fn require_only(args: &[String], allowed: &[&str]) -> Result<()> {
 fn print_json(value: serde_json::Value) -> Result<()> {
     println!("{}", serde_json::to_string(&value)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nearest_rank_distribution;
+
+    #[test]
+    fn nearest_rank_distribution_uses_every_sample() {
+        let distribution = nearest_rank_distribution(vec![
+            20, 1, 19, 2, 18, 3, 17, 4, 16, 5, 15, 6, 14, 7, 13, 8, 12, 9, 11, 10,
+        ]);
+
+        assert_eq!(distribution["p50"].as_u64(), Some(10));
+        assert_eq!(distribution["p95"].as_u64(), Some(19));
+        assert_eq!(distribution["max"].as_u64(), Some(20));
+    }
 }
