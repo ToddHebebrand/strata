@@ -4,7 +4,7 @@ mod model;
 mod storage;
 
 pub use graph::GraphGeneration;
-pub use kernel::{Kernel, PublicationReport, RecoveryReport};
+pub use kernel::{Kernel, PublicationReport, PublishFailpoint, RecoveryReport};
 pub use model::{
     EventRecord, FenceClaim, GraphChange, GraphDelta, GraphSnapshot, NodeRecord, OperationRecord,
     Publication, ReferenceRecord, SCHEMA_VERSION, TicketRecord,

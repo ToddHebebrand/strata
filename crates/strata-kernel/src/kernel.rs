@@ -26,6 +26,16 @@ pub struct PublicationReport {
     pub already_published: bool,
 }
 
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublishFailpoint {
+    None,
+    BeforeRedbTransaction,
+    InsideRedbTransaction,
+    AfterRedbCommitBeforeMemoryPublish,
+    AfterMemoryPublish,
+}
+
 pub struct Kernel {
     store: DurableStore,
     live: RwLock<Arc<GraphGeneration>>,
@@ -123,6 +133,23 @@ impl Kernel {
     }
 
     pub fn publish(&self, publication: Publication) -> Result<PublicationReport> {
+        self.publish_inner(publication, PublishFailpoint::None)
+    }
+
+    #[doc(hidden)]
+    pub fn publish_with_failpoint(
+        &self,
+        publication: Publication,
+        failpoint: PublishFailpoint,
+    ) -> Result<PublicationReport> {
+        self.publish_inner(publication, failpoint)
+    }
+
+    fn publish_inner(
+        &self,
+        publication: Publication,
+        failpoint: PublishFailpoint,
+    ) -> Result<PublicationReport> {
         let _publish_guard = self
             .publish_lock
             .lock()
@@ -141,7 +168,9 @@ impl Kernel {
 
         let next = Arc::new(current.apply(&publication.delta)?);
         let persistence_started = Instant::now();
-        let outcome = self.store.publish(&publication, next.digest())?;
+        let outcome = self
+            .store
+            .publish_with_failpoint(&publication, next.digest(), failpoint)?;
         let persistence_ns = persistence_started.elapsed().as_nanos();
         match outcome {
             PublishOutcome::AlreadyPublished { .. } => Ok(PublicationReport {
@@ -164,6 +193,9 @@ impl Kernel {
                     .write()
                     .map_err(|_| anyhow::anyhow!("live generation lock is poisoned"))? =
                     next.clone();
+                if failpoint == PublishFailpoint::AfterMemoryPublish {
+                    std::process::abort();
+                }
                 let memory_publish_ns = memory_publish_started.elapsed().as_nanos();
                 Ok(PublicationReport {
                     generation,

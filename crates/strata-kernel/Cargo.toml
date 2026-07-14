@@ -8,6 +8,10 @@ rust-version = "1.89"
 name = "strata_kernel"
 path = "src/lib.rs"
 
+[[bin]]
+name = "redb-spike"
+path = "src/bin/redb_spike.rs"
+
 [dependencies]
 anyhow = "1.0"
 redb = "4.1.0"

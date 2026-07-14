@@ -7,7 +7,7 @@ use serde::de::DeserializeOwned;
 
 use crate::{
     EventRecord, FenceClaim, GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord,
-    Publication, TicketRecord,
+    Publication, PublishFailpoint, TicketRecord,
 };
 
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("graph_metadata");
@@ -126,6 +126,28 @@ impl DurableStore {
         publication: &Publication,
         expected_digest: &str,
     ) -> Result<PublishOutcome> {
+        self.publish_inner(publication, expected_digest, PublishFailpoint::None)
+    }
+
+    #[doc(hidden)]
+    pub fn publish_with_failpoint(
+        &self,
+        publication: &Publication,
+        expected_digest: &str,
+        failpoint: PublishFailpoint,
+    ) -> Result<PublishOutcome> {
+        self.publish_inner(publication, expected_digest, failpoint)
+    }
+
+    fn publish_inner(
+        &self,
+        publication: &Publication,
+        expected_digest: &str,
+        failpoint: PublishFailpoint,
+    ) -> Result<PublishOutcome> {
+        if failpoint == PublishFailpoint::BeforeRedbTransaction {
+            std::process::abort();
+        }
         let write = self
             .database
             .begin_write()
@@ -233,7 +255,13 @@ impl DurableStore {
                 .context("advance event sequence")?;
         }
 
+        if failpoint == PublishFailpoint::InsideRedbTransaction {
+            std::process::abort();
+        }
         write.commit().context("commit publication transaction")?;
+        if failpoint == PublishFailpoint::AfterRedbCommitBeforeMemoryPublish {
+            std::process::abort();
+        }
         Ok(PublishOutcome::Published {
             generation: next_generation,
         })
