@@ -74,15 +74,23 @@ fn expected_digest(publication: &Publication) -> String {
         .to_owned()
 }
 
+fn issue_clock_fence(store: &DurableStore, service_epoch: u64) -> FenceClaim {
+    store
+        .issue_fence(service_epoch, &["symbol:Clock".into()])
+        .unwrap()
+}
+
 #[test]
 fn publication_is_atomic_and_durable_across_reopen() {
     let directory = tempdir().unwrap();
     let database_path = directory.path().join("kernel.redb");
-    let publication = publication("publish:1");
+    let mut publication = publication("publish:1");
 
     {
         let store = DurableStore::create(&database_path).unwrap();
         store.seed(&initial_snapshot()).unwrap();
+        let service_epoch = store.begin_service_epoch().unwrap();
+        publication.fence = issue_clock_fence(&store, service_epoch);
         assert_eq!(
             store
                 .publish(&publication, &expected_digest(&publication))
@@ -119,8 +127,10 @@ fn duplicate_idempotency_key_returns_original_generation_without_appending() {
     let database_path = directory.path().join("kernel.redb");
     let store = DurableStore::create(&database_path).unwrap();
     store.seed(&initial_snapshot()).unwrap();
+    let service_epoch = store.begin_service_epoch().unwrap();
 
-    let publication = publication("publish:duplicate");
+    let mut publication = publication("publish:duplicate");
+    publication.fence = issue_clock_fence(&store, service_epoch);
     assert_eq!(
         store
             .publish(&publication, &expected_digest(&publication))
@@ -132,6 +142,7 @@ fn duplicate_idempotency_key_returns_original_generation_without_appending() {
     duplicate.operation.operation_id = "operation:must-not-be-written".into();
     duplicate.event.event_id = "event:must-not-be-written".into();
     duplicate.ticket.ticket_id = "ticket:must-not-be-written".into();
+    store.begin_service_epoch().unwrap();
 
     assert_eq!(
         store

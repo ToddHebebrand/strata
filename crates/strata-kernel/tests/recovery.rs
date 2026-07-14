@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use redb::{Database, ReadableTable, TableDefinition};
 use strata_kernel::{
     EventRecord, FenceClaim, GraphChange, GraphDelta, GraphSnapshot, Kernel, NodeRecord,
@@ -38,7 +36,7 @@ fn initial_snapshot() -> GraphSnapshot {
     }
 }
 
-fn publication(generation: u64, payload: &str) -> Publication {
+fn publication(generation: u64, payload: &str, fence: FenceClaim) -> Publication {
     let next_generation = generation + 1;
     Publication {
         schema_version: SCHEMA_VERSION,
@@ -76,10 +74,7 @@ fn publication(generation: u64, payload: &str) -> Publication {
             graph_generation: next_generation,
             payload_json: format!(r#"{{"operationId":"operation:{next_generation}"}}"#),
         },
-        fence: FenceClaim {
-            service_epoch: 1,
-            resource_tokens: BTreeMap::new(),
-        },
+        fence,
     }
 }
 
@@ -87,12 +82,22 @@ fn seed_two_generations(database_path: &std::path::Path) -> (GraphSnapshot, Grap
     let (kernel, create_report) = Kernel::create(database_path, initial_snapshot()).unwrap();
     assert_eq!(create_report.service_epoch, 1);
 
+    let first_fence = kernel.issue_fence(&["symbol:Clock".into()]).unwrap();
     kernel
-        .publish(publication(0, "export interface TimeSource {}"))
+        .publish(publication(
+            0,
+            "export interface TimeSource {}",
+            first_fence,
+        ))
         .unwrap();
     let generation_one = kernel.snapshot().snapshot();
+    let second_fence = kernel.issue_fence(&["symbol:Clock".into()]).unwrap();
     kernel
-        .publish(publication(1, "export interface SystemClock {}"))
+        .publish(publication(
+            1,
+            "export interface SystemClock {}",
+            second_fence,
+        ))
         .unwrap();
     let generation_two = kernel.snapshot().snapshot();
     kernel.write_snapshot(&generation_one).unwrap();

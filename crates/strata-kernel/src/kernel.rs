@@ -4,7 +4,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 
-use crate::{DurableStore, GraphGeneration, GraphSnapshot, Publication, PublishOutcome};
+use crate::{
+    DurableStore, FenceClaim, GraphGeneration, GraphSnapshot, Publication, PublishOutcome,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryReport {
@@ -114,6 +116,10 @@ impl Kernel {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    pub fn issue_fence(&self, resources: &[String]) -> Result<FenceClaim> {
+        self.store.issue_fence(self.service_epoch, resources)
     }
 
     pub fn publish(&self, publication: Publication) -> Result<PublicationReport> {

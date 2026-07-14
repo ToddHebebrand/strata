@@ -1,13 +1,13 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::{
-    EventRecord, GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord, Publication,
-    TicketRecord,
+    EventRecord, FenceClaim, GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord,
+    Publication, TicketRecord,
 };
 
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("graph_metadata");
@@ -183,6 +183,8 @@ impl DurableStore {
             );
         }
 
+        self.verify_fence_in_write_txn(&write, &publication.fence)?;
+
         let operation = encode(&publication.operation, "operation")?;
         let delta = encode(&publication.delta, "delta")?;
         let ticket = encode(&publication.ticket, "ticket")?;
@@ -235,6 +237,114 @@ impl DurableStore {
         Ok(PublishOutcome::Published {
             generation: next_generation,
         })
+    }
+
+    pub fn issue_fence(&self, service_epoch: u64, resources: &[String]) -> Result<FenceClaim> {
+        let mut resources = resources.to_vec();
+        resources.sort();
+        resources.dedup();
+
+        let write = self
+            .database
+            .begin_write()
+            .context("begin fence issuance transaction")?;
+        {
+            let metadata = write.open_table(META).context("open metadata table")?;
+            let current_epoch = read_metadata(&metadata, SERVICE_EPOCH)?;
+            if service_epoch != current_epoch {
+                bail!(
+                    "stale service epoch {service_epoch}; current service epoch is {current_epoch}"
+                );
+            }
+        }
+
+        let mut resource_tokens = std::collections::BTreeMap::new();
+        {
+            let mut fences = write.open_table(FENCES).context("open fences table")?;
+            for resource in resources {
+                let current = fences
+                    .get(resource.as_str())
+                    .with_context(|| format!("read fence token for {resource}"))?
+                    .map(|token| token.value())
+                    .unwrap_or(0);
+                let next = current
+                    .checked_add(1)
+                    .with_context(|| format!("fence token overflow for {resource}"))?;
+                fences
+                    .insert(resource.as_str(), next)
+                    .with_context(|| format!("write fence token for {resource}"))?;
+                resource_tokens.insert(resource, next);
+            }
+        }
+
+        write
+            .commit()
+            .context("commit fence issuance transaction")?;
+        Ok(FenceClaim {
+            service_epoch,
+            resource_tokens,
+        })
+    }
+
+    pub fn verify_fence_in_write_txn(
+        &self,
+        write_txn: &WriteTransaction,
+        claim: &FenceClaim,
+    ) -> Result<()> {
+        {
+            let metadata = write_txn.open_table(META).context("open metadata table")?;
+            let current_epoch = read_metadata(&metadata, SERVICE_EPOCH)?;
+            if claim.service_epoch != current_epoch {
+                bail!(
+                    "stale service epoch {}; current service epoch is {current_epoch}",
+                    claim.service_epoch
+                );
+            }
+        }
+
+        if claim.resource_tokens.is_empty() {
+            bail!("publication fence must claim at least one resource");
+        }
+
+        {
+            let fences = write_txn.open_table(FENCES).context("open fences table")?;
+            let consumed = write_txn
+                .open_table(CONSUMED_FENCES)
+                .context("open consumed fences table")?;
+            for (resource, claimed_token) in &claim.resource_tokens {
+                let current_token = fences
+                    .get(resource.as_str())
+                    .with_context(|| format!("read fence token for {resource}"))?
+                    .map(|token| token.value())
+                    .unwrap_or(0);
+                if *claimed_token != current_token {
+                    bail!(
+                        "stale fence for {resource}: claimed token {claimed_token}, current token {current_token}"
+                    );
+                }
+
+                let consumed_token = consumed
+                    .get(resource.as_str())
+                    .with_context(|| format!("read consumed fence token for {resource}"))?
+                    .map(|token| token.value())
+                    .unwrap_or(0);
+                if *claimed_token <= consumed_token {
+                    bail!(
+                        "consumed fence for {resource}: claimed token {claimed_token}, consumed through {consumed_token}"
+                    );
+                }
+            }
+        }
+
+        let mut consumed = write_txn
+            .open_table(CONSUMED_FENCES)
+            .context("open consumed fences table")?;
+        for (resource, claimed_token) in &claim.resource_tokens {
+            consumed
+                .insert(resource.as_str(), *claimed_token)
+                .with_context(|| format!("consume fence token for {resource}"))?;
+        }
+        Ok(())
     }
 
     pub fn current_generation(&self) -> Result<u64> {
