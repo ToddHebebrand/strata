@@ -31,6 +31,8 @@ const EVENT_CURSORS: TableDefinition<&str, u64> =
     TableDefinition::new("coordination_event_cursors");
 const SUBMISSION_IDEMPOTENCY: TableDefinition<&str, &str> =
     TableDefinition::new("coordination_submission_idempotency");
+const RESOURCE_CLOCKS: TableDefinition<&str, u64> =
+    TableDefinition::new("coordination_resource_clocks");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_metadata");
 const NEXT_QUEUE_SEQUENCE: &str = "next_queue_sequence";
 const CURRENT_EVENT_SEQUENCE: &str = "current_event_sequence";
@@ -88,6 +90,67 @@ pub struct CoordinationDurable<'a> {
 impl<'a> CoordinationDurable<'a> {
     pub(crate) fn new(database: &'a Database) -> Self {
         Self { database }
+    }
+
+    pub(crate) fn resource_clocks(&self) -> Result<BTreeMap<String, u64>> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin resource clock read")?;
+        let table = read
+            .open_table(RESOURCE_CLOCKS)
+            .context("open resource clocks table")?;
+        let mut clocks = BTreeMap::new();
+        for entry in table.iter().context("iterate resource clocks")? {
+            let (key, clock) = entry.context("read resource clock entry")?;
+            clocks.insert(key.value().to_owned(), clock.value());
+        }
+        Ok(clocks)
+    }
+
+    pub(crate) fn next_resource_clock_updates(
+        &self,
+        keys: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, u64>> {
+        let clocks = self.resource_clocks()?;
+        keys.iter()
+            .map(|key| {
+                let next = clocks
+                    .get(key)
+                    .copied()
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .with_context(|| format!("resource clock overflow for {key}"))?;
+                Ok((key.clone(), next))
+            })
+            .collect()
+    }
+
+    pub(crate) fn persist_resource_clock_updates_in_write_txn(
+        &self,
+        write: &WriteTransaction,
+        updates: &BTreeMap<String, u64>,
+    ) -> Result<()> {
+        let mut clocks = write
+            .open_table(RESOURCE_CLOCKS)
+            .context("open resource clocks table")?;
+        for (key, update) in updates {
+            let current = clocks
+                .get(key.as_str())
+                .with_context(|| format!("read resource clock for {key}"))?
+                .map(|clock| clock.value())
+                .unwrap_or(0);
+            let expected = current
+                .checked_add(1)
+                .with_context(|| format!("resource clock overflow for {key}"))?;
+            if *update != expected {
+                bail!("resource clock update for {key} is {update}, expected exactly {expected}");
+            }
+            clocks
+                .insert(key.as_str(), *update)
+                .with_context(|| format!("write resource clock for {key}"))?;
+        }
+        Ok(())
     }
 
     pub fn events_after(
@@ -1331,6 +1394,11 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
         write
             .open_table(SUBMISSION_IDEMPOTENCY)
             .context("create submission idempotency table")?,
+    );
+    drop(
+        write
+            .open_table(RESOURCE_CLOCKS)
+            .context("create resource clocks table")?,
     );
     write
         .commit()

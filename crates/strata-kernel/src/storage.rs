@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -43,6 +44,7 @@ pub(crate) struct CoordinatedCommit {
     pub lifecycle: LifecycleTransition,
     pub service_epoch: u64,
     pub reservation_keys: Vec<String>,
+    pub resource_clock_updates: BTreeMap<String, u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +52,7 @@ pub enum CoordinatedPublishFailpoint {
     None,
     AfterFenceMutation,
     AfterInsert(usize),
+    AfterResourceClockWrites,
     BeforeCommit,
 }
 
@@ -269,6 +272,11 @@ impl DurableStore {
                 &commit.lifecycle,
                 &mut after_insert,
             )?;
+        self.coordination()
+            .persist_resource_clock_updates_in_write_txn(&write, &commit.resource_clock_updates)?;
+        if failpoint == CoordinatedPublishFailpoint::AfterResourceClockWrites {
+            bail!("coordinated publication failpoint after resource clock writes");
+        }
         if failpoint == CoordinatedPublishFailpoint::BeforeCommit {
             bail!("coordinated publication failpoint before commit");
         }

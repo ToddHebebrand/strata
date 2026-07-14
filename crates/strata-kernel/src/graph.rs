@@ -108,6 +108,10 @@ impl GraphGeneration {
         self.nodes.get(node_id)
     }
 
+    pub fn reference_from(&self, from_node_id: &str) -> Option<&ReferenceRecord> {
+        self.references_from.get(from_node_id)
+    }
+
     pub fn references_to(&self, node_id: &str) -> impl Iterator<Item = &ReferenceRecord> {
         self.references_to.get(node_id).into_iter().flatten()
     }

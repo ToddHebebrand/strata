@@ -102,9 +102,10 @@ impl GraphDerivedAnalyzer {
 impl TestSemanticProvider for GraphDerivedAnalyzer {
     fn analyze(&self, graph: &GraphGeneration, intent: &IntentRecord) -> Result<IntentAnalysis> {
         match &intent.parameters {
-            IntentParameters::RenameSymbol { declaration_id, .. } => {
-                self.analyze_rename(graph, declaration_id)
-            }
+            IntentParameters::RenameSymbol {
+                declaration_id,
+                new_name,
+            } => self.analyze_rename(graph, declaration_id, new_name),
             IntentParameters::AddParameter { function_id, .. } => {
                 self.analyze_add_parameter(graph, function_id)
             }
@@ -117,6 +118,7 @@ impl GraphDerivedAnalyzer {
         &self,
         graph: &GraphGeneration,
         declaration_id: &str,
+        new_name: &str,
     ) -> Result<IntentAnalysis> {
         let target = graph
             .node(declaration_id)
@@ -130,6 +132,14 @@ impl GraphDerivedAnalyzer {
         scope.read_node(graph, declaration_identifier)?;
         scope.write_node(graph, declaration_identifier)?;
         scope.reserve(format!("symbol:{declaration_id}"));
+
+        let old_name = declaration_name(target)
+            .with_context(|| format!("cannot derive declaration name for {declaration_id}"))?;
+        let container = target.parent_id.as_deref().unwrap_or("root");
+        for name in [old_name.as_str(), new_name] {
+            scope.write_semantic_index(format!("namespace:{container}:{name}"))?;
+            scope.write_semantic_index(format!("absence:{}:{container}:{name}", target.kind))?;
+        }
 
         for reference in graph.references_to(&declaration_identifier.id) {
             scope.read_reference(reference)?;
@@ -269,6 +279,14 @@ impl ScopeParts {
         self.validation_set.push(resource);
         self.reserve(format!("node:{}", reference.from_node_id));
         self.reserve(format!("node:{}", reference.to_node_id));
+        Ok(())
+    }
+
+    fn write_semantic_index(&mut self, resource_key: String) -> Result<()> {
+        let resource =
+            ResourceVersion::new(resource_key, "semantic-index").map_err(anyhow::Error::msg)?;
+        self.write_set.push(resource.clone());
+        self.validation_set.push(resource);
         Ok(())
     }
 

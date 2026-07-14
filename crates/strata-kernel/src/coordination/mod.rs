@@ -3,6 +3,7 @@ mod authority;
 mod coordinator;
 mod durable;
 mod model;
+mod resources;
 mod scheduler;
 
 #[cfg(not(feature = "coordination-test-api"))]
@@ -32,4 +33,8 @@ pub use model::{
     EventCursor, IdempotencyClass, InferredScope, IntentParameters, IntentRecord, ReadyOffer,
     ResourceVersion, SubmissionOutcome, TicketState,
 };
+pub use resources::DependencyVersion;
+#[cfg(feature = "coordination-test-api")]
+pub use resources::affected_resource_keys;
+pub(crate) use resources::{ResourceClockSnapshot, affected_resource_keys as resource_keys};
 pub use scheduler::SchedulerState;

@@ -1,3 +1,6 @@
+#[cfg(feature = "coordination-test-api")]
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 #[cfg(feature = "redb-spike-api")]
@@ -5,7 +8,9 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 
-use crate::coordination::{CoordinationError, SemanticProvider};
+use crate::coordination::{
+    CoordinationError, DependencyVersion, ResourceClockSnapshot, SemanticProvider,
+};
 #[cfg(feature = "coordination-test-api")]
 use crate::coordination::{TestSemanticAdapter, TestSemanticProvider};
 #[cfg(feature = "redb-spike-api")]
@@ -48,6 +53,7 @@ pub struct Kernel {
     pub(crate) store: DurableStore,
     pub(crate) live: RwLock<Arc<GraphGeneration>>,
     pub(crate) publish_lock: Mutex<()>,
+    pub(crate) resource_clocks: RwLock<Arc<ResourceClockSnapshot>>,
     service_epoch: u64,
     pub(crate) scheduler: Mutex<SchedulerState>,
     semantic_provider: Option<Arc<dyn SemanticProvider>>,
@@ -78,6 +84,9 @@ impl Kernel {
         let graph = Arc::new(GraphGeneration::from_snapshot(initial.clone())?);
         let store = DurableStore::create(path)?;
         store.seed(&initial)?;
+        let resource_clocks = Arc::new(ResourceClockSnapshot::from_clocks(
+            store.coordination().resource_clocks()?,
+        ));
         let service_epoch = store.begin_service_epoch()?;
         let report = RecoveryReport {
             snapshot_generation: graph.generation(),
@@ -88,7 +97,14 @@ impl Kernel {
         };
         let scheduler = SchedulerState::recover(Vec::new(), Vec::new(), Vec::new())?;
         Ok((
-            Self::from_parts(store, graph, service_epoch, scheduler, semantic_provider),
+            Self::from_parts(
+                store,
+                graph,
+                resource_clocks,
+                service_epoch,
+                scheduler,
+                semantic_provider,
+            ),
             report,
         ))
     }
@@ -168,6 +184,9 @@ impl Kernel {
             store.coordination().ready_offers()?,
             store.coordination().active_claims()?,
         )?;
+        let resource_clocks = Arc::new(ResourceClockSnapshot::from_clocks(
+            store.coordination().resource_clocks()?,
+        ));
         let graph = Arc::new(graph);
         let report = RecoveryReport {
             snapshot_generation,
@@ -177,7 +196,14 @@ impl Kernel {
             service_epoch,
         };
         Ok((
-            Self::from_parts(store, graph, service_epoch, scheduler, semantic_provider),
+            Self::from_parts(
+                store,
+                graph,
+                resource_clocks,
+                service_epoch,
+                scheduler,
+                semantic_provider,
+            ),
             report,
         ))
     }
@@ -187,6 +213,28 @@ impl Kernel {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    pub(crate) fn resource_clock_snapshot(&self) -> Arc<ResourceClockSnapshot> {
+        self.resource_clocks
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn dependency_snapshot(&self, keys: &BTreeSet<String>) -> Vec<DependencyVersion> {
+        self.resource_clock_snapshot().dependencies(keys)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_resource_clocks(&self, keys: &BTreeSet<String>) -> Result<BTreeMap<String, u64>> {
+        Ok(self
+            .dependency_snapshot(keys)
+            .into_iter()
+            .map(|dependency| (dependency.resource_key, dependency.clock))
+            .collect())
     }
 
     #[cfg(feature = "redb-spike-api")]
@@ -305,6 +353,7 @@ impl Kernel {
     fn from_parts(
         store: DurableStore,
         graph: Arc<GraphGeneration>,
+        resource_clocks: Arc<ResourceClockSnapshot>,
         service_epoch: u64,
         scheduler: SchedulerState,
         semantic_provider: Option<Arc<dyn SemanticProvider>>,
@@ -313,6 +362,7 @@ impl Kernel {
             store,
             live: RwLock::new(graph),
             publish_lock: Mutex::new(()),
+            resource_clocks: RwLock::new(resource_clocks),
             service_epoch,
             scheduler: Mutex::new(scheduler),
             semantic_provider,

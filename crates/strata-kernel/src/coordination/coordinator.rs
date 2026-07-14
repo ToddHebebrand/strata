@@ -13,6 +13,7 @@ use super::{
     CoordinationEvent, CoordinationEventKind, CoordinationTicket, CreateDraftOutcome,
     DynamicExpansionPolicy, EventCursor, IntentParameters, IntentRecord, ReadyOffer,
     SchedulerState, ScopeChange, SubmissionOutcome, TicketState, classify_scope_change,
+    resource_keys,
 };
 use crate::model::{FenceClaim, Publication};
 use crate::storage::{CoordinatedCommit, CoordinatedPublishFailpoint, PublishOutcome};
@@ -756,6 +757,23 @@ impl Kernel {
         }
         super::validate_delta_containment(&graph, &delta, &fresh_scope)
             .context("candidate delta is outside inferred scope")?;
+        let semantic_index_keys = fresh_scope
+            .write_set
+            .iter()
+            .chain(&fresh_scope.validation_set)
+            .filter(|resource| {
+                resource.resource_key.starts_with("namespace:")
+                    || resource.resource_key.starts_with("absence:")
+            })
+            .map(|resource| resource.resource_key.clone())
+            .collect::<BTreeSet<_>>();
+        let affected_resource_keys = resource_keys(&graph, &delta, &semantic_index_keys)?;
+        let resource_clock_updates =
+            durable.next_resource_clock_updates(&affected_resource_keys)?;
+        let next_resource_clocks = Arc::new(
+            self.resource_clock_snapshot()
+                .apply(&resource_clock_updates),
+        );
         let next = Arc::new(graph.apply(&delta)?);
         let next_generation = next.generation();
         let operation_id = format!("operation:{}", uuid::Uuid::new_v4());
@@ -1029,6 +1047,7 @@ impl Kernel {
             lifecycle,
             service_epoch: self.service_epoch(),
             reservation_keys: fresh_scope.reservation_keys,
+            resource_clock_updates,
         };
         let persistence_started = Instant::now();
         let outcome = self
@@ -1056,6 +1075,10 @@ impl Kernel {
                     .write()
                     .map_err(|_| anyhow::anyhow!("live generation lock is poisoned"))? =
                     next.clone();
+                *self
+                    .resource_clocks
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = next_resource_clocks;
                 let memory_publish_ns = memory_started.elapsed().as_nanos();
                 *scheduler = next_scheduler;
                 Ok(PublicationReport {
