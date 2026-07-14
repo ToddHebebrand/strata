@@ -90,6 +90,20 @@ Goal: the architectural argument is publishable.
 - [ ] Demo capture (see Iteration 3).
 - [ ] Publication venue + final edit pass (operator).
 
+### Iteration 5 — Multi-agent coordination kernel (approved, not started)
+
+Goal: test Strata's original motivation directly — multiple agents sharing one canonical structural codebase without Git branches, worktrees, or manual text merges.
+
+Approved design: [`docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md`](superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md).
+
+- [ ] **Redb spike gate.** Rust memory-native graph; atomic operation+delta+event+ticket publication; snapshot+replay recovery; fencing and crash-boundary tests on `examples/medium`.
+- [ ] **Coordination kernel.** Typed intents, inferred semantic scopes, all-or-ticket scheduling, durable tickets/events, service epochs, fencing, FIFO aging, and fresh-state wakeups.
+- [ ] **Two-operation proof.** `rename_symbol` (wide closure) and `add_parameter` (dynamic scope) through the Rust kernel while existing TypeScript ingest/render/verify remain authoritative.
+- [ ] **Key-free acceptance.** Zero lost updates, dirty reads, partial commits, and stale-fence publications across deterministic multi-client interleavings and injected crashes.
+- [ ] **Live falsifiable comparison.** Only after correctness: two agents on Strata versus Git worktrees plus an integration agent; primary metric is time-to-one-shared-green-codebase.
+
+The current SQLite product path remains supported until this proof passes. This iteration coordinates code activity only; task decomposition and assignment stay outside Strata.
+
 ## What not to do
 
 These are off-roadmap until something forces them on:
@@ -97,5 +111,5 @@ These are off-roadmap until something forces them on:
 - **Re-running benches to see if a number moved.** The numbers we have are the numbers; new bench task only when a new tool needs scoring.
 - **Trying to close T01's per-callsite gap before shipping iteration 1.** The gap is documented; ship around it.
 - **Building a UI.** Out of scope per `strata-design.md` § Scope of MVP.
-- **Multi-language support, git integration, FUSE, multi-client concurrency.** Out of scope.
+- **Multi-language support, git integration, FUSE, multi-host consensus, and task orchestration.** Out of scope. Multi-client code coordination is now Iteration 5.
 - **Sandbox experiments (`packages/lab`) without a falsifiable product question.** The lab has served its purpose; new lab work needs an explicit product justification.

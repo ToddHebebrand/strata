@@ -7,6 +7,37 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-13 — Recover the original multi-agent thesis: Rust memory-native coordination kernel with redb durability
+
+**Context:** Reviewing Strata through its original motivation exposed a gap between the opening thesis and the implemented product. `strata-design.md` begins from the claim that file granularity prevents agents from safely working in parallel, but the MVP explicitly deferred multi-client editing and every benchmark measured one agent at a time. The product subsequently converged on the narrower, valid bulk-propagation result. Persistence supports sequential sessions; it is not concurrent isolation. The current store also keeps transaction overlays in a process-local `Map`, applies some structural inserts/deletes to canonical SQLite rows before logical commit, and has no durable semantic reservations, tickets, fencing, or restartable undo state. Two agents must not share the current database directly.
+
+**Considered:**
+- Keep SQLite as canonical hot state and add WAL/busy-timeout/record-lock conventions. Rejected: those are storage controls, not Strata's semantic coordination model, and SQLite has no per-record lock primitive matching typed graph intent.
+- Put an active TypeScript coordinator in front of the current SQLite store. Viable as a smaller prototype, but it preserves the SQL graph as the hot representation and does not address the desired memory-native substrate.
+- Rust memory-native kernel with SQLite durability. Viable, but keeps a SQL mapping in the commit/recovery path without using its query layer as the hot path.
+- Rust memory-native kernel with redb durability. Chosen: pure Rust, embedded ACID/MVCC/crash-safe storage, one short commit sequencer, and direct key/value tables for operation deltas, tickets, events, snapshots, and fencing.
+- LMDB, RocksDB, or a custom WAL. LMDB is the viable C fallback; RocksDB is operationally excessive for this workload; a custom WAL assumes database-engine responsibilities before the coordination hypothesis is tested.
+
+**Independent review:** A read-only, repo-grounded Codex CLI review (`gpt-5.5`, reasoning `xhigh`) agreed that the semantic concurrency layer belongs above the store, recommended a single active service for the first proof, and surfaced the need for double scope inference, all-or-ticket acquisition, FIFO aging, service-owned fencing, composite change sets, and a restartable durable intent layer. Pivotal claims were checked against the current transaction/schema/verify code before acceptance.
+
+**Decided:**
+1. Strata's next research iteration is a single active Rust coordination kernel. Independent agent clients never open canonical storage directly.
+2. The hot node/reference graph, indexes, immutable generations, reservation table, queues, and event subscriptions live in memory.
+3. Redb durably stores graph snapshots, the canonical operation/delta log, change sets, typed intents, tickets, events, service epochs, fencing counters, and idempotency keys.
+4. Existing Node packages remain authoritative for TypeScript ingest, rendering/Prettier, compiler diagnostics, and behavioral tests. Validation workers cannot commit.
+5. Agents submit typed semantic intents. Strata infers read/write/validation/reservation scopes; agents do not enumerate affected keys.
+6. Agents draft without locks. Busy submissions receive durable tickets. When runnable, an agent receives relevant before/after state and a fresh generation, then decides whether to revise, cancel, or resubmit. Automatic continuation is limited to operations Strata can prove safe and idempotent.
+7. Scope is inferred at submission and again before execution/publication. Expansion into unavailable resources requeues before side effects.
+8. Hard fenced leases cover only publication. Redb is committed before the new in-memory generation is published; restart increments the service epoch and invalidates every stale fence.
+9. The first proof supports `rename_symbol` and `add_parameter`, uses `examples/medium`, and is key-free/deterministic before any live model comparison.
+10. The falsifiable product experiment compares two Strata clients with Git worktrees plus an integration agent, measuring time-to-one-shared-green-codebase and treating any lost update/dirty read/partial commit as dispositive failure.
+
+**Why:** This is the paradigm the project was created to test. The operation log, structural tools, and graph make Strata capable of coordinating code at a finer unit than files, but only an active authority can turn that possibility into safe multi-agent behavior. A memory-native kernel makes semantic scopes, closures, queues, and immutable generations first-class rather than reconstructing them through SQL. Redb supplies durability without requiring Strata to build a database before it can test coordination.
+
+**Design-doc impact:** Updated `strata-design.md` § Scope, Architecture, Tech stack, and Build phases to add the post-MVP coordination proof while preserving SQLite as the implemented Phase 0–5 substrate. Updated `docs/product-roadmap.md` with Iteration 5 and replaced the stale blanket multi-client exclusion. Approved spec: `docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md`.
+
+**Revisit when:** (a) the redb spike fails atomicity, crash recovery, snapshot replay, concurrent-reader, or fencing acceptance; choose another durable engine only after logging the falsified property; (b) deterministic coordination gates pass, triggering the live two-agent experiment; (c) structural insert/delete/move joins the concurrent surface, which first requires stable logical IDs independent of sibling position; or (d) one active service is measured as a real throughput bottleneck, justifying coordinator/worker sharding.
+
 ## 2026-07-03 — Exploration CLI shipped (Iteration 3 first sub-project): six read-only human commands over the store's query primitives
 
 **What shipped:** `packages/cli/src/commands/explore/` per the approved spec (`docs/superpowers/specs/2026-05-31-strata-explore-cli-design.md`): `modules` (alias `ls`), `exports`, `find [--kind]`, `show`, `refs`, `search [-k]`, each accepting a corpus directory (ephemeral `:memory:` ingest via the shared tree-walk, skipping `node_modules`/`.git`/`dist`) or a persisted `.db`, each supporting `--json`. Dispatch + a grouped `strata help` separating exploration from research/harness commands. Zero new store logic — commands map 1:1 onto `listModules`/`list_module_exports`/`find_declarations`/`read_node`/`get_references`/`semantic_search`.

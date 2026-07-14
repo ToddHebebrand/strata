@@ -22,9 +22,9 @@ A structural substrate makes agents fundamentally more efficient. Same model, sa
 
 The bet is also that the file abstraction was an artifact of human limitations. Humans need linear text because we read sequentially. Agents don't have that constraint. They can ingest a graph as easily as a stream. Files force agents into a human-shaped interface that doesn't match how they reason.
 
-## Scope of the MVP
+## Scope of the MVP and Phase 6 proof
 
-The MVP proves the architecture end-to-end with no compromises for human compatibility. Specifically:
+Phases 0–5 prove the single-agent architecture end-to-end with no compromises for human compatibility. Phase 6 adds the bounded multi-agent coordination proof. Specifically:
 
 **In scope**
 - TypeScript only
@@ -34,19 +34,20 @@ The MVP proves the architecture end-to-end with no compromises for human compati
 - On-demand rendering of stored nodes to TypeScript files for compilation and verification
 - Type checking via tsc against rendered output, with errors mapped back to nodes
 - A benchmark harness comparing the Strata-native agent against Claude Code on the same tasks
+- A post-MVP coordination proof in which multiple agents share one canonical structural codebase through an active Strata service
 
 **Out of scope**
 - File-based editing by humans
 - Bidirectional sync between files and the store
 - FUSE or filesystem integration
-- Compatibility with existing agents (Claude Code, Codex, etc.) operating on the store
+- Unmodified file-tool agents (Claude Code, Codex, etc.) operating directly on the store
 - Multi-language support
-- Multi-client concurrent editing
+- Multi-host distributed coordination and consensus
 - A UI of any kind
 - Git compatibility
 - Production-grade deployment
 
-The MVP is a research artifact that proves "agents work better in this substrate." Everything else is later.
+Phases 0–5 are the completed single-agent MVP. Phase 6 tests the motivating multi-agent claim directly; see the 2026-07-13 decision and approved coordination-kernel spec.
 
 ## Architecture
 
@@ -54,13 +55,13 @@ The MVP is a research artifact that proves "agents work better in this substrate
 
 ```
 ┌─────────────────────────────────────────────┐
-│  Strata Agent (Claude Agent SDK + tools)    │
+│  Agent clients (Claude Agent SDK + tools)   │
 ├─────────────────────────────────────────────┤
 │  Tool layer (structural operations)         │
 ├─────────────────────────────────────────────┤
-│  Store API (query, mutate, validate)        │
+│  Coordination kernel (intent/ticket/event)  │
 ├─────────────────────────────────────────────┤
-│  Node graph + operation log (SQLite)        │
+│  Memory graph + operation log (Rust/redb)   │
 ├─────────────────────────────────────────────┤
 │  Ingest (tree-sitter or swc parsing)        │
 │  Render (AST → TypeScript text)             │
@@ -176,17 +177,15 @@ Length target: 2000-4000 tokens. This is an investment in the agent's competence
 
 ## Tech stack
 
-- **Language**: TypeScript for the store and tooling (keeps the project monolingual; the agent and the store speak the same language)
+- **Language**: TypeScript for language semantics, tools, agent integration, render, and verify; Rust for the post-MVP memory-native coordination kernel.
 - **Parser**: `tree-sitter-typescript` via `web-tree-sitter`, or `@swc/core` for parsing. Start with tree-sitter for round-trip preservation; switch to swc if performance demands.
 - **Renderer**: `prettier` invoked programmatically. Canonical formatting, no preferences exposed.
-- **Storage**: SQLite via `better-sqlite3`. Schema includes nodes, edges, operation log. Indexed for the common query patterns.
+- **Storage**: SQLite via `better-sqlite3` is the implemented Phase 0–5 store. Phase 6 targets an in-memory Rust graph with redb durability for operations/deltas, snapshots, intents, tickets, events, and fencing.
 - **Type checking**: TypeScript Compiler API (`typescript` package) for in-process type checks. Faster than subprocess `tsc` and gives structured diagnostics.
 - **Agent**: `@anthropic-ai/claude-agent-sdk` with custom tools defined in TypeScript.
 - **Tests**: `vitest` for the store and tool implementations.
 
-Rationale for TypeScript everywhere: the store is in the same language as the code it stores, the agent SDK has first-class TypeScript support, type-checking via the compiler API is straightforward, and you have one ecosystem to maintain.
-
-Rust is a tempting alternative for the core engine (performance, type system), but for the MVP, TypeScript is faster to build and the performance is good enough. Rust is a v2 consideration if scale demands it.
+Rationale: TypeScript remains the correct home for TypeScript compiler integration and the already-working structural operations. Rust becomes justified at the coordination boundary, where immutable graph generations, semantic reservations, queues, fencing, and a short durable publication path are the product. The existing SQLite runtime remains supported until the Phase 6 proof passes.
 
 ## Project layout
 
@@ -302,6 +301,20 @@ Deliverables:
 - Demo video (5-10 min walkthrough)
 - Open source release with README
 
+### Phase 6: Multi-agent coordination proof
+
+Goal: test the original thesis — multiple agents share one canonical structural codebase without Git branches, worktrees, or manual text merges.
+
+Deliverables:
+- Rust memory-native coordination kernel with redb durability
+- Typed intents with graph-inferred read/write/validation/reservation scopes
+- Durable ticket/event protocol, service epochs, fencing, crash recovery, and fair all-or-ticket scheduling
+- `rename_symbol` and `add_parameter` working through the kernel while Node ingest/render/verify remain authoritative
+- Key-free deterministic multi-client and failure-injection acceptance on `examples/medium`
+- After correctness passes, a two-agent comparison against Git worktrees plus an integration agent
+
+The approved design is `docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md`. Do not port the full tool surface or build distributed consensus before this proof answers the product question.
+
 ## Benchmark design
 
 The benchmark is the central proof. Design carefully.
@@ -377,6 +390,8 @@ After 6-8 weeks of focused work, success means:
 3. The write-up explains the architecture and results clearly enough that someone reading it can understand why this matters and what's possible.
 
 4. Reputation accrues from being the first to articulate and demonstrate this architecture. Whether anyone builds on it is a separate question.
+
+5. The post-MVP coordination proof either demonstrates that multiple agents can safely reach one shared green codebase without worktrees/manual text merges, or records a precise falsification of that claim.
 
 If the benchmark shows no improvement, that's also a result. It means either the substrate doesn't help as much as expected, or the implementation isn't capturing the benefit. Both are useful to know.
 

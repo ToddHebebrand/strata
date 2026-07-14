@@ -13,7 +13,7 @@ When the two disagree, `decisions.md` (newer entry wins) reflects the current st
 
 ## Project shape
 
-Strata is an agent-native structural substrate for TypeScript code: a SQLite-backed node graph with an operation log, fronted by structural query/mutation tools, driven by an agent built on `@anthropic-ai/claude-agent-sdk`. The agent never sees files — files exist only as transient artifacts produced by the render pipeline for `tsc` and tests.
+Strata is an agent-native structural substrate for TypeScript code. The implemented product is a SQLite-backed node graph with an operation log, fronted by structural query/mutation tools and driven by an agent built on `@anthropic-ai/claude-agent-sdk`. The approved next research iteration adds a Rust memory-native multi-agent coordination kernel with redb durability; see `docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md`. Agents never see files — files exist only as transient artifacts produced by the render pipeline for `tsc` and tests.
 
 The big-picture layering (top to bottom):
 - **Agent** (`packages/agent`) — Claude Agent SDK session with a system prompt and Strata-only tools, no filesystem tools.
@@ -35,7 +35,7 @@ Key invariants to preserve when implementing:
 
 `strata-design.md` defines Phases 0–5 with concrete deliverables. **Phase 0 (round-trip proof) is the gating phase** — do not build store/operation infrastructure on top of an ingest+render that can't round-trip a real TypeScript file through `tsc --noEmit`. If round-trip is painful, that's a finding to surface and log before continuing.
 
-Resist scope creep into multi-language, human-compat, FUSE, git integration, or multi-client concurrency. They're explicitly out of scope; if a need for them surfaces, log a decision rather than implementing.
+Multi-client code coordination is now the approved Phase-6 research direction. Resist scope creep beyond its spec into multi-language, human-compat, FUSE, git integration, task orchestration, multi-host consensus, or production distributed deployment. If a need for them surfaces, log a decision rather than implementing.
 
 ## Tooling commands
 
@@ -132,6 +132,18 @@ As of 2026-05-26 this project has shifted from "characterize the substrate with 
 - **Do not chase N=2 noise into product claims.** If a finding swings between rounds, it's noise; ship the conservative read.
 - **Default move when stuck: ship a smaller piece of the product surface, not run more measurements.** Bench rounds are a tool, not the work.
 - **The roadmap lives in `docs/product-roadmap.md`.** Iteration scope, deliverables, and what "done" means for each iteration are tracked there.
+
+## Current orientation: recover the multi-agent thesis
+
+As of 2026-07-13, the next research iteration is the approved Rust/redb coordination kernel in `docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md`. The single-agent product and bulk-propagation findings remain valid; this iteration asks the original, previously deferred question: can multiple agents reach one shared green codebase without branches, worktrees, or manual text merges?
+
+Hard boundaries:
+- Strata coordinates code activity; it does not decompose or assign tasks.
+- Clients never open canonical storage directly.
+- Typed operations infer reservation scope from the graph; agents do not enumerate lock keys.
+- Deterministic, key-free concurrency and crash-recovery gates must pass before live model comparisons.
+- The existing SQLite path remains supported until the Rust/redb proof passes.
+- Structural insert/delete/move concurrency waits for stable logical IDs independent of sibling position.
 
 ## Working style for this repo
 

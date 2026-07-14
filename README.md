@@ -140,7 +140,7 @@ Research-grade substrate, **actively iterating toward usability** (CLAUDE.md pri
 
 Live roadmap: [`docs/product-roadmap.md`](docs/product-roadmap.md).
 
-Not production-grade; not multi-language; not multi-client. Out-of-scope items (multi-language, FUSE, git integration, multi-client concurrency) are listed in `strata-design.md` § Scope and not pursued.
+The current release is not production-grade, multi-language, or multi-client. Multi-agent code coordination is now the approved next research iteration (`docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md`); multi-language support, FUSE, Git integration, task orchestration, and multi-host consensus remain out of scope.
 
 ## License
 
