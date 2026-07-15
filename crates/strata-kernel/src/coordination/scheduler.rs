@@ -227,10 +227,20 @@ impl SchedulerState {
     }
 
     pub fn select_ready(&mut self) -> Result<Vec<String>> {
+        self.select_ready_excluding(&BTreeSet::new())
+    }
+
+    pub(crate) fn select_ready_excluding(
+        &mut self,
+        deferred_change_set_ids: &BTreeSet<String>,
+    ) -> Result<Vec<String>> {
         let mut ordered = self
             .tickets
             .values()
-            .filter(|ticket| ticket.state == TicketState::Queued)
+            .filter(|ticket| {
+                ticket.state == TicketState::Queued
+                    && !deferred_change_set_ids.contains(&ticket.change_set_id)
+            })
             .map(|ticket| (ticket.queue_sequence, ticket.age_rounds))
             .collect::<Vec<_>>();
         ordered.sort_by_key(|(sequence, age)| (Reverse(*age), *sequence));
@@ -263,7 +273,8 @@ impl SchedulerState {
                 .any(|offered| !offered.is_disjoint(&keys));
             let selected_overlap = !selected_keys.is_disjoint(&keys);
             let older_overlap = self.tickets.range(..sequence).any(|(_, older)| {
-                matches!(older.state, TicketState::Queued | TicketState::Ready)
+                !deferred_change_set_ids.contains(&older.change_set_id)
+                    && matches!(older.state, TicketState::Queued | TicketState::Ready)
                     && older.reservation_keys.iter().any(|key| keys.contains(key))
             });
 
@@ -303,6 +314,15 @@ impl SchedulerState {
 
     // `coordination/planner.rs` is the sole caller so Ready authority is centralized.
     pub(super) fn mark_ready(&mut self, ticket_id: &str, offer: ReadyOffer) -> Result<()> {
+        self.mark_ready_excluding(ticket_id, offer, &BTreeSet::new())
+    }
+
+    pub(super) fn mark_ready_excluding(
+        &mut self,
+        ticket_id: &str,
+        offer: ReadyOffer,
+        deferred_change_set_ids: &BTreeSet<String>,
+    ) -> Result<()> {
         offer.validate().map_err(anyhow::Error::msg)?;
         if self.offers.contains_key(&offer.offer_id) {
             bail!("ready offer {} already exists", offer.offer_id);
@@ -319,7 +339,7 @@ impl SchedulerState {
             bail!("ticket {ticket_id} is not pristine Queued");
         }
         validate_offer_matches_ticket(&offer, ticket)?;
-        self.ensure_ticket_is_runnable(sequence)?;
+        self.ensure_ticket_is_runnable(sequence, deferred_change_set_ids)?;
 
         let offer_id = offer.offer_id.clone();
         self.offers.insert(offer_id.clone(), offer);
@@ -545,7 +565,11 @@ impl SchedulerState {
         Ok(())
     }
 
-    fn ensure_ticket_is_runnable(&self, sequence: u64) -> Result<()> {
+    fn ensure_ticket_is_runnable(
+        &self,
+        sequence: u64,
+        deferred_change_set_ids: &BTreeSet<String>,
+    ) -> Result<()> {
         let ticket = self
             .tickets
             .get(&sequence)
@@ -570,7 +594,8 @@ impl SchedulerState {
             }
         }
         if self.tickets.range(..sequence).any(|(_, older)| {
-            matches!(older.state, TicketState::Queued | TicketState::Ready)
+            !deferred_change_set_ids.contains(&older.change_set_id)
+                && matches!(older.state, TicketState::Queued | TicketState::Ready)
                 && older.reservation_keys.iter().any(|key| keys.contains(key))
         }) {
             bail!(

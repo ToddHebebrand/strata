@@ -114,12 +114,15 @@ fn begin_and_add(kernel: &Kernel, id: &str) {
 
 fn begin_and_add_target(kernel: &Kernel, id: &str, declaration_id: &str) {
     kernel
-        .begin_change_set(BeginChangeSet {
-            change_set_id: id.to_owned(),
-            actor: "agent:planner-test".to_owned(),
-            reasoning: "prove fresh readiness".to_owned(),
-            submission_idempotency_key: format!("submission:{id}"),
-        })
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: id.to_owned(),
+                actor: "agent:planner-test".to_owned(),
+                reasoning: "prove fresh readiness".to_owned(),
+                submission_idempotency_key: format!("submission:{id}"),
+            },
+            0,
+        )
         .unwrap();
     kernel
         .add_intent(
@@ -558,12 +561,15 @@ fn scheduler_revision_discards_a_stale_readiness_plan_and_retries() {
     provider.wait_until_blocked();
 
     kernel
-        .begin_change_set(BeginChangeSet {
-            change_set_id: "disjoint".to_owned(),
-            actor: "agent:planner-test".to_owned(),
-            reasoning: "advance the scheduler revision".to_owned(),
-            submission_idempotency_key: "submission:disjoint".to_owned(),
-        })
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: "disjoint".to_owned(),
+                actor: "agent:planner-test".to_owned(),
+                reasoning: "advance the scheduler revision".to_owned(),
+                submission_idempotency_key: "submission:disjoint".to_owned(),
+            },
+            0,
+        )
         .unwrap();
     kernel
         .add_intent(

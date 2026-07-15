@@ -392,12 +392,15 @@ pub fn begin_with_intents(
     change_set_id: &str,
     intents: impl IntoIterator<Item = IntentParameters>,
 ) -> Result<ChangeSetRecord> {
-    let change_set = kernel.begin_change_set(BeginChangeSet {
-        change_set_id: change_set_id.to_owned(),
-        actor: format!("agent:{change_set_id}"),
-        reasoning: format!("deterministic acceptance scenario {change_set_id}"),
-        submission_idempotency_key: format!("submission:{change_set_id}"),
-    })?;
+    let change_set = kernel.begin_change_set(
+        BeginChangeSet {
+            change_set_id: change_set_id.to_owned(),
+            actor: format!("agent:{change_set_id}"),
+            reasoning: format!("deterministic acceptance scenario {change_set_id}"),
+            submission_idempotency_key: format!("submission:{change_set_id}"),
+        },
+        0,
+    )?;
     for parameters in intents {
         kernel.add_intent(change_set_id, parameters)?;
     }

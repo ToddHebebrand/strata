@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use super::{
     ChangeSetRecord, ChangeSetState, ClaimHandle, CoordinationEvent, CoordinationEventKind,
-    CoordinationTicket, EventCursor, IntentRecord, ReadyOffer, TicketState,
+    CoordinationTicket, DRAFT_TTL_TICKS, EventCursor, IntentRecord, ReadyOffer, TicketState,
 };
 use crate::SCHEMA_VERSION;
 use crate::storage::{
@@ -287,6 +287,19 @@ impl<'a> CoordinationDurable<'a> {
             for entry in change_sets.iter().context("iterate change sets")? {
                 let (_, value) = entry.context("read change set entry")?;
                 let change_set: ChangeSetRecord = decode(value.value(), "change set")?;
+                if change_set.state == ChangeSetState::Draft && change_set.expires_at_tick.is_none()
+                {
+                    let mut migrated = change_set.clone();
+                    migrated.expires_at_tick = Some(
+                        migrated
+                            .created_at_tick
+                            .checked_add(DRAFT_TTL_TICKS)
+                            .context("legacy draft expiry overflow")?,
+                    );
+                    transition
+                        .change_sets
+                        .push((Some(change_set.clone()), Some(migrated)));
+                }
                 if matches!(
                     change_set.state,
                     ChangeSetState::Ready | ChangeSetState::Executing
@@ -760,6 +773,8 @@ impl<'a> CoordinationDurable<'a> {
             expansion_count: 0,
             blocking_change_set_id: None,
             committed_generation: None,
+            created_at_tick: durable_change_set.created_at_tick,
+            expires_at_tick: None,
         };
         let canonical_ticket = CoordinationTicket {
             schema_version: ticket.schema_version,
@@ -1175,6 +1190,23 @@ impl<'a> CoordinationDurable<'a> {
             return Ok(None);
         };
         decode(value.value(), "change set").map(Some)
+    }
+
+    pub(crate) fn all_change_sets(&self) -> Result<Vec<ChangeSetRecord>> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin change-set scan")?;
+        let table = read
+            .open_table(CHANGE_SETS)
+            .context("open change sets table")?;
+        let mut change_sets: Vec<ChangeSetRecord> = Vec::new();
+        for entry in table.iter().context("iterate change sets")? {
+            let (_, value) = entry.context("read change set entry")?;
+            change_sets.push(decode(value.value(), "change set")?);
+        }
+        change_sets.sort_by(|left, right| left.change_set_id.cmp(&right.change_set_id));
+        Ok(change_sets)
     }
 
     pub fn intents_for(&self, change_set_id: &str) -> Result<Vec<IntentRecord>> {

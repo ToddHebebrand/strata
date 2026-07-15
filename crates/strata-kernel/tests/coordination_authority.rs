@@ -18,12 +18,15 @@ fn default_kernel_rejects_semantic_execution_without_side_effects() {
     let dir = tempdir().unwrap();
     let (kernel, _) = Kernel::create(dir.path().join("kernel.redb"), empty_snapshot()).unwrap();
     kernel
-        .begin_change_set(BeginChangeSet {
-            change_set_id: "change:sealed".into(),
-            actor: "agent:a".into(),
-            reasoning: "prove default authority is sealed".into(),
-            submission_idempotency_key: "submit:sealed".into(),
-        })
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: "change:sealed".into(),
+                actor: "agent:a".into(),
+                reasoning: "prove default authority is sealed".into(),
+                submission_idempotency_key: "submit:sealed".into(),
+            },
+            0,
+        )
         .unwrap();
     kernel
         .add_intent(

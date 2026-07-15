@@ -135,14 +135,10 @@ fn publish_fixture_delta(kernel: &Kernel, change_set_id: &str, delta: GraphDelta
 }
 
 fn publish_node_patch(kernel: &Kernel, change_set_id: &str, new_name: &str, marker: &str) {
-    let claim = claim_rename(
-        kernel,
-        change_set_id,
-        new_name,
-        kernel.snapshot().generation() * 10 + 20,
-    );
+    let tick = kernel.snapshot().generation() * 10 + 20;
+    let claim = claim_rename(kernel, change_set_id, new_name, tick);
     let builder = NodePatchBuilder::new(vec![(USER_ID.into(), marker.into())]);
-    let report = kernel.publish_claimed(&claim, &builder, 100).unwrap();
+    let report = kernel.publish_claimed(&claim, &builder, tick + 2).unwrap();
     assert!(!report.already_published);
 }
 

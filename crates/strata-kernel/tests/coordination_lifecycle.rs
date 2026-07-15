@@ -80,12 +80,15 @@ fn kernel(path: &std::path::Path, analyzer: SequencedAnalyzer) -> Kernel {
 
 fn begin_and_add(kernel: &Kernel, id: &str) {
     kernel
-        .begin_change_set(BeginChangeSet {
-            change_set_id: id.into(),
-            actor: "agent:test".into(),
-            reasoning: "exercise lifecycle".into(),
-            submission_idempotency_key: format!("submission:{id}"),
-        })
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: id.into(),
+                actor: "agent:test".into(),
+                reasoning: "exercise lifecycle".into(),
+                submission_idempotency_key: format!("submission:{id}"),
+            },
+            0,
+        )
         .unwrap();
     kernel
         .add_intent(
@@ -378,12 +381,15 @@ fn begin_reuses_the_submission_key_without_creating_a_second_draft() {
         reasoning: "idempotent".into(),
         submission_idempotency_key: "submission:stable".into(),
     };
-    let original = kernel.begin_change_set(input.clone()).unwrap();
+    let original = kernel.begin_change_set(input.clone(), 0).unwrap();
     let duplicate = kernel
-        .begin_change_set(BeginChangeSet {
-            change_set_id: "different".into(),
-            ..input
-        })
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: "different".into(),
+                ..input
+            },
+            0,
+        )
         .unwrap();
     assert_eq!(duplicate, original);
 }

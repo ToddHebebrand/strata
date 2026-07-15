@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::{ReadableDatabase, TableDefinition};
+use redb::{ReadableDatabase, ReadableTable, TableDefinition};
 use serde_json::Value;
 use strata_kernel::{
     BeginChangeSet, ChangeSetState, ClaimOutcome, CoordinationEventKind, CoordinationFailpoint,
@@ -15,6 +15,7 @@ use strata_kernel::{
 use tempfile::tempdir;
 
 const GRAPH_META: TableDefinition<&str, &[u8]> = TableDefinition::new("graph_metadata");
+const CHANGE_SETS: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_change_sets");
 
 struct TargetAnalyzer;
 
@@ -57,12 +58,15 @@ fn create_kernel(path: &Path) -> Kernel {
 
 fn begin_and_submit(kernel: &Kernel, id: &str, target: &str, now_tick: u64) -> SubmissionOutcome {
     kernel
-        .begin_change_set(BeginChangeSet {
-            change_set_id: id.into(),
-            actor: "agent:test".into(),
-            reasoning: "exercise restart recovery".into(),
-            submission_idempotency_key: format!("submission:{id}"),
-        })
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: id.into(),
+                actor: "agent:test".into(),
+                reasoning: "exercise restart recovery".into(),
+                submission_idempotency_key: format!("submission:{id}"),
+            },
+            now_tick,
+        )
         .unwrap();
     kernel
         .add_intent(
@@ -82,6 +86,71 @@ fn raw_service_epoch(path: &Path) -> u64 {
     let metadata = read.open_table(GRAPH_META).unwrap();
     let value = metadata.get("service_epoch").unwrap().unwrap();
     u64::from_le_bytes(value.value().try_into().unwrap())
+}
+
+#[test]
+fn legacy_serialized_draft_gets_one_deterministic_expiry_on_reopen() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let kernel = create_kernel(&path);
+    kernel
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: "change-set:legacy-draft".into(),
+                actor: "agent:legacy".into(),
+                reasoning: "migrate a pre-lease draft".into(),
+                submission_idempotency_key: "submission:legacy-draft".into(),
+            },
+            17,
+        )
+        .unwrap();
+    drop(kernel);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut table = write.open_table(CHANGE_SETS).unwrap();
+        let bytes = table
+            .get("change-set:legacy-draft")
+            .unwrap()
+            .unwrap()
+            .value()
+            .to_vec();
+        let mut legacy: Value = serde_json::from_slice(&bytes).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("createdAtTick");
+        object.remove("expiresAtTick");
+        let encoded = serde_json::to_vec(&legacy).unwrap();
+        table
+            .insert("change-set:legacy-draft", encoded.as_slice())
+            .unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let (reopened, _) = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
+    let migrated = reopened
+        .change_set("change-set:legacy-draft")
+        .unwrap()
+        .unwrap();
+    assert_eq!(migrated.created_at_tick, 0);
+    assert_eq!(
+        migrated.expires_at_tick,
+        Some(strata_kernel::DRAFT_TTL_TICKS)
+    );
+    drop(reopened);
+
+    let (reopened_again, _) =
+        Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
+    assert_eq!(
+        reopened_again
+            .change_set("change-set:legacy-draft")
+            .unwrap()
+            .unwrap()
+            .expires_at_tick,
+        Some(strata_kernel::DRAFT_TTL_TICKS),
+        "the deterministic legacy expiry must not move on a second reopen"
+    );
 }
 
 #[test]

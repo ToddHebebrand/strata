@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
@@ -36,6 +36,10 @@ pub(crate) struct PlannerSnapshot {
     pub now_tick: u64,
     pub cause: TransitionCause,
     pub blocking_event_sequence: Option<u64>,
+    /// Work released by the triggering transition can be deliberately deferred for this pass.
+    /// This lets an expired/rejected claim wake its successor without immediately reacquiring
+    /// the reservation it just lost.
+    pub deferred_change_set_ids: BTreeSet<String>,
 }
 
 pub(crate) struct PlannedOffer {
@@ -79,7 +83,12 @@ pub(crate) fn plan_readiness(
     let mut next_scheduler = snapshot.scheduler;
     let queued_ticket_ids = next_scheduler
         .tickets()
-        .filter(|ticket| ticket.state == TicketState::Queued)
+        .filter(|ticket| {
+            ticket.state == TicketState::Queued
+                && !snapshot
+                    .deferred_change_set_ids
+                    .contains(&ticket.change_set_id)
+        })
         .map(|ticket| ticket.ticket_id.clone())
         .collect::<Vec<_>>();
     let mut change_set_updates = BTreeMap::<String, (ChangeSetRecord, ChangeSetRecord)>::new();
@@ -161,7 +170,7 @@ pub(crate) fn plan_readiness(
         }
     }
 
-    let selected = next_scheduler.select_ready()?;
+    let selected = next_scheduler.select_ready_excluding(&snapshot.deferred_change_set_ids)?;
     let mut offers = Vec::new();
     for ticket_id in selected {
         let ticket_before = next_scheduler
@@ -189,7 +198,11 @@ pub(crate) fn plan_readiness(
             snapshot.now_tick,
         )?;
         offer.blocking_event_sequence = snapshot.blocking_event_sequence;
-        mark_ready(&mut next_scheduler, &ticket_id, offer.clone())?;
+        next_scheduler.mark_ready_excluding(
+            &ticket_id,
+            offer.clone(),
+            &snapshot.deferred_change_set_ids,
+        )?;
         let ticket_after = next_scheduler
             .ticket(&ticket_id)
             .cloned()
@@ -215,7 +228,6 @@ pub(crate) fn plan_readiness(
     let mut lifecycle = LifecycleTransition {
         change_sets: change_set_updates
             .into_values()
-            .filter(|(before, after)| before != after)
             .map(|(before, after)| (Some(before), Some(after)))
             .collect(),
         tickets: scheduler_ticket_updates(&before_scheduler, &next_scheduler),

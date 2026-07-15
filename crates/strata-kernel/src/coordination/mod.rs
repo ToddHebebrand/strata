@@ -21,7 +21,8 @@ pub(crate) use authority::TestSemanticAdapter;
 #[cfg(feature = "coordination-test-api")]
 pub use authority::{TestSemanticProvider, analyze_change_set};
 pub use coordinator::{
-    BeginChangeSet, CancellationOutcome, MAX_WAKE_AFFECTED_NODE_IDS, READY_OFFER_TTL_TICKS,
+    BeginChangeSet, CLAIM_TTL_TICKS, CancellationOutcome, DRAFT_TTL_TICKS,
+    MAX_WAKE_AFFECTED_NODE_IDS, READY_OFFER_TTL_TICKS,
 };
 pub use durable::{
     CoordinationDurable, CoordinationFailpoint, CoordinationMetadataState, CoordinationTableCounts,
@@ -31,8 +32,8 @@ pub(crate) use durable::{LifecycleTransition, ensure_coordination_schema};
 pub use model::{
     ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationError,
     CoordinationEvent, CoordinationEventKind, CoordinationTicket, DynamicExpansionPolicy,
-    EventCursor, IdempotencyClass, InferredScope, IntentParameters, IntentRecord, ReadyOffer,
-    ResourceVersion, SubmissionOutcome, TicketState,
+    EventCursor, IdempotencyClass, InferredScope, IntentParameters, IntentRecord,
+    LeaseExpiryOutcome, ReadyOffer, ResourceVersion, SubmissionOutcome, TicketState,
 };
 pub(crate) use planner::{MAX_OPTIMISTIC_RETRIES, TransitionCause};
 pub use resources::DependencyVersion;

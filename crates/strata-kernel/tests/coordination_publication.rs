@@ -174,12 +174,15 @@ fn user_scope(snapshot: &GraphSnapshot) -> Vec<String> {
 
 fn begin_submit_claim(kernel: &Kernel, id: &str, tick: u64) -> ClaimHandle {
     kernel
-        .begin_change_set(BeginChangeSet {
-            change_set_id: id.into(),
-            actor: "agent:test".into(),
-            reasoning: "rename User as one coordinated change set".into(),
-            submission_idempotency_key: format!("submission:{id}"),
-        })
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: id.into(),
+                actor: "agent:test".into(),
+                reasoning: "rename User as one coordinated change set".into(),
+                submission_idempotency_key: format!("submission:{id}"),
+            },
+            tick,
+        )
         .unwrap();
     kernel
         .add_intent(
@@ -564,12 +567,15 @@ fn material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter(
     let claim = begin_submit_claim(&kernel, "material", 0);
 
     kernel
-        .begin_change_set(BeginChangeSet {
-            change_set_id: "material-waiter".into(),
-            actor: "agent:waiter".into(),
-            reasoning: "wait for terminal release".into(),
-            submission_idempotency_key: "submission:material-waiter".into(),
-        })
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: "material-waiter".into(),
+                actor: "agent:waiter".into(),
+                reasoning: "wait for terminal release".into(),
+                submission_idempotency_key: "submission:material-waiter".into(),
+            },
+            0,
+        )
         .unwrap();
     kernel
         .add_intent(
@@ -624,12 +630,15 @@ fn two_intents_publish_one_aggregate_operation_and_generation() {
         Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer.clone()))
             .unwrap();
     kernel
-        .begin_change_set(BeginChangeSet {
-            change_set_id: "composite".into(),
-            actor: "agent:composite".into(),
-            reasoning: "two intents must land together".into(),
-            submission_idempotency_key: "submission:composite".into(),
-        })
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: "composite".into(),
+                actor: "agent:composite".into(),
+                reasoning: "two intents must land together".into(),
+                submission_idempotency_key: "submission:composite".into(),
+            },
+            0,
+        )
         .unwrap();
     for name in ["Account", "Customer"] {
         kernel
@@ -678,12 +687,15 @@ fn commit_atomically_wakes_successor_with_a_fresh_thirty_tick_offer() {
     let blocker = begin_submit_claim(&kernel, "blocker", 0);
 
     kernel
-        .begin_change_set(BeginChangeSet {
-            change_set_id: "successor".into(),
-            actor: "agent:successor".into(),
-            reasoning: "wait for the rename".into(),
-            submission_idempotency_key: "submission:successor".into(),
-        })
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: "successor".into(),
+                actor: "agent:successor".into(),
+                reasoning: "wait for the rename".into(),
+                submission_idempotency_key: "submission:successor".into(),
+            },
+            0,
+        )
         .unwrap();
     kernel
         .add_intent(
@@ -700,7 +712,7 @@ fn commit_atomically_wakes_successor_with_a_fresh_thirty_tick_offer() {
     ));
 
     let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
-    kernel.publish_claimed(&blocker, &builder, 100).unwrap();
+    kernel.publish_claimed(&blocker, &builder, 50).unwrap();
     let successor = kernel.change_set("successor").unwrap().unwrap();
     assert_eq!(successor.state, ChangeSetState::Ready);
     assert_eq!(successor.blocking_change_set_id.as_deref(), Some("blocker"));
@@ -720,7 +732,7 @@ fn commit_atomically_wakes_successor_with_a_fresh_thirty_tick_offer() {
         .unwrap()
         .unwrap();
     assert_eq!(offer.graph_generation, 1);
-    assert_eq!(offer.expires_at_tick, 130);
+    assert_eq!(offer.expires_at_tick, 80);
     assert_eq!(offer.blocking_event_sequence, Some(ready.sequence - 1));
 }
 
@@ -801,12 +813,15 @@ fn failure_after_in_transaction_fence_mutation_rolls_back_fences_graph_and_coord
                 .unwrap();
         let claim = begin_submit_claim(&kernel, "rollback", 0);
         kernel
-            .begin_change_set(BeginChangeSet {
-                change_set_id: "rollback-successor".into(),
-                actor: "agent:successor".into(),
-                reasoning: "exercise successor rollback".into(),
-                submission_idempotency_key: "submission:rollback-successor".into(),
-            })
+            .begin_change_set(
+                BeginChangeSet {
+                    change_set_id: "rollback-successor".into(),
+                    actor: "agent:successor".into(),
+                    reasoning: "exercise successor rollback".into(),
+                    submission_idempotency_key: "submission:rollback-successor".into(),
+                },
+                0,
+            )
             .unwrap();
         kernel
             .add_intent(

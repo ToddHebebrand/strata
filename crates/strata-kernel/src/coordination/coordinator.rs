@@ -7,13 +7,14 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::analyzer::analyze_change_set;
+use super::authority::plan_change_set;
 use super::durable::{CoordinationMetadataState, LifecycleTransition};
 use super::planner::{PlannerSnapshot, plan_readiness};
 use super::{
     CandidateBuilder, ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome,
     CoordinationEvent, CoordinationEventKind, CoordinationTicket, CreateDraftOutcome,
-    DynamicExpansionPolicy, EventCursor, IntentParameters, IntentRecord, ReadyOffer,
-    SchedulerState, ScopeChange, SubmissionOutcome, TicketState, classify_scope_change,
+    DynamicExpansionPolicy, EventCursor, IntentParameters, IntentRecord, LeaseExpiryOutcome,
+    ReadyOffer, SchedulerState, ScopeChange, SubmissionOutcome, TicketState, classify_scope_change,
     resource_keys,
 };
 use crate::model::{FenceClaim, Publication};
@@ -24,6 +25,8 @@ use crate::{
 };
 
 pub const READY_OFFER_TTL_TICKS: u64 = 30;
+pub const DRAFT_TTL_TICKS: u64 = 120;
+pub const CLAIM_TTL_TICKS: u64 = 60;
 pub const MAX_WAKE_AFFECTED_NODE_IDS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,12 +87,16 @@ impl Kernel {
         self.store.coordination().ack_events(client_id, sequence)
     }
 
-    pub fn begin_change_set(&self, input: BeginChangeSet) -> Result<ChangeSetRecord> {
+    pub fn begin_change_set(
+        &self,
+        input: BeginChangeSet,
+        now_tick: u64,
+    ) -> Result<ChangeSetRecord> {
         let mut scheduler = self
             .scheduler
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
-        let record = ChangeSetRecord::new(
+        let mut record = ChangeSetRecord::new(
             SCHEMA_VERSION,
             input.change_set_id,
             input.actor,
@@ -99,6 +106,12 @@ impl Kernel {
             &[],
         )
         .map_err(anyhow::Error::msg)?;
+        record.created_at_tick = now_tick;
+        record.expires_at_tick = Some(
+            now_tick
+                .checked_add(DRAFT_TTL_TICKS)
+                .context("draft expiry overflow")?,
+        );
         let durable = self.store.coordination();
         let outcome = durable.create_draft(&record)?;
         scheduler.set_revision(durable.metadata_state()?.scheduler_revision);
@@ -151,7 +164,6 @@ impl Kernel {
         change_set_id: &str,
         now_tick: u64,
     ) -> Result<SubmissionOutcome> {
-        let semantic_provider = self.semantic_provider()?;
         let durable = self.store.coordination();
         let draft = durable
             .change_set(change_set_id)?
@@ -159,6 +171,14 @@ impl Kernel {
         if draft.state != ChangeSetState::Draft {
             return Ok(SubmissionOutcome::Duplicate { change_set: draft });
         }
+        if draft
+            .expires_at_tick
+            .is_some_and(|expires_at| now_tick >= expires_at)
+        {
+            self.expire_leases(now_tick)?;
+            return Err(anyhow::Error::new(super::CoordinationError::LeaseExpired));
+        }
+        let semantic_provider = self.semantic_provider()?;
         let graph = self.snapshot();
         let intents = durable.intents_for(change_set_id)?;
         let scope = analyze_change_set(&graph, &intents, semantic_provider)?;
@@ -197,6 +217,7 @@ impl Kernel {
 
         let mut queued_change_set = draft.clone();
         queued_change_set.state = ChangeSetState::Queued;
+        queued_change_set.expires_at_tick = None;
         queued_change_set.inferred_scope = Some(scope.clone());
         queued_change_set.queue_sequence = Some(queue_sequence);
         let queued_ticket = CoordinationTicket::new(
@@ -252,145 +273,213 @@ impl Kernel {
         claim_token: &str,
         now_tick: u64,
     ) -> Result<ClaimOutcome> {
-        let semantic_provider = self.semantic_provider()?;
-        let mut scheduler = self
-            .scheduler
-            .lock()
-            .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
-        let offer = scheduler
-            .offer(offer_id)
-            .cloned()
-            .with_context(|| format!("ready offer {offer_id} does not exist"))?;
-        if offer.claim_token != claim_token {
-            bail!("ready offer {offer_id} claim token does not match");
-        }
-        validate_offer_context(&offer, self.service_epoch(), now_tick)?;
-
-        let graph = self.snapshot();
-        let durable = self.store.coordination();
-        let before_change_set = durable
-            .change_set(&offer.change_set_id)?
-            .with_context(|| format!("missing change set {}", offer.change_set_id))?;
-        if before_change_set.state != ChangeSetState::Ready {
-            bail!(
-                "change set {} is {:?}, not Ready",
-                offer.change_set_id,
-                before_change_set.state
-            );
-        }
-        let before_scope = before_change_set
-            .inferred_scope
-            .as_ref()
-            .context("ready change set has no inferred scope")?;
-        let intents = durable.intents_for(&offer.change_set_id)?;
-        let next_scope = analyze_change_set(&graph, &intents, semantic_provider)?;
-        let scope_change = classify_scope_change(before_scope, &next_scope);
-        let before_ticket = scheduler
-            .ticket_for_offer(offer_id)
-            .cloned()
-            .with_context(|| format!("ready offer {offer_id} has no ticket"))?;
-        let metadata = durable.metadata_state()?;
-        let mut transition = transition(metadata)?;
-        transition.offers.push((Some(offer.clone()), None));
-        let mut next_scheduler = scheduler.clone();
-
-        let outcome = match scope_change {
-            ScopeChange::Unchanged => {
-                let claim = ClaimHandle::new(
-                    Uuid::new_v4().to_string(),
-                    offer.change_set_id.clone(),
-                    offer.offer_id.clone(),
-                    self.service_epoch(),
-                    graph.generation(),
-                    next_scope.scope_fingerprint.clone(),
-                    next_scope.reservation_keys.clone(),
-                )
-                .map_err(anyhow::Error::msg)?;
-                next_scheduler.claim(offer_id, claim.clone())?;
-                let after_ticket = next_scheduler
-                    .ticket(&before_ticket.ticket_id)
-                    .cloned()
-                    .context("claimed ticket disappeared")?;
-                let mut after_change_set = before_change_set.clone();
-                after_change_set.state = ChangeSetState::Executing;
-                after_change_set.inferred_scope = Some(next_scope);
-                transition
-                    .change_sets
-                    .push((Some(before_change_set), Some(after_change_set)));
-                transition
-                    .tickets
-                    .push((Some(before_ticket), Some(after_ticket)));
-                transition.claims.push((None, Some(claim.clone())));
-                ClaimOutcome::Claimed(claim)
+        for _ in 0..super::MAX_OPTIMISTIC_RETRIES {
+            let durable = self.store.coordination();
+            let graph = self.snapshot();
+            let service_epoch = self.service_epoch();
+            let (before_scheduler, expected_revision) = {
+                let scheduler = self
+                    .scheduler
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+                (scheduler.clone(), scheduler.revision())
+            };
+            let offer = before_scheduler
+                .offer(offer_id)
+                .cloned()
+                .with_context(|| format!("ready offer {offer_id} does not exist"))?;
+            if offer.claim_token != claim_token {
+                bail!("ready offer {offer_id} claim token does not match");
             }
-            ScopeChange::Expanded
-                if matches!(
-                    next_scope.dynamic_expansion_policy,
-                    DynamicExpansionPolicy::Requeue { max_expansions }
-                        if before_change_set.expansion_count < max_expansions
-                ) =>
+            validate_offer_context(&offer, service_epoch, now_tick)?;
+            let before_ticket = before_scheduler
+                .ticket_for_offer(offer_id)
+                .cloned()
+                .with_context(|| format!("ready offer {offer_id} has no ticket"))?;
+            let before_change_set = durable
+                .change_set(&offer.change_set_id)?
+                .with_context(|| format!("missing change set {}", offer.change_set_id))?;
+            if before_change_set.state != ChangeSetState::Ready {
+                bail!(
+                    "change set {} is {:?}, not Ready",
+                    offer.change_set_id,
+                    before_change_set.state
+                );
+            }
+            let before_scope = before_change_set
+                .inferred_scope
+                .as_ref()
+                .context("ready change set has no inferred scope")?;
+            let intents = durable.intents_for(&offer.change_set_id)?;
+            let next_authority = plan_change_set(&graph, &intents, self.semantic_provider()?)?;
+            let next_scope = next_authority.scope.clone();
+            let scope_change = classify_scope_change(before_scope, &next_scope);
+            let metadata = durable.metadata_state()?;
+            if metadata.scheduler_revision != expected_revision {
+                continue;
+            }
+            let mut base = transition(metadata)?;
+            base.offers.push((Some(offer.clone()), None));
+            let mut simulated = before_scheduler.clone();
+
+            let (outcome, mut combined, mut final_scheduler) = match scope_change {
+                ScopeChange::Unchanged => {
+                    let mut claim = ClaimHandle::new(
+                        Uuid::new_v4().to_string(),
+                        offer.change_set_id.clone(),
+                        offer.offer_id.clone(),
+                        service_epoch,
+                        graph.generation(),
+                        next_scope.scope_fingerprint.clone(),
+                        next_scope.reservation_keys.clone(),
+                    )
+                    .map_err(anyhow::Error::msg)?;
+                    claim.attempt_id = Uuid::new_v4().to_string();
+                    claim.expires_at_tick = now_tick
+                        .checked_add(CLAIM_TTL_TICKS)
+                        .context("claim expiry overflow")?;
+                    claim.dependency_versions = self
+                        .resource_clock_snapshot()
+                        .dependencies(&next_authority.dependency_keys);
+                    simulated.claim(offer_id, claim.clone())?;
+                    let after_ticket = simulated
+                        .ticket(&before_ticket.ticket_id)
+                        .cloned()
+                        .context("claimed ticket disappeared")?;
+                    let mut after_change_set = before_change_set.clone();
+                    after_change_set.state = ChangeSetState::Executing;
+                    after_change_set.inferred_scope = Some(next_scope);
+                    base.change_sets
+                        .push((Some(before_change_set.clone()), Some(after_change_set)));
+                    base.tickets
+                        .push((Some(before_ticket.clone()), Some(after_ticket)));
+                    base.claims.push((None, Some(claim.clone())));
+                    (ClaimOutcome::Claimed(claim), base, simulated)
+                }
+                ScopeChange::Expanded
+                    if matches!(
+                        next_scope.dynamic_expansion_policy,
+                        DynamicExpansionPolicy::Requeue { max_expansions }
+                            if before_change_set.expansion_count < max_expansions
+                    ) =>
+                {
+                    let after_ticket = simulated.requeue_with_scope(
+                        offer_id,
+                        next_scope.scope_fingerprint.clone(),
+                        next_scope.reservation_keys.clone(),
+                    )?;
+                    let mut after_change_set = before_change_set.clone();
+                    after_change_set.state = ChangeSetState::Queued;
+                    after_change_set.inferred_scope = Some(next_scope);
+                    after_change_set.expansion_count = after_change_set
+                        .expansion_count
+                        .checked_add(1)
+                        .context("scope expansion count overflow")?;
+                    let event = append_event(
+                        &mut base,
+                        CoordinationEventKind::ScopeExpanded,
+                        &after_change_set.change_set_id,
+                        graph.generation(),
+                    )?;
+                    base.change_sets
+                        .push((Some(before_change_set.clone()), Some(after_change_set)));
+                    base.tickets
+                        .push((Some(before_ticket.clone()), Some(after_ticket.clone())));
+                    let plan = plan_readiness(
+                        self.semantic_provider()?,
+                        PlannerSnapshot {
+                            graph: graph.clone(),
+                            scheduler: simulated,
+                            scheduler_revision: expected_revision,
+                            service_epoch,
+                            now_tick,
+                            cause: super::TransitionCause::ClaimRejection,
+                            blocking_event_sequence: None,
+                            deferred_change_set_ids: BTreeSet::from([offer.change_set_id.clone()]),
+                        },
+                        &durable,
+                    )?;
+                    (
+                        ClaimOutcome::Requeued {
+                            ticket: after_ticket,
+                            event,
+                        },
+                        combine_release_and_readiness(base, plan.lifecycle_transition()?)?,
+                        plan.next_scheduler,
+                    )
+                }
+                ScopeChange::Expanded | ScopeChange::MateriallyChanged => {
+                    simulated.cancel_ticket(&before_ticket.ticket_id)?;
+                    let mut terminal_ticket = before_ticket.clone();
+                    terminal_ticket.state = TicketState::NeedsDecision;
+                    terminal_ticket.ready_offer_id = None;
+                    terminal_ticket.active_claim_id = None;
+                    let mut after_change_set = before_change_set.clone();
+                    after_change_set.state = ChangeSetState::NeedsDecision;
+                    after_change_set.inferred_scope = Some(next_scope);
+                    let event = append_event(
+                        &mut base,
+                        CoordinationEventKind::IntentNeedsDecision,
+                        &after_change_set.change_set_id,
+                        graph.generation(),
+                    )?;
+                    base.change_sets.push((
+                        Some(before_change_set.clone()),
+                        Some(after_change_set.clone()),
+                    ));
+                    base.tickets
+                        .push((Some(before_ticket.clone()), Some(terminal_ticket)));
+                    let plan = plan_readiness(
+                        self.semantic_provider()?,
+                        PlannerSnapshot {
+                            graph: graph.clone(),
+                            scheduler: simulated,
+                            scheduler_revision: expected_revision,
+                            service_epoch,
+                            now_tick,
+                            cause: super::TransitionCause::ClaimRejection,
+                            blocking_event_sequence: None,
+                            deferred_change_set_ids: BTreeSet::new(),
+                        },
+                        &durable,
+                    )?;
+                    (
+                        ClaimOutcome::NeedsDecision {
+                            change_set: after_change_set,
+                            event,
+                        },
+                        combine_release_and_readiness(base, plan.lifecycle_transition()?)?,
+                        plan.next_scheduler,
+                    )
+                }
+            };
+
+            combined.expected_metadata.scheduler_revision = expected_revision;
+            combined.next_metadata.scheduler_revision = expected_revision
+                .checked_add(1)
+                .context("scheduler revision overflow")?;
+            final_scheduler.set_revision(combined.next_metadata.scheduler_revision);
+            let mut scheduler = self
+                .scheduler
+                .lock()
+                .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+            if self.snapshot().generation() != graph.generation()
+                || self.service_epoch() != service_epoch
+                || scheduler.revision() != expected_revision
+                || *scheduler != before_scheduler
+                || durable.change_set(&offer.change_set_id)?.as_ref() != Some(&before_change_set)
             {
-                let after_ticket = next_scheduler.requeue_with_scope(
-                    offer_id,
-                    next_scope.scope_fingerprint.clone(),
-                    next_scope.reservation_keys.clone(),
-                )?;
-                let mut after_change_set = before_change_set.clone();
-                after_change_set.state = ChangeSetState::Queued;
-                after_change_set.inferred_scope = Some(next_scope);
-                after_change_set.expansion_count = after_change_set
-                    .expansion_count
-                    .checked_add(1)
-                    .context("scope expansion count overflow")?;
-                let event = append_event(
-                    &mut transition,
-                    CoordinationEventKind::ScopeExpanded,
-                    &after_change_set.change_set_id,
-                    graph.generation(),
-                )?;
-                transition
-                    .change_sets
-                    .push((Some(before_change_set), Some(after_change_set)));
-                transition
-                    .tickets
-                    .push((Some(before_ticket), Some(after_ticket.clone())));
-                ClaimOutcome::Requeued {
-                    ticket: after_ticket,
-                    event,
-                }
+                continue;
             }
-            ScopeChange::Expanded | ScopeChange::MateriallyChanged => {
-                next_scheduler.cancel_ticket(&before_ticket.ticket_id)?;
-                let mut terminal_ticket = before_ticket.clone();
-                terminal_ticket.state = TicketState::NeedsDecision;
-                terminal_ticket.ready_offer_id = None;
-                terminal_ticket.active_claim_id = None;
-                let mut after_change_set = before_change_set.clone();
-                after_change_set.state = ChangeSetState::NeedsDecision;
-                after_change_set.inferred_scope = Some(next_scope);
-                let event = append_event(
-                    &mut transition,
-                    CoordinationEventKind::IntentNeedsDecision,
-                    &after_change_set.change_set_id,
-                    graph.generation(),
-                )?;
-                transition
-                    .change_sets
-                    .push((Some(before_change_set), Some(after_change_set.clone())));
-                transition
-                    .tickets
-                    .push((Some(before_ticket), Some(terminal_ticket)));
-                ClaimOutcome::NeedsDecision {
-                    change_set: after_change_set,
-                    event,
-                }
-            }
-        };
-
-        next_scheduler.set_revision(transition.next_metadata.scheduler_revision);
-        durable.persist_lifecycle(&transition)?;
-        *scheduler = next_scheduler;
-        Ok(outcome)
+            durable.persist_lifecycle(&combined)?;
+            *scheduler = final_scheduler;
+            return Ok(outcome);
+        }
+        Err(anyhow::Error::new(
+            super::CoordinationError::OptimisticRetryExhausted {
+                attempts: super::MAX_OPTIMISTIC_RETRIES,
+            },
+        ))
     }
 
     pub fn reconsider_tickets(&self, now_tick: u64) -> Result<Vec<ReadyOffer>> {
@@ -398,8 +487,224 @@ impl Kernel {
     }
 
     pub fn expire_ready_offers(&self, now_tick: u64) -> Result<Vec<String>> {
-        self.reconsider_with_expired(now_tick, true)
-            .map(|(_, expired)| expired)
+        let expired_offer_ids = {
+            let scheduler = self
+                .scheduler
+                .lock()
+                .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+            scheduler
+                .offers()
+                .filter(|offer| now_tick >= offer.expires_at_tick)
+                .map(|offer| offer.offer_id.clone())
+                .collect::<Vec<_>>()
+        };
+        self.expire_leases(now_tick)?;
+        Ok(expired_offer_ids)
+    }
+
+    /// Expires every due coordination lease using a caller-supplied logical tick.
+    ///
+    /// The release is simulated first, semantic readiness is recomputed without a lock, and the
+    /// complete expiry plus fresh offers is persisted as one optimistic lifecycle transition.
+    pub fn expire_leases(&self, now_tick: u64) -> Result<Vec<LeaseExpiryOutcome>> {
+        for _ in 0..super::MAX_OPTIMISTIC_RETRIES {
+            let durable = self.store.coordination();
+            let (
+                graph,
+                service_epoch,
+                before_scheduler,
+                expected_revision,
+                metadata,
+                change_sets,
+                active_claims,
+            ) = {
+                let scheduler = self
+                    .scheduler
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+                let expected_revision = scheduler.revision();
+                let metadata = durable.metadata_state()?;
+                if metadata.scheduler_revision != expected_revision {
+                    continue;
+                }
+                (
+                    self.snapshot(),
+                    self.service_epoch(),
+                    scheduler.clone(),
+                    expected_revision,
+                    metadata,
+                    durable.all_change_sets()?,
+                    durable.active_claims()?,
+                )
+            };
+            let change_sets = change_sets
+                .into_iter()
+                .map(|change_set| (change_set.change_set_id.clone(), change_set))
+                .collect::<BTreeMap<_, _>>();
+
+            let mut next_scheduler = before_scheduler.clone();
+            let mut base = transition(metadata)?;
+            let mut outcomes = Vec::new();
+            let mut deferred_change_set_ids = BTreeSet::new();
+
+            for before in change_sets.values() {
+                if before.state != ChangeSetState::Draft
+                    || before
+                        .expires_at_tick
+                        .is_none_or(|expires_at| now_tick < expires_at)
+                {
+                    continue;
+                }
+                let mut after = before.clone();
+                after.state = ChangeSetState::Cancelled;
+                after.expires_at_tick = None;
+                base.change_sets.push((Some(before.clone()), Some(after)));
+                append_event_with_payload(
+                    &mut base,
+                    CoordinationEventKind::LeaseExpired,
+                    &before.change_set_id,
+                    graph.generation(),
+                    serde_json::json!({
+                        "authorityKind": "draft",
+                        "reason": "draft-expired",
+                    })
+                    .to_string(),
+                )?;
+                outcomes.push(LeaseExpiryOutcome {
+                    change_set_id: before.change_set_id.clone(),
+                    authority_kind: "draft".into(),
+                });
+            }
+
+            let due_offers = before_scheduler
+                .offers()
+                .filter(|offer| now_tick >= offer.expires_at_tick)
+                .cloned()
+                .collect::<Vec<_>>();
+            for offer in due_offers {
+                next_scheduler.expire_offer(&offer.offer_id)?;
+                let before = change_sets
+                    .get(&offer.change_set_id)
+                    .cloned()
+                    .with_context(|| format!("missing change set {}", offer.change_set_id))?;
+                let mut after = before.clone();
+                after.state = ChangeSetState::Queued;
+                base.change_sets.push((Some(before), Some(after)));
+                base.offers.push((Some(offer.clone()), None));
+                append_event_with_payload(
+                    &mut base,
+                    CoordinationEventKind::LeaseExpired,
+                    &offer.change_set_id,
+                    graph.generation(),
+                    serde_json::json!({
+                        "authorityKind": "offer",
+                        "reason": "offer-expired",
+                    })
+                    .to_string(),
+                )?;
+                outcomes.push(LeaseExpiryOutcome {
+                    change_set_id: offer.change_set_id,
+                    authority_kind: "offer".into(),
+                });
+            }
+
+            let due_claims = active_claims
+                .into_iter()
+                .filter(|claim| now_tick >= claim.expires_at_tick)
+                .collect::<Vec<_>>();
+            for claim in due_claims {
+                next_scheduler.release(&claim.claim_id, TicketState::Queued)?;
+                let before = change_sets
+                    .get(&claim.change_set_id)
+                    .cloned()
+                    .with_context(|| format!("missing change set {}", claim.change_set_id))?;
+                let mut after = before.clone();
+                after.state = ChangeSetState::Queued;
+                base.change_sets.push((Some(before), Some(after)));
+                base.claims.push((Some(claim.clone()), None));
+                append_event_with_payload(
+                    &mut base,
+                    CoordinationEventKind::LeaseExpired,
+                    &claim.change_set_id,
+                    graph.generation(),
+                    serde_json::json!({
+                        "authorityKind": "claim",
+                        "reason": "claim-expired",
+                        "attemptId": claim.attempt_id,
+                    })
+                    .to_string(),
+                )?;
+                deferred_change_set_ids.insert(claim.change_set_id.clone());
+                outcomes.push(LeaseExpiryOutcome {
+                    change_set_id: claim.change_set_id,
+                    authority_kind: "claim".into(),
+                });
+            }
+
+            if outcomes.is_empty() {
+                return Ok(Vec::new());
+            }
+            base.tickets = scheduler_ticket_updates(&before_scheduler, &next_scheduler);
+            let has_claim_expiry = outcomes
+                .iter()
+                .any(|outcome| outcome.authority_kind == "claim");
+            let has_offer_expiry = outcomes
+                .iter()
+                .any(|outcome| outcome.authority_kind == "offer");
+            let (mut combined, mut final_scheduler) = if has_claim_expiry || has_offer_expiry {
+                let cause = if has_claim_expiry {
+                    super::TransitionCause::ClaimExpiry
+                } else {
+                    super::TransitionCause::OfferExpiry
+                };
+                let plan = plan_readiness(
+                    self.semantic_provider()?,
+                    PlannerSnapshot {
+                        graph: graph.clone(),
+                        scheduler: next_scheduler,
+                        scheduler_revision: expected_revision,
+                        service_epoch,
+                        now_tick,
+                        cause,
+                        blocking_event_sequence: None,
+                        deferred_change_set_ids,
+                    },
+                    &durable,
+                )?;
+                (
+                    combine_release_and_readiness(base, plan.lifecycle_transition()?)?,
+                    plan.next_scheduler,
+                )
+            } else {
+                (base, next_scheduler)
+            };
+            final_scheduler.set_revision(combined.next_metadata.scheduler_revision);
+
+            let mut scheduler = self
+                .scheduler
+                .lock()
+                .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+            if self.snapshot().generation() != graph.generation()
+                || self.service_epoch() != service_epoch
+                || scheduler.revision() != expected_revision
+                || *scheduler != before_scheduler
+            {
+                continue;
+            }
+            combined.expected_metadata.scheduler_revision = expected_revision;
+            combined.next_metadata.scheduler_revision = expected_revision
+                .checked_add(1)
+                .context("scheduler revision overflow")?;
+            final_scheduler.set_revision(combined.next_metadata.scheduler_revision);
+            durable.persist_lifecycle(&combined)?;
+            *scheduler = final_scheduler;
+            return Ok(outcomes);
+        }
+        Err(anyhow::Error::new(
+            super::CoordinationError::OptimisticRetryExhausted {
+                attempts: super::MAX_OPTIMISTIC_RETRIES,
+            },
+        ))
     }
 
     pub(crate) fn plan_and_apply_readiness(
@@ -483,120 +788,8 @@ impl Kernel {
             now_tick,
             cause,
             blocking_event_sequence,
+            deferred_change_set_ids: BTreeSet::new(),
         })
-    }
-
-    fn reconsider_with_expired(
-        &self,
-        now_tick: u64,
-        expire_due_offers: bool,
-    ) -> Result<(Vec<ReadyOffer>, Vec<String>)> {
-        let mut scheduler = self
-            .scheduler
-            .lock()
-            .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
-        let durable = self.store.coordination();
-        let graph = self.snapshot();
-        let metadata = durable.metadata_state()?;
-        let before_scheduler = scheduler.clone();
-        let mut next_scheduler = scheduler.clone();
-        let expired_ids = if expire_due_offers {
-            next_scheduler
-                .offers()
-                .filter(|offer| now_tick >= offer.expires_at_tick)
-                .map(|offer| offer.offer_id.clone())
-                .collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        };
-        let mut expired_offers = Vec::new();
-        let mut affected_change_sets = BTreeSet::new();
-        for offer_id in &expired_ids {
-            let offer = next_scheduler
-                .offer(offer_id)
-                .cloned()
-                .with_context(|| format!("ready offer {offer_id} does not exist"))?;
-            if now_tick < offer.expires_at_tick {
-                bail!("ready offer {offer_id} has not expired");
-            }
-            next_scheduler.expire_offer(offer_id)?;
-            affected_change_sets.insert(offer.change_set_id.clone());
-            expired_offers.push(offer);
-        }
-
-        let selected = next_scheduler.select_ready()?;
-        let mut new_offers = Vec::new();
-        for ticket_id in &selected {
-            let ticket = next_scheduler
-                .ticket(ticket_id)
-                .cloned()
-                .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
-            let offer = super::planner::make_offer(
-                &ticket,
-                self.service_epoch(),
-                graph.generation(),
-                now_tick,
-            )?;
-            super::planner::mark_ready(&mut next_scheduler, ticket_id, offer.clone())?;
-            affected_change_sets.insert(offer.change_set_id.clone());
-            new_offers.push(offer);
-        }
-
-        if expired_offers.is_empty()
-            && new_offers.is_empty()
-            && scheduler_ticket_updates(&before_scheduler, &next_scheduler).is_empty()
-        {
-            return Ok((Vec::new(), Vec::new()));
-        }
-
-        let mut transition = transition(metadata)?;
-        for offer in &expired_offers {
-            transition.offers.push((Some(offer.clone()), None));
-            append_event(
-                &mut transition,
-                CoordinationEventKind::LeaseExpired,
-                &offer.change_set_id,
-                graph.generation(),
-            )?;
-        }
-        for offer in &new_offers {
-            transition.offers.push((None, Some(offer.clone())));
-            append_event(
-                &mut transition,
-                CoordinationEventKind::IntentReady,
-                &offer.change_set_id,
-                graph.generation(),
-            )?;
-        }
-        transition.tickets = scheduler_ticket_updates(&before_scheduler, &next_scheduler);
-        for change_set_id in affected_change_sets {
-            let before = durable
-                .change_set(&change_set_id)?
-                .with_context(|| format!("missing change set {change_set_id}"))?;
-            let mut after = before.clone();
-            let ticket = next_scheduler
-                .tickets()
-                .find(|ticket| ticket.change_set_id == change_set_id)
-                .with_context(|| format!("missing active ticket for {change_set_id}"))?;
-            after.state = match ticket.state {
-                TicketState::Queued => ChangeSetState::Queued,
-                TicketState::Ready => ChangeSetState::Ready,
-                TicketState::Claimed => ChangeSetState::Executing,
-                TicketState::Completed
-                | TicketState::NeedsDecision
-                | TicketState::Cancelled
-                | TicketState::Failed => {
-                    bail!("terminal ticket cannot be reconsidered")
-                }
-            };
-            if before != after {
-                transition.change_sets.push((Some(before), Some(after)));
-            }
-        }
-        next_scheduler.set_revision(transition.next_metadata.scheduler_revision);
-        durable.persist_lifecycle(&transition)?;
-        *scheduler = next_scheduler;
-        Ok((new_offers, expired_ids))
     }
 
     pub fn cancel_change_set(
@@ -604,123 +797,165 @@ impl Kernel {
         change_set_id: &str,
         now_tick: u64,
     ) -> Result<CancellationOutcome> {
-        let mut scheduler = self
-            .scheduler
-            .lock()
-            .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
-        let durable = self.store.coordination();
-        let before_change_set = durable
-            .change_set(change_set_id)?
-            .with_context(|| format!("change set {change_set_id} does not exist"))?;
-        if matches!(
-            before_change_set.state,
-            ChangeSetState::Committed
-                | ChangeSetState::NeedsDecision
-                | ChangeSetState::Cancelled
-                | ChangeSetState::Failed
-        ) {
+        for _ in 0..super::MAX_OPTIMISTIC_RETRIES {
+            let durable = self.store.coordination();
+            let (
+                graph,
+                service_epoch,
+                before_scheduler,
+                expected_revision,
+                metadata,
+                before_change_set,
+                active_claims,
+            ) = {
+                let scheduler = self
+                    .scheduler
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+                let expected_revision = scheduler.revision();
+                let metadata = durable.metadata_state()?;
+                if metadata.scheduler_revision != expected_revision {
+                    continue;
+                }
+                (
+                    self.snapshot(),
+                    self.service_epoch(),
+                    scheduler.clone(),
+                    expected_revision,
+                    metadata,
+                    durable
+                        .change_set(change_set_id)?
+                        .with_context(|| format!("change set {change_set_id} does not exist"))?,
+                    durable.active_claims()?,
+                )
+            };
+            if matches!(
+                before_change_set.state,
+                ChangeSetState::Committed
+                    | ChangeSetState::NeedsDecision
+                    | ChangeSetState::Cancelled
+                    | ChangeSetState::Failed
+            ) {
+                return Ok(CancellationOutcome {
+                    change_set: before_change_set,
+                    ready_offers: Vec::new(),
+                });
+            }
+            let mut base = transition(metadata)?;
+            let mut after_change_set = before_change_set.clone();
+            after_change_set.state = ChangeSetState::Cancelled;
+            after_change_set.expires_at_tick = None;
+            base.change_sets.push((
+                Some(before_change_set.clone()),
+                Some(after_change_set.clone()),
+            ));
+            append_event(
+                &mut base,
+                CoordinationEventKind::IntentCancelled,
+                change_set_id,
+                graph.generation(),
+            )?;
+
+            let mut simulated = before_scheduler.clone();
+            if let Some(before_ticket) = before_scheduler
+                .tickets()
+                .find(|ticket| ticket.change_set_id == change_set_id)
+                .cloned()
+            {
+                if let Some(offer_id) = &before_ticket.ready_offer_id {
+                    let offer = before_scheduler
+                        .offer(offer_id)
+                        .cloned()
+                        .with_context(|| format!("missing ready offer {offer_id}"))?;
+                    base.offers.push((Some(offer), None));
+                }
+                if let Some(claim_id) = &before_ticket.active_claim_id {
+                    let claim = active_claims
+                        .into_iter()
+                        .find(|claim| claim.claim_id == *claim_id)
+                        .with_context(|| format!("missing active claim {claim_id}"))?;
+                    base.claims.push((Some(claim), None));
+                }
+                simulated.cancel_ticket(&before_ticket.ticket_id)?;
+                let mut terminal_ticket = before_ticket.clone();
+                terminal_ticket.state = TicketState::Cancelled;
+                terminal_ticket.ready_offer_id = None;
+                terminal_ticket.active_claim_id = None;
+                base.tickets
+                    .push((Some(before_ticket), Some(terminal_ticket)));
+            }
+            base.tickets.extend(
+                scheduler_ticket_updates(&before_scheduler, &simulated)
+                    .into_iter()
+                    .filter(|(before, after)| {
+                        before
+                            .as_ref()
+                            .or(after.as_ref())
+                            .is_some_and(|ticket| ticket.change_set_id != change_set_id)
+                    }),
+            );
+
+            let (mut combined, mut final_scheduler, ready_offers) = if simulated
+                .tickets()
+                .any(|ticket| ticket.state == TicketState::Queued)
+            {
+                let plan = plan_readiness(
+                    self.semantic_provider()?,
+                    PlannerSnapshot {
+                        graph: graph.clone(),
+                        scheduler: simulated,
+                        scheduler_revision: expected_revision,
+                        service_epoch,
+                        now_tick,
+                        cause: super::TransitionCause::Cancellation,
+                        blocking_event_sequence: None,
+                        deferred_change_set_ids: BTreeSet::new(),
+                    },
+                    &durable,
+                )?;
+                let offers = plan
+                    .offers
+                    .iter()
+                    .map(|planned| planned.offer.clone())
+                    .collect();
+                (
+                    combine_release_and_readiness(base, plan.lifecycle_transition()?)?,
+                    plan.next_scheduler,
+                    offers,
+                )
+            } else {
+                (base, simulated, Vec::new())
+            };
+
+            combined.expected_metadata.scheduler_revision = expected_revision;
+            combined.next_metadata.scheduler_revision = expected_revision
+                .checked_add(1)
+                .context("scheduler revision overflow")?;
+            final_scheduler.set_revision(combined.next_metadata.scheduler_revision);
+            let mut scheduler = self
+                .scheduler
+                .lock()
+                .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+            if self.snapshot().generation() != graph.generation()
+                || self.service_epoch() != service_epoch
+                || scheduler.revision() != expected_revision
+                || *scheduler != before_scheduler
+                || durable.change_set(change_set_id)?.as_ref() != Some(&before_change_set)
+            {
+                continue;
+            }
+            durable.persist_lifecycle(&combined)?;
+            *scheduler = final_scheduler;
             return Ok(CancellationOutcome {
-                change_set: before_change_set,
-                ready_offers: Vec::new(),
+                change_set: after_change_set,
+                ready_offers,
             });
         }
-        let graph = self.snapshot();
-        let metadata = durable.metadata_state()?;
-        let mut transition = transition(metadata)?;
-        let mut after_change_set = before_change_set.clone();
-        after_change_set.state = ChangeSetState::Cancelled;
-        transition
-            .change_sets
-            .push((Some(before_change_set), Some(after_change_set.clone())));
-        append_event(
-            &mut transition,
-            CoordinationEventKind::IntentCancelled,
-            change_set_id,
-            graph.generation(),
-        )?;
-
-        let before_scheduler = scheduler.clone();
-        let mut next_scheduler = scheduler.clone();
-        let mut cancelled_ticket_id = None;
-        if let Some(before_ticket) = scheduler
-            .tickets()
-            .find(|ticket| ticket.change_set_id == change_set_id)
-            .cloned()
-        {
-            cancelled_ticket_id = Some(before_ticket.ticket_id.clone());
-            if let Some(offer_id) = &before_ticket.ready_offer_id {
-                let offer = scheduler
-                    .offer(offer_id)
-                    .cloned()
-                    .with_context(|| format!("missing ready offer {offer_id}"))?;
-                transition.offers.push((Some(offer), None));
-            }
-            if let Some(claim_id) = &before_ticket.active_claim_id {
-                let claim = durable
-                    .active_claims()?
-                    .into_iter()
-                    .find(|claim| claim.claim_id == *claim_id)
-                    .with_context(|| format!("missing active claim {claim_id}"))?;
-                transition.claims.push((Some(claim), None));
-            }
-            next_scheduler.cancel_ticket(&before_ticket.ticket_id)?;
-            let mut terminal_ticket = before_ticket.clone();
-            terminal_ticket.state = TicketState::Cancelled;
-            terminal_ticket.ready_offer_id = None;
-            terminal_ticket.active_claim_id = None;
-            transition
-                .tickets
-                .push((Some(before_ticket), Some(terminal_ticket)));
-        }
-
-        let selected = next_scheduler.select_ready()?;
-        let mut ready_offers = Vec::new();
-        for ticket_id in &selected {
-            let ticket = next_scheduler
-                .ticket(ticket_id)
-                .cloned()
-                .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
-            let offer = super::planner::make_offer(
-                &ticket,
-                self.service_epoch(),
-                graph.generation(),
-                now_tick,
-            )?;
-            super::planner::mark_ready(&mut next_scheduler, ticket_id, offer.clone())?;
-            let before = durable
-                .change_set(&offer.change_set_id)?
-                .with_context(|| format!("missing change set {}", offer.change_set_id))?;
-            let mut after = before.clone();
-            after.state = ChangeSetState::Ready;
-            transition.change_sets.push((Some(before), Some(after)));
-            transition.offers.push((None, Some(offer.clone())));
-            append_event(
-                &mut transition,
-                CoordinationEventKind::IntentReady,
-                &offer.change_set_id,
-                graph.generation(),
-            )?;
-            ready_offers.push(offer);
-        }
-        transition.tickets.extend(
-            scheduler_ticket_updates(&before_scheduler, &next_scheduler)
-                .into_iter()
-                .filter(|(before, after)| {
-                    let id = before
-                        .as_ref()
-                        .or(after.as_ref())
-                        .map(|ticket| ticket.ticket_id.as_str());
-                    id != cancelled_ticket_id.as_deref()
-                }),
-        );
-
-        next_scheduler.set_revision(transition.next_metadata.scheduler_revision);
-        durable.persist_lifecycle(&transition)?;
-        *scheduler = next_scheduler;
-        Ok(CancellationOutcome {
-            change_set: after_change_set,
-            ready_offers,
-        })
+        Err(anyhow::Error::new(
+            super::CoordinationError::OptimisticRetryExhausted {
+                attempts: super::MAX_OPTIMISTIC_RETRIES,
+            },
+        ))
     }
 
     /// Publishes an executing claim through the only default commit-authority path.
@@ -804,7 +1039,7 @@ impl Kernel {
         }
 
         let graph = self.snapshot();
-        self.validate_executing_claim(&scheduler, claim, graph.generation())?;
+        self.validate_executing_claim(&scheduler, claim, graph.generation(), now_tick)?;
         let durable = self.store.coordination();
         let before_change_set = durable
             .change_set(&claim.change_set_id)?
@@ -818,19 +1053,12 @@ impl Kernel {
             .context("executing change set has no inferred scope")?;
         let intents = durable.intents_for(&claim.change_set_id)?;
         let fresh_scope = analyze_change_set(&graph, &intents, semantic_provider)?;
-        match classify_scope_change(previous_scope, &fresh_scope) {
-            ScopeChange::Unchanged => {}
-            scope_change => {
-                self.persist_changed_publication_scope(
-                    &mut scheduler,
-                    claim,
-                    before_change_set,
-                    fresh_scope,
-                    scope_change,
-                    now_tick,
-                )?;
-                bail!("publication scope changed before candidate construction");
-            }
+        let scope_change = classify_scope_change(previous_scope, &fresh_scope);
+        if scope_change != ScopeChange::Unchanged {
+            drop(_publish);
+            drop(scheduler);
+            self.persist_changed_publication_scope(claim, fresh_scope, scope_change, now_tick)?;
+            bail!("publication scope changed before candidate construction");
         }
 
         let delta = candidate_builder.build_candidate(&graph, &before_change_set, &intents)?;
@@ -1207,9 +1435,13 @@ impl Kernel {
         scheduler: &SchedulerState,
         claim: &ClaimHandle,
         graph_generation: u64,
+        now_tick: u64,
     ) -> Result<()> {
-        if claim.service_epoch != self.service_epoch() {
-            bail!("claim belongs to a stale service epoch");
+        if claim.service_epoch != self.service_epoch()
+            || claim.expires_at_tick == 0
+            || now_tick >= claim.expires_at_tick
+        {
+            return Err(anyhow::Error::new(super::CoordinationError::LeaseExpired));
         }
         if claim.graph_generation != graph_generation {
             bail!("claim belongs to a stale graph generation");
@@ -1219,7 +1451,7 @@ impl Kernel {
             .active_claims()?
             .into_iter()
             .find(|active| active.claim_id == claim.claim_id)
-            .context("claim is not durably active")?;
+            .ok_or_else(|| anyhow::Error::new(super::CoordinationError::LeaseExpired))?;
         if active != *claim {
             bail!("claim does not match durable executing claim");
         }
@@ -1239,119 +1471,130 @@ impl Kernel {
 
     fn persist_changed_publication_scope(
         &self,
-        scheduler: &mut SchedulerState,
         claim: &ClaimHandle,
-        before_change_set: ChangeSetRecord,
         fresh_scope: super::InferredScope,
         scope_change: ScopeChange,
         now_tick: u64,
     ) -> Result<()> {
-        let graph_generation = claim.graph_generation;
-        let before_scheduler = scheduler.clone();
-        let mut next_scheduler = scheduler.clone();
-        let before_ticket = next_scheduler
-            .tickets()
-            .find(|ticket| ticket.change_set_id == claim.change_set_id)
-            .cloned()
-            .context("claim has no scheduler ticket")?;
-        let durable = self.store.coordination();
-        let metadata = durable.metadata_state()?;
-        let mut lifecycle = transition(metadata)?;
-        let mut after_change_set = before_change_set.clone();
-        after_change_set.inferred_scope = Some(fresh_scope.clone());
-        let terminal = matches!(scope_change, ScopeChange::MateriallyChanged)
-            || matches!(
-                fresh_scope.dynamic_expansion_policy,
-                DynamicExpansionPolicy::NeedsDecision
-            )
-            || before_change_set.expansion_count
-                >= match fresh_scope.dynamic_expansion_policy {
-                    DynamicExpansionPolicy::Requeue { max_expansions } => max_expansions,
-                    DynamicExpansionPolicy::NeedsDecision => 0,
-                };
-        if terminal {
-            next_scheduler.release(&claim.claim_id, TicketState::NeedsDecision)?;
-            after_change_set.state = ChangeSetState::NeedsDecision;
-            let mut after_ticket = before_ticket.clone();
-            after_ticket.state = TicketState::NeedsDecision;
-            after_ticket.active_claim_id = None;
-            lifecycle
-                .tickets
-                .push((Some(before_ticket), Some(after_ticket)));
-            let terminal_event = append_event(
-                &mut lifecycle,
-                CoordinationEventKind::IntentNeedsDecision,
-                &claim.change_set_id,
-                graph_generation,
-            )?;
-            let selected = next_scheduler.select_ready()?;
-            for ticket_id in selected {
-                let ticket = next_scheduler
-                    .ticket(&ticket_id)
-                    .cloned()
-                    .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
-                let mut offer = super::planner::make_offer(
-                    &ticket,
-                    self.service_epoch(),
-                    graph_generation,
-                    now_tick,
-                )?;
-                offer.blocking_event_sequence = Some(terminal_event.sequence);
-                super::planner::mark_ready(&mut next_scheduler, &ticket_id, offer.clone())?;
-                let before = durable.change_set(&offer.change_set_id)?.with_context(|| {
-                    format!("missing successor change set {}", offer.change_set_id)
-                })?;
-                let mut after = before.clone();
-                after.state = ChangeSetState::Ready;
-                after.blocking_change_set_id = Some(claim.change_set_id.clone());
-                lifecycle.change_sets.push((Some(before), Some(after)));
-                lifecycle.offers.push((None, Some(offer.clone())));
-                append_event(
-                    &mut lifecycle,
-                    CoordinationEventKind::IntentReady,
-                    &offer.change_set_id,
-                    graph_generation,
-                )?;
+        for _ in 0..super::MAX_OPTIMISTIC_RETRIES {
+            let durable = self.store.coordination();
+            let graph = self.snapshot();
+            let service_epoch = self.service_epoch();
+            let (before_scheduler, expected_revision) = {
+                let scheduler = self
+                    .scheduler
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+                (scheduler.clone(), scheduler.revision())
+            };
+            self.validate_executing_claim(&before_scheduler, claim, graph.generation(), now_tick)?;
+            let before_change_set = durable
+                .change_set(&claim.change_set_id)?
+                .with_context(|| format!("change set {} does not exist", claim.change_set_id))?;
+            if before_change_set.state != ChangeSetState::Executing {
+                bail!("change set {} is not Executing", claim.change_set_id);
             }
-        } else {
-            let after_ticket = next_scheduler.requeue_claim_with_scope(
-                &claim.claim_id,
-                fresh_scope.scope_fingerprint.clone(),
-                fresh_scope.reservation_keys.clone(),
+            let metadata = durable.metadata_state()?;
+            if metadata.scheduler_revision != expected_revision {
+                continue;
+            }
+            let mut base = transition(metadata)?;
+            let mut simulated = before_scheduler.clone();
+            let mut after_change_set = before_change_set.clone();
+            after_change_set.inferred_scope = Some(fresh_scope.clone());
+            let terminal = matches!(scope_change, ScopeChange::MateriallyChanged)
+                || matches!(
+                    fresh_scope.dynamic_expansion_policy,
+                    DynamicExpansionPolicy::NeedsDecision
+                )
+                || before_change_set.expansion_count
+                    >= match fresh_scope.dynamic_expansion_policy {
+                        DynamicExpansionPolicy::Requeue { max_expansions } => max_expansions,
+                        DynamicExpansionPolicy::NeedsDecision => 0,
+                    };
+            let (blocking_event_sequence, deferred_change_set_ids) = if terminal {
+                simulated.release(&claim.claim_id, TicketState::NeedsDecision)?;
+                after_change_set.state = ChangeSetState::NeedsDecision;
+                let event = append_event(
+                    &mut base,
+                    CoordinationEventKind::IntentNeedsDecision,
+                    &claim.change_set_id,
+                    graph.generation(),
+                )?;
+                (Some(event.sequence), BTreeSet::new())
+            } else {
+                simulated.requeue_claim_with_scope(
+                    &claim.claim_id,
+                    fresh_scope.scope_fingerprint.clone(),
+                    fresh_scope.reservation_keys.clone(),
+                )?;
+                after_change_set.state = ChangeSetState::Queued;
+                after_change_set.expansion_count = after_change_set
+                    .expansion_count
+                    .checked_add(1)
+                    .context("scope expansion count overflow")?;
+                append_event(
+                    &mut base,
+                    CoordinationEventKind::ScopeExpanded,
+                    &claim.change_set_id,
+                    graph.generation(),
+                )?;
+                (None, BTreeSet::from([claim.change_set_id.clone()]))
+            };
+            base.change_sets
+                .push((Some(before_change_set.clone()), Some(after_change_set)));
+            base.claims.push((Some(claim.clone()), None));
+            base.tickets = scheduler_ticket_updates(&before_scheduler, &simulated);
+
+            let plan = plan_readiness(
+                self.semantic_provider()?,
+                PlannerSnapshot {
+                    graph: graph.clone(),
+                    scheduler: simulated,
+                    scheduler_revision: expected_revision,
+                    service_epoch,
+                    now_tick,
+                    cause: super::TransitionCause::ClaimRejection,
+                    blocking_event_sequence,
+                    deferred_change_set_ids,
+                },
+                &durable,
             )?;
-            after_change_set.state = ChangeSetState::Queued;
-            after_change_set.expansion_count = after_change_set
-                .expansion_count
+            let mut combined = combine_release_and_readiness(base, plan.lifecycle_transition()?)?;
+            combined.expected_metadata.scheduler_revision = expected_revision;
+            combined.next_metadata.scheduler_revision = expected_revision
                 .checked_add(1)
-                .context("scope expansion count overflow")?;
-            lifecycle
-                .tickets
-                .push((Some(before_ticket), Some(after_ticket)));
-            append_event(
-                &mut lifecycle,
-                CoordinationEventKind::ScopeExpanded,
-                &claim.change_set_id,
-                graph_generation,
-            )?;
+                .context("scheduler revision overflow")?;
+            let mut final_scheduler = plan.next_scheduler;
+            final_scheduler.set_revision(combined.next_metadata.scheduler_revision);
+
+            let mut scheduler = self
+                .scheduler
+                .lock()
+                .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+            if self.snapshot().generation() != graph.generation()
+                || self.service_epoch() != service_epoch
+                || scheduler.revision() != expected_revision
+                || *scheduler != before_scheduler
+                || durable.change_set(&claim.change_set_id)?.as_ref() != Some(&before_change_set)
+                || durable
+                    .active_claims()?
+                    .into_iter()
+                    .find(|active| active.claim_id == claim.claim_id)
+                    .as_ref()
+                    != Some(claim)
+            {
+                continue;
+            }
+            durable.persist_lifecycle(&combined)?;
+            *scheduler = final_scheduler;
+            return Ok(());
         }
-        lifecycle
-            .change_sets
-            .push((Some(before_change_set), Some(after_change_set)));
-        lifecycle.claims.push((Some(claim.clone()), None));
-        lifecycle.tickets.extend(
-            scheduler_ticket_updates(&before_scheduler, &next_scheduler)
-                .into_iter()
-                .filter(|(before, after)| {
-                    before
-                        .as_ref()
-                        .or(after.as_ref())
-                        .is_some_and(|ticket| ticket.change_set_id != claim.change_set_id)
-                }),
-        );
-        next_scheduler.set_revision(lifecycle.next_metadata.scheduler_revision);
-        durable.persist_lifecycle(&lifecycle)?;
-        *scheduler = next_scheduler;
-        Ok(())
+        Err(anyhow::Error::new(
+            super::CoordinationError::OptimisticRetryExhausted {
+                attempts: super::MAX_OPTIMISTIC_RETRIES,
+            },
+        ))
     }
 }
 
@@ -1475,6 +1718,76 @@ fn validate_offer_context(
         );
     }
     Ok(())
+}
+
+fn combine_release_and_readiness(
+    mut release: LifecycleTransition,
+    readiness: LifecycleTransition,
+) -> Result<LifecycleTransition> {
+    if release.expected_metadata != readiness.expected_metadata {
+        bail!("release and readiness plans were captured from different metadata");
+    }
+
+    for update in readiness.change_sets {
+        let id = update
+            .0
+            .as_ref()
+            .or(update.1.as_ref())
+            .context("readiness change-set update has no record")?
+            .change_set_id
+            .clone();
+        if let Some(existing) = release.change_sets.iter_mut().find(|existing| {
+            existing
+                .0
+                .as_ref()
+                .or(existing.1.as_ref())
+                .is_some_and(|record| record.change_set_id == id)
+        }) {
+            existing.1 = update.1;
+        } else {
+            release.change_sets.push(update);
+        }
+    }
+    for update in readiness.tickets {
+        let id = update
+            .0
+            .as_ref()
+            .or(update.1.as_ref())
+            .context("readiness ticket update has no record")?
+            .ticket_id
+            .clone();
+        if let Some(existing) = release.tickets.iter_mut().find(|existing| {
+            existing
+                .0
+                .as_ref()
+                .or(existing.1.as_ref())
+                .is_some_and(|record| record.ticket_id == id)
+        }) {
+            existing.1 = update.1;
+        } else {
+            release.tickets.push(update);
+        }
+    }
+    release.offers.extend(readiness.offers);
+    release.claims.extend(readiness.claims);
+
+    for mut event in readiness.events {
+        let sequence = release
+            .next_metadata
+            .current_event_sequence
+            .checked_add(1)
+            .context("coordination event sequence overflow")?;
+        event.sequence = sequence;
+        release.next_metadata.current_event_sequence = sequence;
+        release.events.push(event);
+    }
+    release.next_metadata.next_queue_sequence = readiness.next_metadata.next_queue_sequence;
+    release.next_metadata.scheduler_revision = release
+        .expected_metadata
+        .scheduler_revision
+        .checked_add(1)
+        .context("scheduler revision overflow")?;
+    Ok(release)
 }
 
 pub(super) fn transition(metadata: CoordinationMetadataState) -> Result<LifecycleTransition> {

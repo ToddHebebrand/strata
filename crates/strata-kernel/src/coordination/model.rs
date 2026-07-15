@@ -255,6 +255,10 @@ pub struct ChangeSetRecord {
     pub expansion_count: u32,
     pub blocking_change_set_id: Option<String>,
     pub committed_generation: Option<u64>,
+    #[serde(default)]
+    pub created_at_tick: u64,
+    #[serde(default)]
+    pub expires_at_tick: Option<u64>,
 }
 
 impl ChangeSetRecord {
@@ -310,6 +314,8 @@ impl ChangeSetRecord {
             expansion_count: 0,
             blocking_change_set_id: None,
             committed_generation: None,
+            created_at_tick: 0,
+            expires_at_tick: None,
         })
     }
 
@@ -484,6 +490,12 @@ pub struct ClaimHandle {
     pub graph_generation: u64,
     pub scope_fingerprint: String,
     pub reservation_keys: Vec<String>,
+    #[serde(default)]
+    pub attempt_id: String,
+    #[serde(default)]
+    pub expires_at_tick: u64,
+    #[serde(default)]
+    pub dependency_versions: Vec<super::DependencyVersion>,
 }
 
 impl ClaimHandle {
@@ -505,6 +517,9 @@ impl ClaimHandle {
             graph_generation,
             scope_fingerprint: scope_fingerprint.into(),
             reservation_keys,
+            attempt_id: String::new(),
+            expires_at_tick: 0,
+            dependency_versions: Vec::new(),
         };
         record.validate()?;
         Ok(record)
@@ -515,8 +530,26 @@ impl ClaimHandle {
         validate_id("change_set_id", &self.change_set_id)?;
         validate_id("offer_id", &self.offer_id)?;
         validate_id("scope_fingerprint", &self.scope_fingerprint)?;
-        validate_ids("reservation key", &self.reservation_keys)
+        validate_ids("reservation key", &self.reservation_keys)?;
+        if !self.attempt_id.is_empty() {
+            validate_id("attempt_id", &self.attempt_id)?;
+        }
+        if self
+            .dependency_versions
+            .iter()
+            .any(|dependency| dependency.resource_key.is_empty())
+        {
+            return Err("claim dependency resource key cannot be empty".into());
+        }
+        Ok(())
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaseExpiryOutcome {
+    pub change_set_id: String,
+    pub authority_kind: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
