@@ -29,23 +29,43 @@ fn worker_config() -> NodeBridgeConfig {
     )
 }
 
-fn declaration_named<'a>(snapshot: &'a GraphSnapshot, name: &str) -> &'a NodeRecord {
-    snapshot
+fn fixture_declaration<'a>(
+    snapshot: &'a GraphSnapshot,
+    name: &str,
+) -> (&'a NodeRecord, &'a NodeRecord) {
+    let (declaration_id, name_id) = match name {
+        "User" => ("fc98295bca9efc3e", "f5e93472d89a054d"),
+        "greet" => ("603b2ae524ee3c70", "c88199f537b34a1b"),
+        _ => panic!("fixture declaration {name} has no pinned identity"),
+    };
+    let declaration = snapshot
         .nodes
         .iter()
-        .find(|node| {
-            node.kind.ends_with("Declaration")
-                && snapshot.nodes.iter().any(|candidate| {
-                    candidate.parent_id.as_deref() == Some(node.id.as_str())
-                        && candidate.kind == "Identifier"
-                        && serde_json::from_str::<serde_json::Value>(&candidate.payload)
-                            .ok()
-                            .and_then(|value| value.get("text")?.as_str().map(str::to_owned))
-                            .as_deref()
-                            == Some(name)
-                })
-        })
-        .unwrap_or_else(|| panic!("missing declaration {name}"))
+        .find(|node| node.id == declaration_id)
+        .unwrap_or_else(|| panic!("missing declaration {declaration_id}"));
+    let name_identifier = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id == name_id)
+        .unwrap_or_else(|| panic!("missing declaration name {name_id}"));
+    assert_eq!(name_identifier.parent_id.as_deref(), Some(declaration_id));
+    assert_eq!(name_identifier.kind, "Identifier");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&name_identifier.payload)
+            .unwrap()
+            .get("text")
+            .and_then(serde_json::Value::as_str),
+        Some(name)
+    );
+    (declaration, name_identifier)
+}
+
+#[test]
+fn fixture_helper_selects_the_actual_user_declaration() {
+    let snapshot: GraphSnapshot = serde_json::from_str(SNAPSHOT_JSON).unwrap();
+    let (user, name) = fixture_declaration(&snapshot, "User");
+    assert_eq!(user.id, "fc98295bca9efc3e");
+    assert_eq!(name.id, "f5e93472d89a054d");
 }
 
 fn analyze(parameters: IntentParameters) -> strata_kernel::InferredScope {
@@ -132,7 +152,9 @@ fn raw_worker_analysis(
 #[ignore = "requires pnpm kernel:bridge:build"]
 fn real_worker_derives_wide_user_rename_without_node_authority_fields() {
     let snapshot: GraphSnapshot = serde_json::from_str(SNAPSHOT_JSON).unwrap();
-    let user = declaration_named(&snapshot, "User");
+    let (user, user_name) = fixture_declaration(&snapshot, "User");
+    assert_eq!(user.id, "fc98295bca9efc3e");
+    assert_eq!(user_name.id, "f5e93472d89a054d");
     let scope = analyze(IntentParameters::RenameSymbol {
         declaration_id: user.id.clone(),
         new_name: "Account".into(),
@@ -143,10 +165,7 @@ fn real_worker_derives_wide_user_rename_without_node_authority_fields() {
         .iter()
         .filter(|resource| resource.resource_key.starts_with("node:"))
         .count();
-    assert!(
-        validation_node_count >= 30,
-        "expected wide User validation closure, got {validation_node_count}"
-    );
+    assert_eq!(validation_node_count, 1065);
     assert!(
         scope
             .write_set
@@ -173,6 +192,28 @@ fn real_worker_derives_wide_user_rename_without_node_authority_fields() {
         .unwrap()
         .as_object()
         .unwrap();
+    assert_eq!(facts["references"].as_array().unwrap().len(), 15);
+    assert_eq!(
+        facts["validationDependencyNodeIds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1065
+    );
+    assert_eq!(
+        facts["validationDependencyReferenceFromNodeIds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        558
+    );
+    assert_eq!(facts["writableStatementIds"].as_array().unwrap().len(), 11);
+    assert_eq!(
+        facts
+            .get("declarationNameIdentifierId")
+            .and_then(serde_json::Value::as_str),
+        Some(user_name.id.as_str())
+    );
     for authority_field in [
         "resourceVersions",
         "reservationKeys",
@@ -192,7 +233,9 @@ fn real_worker_derives_wide_user_rename_without_node_authority_fields() {
 #[ignore = "requires pnpm kernel:bridge:build"]
 fn real_worker_derives_greet_callsites_with_production_policy() {
     let snapshot: GraphSnapshot = serde_json::from_str(SNAPSHOT_JSON).unwrap();
-    let greet = declaration_named(&snapshot, "greet");
+    let (greet, greet_name) = fixture_declaration(&snapshot, "greet");
+    assert_eq!(greet.id, "603b2ae524ee3c70");
+    assert_eq!(greet_name.id, "c88199f537b34a1b");
     let scope = analyze(IntentParameters::AddParameter {
         function_id: greet.id.clone(),
         name: "traceId".into(),

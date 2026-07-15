@@ -7,6 +7,11 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+#[cfg(test)]
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
@@ -54,14 +59,22 @@ impl NodeBridgeConfig {
 #[derive(Clone, Debug)]
 pub(crate) struct NodeBridgeClient {
     config: NodeBridgeConfig,
+    #[cfg(test)]
+    run_count: Arc<AtomicUsize>,
 }
 
 impl NodeBridgeClient {
     pub(crate) fn new(config: NodeBridgeConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            #[cfg(test)]
+            run_count: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     pub(crate) fn run(&self, request: &BridgeRequest) -> Result<BridgeResponse> {
+        #[cfg(test)]
+        self.run_count.fetch_add(1, Ordering::SeqCst);
         let request_bytes = serialize_bridge_request(request)?;
         ensure!(
             request_bytes.len() <= self.config.max_request_bytes,
@@ -211,6 +224,11 @@ impl NodeBridgeClient {
             request,
             self.config.max_diagnostics_bytes,
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn run_count(&self) -> usize {
+        self.run_count.load(Ordering::SeqCst)
     }
 }
 

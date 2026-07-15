@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use serde::Deserialize;
 
 use super::process::NodeBridgeClient;
 use super::protocol::{
@@ -43,10 +44,6 @@ fn analyze_request(
     graph: &GraphGeneration,
     intent: &IntentRecord,
 ) -> Result<BridgeRequest> {
-    ensure!(
-        intent.base_generation == graph.generation(),
-        "intent base generation does not match analyzed graph"
-    );
     let snapshot = WireSnapshot::from_graph_snapshot(&graph.snapshot())?;
     Ok(BridgeRequest::AnalyzeIntent(AnalyzeIntentRequest {
         protocol_version: PROTOCOL_VERSION,
@@ -63,11 +60,11 @@ fn analyze_request(
             graph_digest: Hash64::parse(graph.digest())?,
         },
         snapshot,
-        intent: wire_intent(intent),
+        intent: wire_intent(intent, graph.generation()),
     }))
 }
 
-fn wire_intent(intent: &IntentRecord) -> WireIntentRecord {
+fn wire_intent(intent: &IntentRecord, analysis_generation: u64) -> WireIntentRecord {
     let parameters = match &intent.parameters {
         IntentParameters::RenameSymbol {
             declaration_id,
@@ -94,7 +91,7 @@ fn wire_intent(intent: &IntentRecord) -> WireIntentRecord {
         schema_version: intent.schema_version,
         intent_id: intent.intent_id.clone(),
         change_set_id: intent.change_set_id.clone(),
-        base_generation: WireU64::new(intent.base_generation),
+        base_generation: WireU64::new(analysis_generation),
         parameters,
     }
 }
@@ -130,14 +127,24 @@ pub(crate) fn intent_analysis_from_facts(
                 is_declaration(&target),
                 "rename target is not a declaration"
             );
-            let name = scope
+            let reported_name = scope
                 .require_direct_identifier(&declaration_name_identifier_id, declaration_id)?
                 .clone();
-            let old_name = identifier_text(&name)
-                .with_context(|| format!("identifier {} has no text", name.id))?;
+            identifier_payload(&reported_name).with_context(|| {
+                format!("malformed declaration name identifier {}", reported_name.id)
+            })?;
+            let name = declaration_name_identifier(graph, &target)?.clone();
+            ensure!(
+                reported_name.id == name.id,
+                "fact declaration name identifier {} does not match canonical declaration name {}",
+                reported_name.id,
+                name.id
+            );
+            let old_name = identifier_payload(&name)?.text;
             ensure!(!new_name.is_empty(), "rename new name must not be empty");
             let references = scope.resolve_references(&references, Some(&name.id))?;
             ensure_exact_reverse_membership(graph, &name.id, &references)?;
+            scope.read_reference_membership(&name.id)?;
             ensure_writable_membership(
                 graph,
                 &writable_statement_ids,
@@ -205,9 +212,19 @@ pub(crate) fn intent_analysis_from_facts(
                 function.kind == "FunctionDeclaration",
                 "add-parameter target is not a FunctionDeclaration"
             );
-            let name = scope
+            let reported_name = scope
                 .require_direct_identifier(&declaration_name_identifier_id, function_id)?
                 .clone();
+            identifier_payload(&reported_name).with_context(|| {
+                format!("malformed declaration name identifier {}", reported_name.id)
+            })?;
+            let name = declaration_name_identifier(graph, &function)?.clone();
+            ensure!(
+                reported_name.id == name.id,
+                "fact declaration name identifier {} does not match canonical declaration name {}",
+                reported_name.id,
+                name.id
+            );
             let direct_calls = scope.resolve_references(&direct_call_references, Some(&name.id))?;
             let arity_risks = scope.resolve_references(&arity_risk_references, Some(&name.id))?;
             let body_reads = scope.resolve_references(&function_body_read_references, None)?;
@@ -215,6 +232,7 @@ pub(crate) fn intent_analysis_from_facts(
             incoming.extend(arity_risks.clone());
             incoming.sort();
             ensure_exact_reverse_membership(graph, &name.id, &incoming)?;
+            scope.read_reference_membership(&name.id)?;
             ensure_writable_membership(
                 graph,
                 &writable_statement_ids,
@@ -390,11 +408,16 @@ impl<'a> ScopeBuilder<'a> {
         let edge = edge_resource(reference)?;
         self.read_set.push(edge.clone());
         self.validation_set.push(edge);
-        let membership = references_to_resource(self.graph, &reference.to_node_id)?;
+        self.read_reference_membership(&reference.to_node_id)?;
+        self.reserve(format!("node:{}", reference.from_node_id));
+        Ok(())
+    }
+
+    fn read_reference_membership(&mut self, target_id: &str) -> Result<()> {
+        let membership = references_to_resource(self.graph, target_id)?;
         self.read_set.push(membership.clone());
         self.validation_set.push(membership);
-        self.reserve(format!("node:{}", reference.from_node_id));
-        self.reserve(format!("node:{}", reference.to_node_id));
+        self.reserve(format!("node:{target_id}"));
         Ok(())
     }
 
@@ -544,16 +567,15 @@ fn semantic_name_resources<'a>(
     let snapshot = graph.snapshot();
     let mut resources = Vec::new();
     for name in names {
-        let namespace_members: Vec<_> = snapshot
-            .nodes
-            .iter()
-            .filter(|node| {
-                node.parent_id.as_deref() == Some(container)
-                    && is_declaration(node)
-                    && declaration_name(graph, node).as_deref() == Some(name.as_str())
-            })
-            .cloned()
-            .collect();
+        let mut namespace_members = Vec::new();
+        for node in &snapshot.nodes {
+            if node.parent_id.as_deref() != Some(container) || !is_declaration(node) {
+                continue;
+            }
+            if declaration_name(graph, node)?.as_deref() == Some(name.as_str()) {
+                namespace_members.push(node.clone());
+            }
+        }
         let absence_members: Vec<_> = namespace_members
             .iter()
             .filter(|node| node.kind == kind)
@@ -571,23 +593,181 @@ fn semantic_name_resources<'a>(
     Ok(resources)
 }
 
-fn declaration_name(graph: &GraphGeneration, declaration: &NodeRecord) -> Option<String> {
-    graph
-        .snapshot()
-        .nodes
-        .into_iter()
-        .find(|node| {
-            node.kind == "Identifier" && node.parent_id.as_deref() == Some(&declaration.id)
-        })
-        .and_then(|node| identifier_text(&node))
+fn declaration_name(graph: &GraphGeneration, declaration: &NodeRecord) -> Result<Option<String>> {
+    if declaration_keyword(&declaration.kind).is_none() {
+        return Ok(None);
+    }
+    Ok(Some(
+        identifier_payload(declaration_name_identifier(graph, declaration)?)?.text,
+    ))
 }
 
-fn identifier_text(node: &NodeRecord) -> Option<String> {
-    serde_json::from_str::<serde_json::Value>(&node.payload)
-        .ok()?
-        .get("text")?
-        .as_str()
-        .map(str::to_owned)
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IdentifierPayload {
+    text: String,
+    offset: u64,
+}
+
+fn identifier_payload(node: &NodeRecord) -> Result<IdentifierPayload> {
+    serde_json::from_str(&node.payload)
+        .with_context(|| format!("identifier {} has a malformed payload", node.id))
+}
+
+fn declaration_name_identifier<'a>(
+    graph: &'a GraphGeneration,
+    declaration: &NodeRecord,
+) -> Result<&'a NodeRecord> {
+    let (expected_text, expected_offset) = declaration_name_token(declaration)?;
+    let mut matches = graph.snapshot().nodes.into_iter().filter_map(|node| {
+        if node.kind != "Identifier" || node.parent_id.as_deref() != Some(&declaration.id) {
+            return None;
+        }
+        let payload = identifier_payload(&node).ok()?;
+        (payload.text == expected_text && payload.offset == expected_offset).then_some(node.id)
+    });
+    let first = matches.next().with_context(|| {
+        format!(
+            "declaration {} has no exact declaration name identifier for {expected_text}@{expected_offset}",
+            declaration.id
+        )
+    })?;
+    ensure!(
+        matches.next().is_none(),
+        "declaration {} has ambiguous declaration name identifiers for {expected_text}@{expected_offset}",
+        declaration.id
+    );
+    graph
+        .node(&first)
+        .with_context(|| format!("declaration name identifier {first} disappeared"))
+}
+
+fn declaration_name_token(declaration: &NodeRecord) -> Result<(String, u64)> {
+    let keyword = declaration_keyword(&declaration.kind)
+        .with_context(|| format!("unsupported named declaration kind {}", declaration.kind))?;
+    let tokens = source_tokens(&declaration.payload)?;
+    let keyword_index = tokens
+        .iter()
+        .position(|token| token.text == keyword)
+        .with_context(|| {
+            format!(
+                "{} payload has no canonical {keyword} declaration token",
+                declaration.id
+            )
+        })?;
+    let mut name_index = keyword_index + 1;
+    if declaration.kind == "FunctionDeclaration"
+        && tokens
+            .get(name_index)
+            .is_some_and(|token| token.text == "*")
+    {
+        name_index += 1;
+    }
+    let name = tokens
+        .get(name_index)
+        .with_context(|| format!("{} payload has no declaration name token", declaration.id))?;
+    ensure!(
+        name.is_identifier,
+        "{} payload declaration name is not an identifier",
+        declaration.id
+    );
+    Ok((name.text.clone(), name.utf16_offset))
+}
+
+fn declaration_keyword(kind: &str) -> Option<&'static str> {
+    match kind {
+        "FunctionDeclaration" => Some("function"),
+        "InterfaceDeclaration" => Some("interface"),
+        "ClassDeclaration" => Some("class"),
+        "TypeAliasDeclaration" => Some("type"),
+        "VariableStatement" => Some("const"),
+        _ => None,
+    }
+}
+
+struct SourceToken {
+    text: String,
+    utf16_offset: u64,
+    is_identifier: bool,
+}
+
+fn source_tokens(source: &str) -> Result<Vec<SourceToken>> {
+    let bytes = source.as_bytes();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte.is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+        if bytes[index..].starts_with(b"//") {
+            index = bytes[index..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |offset| index + offset + 1);
+            continue;
+        }
+        if bytes[index..].starts_with(b"/*") {
+            let end = bytes[index + 2..]
+                .windows(2)
+                .position(|window| window == b"*/")
+                .map(|offset| index + 2 + offset + 2)
+                .ok_or_else(|| anyhow!("unterminated block comment in declaration payload"))?;
+            index = end;
+            continue;
+        }
+        if matches!(byte, b'\'' | b'"' | b'`') {
+            let quote = byte;
+            index += 1;
+            let mut closed = false;
+            while index < bytes.len() {
+                if bytes[index] == b'\\' {
+                    index = (index + 2).min(bytes.len());
+                } else if bytes[index] == quote {
+                    index += 1;
+                    closed = true;
+                    break;
+                } else {
+                    index += 1;
+                }
+            }
+            ensure!(closed, "unterminated string in declaration payload");
+            continue;
+        }
+        let start = index;
+        let Some(first) = source[index..].chars().next() else {
+            break;
+        };
+        let is_identifier = first == '_' || first == '$' || first.is_alphabetic();
+        if is_identifier {
+            index += first.len_utf8();
+            while index < bytes.len() {
+                let Some(character) = source[index..].chars().next() else {
+                    break;
+                };
+                if character == '_'
+                    || character == '$'
+                    || character.is_alphanumeric()
+                    || character == '\u{200c}'
+                    || character == '\u{200d}'
+                {
+                    index += character.len_utf8();
+                } else {
+                    break;
+                }
+            }
+        } else {
+            index += first.len_utf8();
+        }
+        tokens.push(SourceToken {
+            text: source[start..index].to_owned(),
+            utf16_offset: u64::try_from(source[..start].encode_utf16().count())
+                .context("declaration identifier offset overflow")?,
+            is_identifier,
+        });
+    }
+    Ok(tokens)
 }
 
 fn is_declaration(node: &NodeRecord) -> bool {
@@ -600,13 +780,18 @@ fn is_writable_statement(node: &NodeRecord) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::intent_analysis_from_facts;
-    use crate::bridge::protocol::{BridgeDiagnostic, SemanticFacts, WireReference};
+    use super::{NodeSemanticProvider, analyze_request, intent_analysis_from_facts};
+    use crate::bridge::process::{NodeBridgeClient, NodeBridgeConfig};
+    use crate::bridge::protocol::{BridgeDiagnostic, BridgeRequest, SemanticFacts, WireReference};
     use crate::coordination::{
-        DynamicExpansionPolicy, IdempotencyClass, IntentParameters, IntentRecord,
+        DynamicExpansionPolicy, IdempotencyClass, IntentParameters, IntentRecord, SemanticProvider,
     };
     use crate::{GraphGeneration, GraphSnapshot, NodeRecord, ReferenceRecord, SCHEMA_VERSION};
     use sha2::{Digest, Sha256};
+    use std::ffi::OsString;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
 
     fn node(
         id: &str,
@@ -655,14 +840,14 @@ mod tests {
                 "Identifier",
                 Some("greet"),
                 Some(0),
-                r#"{"text":"greet"}"#,
+                r#"{"text":"greet","offset":16}"#,
             ),
             node(
                 "body-name",
                 "Identifier",
                 Some("greet"),
                 Some(1),
-                r#"{"text":"name"}"#,
+                r#"{"text":"name","offset":22}"#,
             ),
             node(
                 "call-statement",
@@ -691,6 +876,13 @@ mod tests {
                 Some("risk-statement"),
                 Some(0),
                 r#"{"text":"greet"}"#,
+            ),
+            node(
+                "callback-name",
+                "Identifier",
+                Some("risk-statement"),
+                Some(1),
+                r#"{"text":"callback","offset":6}"#,
             ),
         ];
         let mut references = vec![
@@ -791,6 +983,246 @@ mod tests {
 
     fn hash_json(value: &impl serde::Serialize) -> String {
         format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap()))
+    }
+
+    #[test]
+    #[ignore = "requires pnpm kernel:bridge:build"]
+    fn provider_reanalyzes_a_durable_intent_once_against_fresh_g1_scope() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let snapshot: GraphSnapshot = serde_json::from_str(include_str!(
+            "../../tests/fixtures/examples-medium.snapshot.json"
+        ))
+        .unwrap();
+        let initial = GraphGeneration::from_snapshot(snapshot.clone()).unwrap();
+        let mut fresh_snapshot = snapshot;
+        fresh_snapshot.generation = 1;
+        fresh_snapshot.nodes.extend([
+            node(
+                "fresh-call-statement",
+                "ExpressionStatement",
+                Some("2afe993be8a95549"),
+                Some(999),
+                "greet({ id: 'fresh', email: 'fresh@example.com' });",
+            ),
+            node(
+                "fresh-call-name",
+                "Identifier",
+                Some("fresh-call-statement"),
+                None,
+                r#"{"text":"greet","offset":0}"#,
+            ),
+        ]);
+        fresh_snapshot.references.push(ReferenceRecord {
+            from_node_id: "fresh-call-name".into(),
+            to_node_id: "c88199f537b34a1b".into(),
+            kind: "value".into(),
+        });
+        let fresh = GraphGeneration::from_snapshot(fresh_snapshot).unwrap();
+        let durable_intent = IntentRecord::new(
+            SCHEMA_VERSION,
+            "intent:fresh-provider",
+            "change:fresh-provider",
+            0,
+            IntentParameters::AddParameter {
+                function_id: "603b2ae524ee3c70".into(),
+                name: "traceId".into(),
+                type_text: "string".into(),
+                position: 1,
+                default_value: None,
+            },
+        )
+        .unwrap();
+        let durable_before = durable_intent.clone();
+        let client = Arc::new(NodeBridgeClient::new(NodeBridgeConfig::tsc_only(
+            "node",
+            vec![OsString::from(
+                root.join("packages/kernel-bridge/dist/worker.js"),
+            )],
+            Duration::from_secs(30),
+            root.join("examples/medium/src"),
+            root.join("examples/medium"),
+            true,
+        )));
+        let provider = NodeSemanticProvider::new(client.clone(), 17);
+
+        let initial_analysis = provider.analyze(&initial, &durable_intent).unwrap();
+        let calls_before_fresh_analysis = client.run_count();
+        let fresh_analysis = provider.analyze(&fresh, &durable_intent).unwrap();
+
+        assert_eq!(client.run_count() - calls_before_fresh_analysis, 1);
+        assert_ne!(
+            version(&initial_analysis.read_set, "references-to:c88199f537b34a1b"),
+            version(&fresh_analysis.read_set, "references-to:c88199f537b34a1b")
+        );
+        assert_ne!(
+            version(&initial_analysis.read_set, "children:2afe993be8a95549"),
+            version(&fresh_analysis.read_set, "children:2afe993be8a95549")
+        );
+        assert!(
+            fresh_analysis
+                .read_set
+                .iter()
+                .any(|resource| { resource.resource_key == "references-to:c88199f537b34a1b" })
+        );
+        assert_ne!(initial_analysis.write_set, fresh_analysis.write_set);
+        assert!(
+            fresh_analysis
+                .write_set
+                .iter()
+                .any(|resource| { resource.resource_key == "node:fresh-call-statement" })
+        );
+        assert_eq!(
+            fresh_analysis.dynamic_expansion_policy,
+            DynamicExpansionPolicy::Requeue { max_expansions: 3 }
+        );
+        assert_eq!(durable_intent, durable_before);
+    }
+
+    #[test]
+    fn analysis_request_rebinds_a_durable_intent_to_the_current_graph_without_mutation() {
+        let current = graph(true);
+        let durable_intent = add_parameter_intent(0);
+        let before = durable_intent.clone();
+
+        let BridgeRequest::AnalyzeIntent(request) =
+            analyze_request(7, &current, &durable_intent).unwrap()
+        else {
+            panic!("expected analyze-intent request")
+        };
+
+        assert_eq!(request.binding.graph_generation.get(), 1);
+        assert_eq!(request.snapshot.generation.get(), 1);
+        assert_eq!(request.intent.base_generation.get(), 1);
+        assert_eq!(durable_intent, before);
+    }
+
+    fn declaration_graph(name_children: Vec<NodeRecord>) -> GraphGeneration {
+        let mut nodes = vec![
+            node("module", "Module", None, None, "src/user.ts"),
+            node(
+                "user",
+                "InterfaceDeclaration",
+                Some("module"),
+                Some(0),
+                "/** User is documented here. */\nexport interface User { id: string; }",
+            ),
+        ];
+        nodes.extend(name_children);
+        GraphGeneration::from_snapshot(GraphSnapshot {
+            schema_version: SCHEMA_VERSION,
+            generation: 0,
+            nodes,
+            references: vec![],
+        })
+        .unwrap()
+    }
+
+    fn rename_facts(name_id: &str) -> SemanticFacts {
+        let mut validation_dependency_node_ids =
+            vec!["module".into(), "user".into(), name_id.into()];
+        validation_dependency_node_ids.sort();
+        SemanticFacts::RenameSymbol {
+            declaration_id: "user".into(),
+            declaration_name_identifier_id: name_id.into(),
+            references: vec![],
+            writable_statement_ids: vec!["user".into()],
+            validation_dependency_node_ids,
+            validation_dependency_reference_from_node_ids: vec![],
+        }
+    }
+
+    fn rename_user_intent() -> IntentRecord {
+        IntentRecord::new(
+            SCHEMA_VERSION,
+            "intent:rename-user",
+            "change:rename-user",
+            0,
+            IntentParameters::RenameSymbol {
+                declaration_id: "user".into(),
+                new_name: "Account".into(),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn declaration_name_uses_the_exact_payload_token_not_a_colliding_child() {
+        let payload = "/** User is documented here. */\nexport interface User { id: string; }";
+        let name_offset = payload.rfind("User").unwrap();
+        let graph = declaration_graph(vec![
+            node(
+                "a-decoy",
+                "Identifier",
+                Some("user"),
+                None,
+                r#"{"text":"User","offset":4}"#,
+            ),
+            node(
+                "name",
+                "Identifier",
+                Some("user"),
+                None,
+                &format!(r#"{{"text":"User","offset":{name_offset}}}"#),
+            ),
+            node(
+                "member",
+                "Identifier",
+                Some("user"),
+                None,
+                r#"{"text":"id","offset":60}"#,
+            ),
+        ]);
+
+        let error =
+            intent_analysis_from_facts(&graph, &rename_user_intent(), rename_facts("a-decoy"))
+                .unwrap_err();
+        assert!(
+            error.to_string().contains("declaration name"),
+            "unexpected error: {error:#}"
+        );
+
+        let analysis =
+            intent_analysis_from_facts(&graph, &rename_user_intent(), rename_facts("name"))
+                .unwrap();
+        assert!(
+            analysis
+                .write_set
+                .iter()
+                .any(|resource| { resource.resource_key == "namespace:module:User" })
+        );
+    }
+
+    #[test]
+    fn declaration_name_rejects_malformed_and_ambiguous_identifier_payloads() {
+        let payload = "/** User is documented here. */\nexport interface User { id: string; }";
+        let name_offset = payload.rfind("User").unwrap();
+        let malformed = declaration_graph(vec![node(
+            "name",
+            "Identifier",
+            Some("user"),
+            None,
+            r#"{"text":"User","offset":"not-a-number"}"#,
+        )]);
+        let error =
+            intent_analysis_from_facts(&malformed, &rename_user_intent(), rename_facts("name"))
+                .unwrap_err();
+        assert!(
+            error.to_string().contains("malformed"),
+            "unexpected error: {error:#}"
+        );
+
+        let exact_payload = format!(r#"{{"text":"User","offset":{name_offset}}}"#);
+        let ambiguous = declaration_graph(vec![
+            node("name-a", "Identifier", Some("user"), None, &exact_payload),
+            node("name-b", "Identifier", Some("user"), None, &exact_payload),
+        ]);
+        let error =
+            intent_analysis_from_facts(&ambiguous, &rename_user_intent(), rename_facts("name-a"))
+                .unwrap_err();
+        assert!(
+            error.to_string().contains("ambiguous"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]
