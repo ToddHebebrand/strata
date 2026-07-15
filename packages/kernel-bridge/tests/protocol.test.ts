@@ -31,6 +31,10 @@ function expectRejected(value: unknown): void {
   expect(bridgeRequestSchema.safeParse(value).success).toBe(false);
 }
 
+function expectResponseRejected(value: unknown): void {
+  expect(bridgeResponseSchema.safeParse(value).success).toBe(false);
+}
+
 describe("bridge protocol v1", () => {
   it("parses and byte-stably serializes shared golden messages", () => {
     for (const name of FIXTURE_NAMES) {
@@ -144,5 +148,24 @@ describe("bridge protocol v1", () => {
     const empty = clone(fixture("candidate-request")) as any;
     empty.changeSet.orderedIntents = [];
     expectRejected(empty);
+  });
+
+  it("rejects duplicate intent IDs in candidate change sets", () => {
+    const request = clone(fixture("candidate-request")) as any;
+    request.changeSet.orderedIntents.push({
+      ...request.changeSet.orderedIntents[0],
+      parameters: {
+        type: "renameSymbol",
+        declarationId: "decl:greet",
+        newName: "salute"
+      }
+    });
+    expectRejected(request);
+  });
+
+  it("rejects candidate deltas bound to a different base generation", () => {
+    const response = clone(fixture("candidate-response")) as any;
+    response.result.delta.baseGeneration = "1";
+    expectResponseRejected(response);
   });
 });

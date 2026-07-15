@@ -217,7 +217,20 @@ const changeSetSchema = z
     reasoning: z.string(),
     orderedIntents: z.array(intentRecordSchema).min(1).max(MAX_PROTOCOL_ARRAY_ITEMS)
   })
-  .strict();
+  .strict()
+  .superRefine((changeSet, context) => {
+    const intentIds = new Set<string>();
+    changeSet.orderedIntents.forEach((intent, index) => {
+      if (intentIds.has(intent.intentId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["orderedIntents", index, "intentId"],
+          message: `duplicate intent id: ${intent.intentId}`
+        });
+      }
+      intentIds.add(intent.intentId);
+    });
+  });
 
 export const buildValidateCandidateRequestSchema = z
   .object({
@@ -351,7 +364,16 @@ const candidateSuccessResponseSchema = z
       })
       .strict()
   })
-  .strict();
+  .strict()
+  .superRefine((response, context) => {
+    if (response.result.delta.baseGeneration !== response.binding.graphGeneration) {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "delta", "baseGeneration"],
+        message: "candidate delta base generation does not match binding"
+      });
+    }
+  });
 
 export const bridgeErrorPayloadSchema = z
   .object({
