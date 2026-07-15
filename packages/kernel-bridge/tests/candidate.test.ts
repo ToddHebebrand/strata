@@ -324,17 +324,44 @@ describe("validated scratch candidates", () => {
       }
     };
 
-    const result = expectSuccess(buildValidateCandidate(request));
-    const after = applyDelta(before, result.delta);
-    expect(
-      after.nodes.some(
-        (node) => node.kind === "Identifier" &&
-          (JSON.parse(node.payload) as { text?: string }).text === "Account"
-      )
-    ).toBe(true);
-    const greetId = declarationId(before, /export function greet\s*\(/);
-    expect(after.nodes.find((node) => node.id === greetId)!.payload)
-      .toContain("excited: boolean = false");
+    const db = hydrateSnapshot(before);
+    try {
+      const result = expectSuccess(buildValidateCandidateInScratch(request, db));
+      const transactions = db.prepare(
+        "SELECT tx_id, status, actor FROM transactions ORDER BY started_at"
+      ).all() as { tx_id: string; status: string; actor: string }[];
+      expect(transactions).toHaveLength(1);
+      expect(transactions[0]).toMatchObject({
+        status: "committed",
+        actor: "composite-agent"
+      });
+      const operations = db.prepare(
+        "SELECT tx_id, kind, actor FROM operations ORDER BY ts, op_id"
+      ).all() as { tx_id: string; kind: string; actor: string }[];
+      expect(operations).toHaveLength(2);
+      expect(new Set(operations.map((operation) => operation.tx_id))).toEqual(
+        new Set([transactions[0]!.tx_id])
+      );
+      expect(operations.map((operation) => operation.kind).sort()).toEqual([
+        "AddParameter",
+        "RenameSymbol"
+      ]);
+      expect(operations.every((operation) => operation.actor === "composite-agent"))
+        .toBe(true);
+
+      const after = applyDelta(before, result.delta);
+      expect(
+        after.nodes.some(
+          (node) => node.kind === "Identifier" &&
+            (JSON.parse(node.payload) as { text?: string }).text === "Account"
+        )
+      ).toBe(true);
+      const greetId = declarationId(before, /export function greet\s*\(/);
+      expect(after.nodes.find((node) => node.id === greetId)!.payload)
+        .toContain("excited: boolean = false");
+    } finally {
+      db.close();
+    }
   });
 
   it("rolls back a valid first intent when the second intent fails", () => {
@@ -361,6 +388,11 @@ describe("validated scratch candidates", () => {
       const error = expectFailure(buildValidateCandidateInScratch(request, db));
       expect(error.stage).toBe("mutate");
       expect(JSON.stringify(exportSnapshot(db, before.generation))).toBe(original);
+      expect(
+        db.prepare("SELECT status FROM transactions").all()
+      ).toEqual([{ status: "rolled_back" }]);
+      expect(db.prepare("SELECT COUNT(*) AS count FROM operations").get())
+        .toEqual({ count: 0 });
     } finally {
       db.close();
     }

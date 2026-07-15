@@ -230,6 +230,20 @@ pub(crate) fn intent_analysis_from_facts(
             let body_reads = scope.resolve_references(&function_body_read_references, None)?;
             let mut incoming = direct_calls.clone();
             incoming.extend(arity_risks.clone());
+            let reported_sources = incoming
+                .iter()
+                .map(|reference| reference.from_node_id.as_str())
+                .collect::<BTreeSet<_>>();
+            let import_reads = graph
+                .references_to(&name.id)
+                .filter(|reference| !reported_sources.contains(reference.from_node_id.as_str()))
+                .filter_map(|reference| {
+                    let source = graph.node(&reference.from_node_id)?;
+                    let parent = graph.node(source.parent_id.as_deref()?)?;
+                    (parent.kind == "ImportDeclaration").then(|| reference.clone())
+                })
+                .collect::<Vec<_>>();
+            incoming.extend(import_reads.clone());
             incoming.sort();
             ensure_exact_reverse_membership(graph, &name.id, &incoming)?;
             scope.read_reference_membership(&name.id)?;
@@ -265,6 +279,16 @@ pub(crate) fn intent_analysis_from_facts(
                 scope.read_node(&source)?;
                 let target = scope.require_node(&reference.to_node_id)?.clone();
                 scope.read_node(&target)?;
+            }
+            for reference in &import_reads {
+                scope.read_reference(reference)?;
+                let source = scope.require_node(&reference.from_node_id)?.clone();
+                scope.read_node(&source)?;
+                let statement_id = source
+                    .parent_id
+                    .as_deref()
+                    .context("resolved import reference has no statement parent")?;
+                scope.read_statement(statement_id)?;
             }
             scope.add_validation_facts(
                 &validation_dependency_node_ids,

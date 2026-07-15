@@ -15,9 +15,17 @@ use strata_kernel::{
     BeginChangeSet, ChangeSetState, ClaimHandle, ClaimOutcome, GraphSnapshot, IntentParameters,
     Kernel, NodeBridgeConfig, NodeRecord, PublishClaimOutcome, SubmissionOutcome, TicketState,
 };
+#[cfg(feature = "redb-spike-api")]
+use strata_kernel::{
+    EventRecord, GraphChange, GraphDelta, GraphGeneration, OperationRecord, Publication,
+    SCHEMA_VERSION, TicketRecord,
+};
 use tempfile::tempdir;
 
 const SNAPSHOT_JSON: &str = include_str!("fixtures/examples-medium.snapshot.json");
+#[cfg(feature = "redb-spike-api")]
+const ADD_PARAMETER_G1_SNAPSHOT_JSON: &str =
+    include_str!("fixtures/examples-medium-add-parameter-g1.snapshot.json");
 const EXPECTED_USER_RENAME_OPERATION_IDS: &[&str] = &[
     "04e15410e873a763",
     "08d0bc3e0e44778c",
@@ -127,12 +135,63 @@ exec node "$worker"
     )
 }
 
+#[cfg(feature = "redb-spike-api")]
+fn classified_worker_config(directory: &Path, corpus_root: &Path) -> (NodeBridgeConfig, PathBuf) {
+    let wrapper = directory.join("count-node-request-kinds.sh");
+    let counter_prefix = directory.join("node-request-count");
+    fs::write(
+        &wrapper,
+        r#"input=$(mktemp)
+cat > "$input"
+kind=$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).kind)' "$input")
+counter="$1.$kind"
+count=$(cat "$counter" 2>/dev/null || printf 0)
+printf '%s\n' "$((count + 1))" > "$counter"
+node "$2" < "$input"
+status=$?
+rm -f "$input"
+exit "$status"
+"#,
+    )
+    .unwrap();
+    (
+        NodeBridgeConfig::tsc_only(
+            "sh",
+            vec![
+                wrapper.into_os_string(),
+                counter_prefix.clone().into_os_string(),
+                repo_root()
+                    .join("packages/kernel-bridge/dist/worker.js")
+                    .into_os_string(),
+            ],
+            Duration::from_secs(30),
+            corpus_root.join("src"),
+            corpus_root,
+            true,
+        ),
+        counter_prefix,
+    )
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn classified_request_count(prefix: &Path, kind: &str) -> usize {
+    launch_count(Path::new(&format!("{}.{}", prefix.display(), kind)))
+}
+
 fn portable_medium_snapshot() -> GraphSnapshot {
     serde_json::from_str(SNAPSHOT_JSON).unwrap()
 }
 
 fn trusted_medium_snapshot() -> GraphSnapshot {
-    let mut snapshot = portable_medium_snapshot();
+    trusted_source_projection(portable_medium_snapshot())
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn portable_add_parameter_g1_snapshot() -> GraphSnapshot {
+    serde_json::from_str(ADD_PARAMETER_G1_SNAPSHOT_JSON).unwrap()
+}
+
+fn trusted_source_projection(mut snapshot: GraphSnapshot) -> GraphSnapshot {
     let corpus_root = repo_root().join("examples/medium");
     let mut retained_ids = snapshot
         .nodes
@@ -178,10 +237,207 @@ fn trusted_medium_snapshot() -> GraphSnapshot {
     snapshot
 }
 
+#[cfg(feature = "redb-spike-api")]
+fn task10_corpus(corpus_root: &Path) {
+    let source = repo_root().join("examples/medium");
+    let status = Command::new("cp")
+        .args([
+            OsString::from("-R"),
+            source.into_os_string(),
+            corpus_root.into(),
+        ])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    fs::write(
+        corpus_root.join("src/kernel-bridge-callsite.ts"),
+        "import { greet } from \"./users/greet.ts\";\n\n\
+export const kernelBridgeGreeting = greet({\n\
+  id: \"kernel-bridge\",\n\
+  email: \"bridge@example.test\"\n\
+});\n",
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn task10_worker_config(corpus_root: &Path) -> NodeBridgeConfig {
+    NodeBridgeConfig::tsc_only(
+        "node",
+        vec![OsString::from(
+            repo_root().join("packages/kernel-bridge/dist/worker.js"),
+        )],
+        Duration::from_secs(30),
+        corpus_root.join("src"),
+        corpus_root,
+        true,
+    )
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn task10_localized_source_projection(
+    snapshot: GraphSnapshot,
+    corpus_root: &Path,
+) -> GraphSnapshot {
+    const HELPER: &str = r#"
+import fs from "node:fs";
+import path from "node:path";
+const input = JSON.parse(fs.readFileSync(0, "utf8"));
+const { ingestBatch } = await import("./packages/ingest/dist/batch.js");
+const { parseCanonicalU64, toKernelSnapshot } = await import("./packages/ingest/dist/kernelSnapshot.js");
+
+const sourceModules = input.snapshot.nodes
+  .filter((node) => node.kind === "Module" && node.payload.startsWith("/project/src/"))
+  .sort((left, right) => left.payload < right.payload ? -1 : left.payload > right.payload ? 1 : 0);
+const inputs = sourceModules.map((module) => {
+  const children = input.snapshot.nodes
+    .filter((node) => node.parentId === module.id && node.kind !== "Identifier")
+    .sort((left, right) => left.childIndex - right.childIndex);
+  return {
+    path: path.join(input.corpusRoot, module.payload.slice("/project/".length)),
+    text: children.map((child) => child.payload).join("")
+  };
+});
+const localized = toKernelSnapshot(
+  ingestBatch(inputs),
+  parseCanonicalU64(String(input.snapshot.generation))
+);
+process.stdout.write(JSON.stringify({ ...localized, generation: Number(localized.generation) }));
+"#;
+    let mut child = Command::new("node")
+        .args(["--input-type=module", "--eval", HELPER])
+        .current_dir(repo_root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    serde_json::to_writer(
+        child.stdin.as_mut().unwrap(),
+        &serde_json::json!({ "snapshot": snapshot, "corpusRoot": corpus_root }),
+    )
+    .unwrap();
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "localized re-ingest failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
 fn launch_count(path: &Path) -> usize {
     fs::read_to_string(path)
         .ok()
         .map_or(0, |value| value.trim().parse().unwrap())
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn fixture_delta(g0: &GraphSnapshot, g1: &GraphSnapshot) -> GraphDelta {
+    assert_eq!(g0.generation, 0);
+    assert_eq!(g1.generation, 1);
+    let g0_nodes = g0
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect::<BTreeMap<_, _>>();
+    for node in &g0.nodes {
+        assert_eq!(
+            g1.nodes.iter().find(|candidate| candidate.id == node.id),
+            Some(node),
+            "G+1 changed or deleted existing node {}",
+            node.id
+        );
+    }
+    for reference in &g0.references {
+        assert!(
+            g1.references.contains(reference),
+            "G+1 deleted existing reference {reference:?}"
+        );
+    }
+    let added_nodes = g1
+        .nodes
+        .iter()
+        .filter(|node| !g0_nodes.contains_key(node.id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let added_references = g1
+        .references
+        .iter()
+        .filter(|reference| !g0.references.contains(reference))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(added_nodes.len(), 9);
+    assert_eq!(added_references.len(), 2);
+    let changes = added_nodes
+        .into_iter()
+        .map(|node| GraphChange::UpsertNode { node })
+        .chain(
+            added_references
+                .into_iter()
+                .map(|reference| GraphChange::UpsertReference { reference }),
+        )
+        .collect();
+    let delta = GraphDelta {
+        schema_version: SCHEMA_VERSION,
+        base_generation: 0,
+        changes,
+    };
+    assert_eq!(
+        GraphGeneration::from_snapshot(g0.clone())
+            .unwrap()
+            .apply(&delta)
+            .unwrap()
+            .snapshot(),
+        *g1
+    );
+    delta
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn inject_validated_g1(kernel: &Kernel, g0: &GraphSnapshot, g1: &GraphSnapshot) {
+    let delta = fixture_delta(g0, g1);
+    let fence = kernel
+        .issue_fence(&["fixture:add-parameter-g1".into()])
+        .unwrap();
+    let report = kernel
+        .publish(Publication {
+            schema_version: SCHEMA_VERSION,
+            idempotency_key: "fixture:add-parameter-g1".into(),
+            operation: OperationRecord {
+                operation_id: "fixture-operation:add-parameter-g1".into(),
+                change_set_id: "fixture-change-set:add-parameter-g1".into(),
+                actor: "fixture:ingest-exporter".into(),
+                kind: "FixtureGraphInjection".into(),
+                reasoning: "publish the mechanically verified ingest-derived G+1 fixture".into(),
+                affected_node_ids: delta
+                    .changes
+                    .iter()
+                    .filter_map(|change| match change {
+                        GraphChange::UpsertNode { node } => Some(node.id.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            },
+            ticket: TicketRecord {
+                ticket_id: "fixture-ticket:add-parameter-g1".into(),
+                state: "published".into(),
+                scope_fingerprint: "fixture-scope:add-parameter-g1".into(),
+            },
+            event: EventRecord {
+                event_id: "fixture-event:add-parameter-g1".into(),
+                sequence: 1,
+                kind: "FixtureGraphInjected".into(),
+                graph_generation: 1,
+                payload_json: "{}".into(),
+            },
+            delta,
+            fence,
+        })
+        .unwrap();
+    assert_eq!(report.generation, 1);
+    assert_eq!(kernel.snapshot().snapshot(), *g1);
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -745,6 +1001,109 @@ fn claim_rename(
     claim
 }
 
+#[cfg(feature = "redb-spike-api")]
+fn claim_add_parameter(
+    kernel: &Kernel,
+    change_set_id: &str,
+    function_id: &str,
+    actor: &str,
+    reasoning: &str,
+    now_tick: u64,
+) -> ClaimHandle {
+    kernel
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: change_set_id.into(),
+                actor: actor.into(),
+                reasoning: reasoning.into(),
+                submission_idempotency_key: format!("submission:{change_set_id}"),
+            },
+            now_tick,
+        )
+        .unwrap();
+    kernel
+        .add_intent(
+            change_set_id,
+            IntentParameters::AddParameter {
+                function_id: function_id.into(),
+                name: "excited".into(),
+                type_text: "boolean".into(),
+                position: 1,
+                default_value: Some("false".into()),
+            },
+        )
+        .unwrap();
+    let SubmissionOutcome::Ready { offer, .. } = kernel
+        .submit_change_set(change_set_id, now_tick + 1)
+        .unwrap()
+    else {
+        panic!("expected {change_set_id} to be ready")
+    };
+    let ClaimOutcome::Claimed(claim) = kernel
+        .claim_ready(&offer.offer_id, &offer.claim_token, now_tick + 2)
+        .unwrap()
+    else {
+        panic!("expected {change_set_id} to be claimed")
+    };
+    claim
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn claim_composite(
+    kernel: &Kernel,
+    change_set_id: &str,
+    user_id: &str,
+    greet_id: &str,
+    parameter_name: &str,
+    actor: &str,
+    reasoning: &str,
+) -> ClaimHandle {
+    kernel
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: change_set_id.into(),
+                actor: actor.into(),
+                reasoning: reasoning.into(),
+                submission_idempotency_key: format!("submission:{change_set_id}"),
+            },
+            0,
+        )
+        .unwrap();
+    kernel
+        .add_intent(
+            change_set_id,
+            IntentParameters::RenameSymbol {
+                declaration_id: user_id.into(),
+                new_name: "Account".into(),
+            },
+        )
+        .unwrap();
+    kernel
+        .add_intent(
+            change_set_id,
+            IntentParameters::AddParameter {
+                function_id: greet_id.into(),
+                name: parameter_name.into(),
+                type_text: "boolean".into(),
+                position: 1,
+                default_value: Some("false".into()),
+            },
+        )
+        .unwrap();
+    let SubmissionOutcome::Ready { offer, .. } =
+        kernel.submit_change_set(change_set_id, 1).unwrap()
+    else {
+        panic!("composite {change_set_id} must be ready")
+    };
+    let ClaimOutcome::Claimed(claim) = kernel
+        .claim_ready(&offer.offer_id, &offer.claim_token, 2)
+        .unwrap()
+    else {
+        panic!("composite {change_set_id} must be claimed")
+    };
+    claim
+}
+
 fn expected_rename_affected_ids(
     snapshot: &GraphSnapshot,
     declaration_name_id: &str,
@@ -766,6 +1125,372 @@ fn identifier_text(node: &NodeRecord) -> Option<String> {
         .get("text")?
         .as_str()
         .map(str::to_owned)
+}
+
+#[test]
+#[ignore = "requires pnpm kernel:bridge:build"]
+#[cfg(feature = "redb-spike-api")]
+fn real_add_parameter_on_g1_publishes_declaration_and_new_callsite_once() {
+    let directory = tempdir().unwrap();
+    let corpus_root = directory.path().join("medium");
+    task10_corpus(&corpus_root);
+    let initial = task10_localized_source_projection(portable_medium_snapshot(), &corpus_root);
+    let g1 = task10_localized_source_projection(portable_add_parameter_g1_snapshot(), &corpus_root);
+    assert_eq!(initial.generation, 0);
+    assert_eq!(g1.generation, 1);
+    let greet_id = g1
+        .nodes
+        .iter()
+        .find(|node| node.kind == "FunctionDeclaration" && node.payload.contains("function greet("))
+        .unwrap()
+        .id
+        .clone();
+    let new_callsite_id = g1
+        .nodes
+        .iter()
+        .find(|node| node.payload.contains("kernelBridgeGreeting = greet("))
+        .unwrap()
+        .id
+        .clone();
+    let greet_before = g1
+        .nodes
+        .iter()
+        .find(|node| node.id == greet_id)
+        .unwrap()
+        .payload
+        .clone();
+    let new_callsite_before = g1
+        .nodes
+        .iter()
+        .find(|node| node.id == new_callsite_id)
+        .unwrap()
+        .payload
+        .clone();
+    assert!(!greet_before.contains("excited"));
+    assert!(!new_callsite_before.contains("false"));
+
+    let (kernel, created) = Kernel::create_with_node_bridge(
+        directory.path().join("kernel.redb"),
+        initial.clone(),
+        task10_worker_config(&corpus_root),
+    )
+    .unwrap();
+    assert_eq!(created.generation, 0);
+    inject_validated_g1(&kernel, &initial, &g1);
+    let claim = claim_add_parameter(
+        &kernel,
+        "bridge-real-add-parameter-g1",
+        &greet_id,
+        "agent:bridge-parameter",
+        "publish one validated uniform parameter expansion",
+        0,
+    );
+
+    let PublishClaimOutcome::Published(report) = kernel.execute_claimed(&claim, 3).unwrap() else {
+        panic!("real add-parameter did not publish")
+    };
+    assert_eq!(report.generation, 2);
+    assert!(!report.already_published);
+    let graph = kernel.snapshot();
+    let greet_after = &graph.node(&greet_id).unwrap().payload;
+    let new_callsite_after = &graph.node(&new_callsite_id).unwrap().payload;
+    assert_ne!(greet_after, &greet_before);
+    assert!(greet_after.contains("excited: boolean = false"));
+    assert_ne!(new_callsite_after, &new_callsite_before);
+    assert_eq!(new_callsite_after.matches("false").count(), 1);
+    assert!(new_callsite_after.contains("greet({"));
+
+    let operation = kernel.operation(2).unwrap().unwrap();
+    assert_eq!(operation.change_set_id, "bridge-real-add-parameter-g1");
+    assert_eq!(operation.kind, "AddParameter");
+    assert_eq!(operation.actor, "agent:bridge-parameter");
+    assert_eq!(
+        operation.reasoning,
+        "publish one validated uniform parameter expansion"
+    );
+    assert!(operation.affected_node_ids.contains(&greet_id));
+    assert!(operation.affected_node_ids.contains(&new_callsite_id));
+    assert!(kernel.operation(3).unwrap().is_none());
+}
+
+#[test]
+#[ignore = "requires pnpm kernel:bridge:build"]
+#[cfg(feature = "redb-spike-api")]
+fn add_parameter_claim_reanalyzes_g1_and_requeues_before_candidate_construction() {
+    let directory = tempdir().unwrap();
+    let corpus_root = directory.path().join("medium");
+    task10_corpus(&corpus_root);
+    let g0 = task10_localized_source_projection(portable_medium_snapshot(), &corpus_root);
+    let g1 = task10_localized_source_projection(portable_add_parameter_g1_snapshot(), &corpus_root);
+    let greet_id = g1
+        .nodes
+        .iter()
+        .find(|node| node.kind == "FunctionDeclaration" && node.payload.contains("function greet("))
+        .unwrap()
+        .id
+        .clone();
+    let new_callsite_id = g1
+        .nodes
+        .iter()
+        .find(|node| node.payload.contains("kernelBridgeGreeting = greet("))
+        .unwrap()
+        .id
+        .clone();
+    let (config, request_counts) = classified_worker_config(directory.path(), &corpus_root);
+    let (kernel, _) =
+        Kernel::create_with_node_bridge(directory.path().join("kernel.redb"), g0.clone(), config)
+            .unwrap();
+    let change_set_id = "bridge-claim-time-add-parameter";
+    kernel
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: change_set_id.into(),
+                actor: "agent:claim-time-parameter".into(),
+                reasoning: "discover a callsite added after submission".into(),
+                submission_idempotency_key: "submission:claim-time-parameter".into(),
+            },
+            0,
+        )
+        .unwrap();
+    kernel
+        .add_intent(
+            change_set_id,
+            IntentParameters::AddParameter {
+                function_id: greet_id.clone(),
+                name: "excited".into(),
+                type_text: "boolean".into(),
+                position: 1,
+                default_value: Some("false".into()),
+            },
+        )
+        .unwrap();
+    let SubmissionOutcome::Ready { offer, .. } =
+        kernel.submit_change_set(change_set_id, 1).unwrap()
+    else {
+        panic!("G0 add-parameter must initially be ready")
+    };
+    let submitted_scope = kernel
+        .change_set(change_set_id)
+        .unwrap()
+        .unwrap()
+        .inferred_scope
+        .unwrap();
+    assert!(
+        !submitted_scope
+            .write_set
+            .iter()
+            .any(|resource| { resource.resource_key == format!("node:{new_callsite_id}") })
+    );
+    let analyses_before_claim = classified_request_count(&request_counts, "analyzeIntent");
+    assert!(analyses_before_claim >= 1);
+    assert_eq!(
+        classified_request_count(&request_counts, "buildValidateCandidate"),
+        0
+    );
+
+    inject_validated_g1(&kernel, &g0, &g1);
+    let ClaimOutcome::Requeued { ticket, event } = kernel
+        .claim_ready(&offer.offer_id, &offer.claim_token, 2)
+        .unwrap()
+    else {
+        panic!("G1 callsite must expand and requeue during fresh claim analysis")
+    };
+    assert_eq!(ticket.state, TicketState::Queued);
+    assert_eq!(
+        event.kind,
+        strata_kernel::CoordinationEventKind::ScopeExpanded
+    );
+    assert_eq!(kernel.snapshot().generation(), 1);
+    assert!(classified_request_count(&request_counts, "analyzeIntent") > analyses_before_claim);
+    assert_eq!(
+        classified_request_count(&request_counts, "buildValidateCandidate"),
+        0,
+        "scope expansion must requeue before candidate construction"
+    );
+    let expanded = kernel.change_set(change_set_id).unwrap().unwrap();
+    assert_eq!(expanded.state, ChangeSetState::Queued);
+    let expanded_scope = expanded.inferred_scope.unwrap();
+    assert!(
+        expanded_scope
+            .write_set
+            .iter()
+            .any(|resource| { resource.resource_key == format!("node:{new_callsite_id}") })
+    );
+    assert_ne!(
+        expanded_scope.scope_fingerprint,
+        submitted_scope.scope_fingerprint
+    );
+    assert_eq!(event.change_set_id, change_set_id);
+
+    kernel.reconsider_tickets(3).unwrap();
+    let next_offer = kernel
+        .ready_offer_for_change_set(change_set_id)
+        .unwrap()
+        .expect("expanded replay-safe intent must receive fresh ready authority");
+    let ClaimOutcome::Claimed(fresh_claim) = kernel
+        .claim_ready(&next_offer.offer_id, &next_offer.claim_token, 4)
+        .unwrap()
+    else {
+        panic!("expected fresh G1 claim")
+    };
+    let report = published(kernel.execute_claimed(&fresh_claim, 5).unwrap());
+    assert_eq!(report.generation, 2);
+    assert_eq!(
+        classified_request_count(&request_counts, "buildValidateCandidate"),
+        1
+    );
+    let published_graph = kernel.snapshot();
+    let callsite = &published_graph.node(&new_callsite_id).unwrap().payload;
+    assert_eq!(callsite.matches("false").count(), 1);
+}
+
+#[test]
+#[ignore = "requires pnpm kernel:bridge:build"]
+#[cfg(feature = "redb-spike-api")]
+fn ordered_composite_publishes_once_and_a_failing_second_intent_publishes_nothing() {
+    let directory = tempdir().unwrap();
+    let corpus_root = directory.path().join("medium");
+    task10_corpus(&corpus_root);
+    let g0 = task10_localized_source_projection(portable_medium_snapshot(), &corpus_root);
+    let g1 = task10_localized_source_projection(portable_add_parameter_g1_snapshot(), &corpus_root);
+    let user_id = g1
+        .nodes
+        .iter()
+        .find(|node| node.kind == "InterfaceDeclaration" && node.payload.contains("interface User"))
+        .unwrap()
+        .id
+        .clone();
+    let greet_id = g1
+        .nodes
+        .iter()
+        .find(|node| node.kind == "FunctionDeclaration" && node.payload.contains("function greet("))
+        .unwrap()
+        .id
+        .clone();
+    let new_callsite_id = g1
+        .nodes
+        .iter()
+        .find(|node| node.payload.contains("kernelBridgeGreeting = greet("))
+        .unwrap()
+        .id
+        .clone();
+    let (config, request_counts) = classified_worker_config(directory.path(), &corpus_root);
+    let (kernel, _) =
+        Kernel::create_with_node_bridge(directory.path().join("kernel.redb"), g0.clone(), config)
+            .unwrap();
+    inject_validated_g1(&kernel, &g0, &g1);
+    let claim = claim_composite(
+        &kernel,
+        "bridge-real-composite",
+        &user_id,
+        &greet_id,
+        "excited",
+        "agent:composite",
+        "rename User and expand greet atomically",
+    );
+
+    let report = published(kernel.execute_claimed(&claim, 3).unwrap());
+    assert_eq!(report.generation, 2);
+    assert_eq!(
+        classified_request_count(&request_counts, "buildValidateCandidate"),
+        1
+    );
+    let operation = kernel.operation(2).unwrap().unwrap();
+    assert_eq!(operation.change_set_id, "bridge-real-composite");
+    assert_eq!(operation.kind, "CompositeChangeSet(2)");
+    assert_eq!(operation.actor, "agent:composite");
+    assert_eq!(
+        operation.reasoning,
+        "rename User and expand greet atomically"
+    );
+    for expected in [&user_id, &greet_id, &new_callsite_id] {
+        assert!(operation.affected_node_ids.contains(expected));
+    }
+    assert!(kernel.operation(3).unwrap().is_none());
+    let graph = kernel.snapshot();
+    assert!(
+        graph
+            .node(&user_id)
+            .unwrap()
+            .payload
+            .contains("interface Account")
+    );
+    assert!(
+        graph
+            .node(&greet_id)
+            .unwrap()
+            .payload
+            .contains("excited: boolean = false")
+    );
+    assert_eq!(
+        graph
+            .node(&new_callsite_id)
+            .unwrap()
+            .payload
+            .matches("false")
+            .count(),
+        1
+    );
+
+    let failed_directory = tempdir().unwrap();
+    let failed_corpus_root = failed_directory.path().join("medium");
+    task10_corpus(&failed_corpus_root);
+    let failed_g0 =
+        task10_localized_source_projection(portable_medium_snapshot(), &failed_corpus_root);
+    let failed_g1 = task10_localized_source_projection(
+        portable_add_parameter_g1_snapshot(),
+        &failed_corpus_root,
+    );
+    let failed_user_id = failed_g1
+        .nodes
+        .iter()
+        .find(|node| node.kind == "InterfaceDeclaration" && node.payload.contains("interface User"))
+        .unwrap()
+        .id
+        .clone();
+    let failed_greet_id = failed_g1
+        .nodes
+        .iter()
+        .find(|node| node.kind == "FunctionDeclaration" && node.payload.contains("function greet("))
+        .unwrap()
+        .id
+        .clone();
+    let (failed_config, failed_counts) =
+        classified_worker_config(failed_directory.path(), &failed_corpus_root);
+    let (failed_kernel, _) = Kernel::create_with_node_bridge(
+        failed_directory.path().join("kernel.redb"),
+        failed_g0.clone(),
+        failed_config,
+    )
+    .unwrap();
+    inject_validated_g1(&failed_kernel, &failed_g0, &failed_g1);
+    let failed_claim = claim_composite(
+        &failed_kernel,
+        "bridge-failing-composite",
+        &failed_user_id,
+        &failed_greet_id,
+        "not-valid",
+        "agent:failing-composite",
+        "the invalid second intent must roll back the first",
+    );
+    let before_failure = failed_kernel.snapshot().snapshot();
+
+    let error = failed_kernel.execute_claimed(&failed_claim, 3).unwrap_err();
+    assert!(error.to_string().contains("mutationFailed"), "{error:#}");
+    assert_eq!(
+        classified_request_count(&failed_counts, "buildValidateCandidate"),
+        1
+    );
+    assert_eq!(failed_kernel.snapshot().snapshot(), before_failure);
+    assert!(failed_kernel.operation(2).unwrap().is_none());
+    assert_eq!(
+        failed_kernel
+            .change_set("bridge-failing-composite")
+            .unwrap()
+            .unwrap()
+            .state,
+        ChangeSetState::Executing
+    );
 }
 
 #[test]

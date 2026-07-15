@@ -302,7 +302,10 @@ pub fn validate_delta_containment(
     let missing_reservations: Vec<_> = required
         .reservation_coverage
         .iter()
-        .filter(|resource| !allowed_reservations.contains(resource.as_str()))
+        .filter(|resource| {
+            !allowed_reservations.contains(resource.as_str())
+                && !materialized_children.contains(resource.as_str())
+        })
         .cloned()
         .collect();
 
@@ -520,6 +523,24 @@ mod tests {
                 GraphChange::UpsertReference {
                     reference: ReferenceRecord {
                         from_node_id: "direct".into(),
+                        to_node_id: "target".into(),
+                        kind: "reference".into(),
+                    },
+                },
+            ]),
+            &scope,
+        )
+        .unwrap();
+
+        validate_delta_containment(
+            &graph,
+            &delta(vec![
+                GraphChange::UpsertNode {
+                    node: record("fresh-direct", "Identifier", Some("writable"), 1),
+                },
+                GraphChange::UpsertReference {
+                    reference: ReferenceRecord {
+                        from_node_id: "fresh-direct".into(),
                         to_node_id: "target".into(),
                         kind: "reference".into(),
                     },
