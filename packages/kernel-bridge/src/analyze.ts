@@ -133,7 +133,12 @@ function analyzeRename(db: Db, declarationId: string): SemanticFacts {
 }
 
 function analyzeAddParameter(db: Db, functionId: string): SemanticFacts {
-  const declaration = requireNode(db, functionId, "function");
+  const declaration = requireNode(
+    db,
+    functionId,
+    "function",
+    "FunctionDeclaration"
+  );
   const name = requireDeclarationName(db, functionId);
   const resolution = resolveCallsites(db, functionId);
   if (resolution.unresolvedReferences.length > 0) {
@@ -425,13 +430,30 @@ function unresolvedReferenceDiagnostic(
   return [];
 }
 
-function requireNode(db: Db, nodeId: string, label: string): NodeRow {
+function requireNode(
+  db: Db,
+  nodeId: string,
+  label: string,
+  expectedKind?: string
+): NodeRow {
   const node = findNodeById(db, nodeId);
   if (!node) {
     throw new AnalyzeFailure(
       "invalidIntentTarget",
       [{ nodeId, modulePath: null, message: `${label} not found`, code: 2304 }],
       `${label} not found`
+    );
+  }
+  if (expectedKind !== undefined && node.kind !== expectedKind) {
+    throw new AnalyzeFailure(
+      "invalidIntentTarget",
+      [{
+        nodeId,
+        modulePath: safeModulePath(db, nodeId),
+        message: `${label} must be a ${expectedKind} (kind=${node.kind})`,
+        code: 2304
+      }],
+      `${label} must be a ${expectedKind}`
     );
   }
   return node;

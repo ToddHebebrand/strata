@@ -241,6 +241,27 @@ describe("semantic intent analysis", () => {
     }
   });
 
+  it("rejects a non-FunctionDeclaration add-parameter target with no facts", () => {
+    const snapshot = mediumSnapshot();
+    const userId = declarationId(snapshot, /export interface User\s*\{/);
+
+    const error = expectError(
+      analyzeIntent(addParameterRequest(snapshot, userId))
+    );
+
+    expect(error.stage).toBe("analyze");
+    expect(error.code).toBe("invalidIntentTarget");
+    expect(error.diagnostics).toEqual([
+      {
+        nodeId: userId,
+        modulePath: "types/user.ts",
+        message: "function must be a FunctionDeclaration (kind=InterfaceDeclaration)",
+        code: 2304
+      }
+    ]);
+    expect(Object.hasOwn(error, "facts")).toBe(false);
+  });
+
   it("widens add-parameter read and validation facts for a higher-order use", () => {
     const snapshot = scratchSnapshot([
       {
