@@ -1,17 +1,19 @@
-# Task 8 Phase A report — integrated correction audit and deterministic gate
+# Task 8 report — integrated correction audit, deterministic gate, and reviews
 
 ## Status
 
 Phase A, the integrated-review correction wave, and the legacy redb compatibility follow-up are
 complete. The eight correction scenarios are mapped to explicit real-corpus tests, the two
 remaining toy-fixture gaps were corrected, and the review findings were fixed and verified. The
-final implementation and test head is `f02b9095aa0c9d8752f08068db5cc70b7bbf6337`.
+final implementation and test head is `f02b9095aa0c9d8752f08068db5cc70b7bbf6337`; the final
+pre-decision evidence head is `f8d0d99b42f0345bc4bd1926ab7b806353a47f19`.
 
 The initial Phase A audit changed acceptance tests only. Integrated review then required production
 corrections for provider-failure containment and validate-before-migrate recovery. The compatibility
 follow-up corrected marker-absent databases created by the actual `8422f4e` coordination schema,
-which lacks the resource-clock and publication-attempt tables. This work still deliberately did not
-edit `decisions.md`, `docs/product-roadmap.md`, or the correction evidence report.
+which lacks the resource-clock and publication-attempt tables. At pre-decision head `f8d0d99`, this
+work still deliberately had not edited `decisions.md`, `docs/product-roadmap.md`, or the correction
+evidence report; those files remained gated on both final reviews.
 
 The bounded Rust/ingest/build gate passes. The exact `pnpm -r test` command reproduces only the
 documented `@strata/verify` TS2454 baseline before pnpm stops. A supplemental non-bailing run also
@@ -90,7 +92,10 @@ No production correction was necessary during the initial audit.
 - GREEN: one queued provider failure is now a pass-local nonselectable ticket, not a planner-wide
   error. It remains a FIFO blocker for younger overlapping work, receives no `Ready` authority,
   and does not prevent fresh disjoint work from progressing. Publication, cancellation, and due
-  claim expiry each durably leave `Executing`; live state and reopen agree.
+  claim expiry each durably leave `Executing`. Publication and cancellation retain their terminal
+  state across reopen. Claim expiry is durably `Queued` in the live kernel and reopens `Ready`
+  after restart recovery replans it; both states have no active claim, so the safety invariant is
+  exit from `Executing`, not literal live/reopen record equality.
 
 ### Validate-before-migrate recovery
 
@@ -133,16 +138,17 @@ No production correction was necessary during the initial audit.
 ## Required ordered gate
 
 The first formatting check found only rustfmt differences in the initial assertions. After
-mechanical formatting, the complete sequence was restarted at command 1. The parent agent's exact
-full ordered gate at report head `ef4d9cf471895b1e835ee2163e7d3a136a18154a` covered implementation
-head `1f3b2a834bdc3656cbcd4fcb255bda037e20679e` and produced:
+mechanical formatting and the later compatibility correction, the parent agent restarted and ran
+the exact full ordered gate at final pre-decision head
+`f8d0d99b42f0345bc4bd1926ab7b806353a47f19`, covering all implementation commits through
+`f02b9095aa0c9d8752f08068db5cc70b7bbf6337`:
 
 1. `cargo fmt --all -- --check` — PASS, exit 0.
 2. `cargo clippy -p strata-kernel --all-targets -- -D warnings` — PASS, exit 0, zero warnings.
 3. `cargo clippy -p strata-kernel --features redb-spike-api --all-targets -- -D warnings` — PASS,
    exit 0, zero warnings.
 4. `cargo test -p strata-kernel` — PASS, 33 passed, 0 failed.
-5. `cargo test -p strata-kernel --features redb-spike-api` — PASS, 169 passed, 0 failed.
+5. `cargo test -p strata-kernel --features redb-spike-api` — PASS, 171 passed, 0 failed.
 6. `pnpm --filter @strata/ingest build` — PASS, exit 0.
 7. `pnpm --filter @strata/ingest test` — PASS, 4 files and 8 tests passed.
 8. `pnpm -r build` — PASS, all 8 buildable workspace projects completed.
@@ -159,19 +165,9 @@ head `1f3b2a834bdc3656cbcd4fcb255bda037e20679e` and produced:
    - pnpm stopped at the first failing package, so agent/cli/bench/lab were not run by this exact
      command.
 
-The compatibility follow-up changed only the Rust kernel and Rust recovery tests. The complete Rust
-portion was therefore rerun from command 1 against exact final implementation head
-`f02b9095aa0c9d8752f08068db5cc70b7bbf6337`:
-
-1. `cargo fmt --all -- --check` — PASS, exit 0.
-2. `cargo clippy -p strata-kernel --all-targets -- -D warnings` — PASS, exit 0, zero warnings.
-3. `cargo clippy -p strata-kernel --features redb-spike-api --all-targets -- -D warnings` — PASS,
-   exit 0, zero warnings.
-4. `cargo test -p strata-kernel` — PASS, 33 passed, 0 failed.
-5. `cargo test -p strata-kernel --features redb-spike-api` — PASS, 171 passed, 0 failed. The two-test
-   increase over the parent gate is exactly the legacy physical-schema migration regression and
-   the retained/versioned missing-table fail-closed regression.
-6. Focused `coordination_recovery` suite — PASS, 23 passed, 0 failed.
+The focused `coordination_recovery` suite also passed 23/23. The two-test feature-suite increase
+from the earlier 169-test gate is exactly the legacy physical-schema migration regression and the
+retained/versioned missing-table fail-closed regression.
 
 ## Supplemental non-bailing workspace check
 
@@ -240,4 +236,20 @@ first-failure behavior:
   agent replay-fixture failures. They are outside this acceptance-test-only correction and do not
   falsify the Rust coordination invariants, but the whole-branch and architecture reviewers should
   be given this fact rather than told the entire TypeScript workspace is green.
-- Phase B reviews and any decision/roadmap/evidence edits remain with the parent agent.
+- Both final reviews approved the bounded proof; the parent agent authorized the gated
+  decision/roadmap/correction-evidence edits recorded after pre-decision head `f8d0d99`.
+
+## Final reviews and decision handoff
+
+- The fresh integrated whole-branch reviewer inspected `8422f4e..f8d0d99`, including the provider
+  containment, common validate-before-migrate recovery, actual due-expiry lifecycle, and legacy
+  physical-schema fixes, and approved with no findings.
+- The required external review used `gpt-5.6-sol`, reasoning `xhigh`, read-only. After its empirical
+  compatibility concern was turned into the exact `8422f4e` schema regression and its scope
+  language was corrected, it returned **APPROVE BOUNDED PASS** with only wording caveats, all
+  incorporated here and in the final correction evidence.
+- The approved claim is limited to the deterministic, feature-gated Rust/redb coordination proof.
+  Default semantic execution remains unavailable, though the common recovery validator runs in
+  default builds. The workspace is not green, and no TypeScript semantic bridge, worker bridge,
+  transport/authentication, process isolation, orchestration, consensus, two-operation proof,
+  full key-free acceptance, or live model comparison is claimed.
