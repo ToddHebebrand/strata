@@ -1506,20 +1506,34 @@ impl Kernel {
                 envelope.candidate_digest.clone()
             }
             CandidateSource::Builder(builder) => {
-                let graph = Arc::new(self.store.graph_generation(claim.graph_generation)?);
+                let base_generation = attempt.generation.checked_sub(1).with_context(|| {
+                    format!(
+                        "publication attempt {} has invalid generation zero",
+                        attempt.attempt_id
+                    )
+                })?;
+                let graph = Arc::new(self.store.graph_generation(base_generation)?);
                 let durable = self.store.coordination();
                 let mut change_set =
-                    durable.change_set(&claim.change_set_id)?.with_context(|| {
-                        format!("change set {} does not exist", claim.change_set_id)
-                    })?;
+                    durable
+                        .change_set(&attempt.change_set_id)?
+                        .with_context(|| {
+                            format!("change set {} does not exist", attempt.change_set_id)
+                        })?;
+                let scope_fingerprint = change_set
+                    .inferred_scope
+                    .as_ref()
+                    .context("committed change set has no inferred scope")?
+                    .scope_fingerprint
+                    .clone();
                 change_set.state = ChangeSetState::Executing;
                 change_set.committed_generation = None;
                 let prepared = PreparedCandidate {
                     change_set,
-                    intents: durable.intents_for(&claim.change_set_id)?,
+                    intents: durable.intents_for(&attempt.change_set_id)?,
                     graph,
-                    attempt_id: claim.attempt_id.clone(),
-                    scope_fingerprint: claim.scope_fingerprint.clone(),
+                    attempt_id: attempt.attempt_id.clone(),
+                    scope_fingerprint,
                 };
                 let envelope = builder.build_candidate(&prepared)?;
                 envelope.validate_digest()?;

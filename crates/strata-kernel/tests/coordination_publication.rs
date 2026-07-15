@@ -115,6 +115,42 @@ impl CandidateBuilder for PassiveBuilder {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PreparedObservation {
+    graph_generation: u64,
+    scope_fingerprint: String,
+    attempt_id: String,
+}
+
+struct InspectingBuilder {
+    delta: GraphDelta,
+    observations: Mutex<Vec<PreparedObservation>>,
+}
+
+impl InspectingBuilder {
+    fn new(delta: GraphDelta) -> Self {
+        Self {
+            delta,
+            observations: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn observations(&self) -> Vec<PreparedObservation> {
+        self.observations.lock().unwrap().clone()
+    }
+}
+
+impl CandidateBuilder for InspectingBuilder {
+    fn build_candidate(&self, prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
+        self.observations.lock().unwrap().push(PreparedObservation {
+            graph_generation: prepared.graph.generation(),
+            scope_fingerprint: prepared.scope_fingerprint.clone(),
+            attempt_id: prepared.attempt_id.clone(),
+        });
+        CandidateEnvelope::from_delta(self.delta.clone())
+    }
+}
+
 fn fixture() -> GraphSnapshot {
     serde_json::from_str(include_str!("fixtures/examples-medium.snapshot.json")).unwrap()
 }
@@ -302,6 +338,52 @@ fn changed_builder_output_for_same_attempt_is_rejected() {
         changed_builder.calls(),
         1,
         "changed builder output must be digested"
+    );
+}
+
+#[test]
+fn committed_builder_replay_uses_only_durable_prepared_authority() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 6]);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
+    let claim = begin_submit_claim(&kernel, "durable-replay-authority", 0);
+    let delta = user_delta(&snapshot, "export interface Account {}");
+    let first = kernel
+        .publish_claimed(&claim, &PassiveBuilder(delta.clone()), 2)
+        .unwrap();
+    let durable_scope = kernel
+        .change_set(&claim.change_set_id)
+        .unwrap()
+        .unwrap()
+        .inferred_scope
+        .unwrap()
+        .scope_fingerprint;
+    let tampered_claim = ClaimHandle {
+        graph_generation: first.generation,
+        scope_fingerprint: "caller-controlled-scope".into(),
+        ..claim.clone()
+    };
+    let replay_builder = InspectingBuilder::new(delta);
+
+    let replay = kernel
+        .publish_claimed(&tampered_claim, &replay_builder, 3)
+        .unwrap();
+
+    assert!(replay.already_published);
+    assert_eq!(replay.generation, first.generation);
+    assert_eq!(replay.digest, first.digest);
+    assert_eq!(
+        replay_builder.observations(),
+        vec![PreparedObservation {
+            graph_generation: first.generation.checked_sub(1).unwrap(),
+            scope_fingerprint: durable_scope,
+            attempt_id: claim.attempt_id,
+        }],
+        "caller-controlled claim fields must not select replay authority"
     );
 }
 
