@@ -319,6 +319,45 @@ fn claim_reanalyzes_and_strict_expansion_requeues_three_times_then_needs_decisio
 }
 
 #[test]
+fn claim_requeues_pure_addition_when_common_membership_versions_advance() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let initial = analysis(&["children:module", "symbol:A"], 3);
+    let mut expanded = analysis(&["children:module", "symbol:A", "node:fresh-callsite"], 3);
+    for resource in expanded
+        .read_set
+        .iter_mut()
+        .chain(&mut expanded.write_set)
+        .chain(&mut expanded.validation_set)
+    {
+        if resource.resource_key == "children:module" {
+            resource.version = "v1".into();
+        }
+    }
+    let analyzer =
+        SequencedAnalyzer::new(vec![initial.clone(), initial, expanded.clone(), expanded]);
+    let kernel = kernel(&path, analyzer);
+    let (_, offer) = submit_ready(&kernel, "membership-expansion", 0);
+
+    let ClaimOutcome::Requeued { ticket, event } = kernel
+        .claim_ready(&offer.offer_id, &offer.claim_token, 1)
+        .unwrap()
+    else {
+        panic!("pure callsite addition should requeue")
+    };
+    assert_eq!(ticket.state, TicketState::Queued);
+    assert_eq!(event.kind, CoordinationEventKind::ScopeExpanded);
+    assert_eq!(
+        kernel
+            .change_set("membership-expansion")
+            .unwrap()
+            .unwrap()
+            .expansion_count,
+        1
+    );
+}
+
+#[test]
 fn material_scope_change_needs_decision_and_cancellation_unblocks_waiters() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");

@@ -1471,7 +1471,7 @@ fn final_lifecycle_commit_holds_publication_then_scheduler_before_redb() {
 }
 
 #[test]
-fn central_planner_contracts_stale_reservations_before_selecting_successor() {
+fn central_planner_requires_decision_when_a_stale_resource_member_disappears() {
     let fixture = MediumCoordinationFixture::load();
     let graph = GraphGeneration::from_snapshot(fixture.snapshot().clone()).unwrap();
     let blocker = fixture.declaration_named("User").clone();
@@ -1552,23 +1552,15 @@ fn central_planner_contracts_stale_reservations_before_selecting_successor() {
         .ticket_for_change_set("contracting-successor")
         .unwrap()
         .unwrap();
-    let durable_offer = kernel
-        .ready_offer_for_change_set("contracting-successor")
-        .unwrap()
-        .unwrap();
-    assert_eq!(durable_change_set.state, ChangeSetState::Ready);
-    assert_eq!(durable_ticket.state, TicketState::Ready);
-    assert_eq!(durable_offer.graph_generation, 1);
-    assert_eq!(
+    assert_eq!(durable_change_set.state, ChangeSetState::NeedsDecision);
+    assert_eq!(durable_ticket.state, TicketState::NeedsDecision);
+    assert!(
         kernel
-            .test_scheduler_ticket_for_change_set("contracting-successor")
-            .unwrap(),
-        durable_ticket
+            .ready_offer_for_change_set("contracting-successor")
+            .unwrap()
+            .is_none()
     );
-    assert_eq!(
-        durable_ticket.ready_offer_id.as_deref(),
-        Some(durable_offer.offer_id.as_str())
-    );
+    assert_eq!(durable_ticket.ready_offer_id, None);
 }
 
 #[test]

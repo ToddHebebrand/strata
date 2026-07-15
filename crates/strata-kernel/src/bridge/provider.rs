@@ -594,7 +594,7 @@ fn semantic_name_resources<'a>(
 }
 
 fn declaration_name(graph: &GraphGeneration, declaration: &NodeRecord) -> Result<Option<String>> {
-    if declaration_keyword(&declaration.kind).is_none() {
+    if !is_supported_named_declaration_kind(&declaration.kind) {
         return Ok(None);
     }
     Ok(Some(
@@ -643,9 +643,15 @@ fn declaration_name_identifier<'a>(
 }
 
 fn declaration_name_token(declaration: &NodeRecord) -> Result<(String, u64)> {
+    let tokens = source_tokens(&declaration.payload)?;
+    if matches!(
+        declaration.kind.as_str(),
+        "FirstStatement" | "VariableStatement"
+    ) {
+        return first_simple_variable_binding(declaration, &tokens);
+    }
     let keyword = declaration_keyword(&declaration.kind)
         .with_context(|| format!("unsupported named declaration kind {}", declaration.kind))?;
-    let tokens = source_tokens(&declaration.payload)?;
     let keyword_index = tokens
         .iter()
         .position(|token| token.text == keyword)
@@ -674,15 +680,109 @@ fn declaration_name_token(declaration: &NodeRecord) -> Result<(String, u64)> {
     Ok((name.text.clone(), name.utf16_offset))
 }
 
+fn first_simple_variable_binding(
+    declaration: &NodeRecord,
+    tokens: &[SourceToken],
+) -> Result<(String, u64)> {
+    let keyword_index = tokens
+        .iter()
+        .position(|token| matches!(token.text.as_str(), "const" | "let" | "var"))
+        .with_context(|| {
+            format!(
+                "{} payload has no canonical variable declaration token",
+                declaration.id
+            )
+        })?;
+    let mut cursor = keyword_index + 1;
+    while let Some(binding) = tokens.get(cursor) {
+        if binding.is_identifier {
+            return Ok((binding.text.clone(), binding.utf16_offset));
+        }
+        ensure!(
+            matches!(binding.text.as_str(), "{" | "["),
+            "{} payload has an unsupported variable binding",
+            declaration.id
+        );
+        cursor = skip_balanced_binding(tokens, cursor)
+            .with_context(|| format!("{} payload has malformed destructuring", declaration.id))?;
+        let mut paren_depth = 0_u32;
+        let mut brace_depth = 0_u32;
+        let mut bracket_depth = 0_u32;
+        let mut angle_depth = 0_u32;
+        let mut found_next = false;
+        while let Some(token) = tokens.get(cursor) {
+            match token.text.as_str() {
+                "(" => paren_depth += 1,
+                ")" => paren_depth = paren_depth.saturating_sub(1),
+                "{" => brace_depth += 1,
+                "}" => brace_depth = brace_depth.saturating_sub(1),
+                "[" => bracket_depth += 1,
+                "]" => bracket_depth = bracket_depth.saturating_sub(1),
+                "<" => angle_depth += 1,
+                ">" => angle_depth = angle_depth.saturating_sub(1),
+                "," if paren_depth == 0
+                    && brace_depth == 0
+                    && bracket_depth == 0
+                    && angle_depth == 0 =>
+                {
+                    cursor += 1;
+                    found_next = true;
+                    break;
+                }
+                ";" if paren_depth == 0
+                    && brace_depth == 0
+                    && bracket_depth == 0
+                    && angle_depth == 0 =>
+                {
+                    break;
+                }
+                _ => {}
+            }
+            cursor += 1;
+        }
+        if !found_next {
+            break;
+        }
+    }
+    bail!(
+        "{} payload has no simple variable declaration name",
+        declaration.id
+    )
+}
+
+fn skip_balanced_binding(tokens: &[SourceToken], start: usize) -> Option<usize> {
+    let open = tokens.get(start)?.text.as_str();
+    let close = match open {
+        "{" => "}",
+        "[" => "]",
+        _ => return None,
+    };
+    let mut depth = 0_u32;
+    for (index, token) in tokens.iter().enumerate().skip(start) {
+        if token.text == open {
+            depth = depth.checked_add(1)?;
+        } else if token.text == close {
+            depth = depth.checked_sub(1)?;
+            if depth == 0 {
+                return Some(index + 1);
+            }
+        }
+    }
+    None
+}
+
 fn declaration_keyword(kind: &str) -> Option<&'static str> {
     match kind {
         "FunctionDeclaration" => Some("function"),
         "InterfaceDeclaration" => Some("interface"),
         "ClassDeclaration" => Some("class"),
         "TypeAliasDeclaration" => Some("type"),
-        "VariableStatement" => Some("const"),
         _ => None,
     }
+}
+
+fn is_supported_named_declaration_kind(kind: &str) -> bool {
+    declaration_keyword(kind).is_some() || matches!(kind, "FirstStatement" | "VariableStatement")
 }
 
 struct SourceToken {
@@ -771,7 +871,8 @@ fn source_tokens(source: &str) -> Result<Vec<SourceToken>> {
 }
 
 fn is_declaration(node: &NodeRecord) -> bool {
-    node.kind.ends_with("Declaration") || node.kind == "VariableStatement"
+    node.kind.ends_with("Declaration")
+        || matches!(node.kind.as_str(), "FirstStatement" | "VariableStatement")
 }
 
 fn is_writable_statement(node: &NodeRecord) -> bool {
@@ -780,11 +881,15 @@ fn is_writable_statement(node: &NodeRecord) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{NodeSemanticProvider, analyze_request, intent_analysis_from_facts};
+    use super::{
+        NodeSemanticProvider, analyze_request, declaration_name_token, intent_analysis_from_facts,
+    };
     use crate::bridge::process::{NodeBridgeClient, NodeBridgeConfig};
     use crate::bridge::protocol::{BridgeDiagnostic, BridgeRequest, SemanticFacts, WireReference};
     use crate::coordination::{
-        DynamicExpansionPolicy, IdempotencyClass, IntentParameters, IntentRecord, SemanticProvider,
+        DynamicExpansionPolicy, IdempotencyClass, InferredScope, IntentAnalysis, IntentParameters,
+        IntentRecord, ScopeChange, SemanticProvider, canonical_scope_fingerprint,
+        classify_scope_change,
     };
     use crate::{GraphGeneration, GraphSnapshot, NodeRecord, ReferenceRecord, SCHEMA_VERSION};
     use sha2::{Digest, Sha256};
@@ -985,6 +1090,20 @@ mod tests {
         format!("{:x}", Sha256::digest(serde_json::to_vec(value).unwrap()))
     }
 
+    fn inferred_scope(analysis: IntentAnalysis) -> InferredScope {
+        let mut scope = InferredScope {
+            read_set: analysis.read_set,
+            write_set: analysis.write_set,
+            validation_set: analysis.validation_set,
+            reservation_keys: analysis.reservation_keys,
+            scope_fingerprint: String::new(),
+            dynamic_expansion_policy: analysis.dynamic_expansion_policy,
+            idempotency_class: analysis.idempotency_class,
+        };
+        scope.scope_fingerprint = canonical_scope_fingerprint(&scope).unwrap();
+        scope
+    }
+
     #[test]
     #[ignore = "requires pnpm kernel:bridge:build"]
     fn provider_reanalyzes_a_durable_intent_once_against_fresh_g1_scope() {
@@ -1045,11 +1164,15 @@ mod tests {
         )));
         let provider = NodeSemanticProvider::new(client.clone(), 17);
 
-        let initial_analysis = provider.analyze(&initial, &durable_intent).unwrap();
+        let initial_analysis = inferred_scope(provider.analyze(&initial, &durable_intent).unwrap());
         let calls_before_fresh_analysis = client.run_count();
-        let fresh_analysis = provider.analyze(&fresh, &durable_intent).unwrap();
+        let fresh_analysis = inferred_scope(provider.analyze(&fresh, &durable_intent).unwrap());
 
         assert_eq!(client.run_count() - calls_before_fresh_analysis, 1);
+        assert_eq!(
+            classify_scope_change(&initial_analysis, &fresh_analysis),
+            ScopeChange::Expanded
+        );
         assert_ne!(
             version(&initial_analysis.read_set, "references-to:c88199f537b34a1b"),
             version(&fresh_analysis.read_set, "references-to:c88199f537b34a1b")
@@ -1076,6 +1199,92 @@ mod tests {
             DynamicExpansionPolicy::Requeue { max_expansions: 3 }
         );
         assert_eq!(durable_intent, durable_before);
+    }
+
+    #[test]
+    fn declaration_name_tokens_match_persisted_kinds_and_typescript_offsets() {
+        let cases = [
+            (
+                "FunctionDeclaration",
+                "export async function run(value: string) {}",
+                "run",
+            ),
+            (
+                "InterfaceDeclaration",
+                "export interface User { id: string }",
+                "User",
+            ),
+            (
+                "ClassDeclaration",
+                "export default class Account {}",
+                "Account",
+            ),
+            (
+                "TypeAliasDeclaration",
+                "export type UserId = string;",
+                "UserId",
+            ),
+            ("FirstStatement", "export const zone = 'utc';", "zone"),
+            ("FirstStatement", "let mutable = 1;", "mutable"),
+            ("FirstStatement", "var legacy = true;", "legacy"),
+            (
+                "FirstStatement",
+                "const { skipped } = source, selected = 1;",
+                "selected",
+            ),
+            (
+                "FirstStatement",
+                "const { skipped }: Map<string, number> = source, selected = 1;",
+                "selected",
+            ),
+            (
+                "FirstStatement",
+                "const first = 1, { later } = source;",
+                "first",
+            ),
+            (
+                "InterfaceDeclaration",
+                "/** 😀 */ export interface Café { valeur: string }",
+                "Café",
+            ),
+        ];
+
+        for (index, (kind, payload, expected_name)) in cases.into_iter().enumerate() {
+            let declaration = node(
+                &format!("declaration-{index}"),
+                kind,
+                Some("module"),
+                Some(index as i64),
+                payload,
+            );
+            let (name, offset) = declaration_name_token(&declaration).unwrap();
+            let byte_offset = payload.find(expected_name).unwrap();
+            let expected_offset = payload[..byte_offset].encode_utf16().count() as u64;
+            assert_eq!(name, expected_name, "{kind}: {payload}");
+            assert_eq!(offset, expected_offset, "{kind}: {payload}");
+        }
+    }
+
+    #[test]
+    fn declaration_name_tokens_reject_destructuring_malformed_and_escaped_bindings() {
+        for payload in [
+            "const { only } = source;",
+            "const [only] = source;",
+            "const = broken;",
+            r"const \u0061 = 1;",
+        ] {
+            let declaration = node(
+                "unsupported-binding",
+                "FirstStatement",
+                Some("module"),
+                Some(0),
+                payload,
+            );
+            assert!(
+                declaration_name_token(&declaration).is_err(),
+                "unexpectedly accepted {payload}"
+            );
+        }
     }
 
     #[test]

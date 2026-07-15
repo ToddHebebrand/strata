@@ -140,38 +140,77 @@ pub fn classify_scope_change(old: &InferredScope, new: &InferredScope) -> ScopeC
         return ScopeChange::Unchanged;
     }
 
-    let old_read = canonical_resources(&old.read_set);
-    let new_read = canonical_resources(&new.read_set);
-    let old_write = canonical_resources(&old.write_set);
-    let new_write = canonical_resources(&new.write_set);
-    let old_validation = canonical_resources(&old.validation_set);
-    let new_validation = canonical_resources(&new.validation_set);
+    let Some(old_read) = resources_by_key(&old.read_set) else {
+        return ScopeChange::MateriallyChanged;
+    };
+    let Some(new_read) = resources_by_key(&new.read_set) else {
+        return ScopeChange::MateriallyChanged;
+    };
+    let Some(old_write) = resources_by_key(&old.write_set) else {
+        return ScopeChange::MateriallyChanged;
+    };
+    let Some(new_write) = resources_by_key(&new.write_set) else {
+        return ScopeChange::MateriallyChanged;
+    };
+    let Some(old_validation) = resources_by_key(&old.validation_set) else {
+        return ScopeChange::MateriallyChanged;
+    };
+    let Some(new_validation) = resources_by_key(&new.validation_set) else {
+        return ScopeChange::MateriallyChanged;
+    };
     let old_reservations: BTreeSet<_> = old.reservation_keys.iter().collect();
     let new_reservations: BTreeSet<_> = new.reservation_keys.iter().collect();
 
-    let all_old_entries_remain = old_read.is_subset(&new_read)
-        && old_write.is_subset(&new_write)
-        && old_validation.is_subset(&new_validation)
+    let all_old_keys_remain = common_resources_allow_only_membership_drift(&old_read, &new_read)
+        && common_resources_allow_only_membership_drift(&old_write, &new_write)
+        && common_resources_allow_only_membership_drift(&old_validation, &new_validation)
         && old_reservations.is_subset(&new_reservations);
-    let all_new_entries_existed = new_read.is_subset(&old_read)
-        && new_write.is_subset(&old_write)
-        && new_validation.is_subset(&old_validation)
-        && new_reservations.is_subset(&old_reservations);
-    let adds_scope = old_read != new_read
-        || old_write != new_write
-        || old_validation != new_validation
-        || old_reservations != new_reservations;
+    let adds_scope_key = old_read.len() < new_read.len()
+        || old_write.len() < new_write.len()
+        || old_validation.len() < new_validation.len()
+        || old_reservations.len() < new_reservations.len();
 
     let governance_unchanged = old.dynamic_expansion_policy == new.dynamic_expansion_policy
         && old.idempotency_class == new.idempotency_class;
+    let reservation_only_contraction = old_read == new_read
+        && old_write == new_write
+        && old_validation == new_validation
+        && new_reservations.is_subset(&old_reservations)
+        && new_reservations.len() < old_reservations.len();
 
-    if all_old_entries_remain && adds_scope && governance_unchanged {
+    if all_old_keys_remain && adds_scope_key && governance_unchanged {
         ScopeChange::Expanded
-    } else if all_new_entries_existed && adds_scope && governance_unchanged {
+    } else if reservation_only_contraction && governance_unchanged {
         ScopeChange::Contracted
     } else {
         ScopeChange::MateriallyChanged
     }
+}
+
+fn resources_by_key(resources: &[ResourceVersion]) -> Option<BTreeMap<&str, &str>> {
+    let mut by_key = BTreeMap::new();
+    for resource in resources {
+        if by_key
+            .insert(resource.resource_key.as_str(), resource.version.as_str())
+            .is_some()
+        {
+            return None;
+        }
+    }
+    Some(by_key)
+}
+
+fn common_resources_allow_only_membership_drift(
+    old: &BTreeMap<&str, &str>,
+    new: &BTreeMap<&str, &str>,
+) -> bool {
+    old.iter().all(|(key, old_version)| {
+        new.get(key).is_some_and(|new_version| {
+            old_version == new_version
+                || key.starts_with("children:")
+                || key.starts_with("references-to:")
+        })
+    })
 }
 
 pub fn required_delta_authority(
@@ -352,13 +391,6 @@ fn canonicalize_resources(resources: &mut Vec<ResourceVersion>) {
         (&left.resource_key, &left.version).cmp(&(&right.resource_key, &right.version))
     });
     resources.dedup();
-}
-
-fn canonical_resources(resources: &[ResourceVersion]) -> BTreeSet<(String, String)> {
-    resources
-        .iter()
-        .map(|resource| (resource.resource_key.clone(), resource.version.clone()))
-        .collect()
 }
 
 fn add_node_write(writes: &mut BTreeSet<String>, coverage: &mut BTreeSet<String>, node_id: &str) {

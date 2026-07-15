@@ -221,6 +221,88 @@ fn scope_change_classifies_unchanged_expanded_and_material_replacements() {
 }
 
 #[test]
+fn membership_only_version_drift_is_expansion_only_with_new_scope_keys() {
+    let mut old = analyze_change_set(&seed_graph(), &[rename()], &analyzer()).unwrap();
+    old.read_set
+        .push(resource("children:parent", "membership-v1"));
+    old.scope_fingerprint = canonical_scope_fingerprint(&old).unwrap();
+    let mut expanded = old.clone();
+    let membership = expanded
+        .read_set
+        .iter_mut()
+        .find(|resource| resource.resource_key.starts_with("children:"))
+        .expect("fixture scope has children membership");
+    membership.version = "membership-v2".into();
+    expanded.read_set.push(resource("node:new-callsite", "1"));
+    expanded
+        .validation_set
+        .push(resource("edge:new-callsite-name", "1"));
+    expanded.reservation_keys.push("node:new-callsite".into());
+    expanded.scope_fingerprint = canonical_scope_fingerprint(&expanded).unwrap();
+
+    assert_eq!(
+        classify_scope_change(&old, &expanded),
+        ScopeChange::Expanded
+    );
+
+    let mut membership_drift_only = old.clone();
+    membership_drift_only
+        .read_set
+        .iter_mut()
+        .find(|resource| resource.resource_key.starts_with("children:"))
+        .unwrap()
+        .version = "membership-v2".into();
+    membership_drift_only.scope_fingerprint =
+        canonical_scope_fingerprint(&membership_drift_only).unwrap();
+    assert_eq!(
+        classify_scope_change(&old, &membership_drift_only),
+        ScopeChange::MateriallyChanged
+    );
+}
+
+#[test]
+fn removals_replacements_and_unrelated_common_version_drift_are_material() {
+    let old = analyze_change_set(&seed_graph(), &[rename()], &analyzer()).unwrap();
+
+    let mut removed = old.clone();
+    removed.read_set.pop();
+    removed.scope_fingerprint = canonical_scope_fingerprint(&removed).unwrap();
+    assert_eq!(
+        classify_scope_change(&old, &removed),
+        ScopeChange::MateriallyChanged
+    );
+
+    let mut replaced = old.clone();
+    replaced.read_set.pop();
+    replaced.read_set.push(resource("node:replacement", "1"));
+    replaced.reservation_keys.push("node:replacement".into());
+    replaced.scope_fingerprint = canonical_scope_fingerprint(&replaced).unwrap();
+    assert_eq!(
+        classify_scope_change(&old, &replaced),
+        ScopeChange::MateriallyChanged
+    );
+
+    let mut unrelated_drift = old.clone();
+    unrelated_drift
+        .read_set
+        .iter_mut()
+        .find(|resource| resource.resource_key.starts_with("node:"))
+        .expect("fixture scope has node resource")
+        .version = "node-v2".into();
+    unrelated_drift
+        .validation_set
+        .push(resource("node:new-callsite", "1"));
+    unrelated_drift
+        .reservation_keys
+        .push("node:new-callsite".into());
+    unrelated_drift.scope_fingerprint = canonical_scope_fingerprint(&unrelated_drift).unwrap();
+    assert_eq!(
+        classify_scope_change(&old, &unrelated_drift),
+        ScopeChange::MateriallyChanged
+    );
+}
+
+#[test]
 fn scope_expansion_with_a_policy_change_is_material() {
     let old = analyze_change_set(&seed_graph(), &[rename()], &analyzer()).unwrap();
     let mut expanded = old.clone();
