@@ -1,4 +1,6 @@
 use serde::{Serialize, de::DeserializeOwned};
+#[cfg(feature = "coordination-test-api")]
+use strata_kernel::PublicationAttemptRecord;
 use strata_kernel::{
     ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEvent,
     CoordinationEventKind, CoordinationTicket, DynamicExpansionPolicy, EventCursor,
@@ -350,4 +352,21 @@ fn terminal_states_cannot_transition_back_to_nonterminal_states() {
         .unwrap_err();
     assert!(error.contains("NeedsDecision"));
     assert!(error.contains("Queued"));
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn legacy_publication_attempt_without_prepared_generation_remains_readable() {
+    let legacy = r#"{
+        "changeSetId":"change-set:legacy",
+        "attemptId":"attempt:legacy",
+        "candidateDigest":"candidate-digest",
+        "generation":7,
+        "graphDigest":"graph-digest"
+    }"#;
+
+    let decoded: PublicationAttemptRecord = serde_json::from_str(legacy).unwrap();
+
+    assert_eq!(decoded.prepared_graph_generation, None);
+    assert_eq!(decoded.generation, 7);
 }

@@ -274,6 +274,33 @@ impl Kernel {
         self.publish_lock.try_lock().is_ok() && self.scheduler.try_lock().is_ok()
     }
 
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_publication_mutexes_held(&self) -> bool {
+        self.publish_lock.try_lock().is_err() && self.scheduler.try_lock().is_err()
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_active_claims(&self) -> Result<Vec<crate::coordination::ClaimHandle>> {
+        self.store.coordination().active_claims()
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_scheduler_ticket_for_change_set(
+        &self,
+        change_set_id: &str,
+    ) -> Result<crate::coordination::CoordinationTicket> {
+        self.scheduler
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?
+            .tickets()
+            .find(|ticket| ticket.change_set_id == change_set_id)
+            .cloned()
+            .with_context(|| format!("scheduler ticket for {change_set_id} does not exist"))
+    }
+
     #[cfg(feature = "redb-spike-api")]
     pub fn issue_fence(&self, resources: &[String]) -> Result<FenceClaim> {
         self.store.issue_fence(self.service_epoch, resources)

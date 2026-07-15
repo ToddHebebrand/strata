@@ -23,6 +23,7 @@ pub struct IntentAnalysis {
 pub enum ScopeChange {
     Unchanged,
     Expanded,
+    Contracted,
     MateriallyChanged,
 }
 
@@ -139,6 +140,10 @@ pub fn classify_scope_change(old: &InferredScope, new: &InferredScope) -> ScopeC
         && old_write.is_subset(&new_write)
         && old_validation.is_subset(&new_validation)
         && old_reservations.is_subset(&new_reservations);
+    let all_new_entries_existed = new_read.is_subset(&old_read)
+        && new_write.is_subset(&old_write)
+        && new_validation.is_subset(&old_validation)
+        && new_reservations.is_subset(&old_reservations);
     let adds_scope = old_read != new_read
         || old_write != new_write
         || old_validation != new_validation
@@ -149,6 +154,8 @@ pub fn classify_scope_change(old: &InferredScope, new: &InferredScope) -> ScopeC
 
     if all_old_entries_remain && adds_scope && governance_unchanged {
         ScopeChange::Expanded
+    } else if all_new_entries_existed && adds_scope && governance_unchanged {
+        ScopeChange::Contracted
     } else {
         ScopeChange::MateriallyChanged
     }

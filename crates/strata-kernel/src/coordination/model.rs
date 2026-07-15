@@ -17,6 +17,8 @@ pub struct PublicationAttemptRecord {
     pub change_set_id: String,
     pub attempt_id: String,
     pub candidate_digest: String,
+    #[serde(default)]
+    pub prepared_graph_generation: Option<u64>,
     pub generation: u64,
     pub graph_digest: String,
 }

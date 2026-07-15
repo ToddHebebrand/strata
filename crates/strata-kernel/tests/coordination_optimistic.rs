@@ -5,16 +5,19 @@
 mod coordination_support;
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::Result;
 use coordination_support::{
     GraphDerivedAnalyzer, MediumCoordinationFixture, NodePatchBuilder, begin_with_intents, rename,
 };
+#[cfg(feature = "redb-spike-api")]
+use strata_kernel::DurableStore;
 use strata_kernel::{
     BeginChangeSet, CandidateBuilder, CandidateEnvelope, ChangeSetState, ClaimHandle, ClaimOutcome,
-    DynamicExpansionPolicy, GraphChange, GraphDelta, GraphGeneration, IdempotencyClass,
-    IntentAnalysis, IntentRecord, Kernel, PreparedCandidate, PublicationReport,
+    CoordinationError, DynamicExpansionPolicy, GraphChange, GraphDelta, GraphGeneration,
+    IdempotencyClass, IntentAnalysis, IntentRecord, Kernel, PreparedCandidate, PublicationReport,
     PublishClaimOutcome, ResourceVersion, SCHEMA_VERSION, SubmissionOutcome, TestSemanticProvider,
     TicketState, required_delta_authority,
 };
@@ -121,6 +124,85 @@ fn fixed_analysis(write_keys: Vec<String>, reservation_keys: Vec<String>) -> Int
 }
 
 struct DeltaBuilder(Vec<GraphChange>);
+
+struct CountingDeltaBuilder {
+    calls: AtomicUsize,
+    changes: Vec<GraphChange>,
+}
+
+struct RecordingGenerationBuilder {
+    generations: Arc<Mutex<Vec<u64>>>,
+    changes: Vec<GraphChange>,
+}
+
+impl CandidateBuilder for RecordingGenerationBuilder {
+    fn build_candidate(&self, prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
+        self.generations
+            .lock()
+            .unwrap()
+            .push(prepared.graph.generation());
+        CandidateEnvelope::from_delta(GraphDelta {
+            schema_version: SCHEMA_VERSION,
+            base_generation: prepared.graph.generation(),
+            changes: self.changes.clone(),
+        })
+    }
+}
+
+impl CountingDeltaBuilder {
+    fn new(changes: Vec<GraphChange>) -> Self {
+        Self {
+            calls: AtomicUsize::new(0),
+            changes,
+        }
+    }
+}
+
+impl CandidateBuilder for CountingDeltaBuilder {
+    fn build_candidate(&self, prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        CandidateEnvelope::from_delta(GraphDelta {
+            schema_version: SCHEMA_VERSION,
+            base_generation: prepared.graph.generation(),
+            changes: self.changes.clone(),
+        })
+    }
+}
+
+#[derive(Clone)]
+struct ContractingSuccessorProvider {
+    blocker_id: String,
+    blocker: IntentAnalysis,
+    active_id: String,
+    active: IntentAnalysis,
+    successor_id: String,
+    successor_stale: IntentAnalysis,
+    successor_fresh: IntentAnalysis,
+    successor_calls: Arc<AtomicUsize>,
+}
+
+impl TestSemanticProvider for ContractingSuccessorProvider {
+    fn analyze(&self, _graph: &GraphGeneration, intent: &IntentRecord) -> Result<IntentAnalysis> {
+        let strata_kernel::IntentParameters::RenameSymbol { declaration_id, .. } =
+            &intent.parameters
+        else {
+            panic!("contracting provider only accepts rename intents")
+        };
+        if declaration_id == &self.blocker_id {
+            return Ok(self.blocker.clone());
+        }
+        if declaration_id == &self.active_id {
+            return Ok(self.active.clone());
+        }
+        assert_eq!(declaration_id, &self.successor_id);
+        let call = self.successor_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(if call < 2 {
+            self.successor_stale.clone()
+        } else {
+            self.successor_fresh.clone()
+        })
+    }
+}
 
 impl CandidateBuilder for DeltaBuilder {
     fn build_candidate(&self, prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
@@ -306,7 +388,34 @@ fn panicking_builder_leaves_claim_active_until_explicit_release() {
             .state,
         TicketState::Claimed
     );
+    assert_eq!(kernel.test_active_claims().unwrap(), vec![claim.clone()]);
+    #[cfg(feature = "redb-spike-api")]
+    {
+        drop(kernel);
+        let store = DurableStore::open(&path).unwrap();
+        assert_eq!(
+            store.coordination().active_claims().unwrap(),
+            vec![claim.clone()]
+        );
+        drop(store);
+        let (reopened, _) =
+            Kernel::open_with_test_semantics(&path, Arc::new(GraphDerivedAnalyzer::new())).unwrap();
+        assert!(reopened.test_active_claims().unwrap().is_empty());
+        assert_eq!(
+            reopened.change_set("panic").unwrap().unwrap().state,
+            ChangeSetState::Ready
+        );
+        let late = reopened
+            .publish_claimed(&claim, &PanickingBuilder, 3)
+            .unwrap_err();
+        assert_eq!(
+            late.downcast_ref::<CoordinationError>(),
+            Some(&CoordinationError::LeaseExpired)
+        );
+    }
+    #[cfg(not(feature = "redb-spike-api"))]
     kernel.cancel_change_set("panic", 3).unwrap();
+    #[cfg(not(feature = "redb-spike-api"))]
     assert_eq!(
         kernel.change_set("panic").unwrap().unwrap().state,
         ChangeSetState::Cancelled
@@ -582,4 +691,445 @@ fn publication_successor_offer_uses_fresh_unlocked_analysis_on_committed_graph()
         ChangeSetState::Queued,
         "freshly analyzed successor remained stranded"
     );
+}
+
+#[test]
+fn third_final_check_dependency_drift_atomically_requeues_and_fences_the_stale_claim() {
+    let fixture = MediumCoordinationFixture::load();
+    let graph = GraphGeneration::from_snapshot(fixture.snapshot().clone()).unwrap();
+    let user = fixture.declaration_named("User").clone();
+    let parse = fixture.declaration_named("parseArgs").clone();
+    let format = fixture.declaration_named("formatTimestamp").clone();
+    let mut changed_user = user.clone();
+    changed_user.payload.push_str("\n// dependency drift");
+    let publisher_changes = vec![GraphChange::UpsertNode { node: changed_user }];
+    let mut changed_parse = parse.clone();
+    changed_parse.payload.push_str("\n// stale candidate");
+    let stale_changes = vec![GraphChange::UpsertNode {
+        node: changed_parse,
+    }];
+    let stale_authority = required_delta_authority(
+        &graph,
+        &GraphDelta {
+            schema_version: SCHEMA_VERSION,
+            base_generation: 0,
+            changes: stale_changes.clone(),
+        },
+    )
+    .unwrap();
+    let publisher_authority = required_delta_authority(
+        &graph,
+        &GraphDelta {
+            schema_version: SCHEMA_VERSION,
+            base_generation: 0,
+            changes: publisher_changes.clone(),
+        },
+    )
+    .unwrap();
+    let dependency_key = format!("node:{}", user.id);
+    let mut stale_keys = stale_authority.write_resources;
+    stale_keys.push(dependency_key.clone());
+    let loss_scope = vec![format!("node:{}", format.id)];
+    let provider = RoleProvider {
+        analyses: Arc::new(BTreeMap::from([
+            (
+                parse.id.clone(),
+                fixed_analysis(stale_keys, stale_authority.reservation_coverage),
+            ),
+            (
+                user.id.clone(),
+                fixed_analysis(
+                    publisher_authority.write_resources,
+                    publisher_authority.reservation_coverage,
+                ),
+            ),
+            (
+                format.id.clone(),
+                fixed_analysis(loss_scope.clone(), loss_scope),
+            ),
+        ])),
+    };
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, fixture.snapshot().clone(), Arc::new(provider))
+            .unwrap();
+    let kernel = Arc::new(kernel);
+    begin_with_intents(&kernel, "stale-third", [rename(&parse.id, "parseStale")]).unwrap();
+    begin_with_intents(
+        &kernel,
+        "dependency-publisher",
+        [rename(&user.id, "Account")],
+    )
+    .unwrap();
+    let stale_offer = ready(kernel.submit_change_set("stale-third", 0).unwrap());
+    let publisher_offer = ready(kernel.submit_change_set("dependency-publisher", 0).unwrap());
+    let stale_claim = claimed(
+        kernel
+            .claim_ready(&stale_offer.offer_id, &stale_offer.claim_token, 1)
+            .unwrap(),
+    );
+    let publisher_claim = claimed(
+        kernel
+            .claim_ready(&publisher_offer.offer_id, &publisher_offer.claim_token, 1)
+            .unwrap(),
+    );
+    for index in 0..2 {
+        let new_name = format!("formatLoss{index}");
+        begin_with_intents(
+            &kernel,
+            &format!("loss-{index}"),
+            [rename(&format.id, &new_name)],
+        )
+        .unwrap();
+    }
+    let stale_builder = CountingDeltaBuilder::new(stale_changes);
+    let publisher_builder = DeltaBuilder(publisher_changes);
+    let before_final_check = |attempt: u32| match attempt {
+        0 | 1 => {
+            let id = format!("loss-{attempt}");
+            kernel.submit_change_set(&id, 10 + attempt as u64).unwrap();
+        }
+        2 => {
+            let PublishClaimOutcome::Published(_) = kernel
+                .publish_claimed(&publisher_claim, &publisher_builder, 20)
+                .unwrap()
+            else {
+                panic!("dependency publisher did not publish")
+            };
+        }
+        _ => panic!("unexpected optimistic attempt {attempt}"),
+    };
+    let invalidation_commits = AtomicUsize::new(0);
+    let before_redb = || {
+        assert!(kernel.test_publication_mutexes_held());
+        invalidation_commits.fetch_add(1, Ordering::SeqCst);
+    };
+    let outcome = kernel
+        .publish_claimed_with_test_hooks(
+            &stale_claim,
+            &stale_builder,
+            30,
+            &before_final_check,
+            &before_redb,
+        )
+        .unwrap();
+
+    assert!(matches!(outcome, PublishClaimOutcome::Requeued { .. }));
+    assert_eq!(invalidation_commits.load(Ordering::SeqCst), 1);
+    assert_eq!(stale_builder.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        kernel.change_set("stale-third").unwrap().unwrap().state,
+        ChangeSetState::Queued
+    );
+    assert_eq!(
+        kernel
+            .ticket_for_change_set("stale-third")
+            .unwrap()
+            .unwrap()
+            .state,
+        TicketState::Queued
+    );
+    assert!(
+        kernel
+            .test_active_claims()
+            .unwrap()
+            .iter()
+            .all(|active| active.claim_id != stale_claim.claim_id)
+    );
+    let late = kernel
+        .publish_claimed(&stale_claim, &stale_builder, 31)
+        .unwrap_err();
+    assert!(late.downcast_ref::<CoordinationError>().is_some());
+}
+
+#[test]
+fn three_unrelated_final_state_losses_exhaust_once_without_rebuilding() {
+    let fixture = MediumCoordinationFixture::load();
+    let user = fixture.declaration_named("User").clone();
+    let format = fixture.declaration_named("formatTimestamp").clone();
+    let mut changed_user = user.clone();
+    changed_user.payload.push_str("\n// optimistic candidate");
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(GraphDerivedAnalyzer::new()),
+    )
+    .unwrap();
+    let kernel = Arc::new(kernel);
+    begin_with_intents(&kernel, "retry-target", [rename(&user.id, "Account")]).unwrap();
+    let offer = ready(kernel.submit_change_set("retry-target", 0).unwrap());
+    let claim = claimed(
+        kernel
+            .claim_ready(&offer.offer_id, &offer.claim_token, 1)
+            .unwrap(),
+    );
+    for attempt in 0..3 {
+        let new_name = format!("formatRevision{attempt}");
+        begin_with_intents(
+            &kernel,
+            &format!("revision-loss-{attempt}"),
+            [rename(&format.id, &new_name)],
+        )
+        .unwrap();
+    }
+    let builder = CountingDeltaBuilder::new(vec![GraphChange::UpsertNode { node: changed_user }]);
+    let before_final_check = |attempt: u32| {
+        kernel
+            .submit_change_set(&format!("revision-loss-{attempt}"), 10 + attempt as u64)
+            .unwrap();
+    };
+
+    let error = kernel
+        .publish_claimed_with_test_hooks(&claim, &builder, 20, &before_final_check, &|| {})
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<CoordinationError>(),
+        Some(&CoordinationError::OptimisticRetryExhausted { attempts: 3 })
+    );
+    assert_eq!(builder.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(kernel.test_active_claims().unwrap(), vec![claim]);
+}
+
+#[test]
+fn final_lifecycle_commit_holds_publication_then_scheduler_before_redb() {
+    let fixture = MediumCoordinationFixture::load();
+    let user = fixture.declaration_named("User").clone();
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(GraphDerivedAnalyzer::new()),
+    )
+    .unwrap();
+    let kernel = Arc::new(kernel);
+    begin_with_intents(&kernel, "lock-order", [rename(&user.id, "Account")]).unwrap();
+    let offer = ready(kernel.submit_change_set("lock-order", 0).unwrap());
+    let claim = claimed(
+        kernel
+            .claim_ready(&offer.offer_id, &offer.claim_token, 1)
+            .unwrap(),
+    );
+    let before_redb = || {
+        assert!(
+            kernel.test_publication_mutexes_held(),
+            "redb lifecycle commit must run under publication then scheduler"
+        );
+    };
+    let outcome = kernel
+        .publish_claimed_with_test_hooks(
+            &claim,
+            &NodePatchBuilder::new(vec![(user.id, "\n// Account".into())]),
+            2,
+            &|_| {},
+            &before_redb,
+        )
+        .unwrap();
+    assert!(matches!(outcome, PublishClaimOutcome::Published(_)));
+}
+
+#[test]
+fn central_planner_contracts_stale_reservations_before_selecting_successor() {
+    let fixture = MediumCoordinationFixture::load();
+    let graph = GraphGeneration::from_snapshot(fixture.snapshot().clone()).unwrap();
+    let blocker = fixture.declaration_named("User").clone();
+    let active = fixture.declaration_named("parseArgs").clone();
+    let successor = fixture.declaration_named("formatTimestamp").clone();
+    let mut changed_blocker = blocker.clone();
+    changed_blocker.payload.push_str("\n// committed blocker");
+    let blocker_changes = vec![GraphChange::UpsertNode {
+        node: changed_blocker,
+    }];
+    let blocker_authority = required_delta_authority(
+        &graph,
+        &GraphDelta {
+            schema_version: SCHEMA_VERSION,
+            base_generation: 0,
+            changes: blocker_changes.clone(),
+        },
+    )
+    .unwrap();
+    let active_scope = vec![format!("node:{}", active.id)];
+    let fresh_scope = vec![format!("node:{}", successor.id)];
+    let mut stale_scope = active_scope.clone();
+    stale_scope.extend(fresh_scope.clone());
+    let successor_calls = Arc::new(AtomicUsize::new(0));
+    let provider = ContractingSuccessorProvider {
+        blocker_id: blocker.id.clone(),
+        blocker: fixed_analysis(
+            blocker_authority.write_resources,
+            blocker_authority.reservation_coverage,
+        ),
+        active_id: active.id.clone(),
+        active: fixed_analysis(active_scope.clone(), active_scope.clone()),
+        successor_id: successor.id.clone(),
+        successor_stale: fixed_analysis(stale_scope.clone(), stale_scope),
+        successor_fresh: fixed_analysis(fresh_scope.clone(), fresh_scope),
+        successor_calls: successor_calls.clone(),
+    };
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, fixture.snapshot().clone(), Arc::new(provider))
+            .unwrap();
+    begin_with_intents(&kernel, "planner-blocker", [rename(&blocker.id, "Account")]).unwrap();
+    begin_with_intents(&kernel, "active-other", [rename(&active.id, "parseTokens")]).unwrap();
+    let blocker_offer = ready(kernel.submit_change_set("planner-blocker", 0).unwrap());
+    let active_offer = ready(kernel.submit_change_set("active-other", 0).unwrap());
+    let blocker_claim = claimed(
+        kernel
+            .claim_ready(&blocker_offer.offer_id, &blocker_offer.claim_token, 1)
+            .unwrap(),
+    );
+    let _active_claim = claimed(
+        kernel
+            .claim_ready(&active_offer.offer_id, &active_offer.claim_token, 1)
+            .unwrap(),
+    );
+    begin_with_intents(
+        &kernel,
+        "contracting-successor",
+        [rename(&successor.id, "formatContracted")],
+    )
+    .unwrap();
+    let successor_submission = kernel
+        .submit_change_set("contracting-successor", 2)
+        .unwrap();
+    assert!(
+        matches!(successor_submission, SubmissionOutcome::Queued { .. }),
+        "stale successor scope must initially conflict: {successor_submission:?}"
+    );
+
+    kernel
+        .publish_claimed(&blocker_claim, &DeltaBuilder(blocker_changes), 3)
+        .unwrap();
+
+    assert_eq!(successor_calls.load(Ordering::SeqCst), 3);
+    let durable_change_set = kernel.change_set("contracting-successor").unwrap().unwrap();
+    let durable_ticket = kernel
+        .ticket_for_change_set("contracting-successor")
+        .unwrap()
+        .unwrap();
+    let durable_offer = kernel
+        .ready_offer_for_change_set("contracting-successor")
+        .unwrap()
+        .unwrap();
+    assert_eq!(durable_change_set.state, ChangeSetState::Ready);
+    assert_eq!(durable_ticket.state, TicketState::Ready);
+    assert_eq!(durable_offer.graph_generation, 1);
+    assert_eq!(
+        kernel
+            .test_scheduler_ticket_for_change_set("contracting-successor")
+            .unwrap(),
+        durable_ticket
+    );
+    assert_eq!(
+        durable_ticket.ready_offer_id.as_deref(),
+        Some(durable_offer.offer_id.as_str())
+    );
+}
+
+#[test]
+fn rebased_builder_replay_uses_durable_original_prepared_generation_after_reopen() {
+    let fixture = MediumCoordinationFixture::load();
+    let user = fixture.declaration_named("User").clone();
+    let parse = fixture.declaration_named("parseArgs").clone();
+    let format = fixture.declaration_named("formatTimestamp").clone();
+    let mut changed_user = user.clone();
+    changed_user.payload.push_str("\n// outer candidate");
+    let mut changed_parse = parse.clone();
+    changed_parse.payload.push_str("\n// drift one");
+    let mut changed_format = format.clone();
+    changed_format.payload.push_str("\n// drift two");
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(GraphDerivedAnalyzer::new()),
+    )
+    .unwrap();
+    let kernel = Arc::new(kernel);
+    for (id, declaration, new_name) in [
+        ("replay-outer", &user, "Account"),
+        ("drift-one", &parse, "parseTokens"),
+        ("drift-two", &format, "formatClock"),
+    ] {
+        begin_with_intents(&kernel, id, [rename(&declaration.id, new_name)]).unwrap();
+    }
+    let outer_offer = ready(kernel.submit_change_set("replay-outer", 0).unwrap());
+    let first_offer = ready(kernel.submit_change_set("drift-one", 0).unwrap());
+    let second_offer = ready(kernel.submit_change_set("drift-two", 0).unwrap());
+    let outer_claim = claimed(
+        kernel
+            .claim_ready(&outer_offer.offer_id, &outer_offer.claim_token, 1)
+            .unwrap(),
+    );
+    let first_claim = claimed(
+        kernel
+            .claim_ready(&first_offer.offer_id, &first_offer.claim_token, 1)
+            .unwrap(),
+    );
+    let second_claim = claimed(
+        kernel
+            .claim_ready(&second_offer.offer_id, &second_offer.claim_token, 1)
+            .unwrap(),
+    );
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let outer_builder = RecordingGenerationBuilder {
+        generations: observed.clone(),
+        changes: vec![GraphChange::UpsertNode { node: changed_user }],
+    };
+    let before_final = |attempt: u32| {
+        if attempt == 0 {
+            kernel
+                .publish_claimed(
+                    &first_claim,
+                    &DeltaBuilder(vec![GraphChange::UpsertNode {
+                        node: changed_parse.clone(),
+                    }]),
+                    2,
+                )
+                .unwrap();
+            kernel
+                .publish_claimed(
+                    &second_claim,
+                    &DeltaBuilder(vec![GraphChange::UpsertNode {
+                        node: changed_format.clone(),
+                    }]),
+                    3,
+                )
+                .unwrap();
+        }
+    };
+    let first = published(
+        kernel
+            .publish_claimed_with_test_hooks(&outer_claim, &outer_builder, 4, &before_final, &|| {})
+            .unwrap(),
+    );
+    assert_eq!(first.generation, 3);
+    assert_eq!(*observed.lock().unwrap(), vec![0]);
+    drop(kernel);
+
+    let (reopened, recovered) = Kernel::open(&path).unwrap();
+    assert_eq!(recovered.generation, 3);
+    let replay_observed = Arc::new(Mutex::new(Vec::new()));
+    let replay = published(
+        reopened
+            .publish_claimed(
+                &outer_claim,
+                &RecordingGenerationBuilder {
+                    generations: replay_observed.clone(),
+                    changes: outer_builder.changes.clone(),
+                },
+                5,
+            )
+            .unwrap(),
+    );
+    assert!(replay.already_published);
+    assert_eq!(replay.generation, 3);
+    assert_eq!(*replay_observed.lock().unwrap(), vec![0]);
 }

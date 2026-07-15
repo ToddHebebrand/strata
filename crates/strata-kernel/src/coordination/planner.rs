@@ -125,7 +125,11 @@ pub(crate) fn plan_readiness(
                 DynamicExpansionPolicy::Requeue { max_expansions }
                     if change_set_before.expansion_count < max_expansions
             );
-        if scope_change == ScopeChange::Unchanged || can_requeue_expansion {
+        if matches!(
+            scope_change,
+            ScopeChange::Unchanged | ScopeChange::Contracted
+        ) || can_requeue_expansion
+        {
             next_scheduler.update_queued_scope(
                 &ticket_id,
                 authority.scope.scope_fingerprint.clone(),
@@ -302,13 +306,4 @@ pub(super) fn make_offer(
         None,
     )
     .map_err(anyhow::Error::msg)
-}
-
-#[cfg(feature = "coordination-test-api")]
-pub(super) fn mark_ready(
-    scheduler: &mut SchedulerState,
-    ticket_id: &str,
-    offer: ReadyOffer,
-) -> Result<()> {
-    scheduler.mark_ready(ticket_id, offer)
 }

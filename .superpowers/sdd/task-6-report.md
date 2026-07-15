@@ -57,3 +57,39 @@ Commit: this report is committed with `fix(kernel): publish disjoint claims opti
 ## Concerns
 
 - None blocking.
+
+## Review-fix wave (2026-07-15)
+
+Status: DONE
+
+### Corrections delivered
+
+- Made dependency-clock drift authoritative at every final check, including the third optimistic attempt: stale work is atomically reanalyzed, its claim is removed and fenced, and it returns `Requeued` or `NeedsDecision`; only three consecutive unrelated graph/scheduler/service losses return `OptimisticRetryExhausted { attempts: 3 }`.
+- Routed successful-publication and invalidation successor scheduling through the centralized `plan_readiness` path. Scope contraction is now explicit, so stale wide reservations can contract to fresh narrow authority before FIFO selection.
+- Enforced publication -> scheduler -> redb ordering for the invalidation commit and added a deterministic lock-order probe.
+- Persisted the builder's original prepared graph generation in `PublicationAttemptRecord`. Retry and reopen replay reuse that authority; legacy records deserialize through a `serde(default)` fallback.
+- Split external envelopes from internally validated retry candidates. Initial external input must bind to the captured graph generation, while retries reuse the already validated envelope without rebuilding or rehashing it.
+- Removed structural digest validation from final locked/idempotency checks; the final section compares the already validated digest string to durable state only.
+- Converted committed builder-replay panics to typed errors and strengthened panic recovery coverage through a raw durable reopen followed by kernel recovery and stale-claim fencing.
+
+### Regression-first evidence
+
+- Initial compile RED failed on the intentionally missing durable prepared-generation field and deterministic test probes.
+- Behavioral RED proved all three target defects: third-final-check dependency drift returned generic optimistic exhaustion; centralized-planner contraction produced no successor offer; and rebased reopen replay failed with `AttemptDigestMismatch`.
+- Publication RED proved an external envelope with base generation 99 could commit and a replay builder panic could unwind.
+- The control regression was green throughout: three unrelated final-state losses return exactly `OptimisticRetryExhausted { attempts: 3 }`, and the builder runs once.
+
+### Final verification
+
+- Exact acceptance command passed 39/39: optimistic 11/11, publication 17/17, acceptance 11/11.
+- Full coordination-test-api suite passed 93/93.
+- Full all-features suite passed 146/146, including durable panic recovery, duplicate races, failpoints, recovery, and fencing.
+- Default and all-features strict Clippy passed with `-D warnings`.
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+
+### Review conclusion
+
+- Claim removal, durable state transition, scheduler ticket/offer state, and fencing are committed together on invalidation; no stale active claim or offer remains.
+- Candidate construction, semantic analysis, digest work, graph application, readiness planning, and replay building remain outside both global mutexes.
+- The durable prepared-generation field implements the already approved idempotency/replay contract and is backward compatible, so no `decisions.md` or design-spec change is required.
+- No blocking concerns remain.

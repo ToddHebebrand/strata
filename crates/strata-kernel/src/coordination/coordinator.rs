@@ -327,7 +327,7 @@ impl Kernel {
             let mut simulated = before_scheduler.clone();
 
             let (outcome, mut combined, mut final_scheduler) = match scope_change {
-                ScopeChange::Unchanged => {
+                ScopeChange::Unchanged | ScopeChange::Contracted => {
                     let mut claim = ClaimHandle::new(
                         Uuid::new_v4().to_string(),
                         offer.change_set_id.clone(),

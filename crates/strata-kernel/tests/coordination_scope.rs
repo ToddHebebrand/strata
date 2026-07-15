@@ -216,7 +216,7 @@ fn scope_change_classifies_unchanged_expanded_and_material_replacements() {
     removed_key.scope_fingerprint = canonical_scope_fingerprint(&removed_key).unwrap();
     assert_eq!(
         classify_scope_change(&expanded, &removed_key),
-        ScopeChange::MateriallyChanged
+        ScopeChange::Contracted
     );
 }
 

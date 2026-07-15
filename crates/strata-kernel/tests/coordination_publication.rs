@@ -115,6 +115,14 @@ impl CandidateBuilder for PassiveBuilder {
     }
 }
 
+struct PanickingReplayBuilder;
+
+impl CandidateBuilder for PanickingReplayBuilder {
+    fn build_candidate(&self, _prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
+        panic!("committed replay builder panic")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PreparedObservation {
     graph_generation: u64,
@@ -494,6 +502,121 @@ fn malicious_candidate_digest_is_rejected_before_graph_or_lifecycle_state_change
 }
 
 #[test]
+fn external_envelope_with_unbound_base_generation_is_rejected_without_side_effects() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 6]);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
+    let claim = begin_submit_claim(&kernel, "external-stale-base", 0);
+    let before_change_set = kernel.change_set("external-stale-base").unwrap().unwrap();
+    let before_ticket = kernel
+        .ticket_for_change_set("external-stale-base")
+        .unwrap()
+        .unwrap();
+    let before_events = kernel.events_after("stale-base-audit", 0, 20).unwrap();
+    let mut stale = user_delta(&snapshot, "export interface Account {}");
+    stale.base_generation = 99;
+    let envelope = CandidateEnvelope::from_delta(stale).unwrap();
+
+    let error = kernel
+        .publish_claimed_envelope(&claim, envelope, 2)
+        .unwrap_err();
+
+    assert!(error.to_string().contains("base generation"));
+    assert_eq!(kernel.snapshot().generation(), 0);
+    assert_eq!(
+        kernel.change_set("external-stale-base").unwrap().unwrap(),
+        before_change_set
+    );
+    assert_eq!(
+        kernel
+            .ticket_for_change_set("external-stale-base")
+            .unwrap()
+            .unwrap(),
+        before_ticket
+    );
+    assert_eq!(
+        kernel.events_after("stale-base-audit", 0, 20).unwrap(),
+        before_events
+    );
+}
+
+#[test]
+fn envelope_digest_validation_runs_once_with_both_global_mutexes_free() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 6]);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
+    let kernel = Arc::new(kernel);
+    let claim = begin_submit_claim(&kernel, "digest-lock-freedom", 0);
+    let envelope =
+        CandidateEnvelope::from_delta(user_delta(&snapshot, "export interface Account {}"))
+            .unwrap();
+    let validations = AtomicUsize::new(0);
+    let validation_hook = || {
+        validations.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            kernel.test_publication_mutexes_available(),
+            "candidate digest validation must run outside both global mutexes"
+        );
+    };
+
+    let outcome = kernel
+        .publish_claimed_envelope_with_validation_hook(&claim, envelope, 2, &validation_hook)
+        .unwrap();
+
+    assert!(matches!(outcome, PublishClaimOutcome::Published(_)));
+    assert_eq!(validations.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn committed_replay_builder_panic_returns_error_without_changing_committed_state() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 6]);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
+    let claim = begin_submit_claim(&kernel, "replay-panic", 0);
+    let first = published(
+        kernel
+            .publish_claimed(
+                &claim,
+                &PassiveBuilder(user_delta(&snapshot, "export interface Account {}")),
+                2,
+            )
+            .unwrap(),
+    );
+    let before_events = kernel.events_after("replay-panic-audit", 0, 20).unwrap();
+
+    let error = kernel
+        .publish_claimed(&claim, &PanickingReplayBuilder, 3)
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("committed replay builder panicked")
+    );
+    assert_eq!(kernel.snapshot().generation(), first.generation);
+    assert_eq!(
+        kernel.change_set("replay-panic").unwrap().unwrap().state,
+        ChangeSetState::Committed
+    );
+    assert_eq!(
+        kernel.events_after("replay-panic-audit", 0, 20).unwrap(),
+        before_events
+    );
+}
+
+#[test]
 fn claimed_composite_publication_is_kernel_owned_atomic_and_idempotent_after_reopen() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
@@ -842,7 +965,11 @@ fn publication_reanalysis_happens_before_builder_and_changed_scope_needs_decisio
 
     let outcome = kernel.publish_claimed(&claim, &builder, 2).unwrap();
     assert!(matches!(outcome, PublishClaimOutcome::Requeued { .. }));
-    assert_eq!(analyzer.calls(), 4);
+    assert_eq!(
+        analyzer.calls(),
+        5,
+        "invalidation must repeat fresh analysis before its locked commit"
+    );
     assert_eq!(builder.calls(), 0);
     assert_eq!(kernel.snapshot().generation(), 0);
     assert_eq!(
@@ -864,6 +991,7 @@ fn material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter(
         analysis(&old_scope),
         analysis(&old_scope),
         analysis(&old_scope),
+        analysis(&material_scope),
         analysis(&material_scope),
         analysis(&old_scope),
     ]);

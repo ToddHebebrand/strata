@@ -16,10 +16,10 @@ use super::coordinator::{
 use super::planner::{PlannerSnapshot, plan_readiness};
 use super::resource_keys;
 use super::{
-    CandidateBuilder, CandidateEnvelope, ChangeSetRecord, ChangeSetState, ClaimHandle,
-    CoordinationEventKind, DependencyVersion, DynamicExpansionPolicy, LifecycleTransition,
-    PreparedCandidate, PublicationAttemptRecord, PublishClaimOutcome, SchedulerState, ScopeChange,
-    TicketState, classify_scope_change,
+    CandidateBuilder, CandidateEnvelope, ChangeSetState, ClaimHandle, CoordinationEventKind,
+    DependencyVersion, DynamicExpansionPolicy, LifecycleTransition, PreparedCandidate,
+    PublicationAttemptRecord, PublishClaimOutcome, SchedulerState, ScopeChange, TicketState,
+    classify_scope_change,
 };
 use crate::model::{FenceClaim, Publication};
 use crate::storage::{CoordinatedCommit, CoordinatedPublishFailpoint, PublishOutcome};
@@ -30,7 +30,40 @@ use crate::{
 
 enum CandidateSource<'a> {
     Builder(&'a dyn CandidateBuilder),
-    Envelope(CandidateEnvelope),
+    ExternalEnvelope(CandidateEnvelope),
+    Validated(ValidatedCandidate),
+}
+
+#[derive(Clone)]
+struct ValidatedCandidate {
+    envelope: CandidateEnvelope,
+    prepared_graph_generation: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct PublicationTestHooks<'a> {
+    before_final_check: Option<&'a dyn Fn(u32)>,
+    before_redb_commit: Option<&'a dyn Fn()>,
+    after_digest_validation: Option<&'a dyn Fn()>,
+}
+
+#[derive(Clone, Copy)]
+struct PublicationExecution<'a> {
+    failpoint: CoordinatedPublishFailpoint,
+    after_outer_idempotency_lookup: Option<&'a dyn Fn()>,
+    optimistic_attempt: u32,
+    test_hooks: PublicationTestHooks<'a>,
+}
+
+impl Default for PublicationExecution<'_> {
+    fn default() -> Self {
+        Self {
+            failpoint: CoordinatedPublishFailpoint::None,
+            after_outer_idempotency_lookup: None,
+            optimistic_attempt: 0,
+            test_hooks: PublicationTestHooks::default(),
+        }
+    }
 }
 
 /// Complete immutable publication proposal prepared before either global mutex is acquired.
@@ -61,9 +94,7 @@ impl Kernel {
             claim,
             CandidateSource::Builder(candidate_builder),
             now_tick,
-            CoordinatedPublishFailpoint::None,
-            None,
-            0,
+            PublicationExecution::default(),
         )
     }
 
@@ -74,14 +105,60 @@ impl Kernel {
         envelope: CandidateEnvelope,
         now_tick: u64,
     ) -> Result<PublishClaimOutcome> {
-        envelope.validate_digest()?;
         self.publish_claimed_inner(
             claim,
-            CandidateSource::Envelope(envelope),
+            CandidateSource::ExternalEnvelope(envelope),
             now_tick,
-            CoordinatedPublishFailpoint::None,
-            None,
-            0,
+            PublicationExecution::default(),
+        )
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn publish_claimed_with_test_hooks(
+        &self,
+        claim: &ClaimHandle,
+        candidate_builder: &dyn CandidateBuilder,
+        now_tick: u64,
+        before_final_check: &dyn Fn(u32),
+        before_redb_commit: &dyn Fn(),
+    ) -> Result<PublishClaimOutcome> {
+        self.publish_claimed_inner(
+            claim,
+            CandidateSource::Builder(candidate_builder),
+            now_tick,
+            PublicationExecution {
+                test_hooks: PublicationTestHooks {
+                    before_final_check: Some(before_final_check),
+                    before_redb_commit: Some(before_redb_commit),
+                    after_digest_validation: None,
+                },
+                ..PublicationExecution::default()
+            },
+        )
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn publish_claimed_envelope_with_validation_hook(
+        &self,
+        claim: &ClaimHandle,
+        envelope: CandidateEnvelope,
+        now_tick: u64,
+        after_digest_validation: &dyn Fn(),
+    ) -> Result<PublishClaimOutcome> {
+        self.publish_claimed_inner(
+            claim,
+            CandidateSource::ExternalEnvelope(envelope),
+            now_tick,
+            PublicationExecution {
+                test_hooks: PublicationTestHooks {
+                    before_final_check: None,
+                    before_redb_commit: None,
+                    after_digest_validation: Some(after_digest_validation),
+                },
+                ..PublicationExecution::default()
+            },
         )
     }
 
@@ -98,9 +175,10 @@ impl Kernel {
             claim,
             CandidateSource::Builder(candidate_builder),
             now_tick,
-            failpoint,
-            None,
-            0,
+            PublicationExecution {
+                failpoint,
+                ..PublicationExecution::default()
+            },
         )?;
         let PublishClaimOutcome::Published(report) = outcome else {
             bail!("failpoint publication did not reach a graph publication outcome")
@@ -122,9 +200,10 @@ impl Kernel {
             claim,
             CandidateSource::Builder(candidate_builder),
             now_tick,
-            CoordinatedPublishFailpoint::None,
-            Some(after_outer_idempotency_lookup),
-            0,
+            PublicationExecution {
+                after_outer_idempotency_lookup: Some(after_outer_idempotency_lookup),
+                ..PublicationExecution::default()
+            },
         )?;
         let PublishClaimOutcome::Published(report) = outcome else {
             bail!("entry-hook publication did not reach a graph publication outcome")
@@ -138,10 +217,14 @@ impl Kernel {
         claim: &ClaimHandle,
         candidate_source: CandidateSource<'_>,
         now_tick: u64,
-        failpoint: CoordinatedPublishFailpoint,
-        after_outer_idempotency_lookup: Option<&dyn Fn()>,
-        optimistic_attempt: u32,
+        execution: PublicationExecution<'_>,
     ) -> Result<PublishClaimOutcome> {
+        let PublicationExecution {
+            failpoint,
+            after_outer_idempotency_lookup,
+            optimistic_attempt,
+            test_hooks,
+        } = execution;
         let idempotency_key = coordination_commit_key(&claim.change_set_id);
         if let Some(report) = self.committed_candidate_report(claim, &candidate_source)? {
             return Ok(PublishClaimOutcome::Published(report));
@@ -152,14 +235,14 @@ impl Kernel {
 
         let semantic_provider = self.semantic_provider()?;
         let durable = self.store.coordination();
-        let captured_revision = {
+        let (captured_scheduler, captured_revision) = {
             let scheduler = self
                 .scheduler
                 .lock()
                 .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
-            self.validate_executing_claim(&scheduler, claim, now_tick)?;
-            scheduler.revision()
+            (scheduler.clone(), scheduler.revision())
         };
+        self.validate_executing_claim(&captured_scheduler, claim, now_tick)?;
         let prepared_graph = self.snapshot();
         let before_change_set = durable
             .change_set(&claim.change_set_id)?
@@ -175,12 +258,11 @@ impl Kernel {
         let fresh_scope = analyze_change_set(&prepared_graph, &intents, semantic_provider)?;
         let scope_change = classify_scope_change(previous_scope, &fresh_scope);
         if scope_change != ScopeChange::Unchanged {
-            self.persist_changed_publication_scope(claim, fresh_scope, scope_change, now_tick)?;
+            self.persist_changed_publication_scope(claim, now_tick, test_hooks.before_redb_commit)?;
             return self.invalidated_claim_outcome(claim);
         }
 
-        let candidate_may_rebase = matches!(&candidate_source, CandidateSource::Envelope(_));
-        let envelope = match candidate_source {
+        let (validated_candidate, candidate_may_rebase) = match candidate_source {
             CandidateSource::Builder(candidate_builder) => {
                 let prepared = PreparedCandidate {
                     change_set: before_change_set.clone(),
@@ -189,14 +271,38 @@ impl Kernel {
                     attempt_id: claim.attempt_id.clone(),
                     scope_fingerprint: fresh_scope.scope_fingerprint.clone(),
                 };
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let envelope = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     candidate_builder.build_candidate(&prepared)
                 }))
-                .map_err(|_| anyhow::anyhow!("candidate builder panicked"))??
+                .map_err(|_| anyhow::anyhow!("candidate builder panicked"))??;
+                envelope.validate_digest()?;
+                if let Some(hook) = test_hooks.after_digest_validation {
+                    hook();
+                }
+                (
+                    ValidatedCandidate {
+                        envelope,
+                        prepared_graph_generation: prepared_graph.generation(),
+                    },
+                    false,
+                )
             }
-            CandidateSource::Envelope(envelope) => envelope,
+            CandidateSource::ExternalEnvelope(envelope) => {
+                envelope.validate_digest()?;
+                if let Some(hook) = test_hooks.after_digest_validation {
+                    hook();
+                }
+                (
+                    ValidatedCandidate {
+                        envelope,
+                        prepared_graph_generation: prepared_graph.generation(),
+                    },
+                    false,
+                )
+            }
+            CandidateSource::Validated(candidate) => (candidate, true),
         };
-        envelope.validate_digest()?;
+        let envelope = validated_candidate.envelope.clone();
         let candidate_digest = envelope.candidate_digest.clone();
         let mut delta = envelope.delta;
         if delta.schema_version != SCHEMA_VERSION {
@@ -214,25 +320,20 @@ impl Kernel {
         }
         super::validate_delta_containment(&prepared_graph, &delta, &fresh_scope)
             .context("candidate delta is outside inferred scope")?;
-        let candidate_envelope = CandidateEnvelope {
-            delta: delta.clone(),
-            candidate_digest: candidate_digest.clone(),
-        };
+        let candidate_envelope = validated_candidate.envelope.clone();
 
         let before_scheduler = {
             let scheduler = self
                 .scheduler
                 .lock()
                 .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
-            self.validate_executing_claim(&scheduler, claim, now_tick)?;
             scheduler.clone()
         };
+        self.validate_executing_claim(&before_scheduler, claim, now_tick)?;
         let graph = self.snapshot();
         let clocks = self.resource_clock_snapshot();
         if !clocks.matches(&claim.dependency_versions) {
-            let authority = plan_change_set(&graph, &intents, semantic_provider)?;
-            let changed = classify_scope_change(previous_scope, &authority.scope);
-            self.persist_changed_publication_scope(claim, authority.scope, changed, now_tick)?;
+            self.persist_changed_publication_scope(claim, now_tick, test_hooks.before_redb_commit)?;
             return self.invalidated_claim_outcome(claim);
         }
         if before_scheduler.revision() < captured_revision {
@@ -241,12 +342,7 @@ impl Kernel {
         let current_authority = plan_change_set(&graph, &intents, semantic_provider)?;
         let current_scope_change = classify_scope_change(previous_scope, &current_authority.scope);
         if current_scope_change != ScopeChange::Unchanged {
-            self.persist_changed_publication_scope(
-                claim,
-                current_authority.scope,
-                current_scope_change,
-                now_tick,
-            )?;
+            self.persist_changed_publication_scope(claim, now_tick, test_hooks.before_redb_commit)?;
             return self.invalidated_claim_outcome(claim);
         }
         let fresh_scope = current_authority.scope;
@@ -313,197 +409,57 @@ impl Kernel {
             ),
         )?;
 
-        let mut successor_change_sets: BTreeMap<String, (ChangeSetRecord, ChangeSetRecord)> =
-            BTreeMap::new();
-        let mut terminal_successor_ticket_ids = BTreeSet::new();
-        loop {
-            let selected = next_scheduler.select_ready()?;
-            if selected.is_empty() {
-                break;
-            }
-            let mut analyses = Vec::with_capacity(selected.len());
-            let mut any_scope_change = false;
-            for ticket_id in selected {
-                let ticket = next_scheduler
-                    .ticket(&ticket_id)
-                    .cloned()
-                    .with_context(|| format!("selected ticket {ticket_id} disappeared"))?;
-                let (durable_before, current) = if let Some((before, after)) =
-                    successor_change_sets.get(&ticket.change_set_id)
-                {
-                    (before.clone(), after.clone())
-                } else {
-                    let before = durable
-                        .change_set(&ticket.change_set_id)?
-                        .with_context(|| {
-                            format!("missing successor change set {}", ticket.change_set_id)
-                        })?;
-                    (before.clone(), before)
-                };
-                let previous_scope = current
-                    .inferred_scope
-                    .as_ref()
-                    .context("queued successor has no inferred scope")?;
-                let successor_intents = durable.intents_for(&ticket.change_set_id)?;
-                let fresh = analyze_change_set(&next, &successor_intents, semantic_provider)?;
-                let scope_change = classify_scope_change(previous_scope, &fresh);
-                any_scope_change |= scope_change != ScopeChange::Unchanged;
-                analyses.push((ticket, durable_before, current, fresh, scope_change));
-            }
-
-            if !any_scope_change {
-                for (ticket, durable_before, mut current, fresh, _) in analyses {
-                    let mut fresh_ticket = next_scheduler.update_queued_scope(
-                        &ticket.ticket_id,
-                        fresh.scope_fingerprint.clone(),
-                        fresh.reservation_keys.clone(),
-                    )?;
-                    let mut offer = super::planner::make_offer(
-                        &fresh_ticket,
-                        self.service_epoch(),
-                        next_generation,
-                        now_tick,
-                    )?;
-                    offer.blocking_event_sequence = Some(committed_event.sequence);
-                    super::planner::mark_ready(
-                        &mut next_scheduler,
-                        &ticket.ticket_id,
-                        offer.clone(),
-                    )?;
-                    fresh_ticket = next_scheduler
-                        .ticket(&ticket.ticket_id)
-                        .cloned()
-                        .context("freshly offered successor disappeared")?;
-                    debug_assert_eq!(fresh_ticket.scope_fingerprint, fresh.scope_fingerprint);
-                    current.state = ChangeSetState::Ready;
-                    current.inferred_scope = Some(fresh.clone());
-                    current.blocking_change_set_id = Some(claim.change_set_id.clone());
-                    successor_change_sets
-                        .insert(current.change_set_id.clone(), (durable_before, current));
-                    lifecycle.offers.push((None, Some(offer.clone())));
-                    append_event_with_payload(
-                        &mut lifecycle,
-                        CoordinationEventKind::IntentReady,
-                        &offer.change_set_id,
-                        next_generation,
-                        bounded_wake_payload_with_scope(
-                            "blockingOperationId",
-                            &operation_id,
-                            graph.generation(),
-                            next_generation,
-                            &affected_node_ids,
-                            &fresh.scope_fingerprint,
-                        ),
-                    )?;
-                }
-                break;
-            }
-
-            for (ticket, durable_before, mut current, fresh, scope_change) in analyses {
-                if scope_change == ScopeChange::Unchanged {
-                    continue;
-                }
-                let can_requeue_expansion = scope_change == ScopeChange::Expanded
-                    && matches!(
-                        fresh.dynamic_expansion_policy,
-                        DynamicExpansionPolicy::Requeue { max_expansions }
-                            if current.expansion_count < max_expansions
-                    );
-                if can_requeue_expansion {
-                    next_scheduler.update_queued_scope(
-                        &ticket.ticket_id,
-                        fresh.scope_fingerprint.clone(),
-                        fresh.reservation_keys.clone(),
-                    )?;
-                    current.state = ChangeSetState::Queued;
-                    current.inferred_scope = Some(fresh.clone());
-                    current.blocking_change_set_id = Some(claim.change_set_id.clone());
-                    current.expansion_count = current
-                        .expansion_count
-                        .checked_add(1)
-                        .context("successor scope expansion count overflow")?;
-                    successor_change_sets.insert(
-                        current.change_set_id.clone(),
-                        (durable_before, current.clone()),
-                    );
-                    append_event_with_payload(
-                        &mut lifecycle,
-                        CoordinationEventKind::ScopeExpanded,
-                        &current.change_set_id,
-                        next_generation,
-                        bounded_wake_payload_with_scope(
-                            "blockingOperationId",
-                            &operation_id,
-                            graph.generation(),
-                            next_generation,
-                            &affected_node_ids,
-                            &fresh.scope_fingerprint,
-                        ),
-                    )?;
-                } else {
-                    let current_ticket = next_scheduler
-                        .ticket(&ticket.ticket_id)
-                        .cloned()
-                        .context("terminal successor ticket disappeared")?;
-                    next_scheduler.cancel_ticket(&ticket.ticket_id)?;
-                    let mut terminal_ticket = current_ticket;
-                    terminal_ticket.state = TicketState::NeedsDecision;
-                    terminal_ticket.scope_fingerprint = fresh.scope_fingerprint.clone();
-                    terminal_ticket.reservation_keys = fresh.reservation_keys.clone();
-                    terminal_ticket.ready_offer_id = None;
-                    terminal_ticket.active_claim_id = None;
-                    let durable_before_ticket = before_scheduler
-                        .ticket(&ticket.ticket_id)
-                        .cloned()
-                        .context("terminal successor missing before scheduler ticket")?;
-                    lifecycle
-                        .tickets
-                        .push((Some(durable_before_ticket), Some(terminal_ticket)));
-                    terminal_successor_ticket_ids.insert(ticket.ticket_id.clone());
-                    current.state = ChangeSetState::NeedsDecision;
-                    current.inferred_scope = Some(fresh.clone());
-                    current.blocking_change_set_id = Some(claim.change_set_id.clone());
-                    successor_change_sets.insert(
-                        current.change_set_id.clone(),
-                        (durable_before, current.clone()),
-                    );
-                    append_event_with_payload(
-                        &mut lifecycle,
-                        CoordinationEventKind::IntentNeedsDecision,
-                        &current.change_set_id,
-                        next_generation,
-                        bounded_wake_payload_with_scope(
-                            "blockingOperationId",
-                            &operation_id,
-                            graph.generation(),
-                            next_generation,
-                            &affected_node_ids,
-                            &fresh.scope_fingerprint,
-                        ),
-                    )?;
-                }
+        let readiness_plan = plan_readiness(
+            semantic_provider,
+            PlannerSnapshot {
+                graph: next.clone(),
+                scheduler: next_scheduler,
+                scheduler_revision: before_scheduler.revision(),
+                service_epoch: self.service_epoch(),
+                now_tick,
+                cause: super::TransitionCause::Publication,
+                blocking_event_sequence: Some(committed_event.sequence),
+                deferred_change_set_ids: BTreeSet::new(),
+            },
+            &durable,
+        )?;
+        let mut readiness_lifecycle = readiness_plan.lifecycle_transition()?;
+        for (_, after) in &mut readiness_lifecycle.change_sets {
+            if let Some(after) = after {
+                after.blocking_change_set_id = Some(claim.change_set_id.clone());
             }
         }
-        lifecycle.change_sets.extend(
-            successor_change_sets
-                .into_values()
-                .map(|(before, after)| (Some(before), Some(after))),
-        );
-        lifecycle.tickets.extend(
-            scheduler_ticket_updates(&before_scheduler, &next_scheduler)
-                .into_iter()
-                .filter(|(before, after)| {
-                    let ticket_id = before
-                        .as_ref()
-                        .or(after.as_ref())
-                        .map(|ticket| ticket.ticket_id.as_str());
-                    ticket_id != Some(before_ticket.ticket_id.as_str())
-                        && ticket_id.is_none_or(|ticket_id| {
-                            !terminal_successor_ticket_ids.contains(ticket_id)
-                        })
-                }),
-        );
-
+        for event in &mut readiness_lifecycle.events {
+            if matches!(
+                event.kind,
+                CoordinationEventKind::IntentReady
+                    | CoordinationEventKind::ScopeExpanded
+                    | CoordinationEventKind::IntentNeedsDecision
+            ) {
+                let scope_fingerprint = readiness_lifecycle
+                    .change_sets
+                    .iter()
+                    .find_map(|(_, after)| {
+                        after
+                            .as_ref()
+                            .filter(|record| record.change_set_id == event.change_set_id)
+                            .and_then(|record| record.inferred_scope.as_ref())
+                            .map(|scope| scope.scope_fingerprint.as_str())
+                    })
+                    .context("planned readiness event has no fresh inferred scope")?;
+                event.payload_json = bounded_wake_payload_with_scope(
+                    "blockingOperationId",
+                    &operation_id,
+                    graph.generation(),
+                    next_generation,
+                    &affected_node_ids,
+                    scope_fingerprint,
+                );
+            }
+        }
+        lifecycle = combine_release_and_readiness(lifecycle, readiness_lifecycle)?;
+        next_scheduler = readiness_plan.next_scheduler;
+        next_scheduler.set_revision(lifecycle.next_metadata.scheduler_revision);
         let operation = OperationRecord {
             operation_id: operation_id.clone(),
             change_set_id: claim.change_set_id.clone(),
@@ -547,6 +503,7 @@ impl Kernel {
             change_set_id: claim.change_set_id.clone(),
             attempt_id: claim.attempt_id.clone(),
             candidate_digest,
+            prepared_graph_generation: Some(validated_candidate.prepared_graph_generation),
             generation: next_generation,
             graph_digest: next.digest().to_owned(),
         };
@@ -573,6 +530,9 @@ impl Kernel {
             publication_attempt: prepared_publication.attempt_record.clone(),
         };
         debug_assert_eq!(prepared_publication.operation, commit.publication.operation);
+        if let Some(hook) = test_hooks.before_final_check {
+            hook(optimistic_attempt);
+        }
         let _publish = self
             .publish_lock
             .lock()
@@ -581,19 +541,38 @@ impl Kernel {
             .scheduler
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
-        if let Some(report) = self.committed_candidate_report(
+        if let Some(report) = self.committed_candidate_report_for_digest(
             claim,
-            &CandidateSource::Envelope(prepared_publication.envelope.clone()),
+            &prepared_publication.envelope.candidate_digest,
         )? {
             return Ok(PublishClaimOutcome::Published(report));
+        }
+        if let Err(error) =
+            self.validate_executing_claim(&scheduler, &prepared_publication.claim, now_tick)
+        {
+            drop(scheduler);
+            drop(_publish);
+            if error.downcast_ref::<super::CoordinationError>()
+                == Some(&super::CoordinationError::LeaseExpired)
+                && now_tick >= prepared_publication.claim.expires_at_tick
+            {
+                self.expire_leases(now_tick)?;
+            }
+            return Err(error);
+        }
+        if !self
+            .resource_clock_snapshot()
+            .matches(&prepared_publication.dependency_versions)
+        {
+            drop(scheduler);
+            drop(_publish);
+            self.persist_changed_publication_scope(claim, now_tick, test_hooks.before_redb_commit)?;
+            return self.invalidated_claim_outcome(claim);
         }
         if self.snapshot().generation() != prepared_publication.expected_graph_generation
             || scheduler.revision() != prepared_publication.expected_scheduler_revision
             || *scheduler != before_scheduler
             || self.service_epoch() != prepared_publication.expected_service_epoch
-            || !self
-                .resource_clock_snapshot()
-                .matches(&prepared_publication.dependency_versions)
         {
             drop(scheduler);
             drop(_publish);
@@ -603,11 +582,17 @@ impl Kernel {
             if next_attempt < super::MAX_OPTIMISTIC_RETRIES {
                 return self.publish_claimed_inner(
                     claim,
-                    CandidateSource::Envelope(candidate_envelope),
+                    CandidateSource::Validated(ValidatedCandidate {
+                        envelope: candidate_envelope,
+                        prepared_graph_generation: validated_candidate.prepared_graph_generation,
+                    }),
                     now_tick,
-                    failpoint,
-                    None,
-                    next_attempt,
+                    PublicationExecution {
+                        failpoint,
+                        after_outer_idempotency_lookup: None,
+                        optimistic_attempt: next_attempt,
+                        test_hooks,
+                    },
                 );
             }
             return Err(anyhow::Error::new(
@@ -616,7 +601,9 @@ impl Kernel {
                 },
             ));
         }
-        self.validate_executing_claim(&scheduler, &prepared_publication.claim, now_tick)?;
+        if let Some(hook) = test_hooks.before_redb_commit {
+            hook();
+        }
         let persistence_started = Instant::now();
         let outcome = self
             .store
@@ -679,17 +666,21 @@ impl Kernel {
             ));
         }
         let candidate_digest = match candidate_source {
-            CandidateSource::Envelope(envelope) => {
+            CandidateSource::ExternalEnvelope(envelope) => {
                 envelope.validate_digest()?;
                 envelope.candidate_digest.clone()
             }
+            CandidateSource::Validated(candidate) => candidate.envelope.candidate_digest.clone(),
             CandidateSource::Builder(builder) => {
-                let base_generation = attempt.generation.checked_sub(1).with_context(|| {
-                    format!(
-                        "publication attempt {} has invalid generation zero",
-                        attempt.attempt_id
-                    )
-                })?;
+                let base_generation = match attempt.prepared_graph_generation {
+                    Some(generation) => generation,
+                    None => attempt.generation.checked_sub(1).with_context(|| {
+                        format!(
+                            "publication attempt {} has invalid generation zero",
+                            attempt.attempt_id
+                        )
+                    })?,
+                };
                 let graph = Arc::new(self.store.graph_generation(base_generation)?);
                 let durable = self.store.coordination();
                 let mut change_set =
@@ -713,12 +704,44 @@ impl Kernel {
                     attempt_id: attempt.attempt_id.clone(),
                     scope_fingerprint,
                 };
-                let envelope = builder.build_candidate(&prepared)?;
+                let envelope = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    builder.build_candidate(&prepared)
+                }))
+                .map_err(|_| anyhow::anyhow!("committed replay builder panicked"))??;
                 envelope.validate_digest()?;
                 envelope.candidate_digest
             }
         };
         if attempt.candidate_digest != candidate_digest {
+            return Err(anyhow::Error::new(
+                super::CoordinationError::AttemptDigestMismatch,
+            ));
+        }
+        Ok(Some(PublicationReport {
+            generation: attempt.generation,
+            digest: attempt.graph_digest,
+            persistence_ns: 0,
+            memory_publish_ns: 0,
+            already_published: true,
+        }))
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    fn committed_candidate_report_for_digest(
+        &self,
+        claim: &ClaimHandle,
+        validated_candidate_digest: &str,
+    ) -> Result<Option<PublicationReport>> {
+        let Some(attempt) = self
+            .store
+            .coordination()
+            .publication_attempt(&claim.attempt_id)?
+        else {
+            return Ok(None);
+        };
+        if attempt.change_set_id != claim.change_set_id
+            || attempt.candidate_digest != validated_candidate_digest
+        {
             return Err(anyhow::Error::new(
                 super::CoordinationError::AttemptDigestMismatch,
             ));
@@ -798,21 +821,23 @@ impl Kernel {
     fn persist_changed_publication_scope(
         &self,
         claim: &ClaimHandle,
-        fresh_scope: super::InferredScope,
-        scope_change: ScopeChange,
         now_tick: u64,
+        before_redb_commit: Option<&dyn Fn()>,
     ) -> Result<()> {
-        for _ in 0..super::MAX_OPTIMISTIC_RETRIES {
+        let mut unrelated_losses = 0;
+        loop {
             let durable = self.store.coordination();
             let graph = self.snapshot();
+            let clocks = self.resource_clock_snapshot();
             let service_epoch = self.service_epoch();
-            let (before_scheduler, expected_revision) = {
+            let before_scheduler = {
                 let scheduler = self
                     .scheduler
                     .lock()
                     .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
-                (scheduler.clone(), scheduler.revision())
+                scheduler.clone()
             };
+            let expected_revision = before_scheduler.revision();
             self.validate_executing_claim(&before_scheduler, claim, now_tick)?;
             let before_change_set = durable
                 .change_set(&claim.change_set_id)?
@@ -820,8 +845,25 @@ impl Kernel {
             if before_change_set.state != ChangeSetState::Executing {
                 bail!("change set {} is not Executing", claim.change_set_id);
             }
+            let previous_scope = before_change_set
+                .inferred_scope
+                .as_ref()
+                .context("executing change set has no inferred scope")?;
+            let intents = durable.intents_for(&claim.change_set_id)?;
+            let authority = plan_change_set(&graph, &intents, self.semantic_provider()?)?;
+            let fresh_scope = authority.scope;
+            let scope_change = classify_scope_change(previous_scope, &fresh_scope);
+            let planned_dependencies = clocks.dependencies(&authority.dependency_keys);
             let metadata = durable.metadata_state()?;
             if metadata.scheduler_revision != expected_revision {
+                unrelated_losses += 1;
+                if unrelated_losses >= super::MAX_OPTIMISTIC_RETRIES {
+                    return Err(anyhow::Error::new(
+                        super::CoordinationError::OptimisticRetryExhausted {
+                            attempts: super::MAX_OPTIMISTIC_RETRIES,
+                        },
+                    ));
+                }
                 continue;
             }
             let mut base = transition(metadata)?;
@@ -894,32 +936,57 @@ impl Kernel {
             let mut final_scheduler = plan.next_scheduler;
             final_scheduler.set_revision(combined.next_metadata.scheduler_revision);
 
+            let publication = self
+                .publish_lock
+                .lock()
+                .map_err(|_| anyhow::anyhow!("publication lock is poisoned"))?;
             let mut scheduler = self
                 .scheduler
                 .lock()
                 .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+            if let Err(error) = self.validate_executing_claim(&scheduler, claim, now_tick) {
+                drop(scheduler);
+                drop(publication);
+                if error.downcast_ref::<super::CoordinationError>()
+                    == Some(&super::CoordinationError::LeaseExpired)
+                    && now_tick >= claim.expires_at_tick
+                {
+                    self.expire_leases(now_tick)?;
+                }
+                return Err(error);
+            }
+            if !self
+                .resource_clock_snapshot()
+                .matches(&planned_dependencies)
+            {
+                drop(scheduler);
+                drop(publication);
+                continue;
+            }
             if self.snapshot().generation() != graph.generation()
                 || self.service_epoch() != service_epoch
                 || scheduler.revision() != expected_revision
                 || *scheduler != before_scheduler
                 || durable.change_set(&claim.change_set_id)?.as_ref() != Some(&before_change_set)
-                || durable
-                    .active_claims()?
-                    .into_iter()
-                    .find(|active| active.claim_id == claim.claim_id)
-                    .as_ref()
-                    != Some(claim)
             {
+                drop(scheduler);
+                drop(publication);
+                unrelated_losses += 1;
+                if unrelated_losses >= super::MAX_OPTIMISTIC_RETRIES {
+                    return Err(anyhow::Error::new(
+                        super::CoordinationError::OptimisticRetryExhausted {
+                            attempts: super::MAX_OPTIMISTIC_RETRIES,
+                        },
+                    ));
+                }
                 continue;
+            }
+            if let Some(hook) = before_redb_commit {
+                hook();
             }
             durable.persist_lifecycle(&combined)?;
             *scheduler = final_scheduler;
             return Ok(());
         }
-        Err(anyhow::Error::new(
-            super::CoordinationError::OptimisticRetryExhausted {
-                attempts: super::MAX_OPTIMISTIC_RETRIES,
-            },
-        ))
     }
 }
