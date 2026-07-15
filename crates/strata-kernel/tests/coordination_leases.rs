@@ -74,12 +74,10 @@ fn kernel(provider: Arc<CountingProvider>) -> (tempfile::TempDir, Kernel) {
     let directory = tempdir().unwrap();
     let (kernel, _) = Kernel::create_with_test_semantics(
         directory.path().join("kernel.redb"),
-        GraphSnapshot {
-            schema_version: SCHEMA_VERSION,
-            generation: 0,
-            nodes: vec![],
-            references: vec![],
-        },
+        serde_json::from_str::<GraphSnapshot>(include_str!(
+            "fixtures/examples-medium.snapshot.json"
+        ))
+        .unwrap(),
         provider,
     )
     .unwrap();
@@ -436,6 +434,10 @@ fn every_release_cause_uses_the_latest_provider_scope_and_current_generation() {
     ] {
         let provider = Arc::new(CountingProvider::default());
         let (_directory, kernel) = kernel(provider.clone());
+        assert!(
+            !kernel.snapshot().snapshot().nodes.is_empty(),
+            "release-path acceptance must run on the committed examples/medium fixture"
+        );
         let blocker_offer = match begin_and_submit(&kernel, "change:blocker", "shared", 1) {
             SubmissionOutcome::Ready { offer, .. } => offer,
             other => panic!("expected blocker Ready for {cause:?}, got {other:?}"),
@@ -532,6 +534,7 @@ fn restart_and_expiry_are_idempotent_and_old_epoch_claims_are_fenced() {
     let provider = Arc::new(CountingProvider::default());
     let (directory, kernel) = kernel(provider.clone());
     let path = directory.path().join("kernel.redb");
+    let initial_digest = kernel.snapshot().digest().to_owned();
     let draft = kernel
         .begin_change_set(
             BeginChangeSet {
@@ -557,6 +560,8 @@ fn restart_and_expiry_are_idempotent_and_old_epoch_claims_are_fenced() {
     drop(kernel);
 
     let (reopened, _) = Kernel::open_with_test_semantics(&path, provider.clone()).unwrap();
+    assert_eq!(reopened.snapshot().generation(), 0);
+    assert_eq!(reopened.snapshot().digest(), initial_digest);
     assert_eq!(
         reopened
             .change_set("change:restart-draft")
@@ -584,6 +589,8 @@ fn restart_and_expiry_are_idempotent_and_old_epoch_claims_are_fenced() {
     drop(reopened);
 
     let (reopened_again, _) = Kernel::open_with_test_semantics(&path, provider).unwrap();
+    assert_eq!(reopened_again.snapshot().generation(), 0);
+    assert_eq!(reopened_again.snapshot().digest(), initial_digest);
     assert_eq!(
         reopened_again
             .events_after("restart-audit", 0, 100)

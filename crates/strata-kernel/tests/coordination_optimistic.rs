@@ -276,6 +276,45 @@ fn two_disjoint_claims_captured_before_publication_both_commit_in_either_order()
         );
         assert_eq!((first.generation, second.generation), (1, 2));
         assert_eq!(kernel.snapshot().generation(), 2);
+        assert_eq!(
+            kernel.change_set("user").unwrap().unwrap().state,
+            ChangeSetState::Committed
+        );
+        assert_eq!(
+            kernel.change_set("parse").unwrap().unwrap().state,
+            ChangeSetState::Committed
+        );
+        assert!(
+            kernel
+                .snapshot()
+                .node(&user_id)
+                .unwrap()
+                .payload
+                .contains("// Account")
+        );
+        assert!(
+            kernel
+                .snapshot()
+                .node(&parse_id)
+                .unwrap()
+                .payload
+                .contains("// parseTokens")
+        );
+        let live_digest = kernel.snapshot().digest().to_owned();
+        drop(kernel);
+
+        let (reopened, recovered) =
+            Kernel::open_with_test_semantics(&path, Arc::new(GraphDerivedAnalyzer::new())).unwrap();
+        assert_eq!(recovered.generation, 2);
+        assert_eq!(reopened.snapshot().digest(), live_digest);
+        assert_eq!(
+            reopened.change_set("user").unwrap().unwrap().state,
+            ChangeSetState::Committed
+        );
+        assert_eq!(
+            reopened.change_set("parse").unwrap().unwrap().state,
+            ChangeSetState::Committed
+        );
     }
 }
 
@@ -345,9 +384,43 @@ fn builder_can_run_disjoint_lifecycle_and_event_replay_without_global_lock_block
         inner: NodePatchBuilder::new(vec![(user_id, "\n// Account".into())]),
     };
 
-    kernel.publish_claimed(&claim, &builder, 2).unwrap();
+    let report = published(kernel.publish_claimed(&claim, &builder, 2).unwrap());
+    assert_eq!(report.generation, 1);
+    assert_eq!(kernel.snapshot().generation(), 1);
+    assert!(
+        kernel
+            .snapshot()
+            .node(fixture.declaration_named("User").id.as_str())
+            .unwrap()
+            .payload
+            .contains("// Account")
+    );
+    assert_eq!(
+        kernel.change_set("publishing").unwrap().unwrap().state,
+        ChangeSetState::Committed
+    );
+    assert_eq!(
+        kernel.change_set("disjoint").unwrap().unwrap().state,
+        ChangeSetState::Ready
+    );
     assert_eq!(
         kernel.change_set("other").unwrap().unwrap().state,
+        ChangeSetState::Cancelled
+    );
+    let live_digest = kernel.snapshot().digest().to_owned();
+    drop(builder);
+    drop(kernel);
+
+    let (reopened, recovered) =
+        Kernel::open_with_test_semantics(&path, Arc::new(GraphDerivedAnalyzer::new())).unwrap();
+    assert_eq!(recovered.generation, 1);
+    assert_eq!(reopened.snapshot().digest(), live_digest);
+    assert_eq!(
+        reopened.change_set("publishing").unwrap().unwrap().state,
+        ChangeSetState::Committed
+    );
+    assert_eq!(
+        reopened.change_set("other").unwrap().unwrap().state,
         ChangeSetState::Cancelled
     );
 }
@@ -552,6 +625,12 @@ fn every_dependency_clock_class_invalidates_affected_work_but_unrelated_work_reb
             ChangeSetState::Executing,
             "{case}: invalidated claim was stranded"
         );
+        assert_eq!(kernel.snapshot().generation(), 1, "{case}");
+        assert_eq!(
+            kernel.snapshot().node(&parse.id).unwrap().payload,
+            parse.payload,
+            "{case}: invalidated candidate leaked into the live graph"
+        );
     }
 
     let directory = tempdir().unwrap();
@@ -635,6 +714,18 @@ fn every_dependency_clock_class_invalidates_affected_work_but_unrelated_work_reb
         panic!("unrelated control did not rebase")
     };
     assert_eq!(report.generation, 2);
+    assert_eq!(
+        kernel.change_set("control-stale").unwrap().unwrap().state,
+        ChangeSetState::Committed
+    );
+    assert!(
+        kernel
+            .snapshot()
+            .node(&parse.id)
+            .unwrap()
+            .payload
+            .contains("// rebase control")
+    );
 }
 
 #[test]

@@ -638,12 +638,25 @@ fn same_attempt_same_digest_replays_but_changed_digest_is_rejected() {
     let changed =
         CandidateEnvelope::from_delta(user_delta(&snapshot, "export interface Customer {}"))
             .unwrap();
+    let before_mismatch_digest = kernel.snapshot().digest().to_owned();
+    let before_mismatch_attempt = kernel
+        .publication_attempt(&claim.attempt_id)
+        .unwrap()
+        .unwrap();
     let error = kernel
         .publish_claimed_envelope(&claim, changed, 5)
         .unwrap_err();
     assert_eq!(
         error.downcast_ref::<CoordinationError>(),
         Some(&CoordinationError::AttemptDigestMismatch),
+    );
+    assert_eq!(kernel.snapshot().digest(), before_mismatch_digest);
+    assert_eq!(
+        kernel
+            .publication_attempt(&claim.attempt_id)
+            .unwrap()
+            .unwrap(),
+        before_mismatch_attempt
     );
 }
 
