@@ -1,10 +1,10 @@
 #![cfg(feature = "redb-spike-api")]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
+use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle};
 use serde_json::Value;
 use strata_kernel::{
     BeginChangeSet, CandidateBuilder, CandidateEnvelope, ChangeSetState, ClaimOutcome,
@@ -650,10 +650,129 @@ fn raw_coordination_event_ids(path: &Path) -> BTreeMap<String, u64> {
         .collect()
 }
 
+fn raw_coordination_table_names(path: &Path) -> BTreeSet<String> {
+    let database = redb::Database::open(path).unwrap();
+    let read = database.begin_read().unwrap();
+    read.list_tables()
+        .unwrap()
+        .map(|table| table.name().to_owned())
+        .filter(|name| name.starts_with("coordination_"))
+        .collect()
+}
+
+fn strip_to_8422f4e_coordination_schema(path: &Path) {
+    let database = redb::Database::open(path).unwrap();
+    let write = database.begin_write().unwrap();
+    assert!(write.delete_table(RESOURCE_CLOCKS).unwrap());
+    assert!(write.delete_table(PUBLICATION_ATTEMPTS).unwrap());
+    {
+        let mut metadata = write.open_table(COORDINATION_META).unwrap();
+        for key in [
+            "scheduler_revision",
+            "recovery_validation_version",
+            "latest_lifecycle_revision",
+            "clocked_publication_generation",
+        ] {
+            metadata.remove(key).unwrap();
+        }
+    }
+    write.commit().unwrap();
+}
+
 fn metadata_u64(metadata: &BTreeMap<String, Vec<u8>>, key: &str) -> Option<u64> {
     metadata
         .get(key)
         .map(|bytes| u64::from_le_bytes(bytes.as_slice().try_into().unwrap()))
+}
+
+#[test]
+fn marker_absent_8422f4e_schema_without_clock_or_attempt_tables_migrates_atomically() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let kernel = create_kernel(&path);
+    let old_epoch = kernel.service_epoch();
+    assert!(matches!(
+        begin_and_submit(&kernel, "change-set:8422f4e", "Clock", 1),
+        SubmissionOutcome::Ready { .. }
+    ));
+    drop(kernel);
+
+    strip_to_8422f4e_coordination_schema(&path);
+    assert_eq!(
+        raw_coordination_table_names(&path),
+        [
+            "coordination_active_claims",
+            "coordination_change_sets",
+            "coordination_event_cursors",
+            "coordination_event_ids",
+            "coordination_events",
+            "coordination_intents",
+            "coordination_metadata",
+            "coordination_ready_offers",
+            "coordination_submission_idempotency",
+            "coordination_tickets",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    );
+    let legacy_metadata = raw_coordination_metadata(&path);
+    assert_eq!(metadata_u64(&legacy_metadata, "scheduler_revision"), None);
+    assert_eq!(
+        metadata_u64(&legacy_metadata, "recovery_validation_version"),
+        None
+    );
+
+    let (kernel, _) = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
+    assert_eq!(kernel.service_epoch(), old_epoch + 1);
+    drop(kernel);
+
+    let migrated_tables = raw_coordination_table_names(&path);
+    assert!(migrated_tables.contains(RESOURCE_CLOCKS.name()));
+    assert!(migrated_tables.contains(PUBLICATION_ATTEMPTS.name()));
+    let migrated_metadata = raw_coordination_metadata(&path);
+    assert_eq!(
+        metadata_u64(&migrated_metadata, "recovery_validation_version"),
+        Some(1)
+    );
+    assert!(metadata_u64(&migrated_metadata, "scheduler_revision").is_some());
+
+    let (kernel, _) = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
+    assert_eq!(kernel.service_epoch(), old_epoch + 2);
+}
+
+#[test]
+fn failed_open_does_not_recreate_missing_required_versioned_tables() {
+    for missing_table in [RESOURCE_CLOCKS.name(), PUBLICATION_ATTEMPTS.name()] {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join(format!("{missing_table}.redb"));
+        let kernel = create_kernel(&path);
+        let old_epoch = kernel.service_epoch();
+        drop(kernel);
+
+        let database = redb::Database::open(&path).unwrap();
+        let write = database.begin_write().unwrap();
+        match missing_table {
+            name if name == RESOURCE_CLOCKS.name() => {
+                assert!(write.delete_table(RESOURCE_CLOCKS).unwrap());
+            }
+            name if name == PUBLICATION_ATTEMPTS.name() => {
+                assert!(write.delete_table(PUBLICATION_ATTEMPTS).unwrap());
+            }
+            _ => unreachable!(),
+        }
+        write.commit().unwrap();
+        drop(database);
+        let before_metadata = raw_coordination_metadata(&path);
+
+        let error = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer))
+            .err()
+            .expect("missing versioned coordination table must reject reopen");
+        assert!(error.to_string().contains(missing_table), "{error:#}");
+        assert!(!raw_coordination_table_names(&path).contains(missing_table));
+        assert_eq!(raw_coordination_metadata(&path), before_metadata);
+        assert_eq!(raw_service_epoch(&path), old_epoch);
+    }
 }
 
 #[test]
@@ -693,7 +812,7 @@ fn legacy_validation_markers_are_backfilled_after_read_only_validation() {
 }
 
 #[test]
-fn failed_legacy_validation_migration_rolls_back_markers_and_service_epoch() {
+fn failed_legacy_validation_migration_rolls_back_schema_markers_and_service_epoch() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let kernel = create_kernel(&path);
@@ -702,6 +821,8 @@ fn failed_legacy_validation_migration_rolls_back_markers_and_service_epoch() {
 
     let database = redb::Database::open(&path).unwrap();
     let write = database.begin_write().unwrap();
+    assert!(write.delete_table(RESOURCE_CLOCKS).unwrap());
+    assert!(write.delete_table(PUBLICATION_ATTEMPTS).unwrap());
     {
         let mut metadata = write.open_table(COORDINATION_META).unwrap();
         metadata.remove("recovery_validation_version").unwrap();
@@ -711,6 +832,7 @@ fn failed_legacy_validation_migration_rolls_back_markers_and_service_epoch() {
     write.commit().unwrap();
     drop(database);
     let before = raw_coordination_metadata(&path);
+    let before_tables = raw_coordination_table_names(&path);
 
     let store = DurableStore::open(&path).unwrap();
     let error = store
@@ -726,6 +848,7 @@ fn failed_legacy_validation_migration_rolls_back_markers_and_service_epoch() {
     drop(store);
 
     assert_eq!(raw_coordination_metadata(&path), before);
+    assert_eq!(raw_coordination_table_names(&path), before_tables);
     assert_eq!(raw_service_epoch(&path), old_epoch);
 }
 

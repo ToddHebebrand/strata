@@ -309,6 +309,18 @@ impl<'a> CoordinationDurable<'a> {
             bail!("unsupported coordination recovery validation version");
         }
         let versioned = validation_version.is_some();
+        if versioned && !table_names.contains(RESOURCE_CLOCKS.name()) {
+            bail!(
+                "versioned coordination database is missing required table {}",
+                RESOURCE_CLOCKS.name()
+            );
+        }
+        if versioned && !table_names.contains(PUBLICATION_ATTEMPTS.name()) {
+            bail!(
+                "versioned coordination database is missing required table {}",
+                PUBLICATION_ATTEMPTS.name()
+            );
+        }
         let next_queue_sequence = read_optional_u64_metadata(&metadata, NEXT_QUEUE_SEQUENCE)?;
         let current_event_sequence = read_optional_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?;
         let scheduler_revision = read_optional_u64_metadata(&metadata, SCHEDULER_REVISION)?;
@@ -416,10 +428,18 @@ impl<'a> CoordinationDurable<'a> {
             .map(|(event_id, sequence)| (event_id.clone(), *sequence))
             .collect::<Vec<_>>();
 
-        let clocks = read
-            .open_table(RESOURCE_CLOCKS)
-            .context("open resource clocks table")?;
-        let clocked_generation = clock_marker.unwrap_or(if clocks.is_empty()? {
+        let clocks = table_names
+            .contains(RESOURCE_CLOCKS.name())
+            .then(|| {
+                read.open_table(RESOURCE_CLOCKS)
+                    .context("open resource clocks table")
+            })
+            .transpose()?;
+        let clocks_empty = match &clocks {
+            Some(clocks) => clocks.is_empty()?,
+            None => true,
+        };
+        let clocked_generation = clock_marker.unwrap_or(if clocks_empty {
             0
         } else {
             current_graph_generation
@@ -429,7 +449,7 @@ impl<'a> CoordinationDurable<'a> {
                 "clocked publication generation {clocked_generation} exceeds current graph generation {current_graph_generation}"
             );
         }
-        if clocked_generation > 0 && clocks.is_empty()? {
+        if clocked_generation > 0 && clocks_empty {
             bail!("resource clock table is empty after the first clocked publication");
         }
         let claims = read
@@ -440,12 +460,15 @@ impl<'a> CoordinationDurable<'a> {
             let claim: ClaimHandle = decode(value.value(), "active claim")?;
             for dependency in &claim.dependency_versions {
                 if dependency.clock > 0
-                    && clocks
-                        .get(dependency.resource_key.as_str())
-                        .with_context(|| {
-                            format!("read resource clock for {}", dependency.resource_key)
-                        })?
-                        .is_none()
+                    && match &clocks {
+                        Some(clocks) => clocks
+                            .get(dependency.resource_key.as_str())
+                            .with_context(|| {
+                                format!("read resource clock for {}", dependency.resource_key)
+                            })?
+                            .is_none(),
+                        None => true,
+                    }
                 {
                     bail!(
                         "missing resource clock {} required at nonzero dependency clock {}",
@@ -458,9 +481,27 @@ impl<'a> CoordinationDurable<'a> {
         drop(claims);
         drop(clocks);
 
-        let attempts = read
-            .open_table(PUBLICATION_ATTEMPTS)
-            .context("open publication attempts table")?;
+        let attempts = table_names
+            .contains(PUBLICATION_ATTEMPTS.name())
+            .then(|| {
+                read.open_table(PUBLICATION_ATTEMPTS)
+                    .context("open publication attempts table")
+            })
+            .transpose()?;
+        let Some(attempts) = attempts else {
+            return Ok(Some(RecoveryMigrationPlan {
+                validation: RecoveryValidationMigration {
+                    latest_lifecycle_revision: lifecycle_revision,
+                    clocked_publication_generation: clocked_generation,
+                },
+                metadata: CoordinationMetadataState {
+                    next_queue_sequence,
+                    current_event_sequence,
+                    scheduler_revision,
+                },
+                event_id_mappings: missing_event_id_mappings,
+            }));
+        };
         for entry in attempts.iter().context("iterate publication attempts")? {
             let (attempt_id, value) = entry.context("read publication attempt")?;
             let attempt: PublicationAttemptRecord = decode(value.value(), "publication attempt")?;
