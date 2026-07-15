@@ -1,0 +1,32 @@
+{
+  "protocolVersion": 1,
+  "requestId": "request-candidate-1",
+  "kind": "buildValidateCandidate",
+  "binding": {
+    "serviceEpoch": "1",
+    "graphGeneration": "0",
+    "graphDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "attemptId": "attempt-1",
+    "scopeFingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+  },
+  "ok": true,
+  "result": {
+    "delta": {
+      "schemaVersion": 1,
+      "baseGeneration": "0",
+      "changes": [
+        {
+          "type": "upsertNode",
+          "node": {
+            "id": "decl:greet",
+            "kind": "FunctionDeclaration",
+            "parentId": "module:main",
+            "childIndex": 0,
+            "payload": "export function welcome() {}"
+          }
+        }
+      ]
+    },
+    "diagnostics": []
+  }
+}

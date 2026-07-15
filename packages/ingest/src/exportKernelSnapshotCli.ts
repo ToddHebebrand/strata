@@ -8,7 +8,12 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { ingestBatch } from "./batch";
-import { compareCodeUnits, toKernelSnapshot } from "./kernelSnapshot";
+import {
+  compareCodeUnits,
+  parseCanonicalU64,
+  toKernelSnapshot,
+  toRustGraphSnapshotFixture
+} from "./kernelSnapshot";
 
 const SKIPPED_DIRECTORIES = new Set(["node_modules", ".git", "dist"]);
 
@@ -30,19 +35,30 @@ function collectTypeScriptFiles(directory: string): string[] {
 }
 
 function usage(): never {
-  throw new Error("usage: exportKernelSnapshotCli <corpusRoot> --out <path>");
+  throw new Error(
+    "usage: exportKernelSnapshotCli <corpusRoot> [--generation <canonical-u64>] --out <path>"
+  );
 }
 
 function main(args: string[]): void {
-  if (args.length !== 3 || args[1] !== "--out") usage();
+  const hasGeneration = args.length === 5;
+  if (
+    (!hasGeneration && (args.length !== 3 || args[1] !== "--out")) ||
+    (hasGeneration && (args[1] !== "--generation" || args[3] !== "--out"))
+  ) {
+    usage();
+  }
 
   const corpusRoot = path.resolve(args[0]!);
-  const outputPath = path.resolve(args[2]!);
+  const generation = parseCanonicalU64(hasGeneration ? args[2] : "0");
+  const outputPath = path.resolve(args[hasGeneration ? 4 : 2]!);
   const inputs = collectTypeScriptFiles(corpusRoot).map((filePath) => ({
     path: `/project/${path.relative(corpusRoot, filePath).split(path.sep).join("/")}`,
     text: readFileSync(filePath, "utf8")
   }));
-  const snapshot = toKernelSnapshot(ingestBatch(inputs));
+  const snapshot = toRustGraphSnapshotFixture(
+    toKernelSnapshot(ingestBatch(inputs), generation)
+  );
 
   mkdirSync(path.dirname(outputPath), { recursive: true });
   writeFileSync(outputPath, `${JSON.stringify(snapshot, null, 2)}\n`);

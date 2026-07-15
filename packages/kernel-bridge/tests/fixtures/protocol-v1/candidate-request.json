@@ -1,0 +1,58 @@
+{
+  "protocolVersion": 1,
+  "requestId": "request-candidate-1",
+  "kind": "buildValidateCandidate",
+  "binding": {
+    "serviceEpoch": "1",
+    "graphGeneration": "0",
+    "graphDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "snapshot": {
+    "schemaVersion": 1,
+    "generation": "0",
+    "nodes": [
+      {
+        "id": "decl:greet",
+        "kind": "FunctionDeclaration",
+        "parentId": "module:main",
+        "childIndex": 0,
+        "payload": "export function greet() {}"
+      },
+      {
+        "id": "module:main",
+        "kind": "Module",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "/project/main.ts"
+      }
+    ],
+    "references": []
+  },
+  "attemptId": "attempt-1",
+  "scopeFingerprint": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+  "changeSet": {
+    "changeSetId": "change-set-1",
+    "actor": "agent-1",
+    "reasoning": "Rename the public greeting API",
+    "orderedIntents": [
+      {
+        "schemaVersion": 1,
+        "intentId": "intent-1",
+        "changeSetId": "change-set-1",
+        "baseGeneration": "0",
+        "parameters": {
+          "type": "renameSymbol",
+          "declarationId": "decl:greet",
+          "newName": "welcome"
+        }
+      }
+    ]
+  },
+  "validationProfile": {
+    "mode": "tscOnly",
+    "sourceRoot": "/project/src",
+    "corpusRoot": "/project",
+    "behavioralFixtures": [],
+    "strictSrcOnlyTscScope": true
+  }
+}

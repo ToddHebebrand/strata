@@ -55,9 +55,13 @@ export { emitIdentifiers } from "./identifiers";
 export { ingestBatch, type IngestBatchInput, type IngestBatchResult } from "./batch";
 export {
   compareCodeUnits,
+  parseCanonicalU64,
   toKernelSnapshot,
+  toRustGraphSnapshotFixture,
+  type CanonicalU64,
   type KernelNodeV1,
   type KernelReferenceV1,
-  type KernelSnapshotV1
+  type KernelSnapshotV1,
+  type RustGraphSnapshotFixtureV1
 } from "./kernelSnapshot";
 export type { NodeRow };

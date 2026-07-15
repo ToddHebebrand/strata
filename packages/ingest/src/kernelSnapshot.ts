@@ -14,21 +14,49 @@ export interface KernelReferenceV1 {
   kind: string;
 }
 
+export type CanonicalU64 = string & {
+  readonly __canonicalU64: unique symbol;
+};
+
 export interface KernelSnapshotV1 {
   schemaVersion: 1;
-  generation: 0;
+  generation: CanonicalU64;
   nodes: KernelNodeV1[];
   references: KernelReferenceV1[];
+}
+
+export interface RustGraphSnapshotFixtureV1 {
+  schemaVersion: 1;
+  generation: number;
+  nodes: KernelNodeV1[];
+  references: KernelReferenceV1[];
+}
+
+const MAX_U64 = 2n ** 64n - 1n;
+const CANONICAL_U64_PATTERN = /^(0|[1-9][0-9]*)$/;
+
+export function parseCanonicalU64(value: unknown): CanonicalU64 {
+  if (
+    typeof value !== "string" ||
+    !CANONICAL_U64_PATTERN.test(value) ||
+    BigInt(value) > MAX_U64
+  ) {
+    throw new TypeError("expected a canonical unsigned 64-bit decimal string");
+  }
+  return value as CanonicalU64;
 }
 
 export function compareCodeUnits(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-export function toKernelSnapshot(batch: IngestBatchResult): KernelSnapshotV1 {
+export function toKernelSnapshot(
+  batch: IngestBatchResult,
+  generation: CanonicalU64 = parseCanonicalU64("0")
+): KernelSnapshotV1 {
   return {
     schemaVersion: 1,
-    generation: 0,
+    generation,
     nodes: batch.allNodes
       .map(({ id, kind, parentId, childIndex, payload }) => ({
         id,
@@ -47,4 +75,14 @@ export function toKernelSnapshot(batch: IngestBatchResult): KernelSnapshotV1 {
           compareCodeUnits(a.kind, b.kind)
       )
   };
+}
+
+export function toRustGraphSnapshotFixture(
+  snapshot: KernelSnapshotV1
+): RustGraphSnapshotFixtureV1 {
+  const generation = Number(snapshot.generation);
+  if (!Number.isSafeInteger(generation)) {
+    throw new RangeError("legacy Rust fixture generation must be a safe integer");
+  }
+  return { ...snapshot, generation };
 }
