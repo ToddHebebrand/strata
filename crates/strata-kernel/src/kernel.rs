@@ -268,6 +268,12 @@ impl Kernel {
         ))
     }
 
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_publication_mutexes_available(&self) -> bool {
+        self.publish_lock.try_lock().is_ok() && self.scheduler.try_lock().is_ok()
+    }
+
     #[cfg(feature = "redb-spike-api")]
     pub fn issue_fence(&self, resources: &[String]) -> Result<FenceClaim> {
         self.store.issue_fence(self.service_epoch, resources)

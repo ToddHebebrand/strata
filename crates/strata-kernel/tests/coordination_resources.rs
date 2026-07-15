@@ -14,8 +14,8 @@ use coordination_support::{
 };
 use strata_kernel::{
     ClaimHandle, ClaimOutcome, GraphChange, GraphDelta, GraphGeneration, IntentAnalysis,
-    IntentRecord, Kernel, ReferenceRecord, ResourceVersion, SCHEMA_VERSION, SubmissionOutcome,
-    TestSemanticProvider, affected_resource_keys,
+    IntentRecord, Kernel, PublishClaimOutcome, ReferenceRecord, ResourceVersion, SCHEMA_VERSION,
+    SubmissionOutcome, TestSemanticProvider, affected_resource_keys,
 };
 
 const USER_ID: &str = "fc98295bca9efc3e";
@@ -128,9 +128,12 @@ impl TestSemanticProvider for ResourceClockProvider {
 
 fn publish_fixture_delta(kernel: &Kernel, change_set_id: &str, delta: GraphDelta) {
     let claim = claim_rename(kernel, change_set_id, "Account", 10);
-    let report = kernel
+    let outcome = kernel
         .publish_claimed(&claim, &FixedDeltaBuilder(delta), 12)
         .unwrap();
+    let PublishClaimOutcome::Published(report) = outcome else {
+        panic!("fixture delta did not publish")
+    };
     assert!(!report.already_published);
 }
 
@@ -138,7 +141,11 @@ fn publish_node_patch(kernel: &Kernel, change_set_id: &str, new_name: &str, mark
     let tick = kernel.snapshot().generation() * 10 + 20;
     let claim = claim_rename(kernel, change_set_id, new_name, tick);
     let builder = NodePatchBuilder::new(vec![(USER_ID.into(), marker.into())]);
-    let report = kernel.publish_claimed(&claim, &builder, tick + 2).unwrap();
+    let PublishClaimOutcome::Published(report) =
+        kernel.publish_claimed(&claim, &builder, tick + 2).unwrap()
+    else {
+        panic!("node patch did not publish")
+    };
     assert!(!report.already_published);
 }
 

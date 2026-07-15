@@ -14,8 +14,8 @@ use serde::Serialize;
 use strata_kernel::{
     BeginChangeSet, ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEventKind, GraphChange,
     GraphDelta, GraphGeneration, IntentParameters, IntentRecord, Kernel,
-    MAX_WAKE_AFFECTED_NODE_IDS, ReferenceRecord, SCHEMA_VERSION, SubmissionOutcome, TicketState,
-    analyze_change_set,
+    MAX_WAKE_AFFECTED_NODE_IDS, PublicationReport, PublishClaimOutcome, ReferenceRecord,
+    SCHEMA_VERSION, SubmissionOutcome, TicketState, analyze_change_set,
 };
 use tempfile::tempdir;
 
@@ -45,6 +45,13 @@ fn claimed(outcome: ClaimOutcome) -> ClaimHandle {
         ClaimOutcome::Claimed(claim) => claim,
         other => panic!("expected Claimed, got {other:?}"),
     }
+}
+
+fn published(outcome: PublishClaimOutcome) -> PublicationReport {
+    let PublishClaimOutcome::Published(report) = outcome else {
+        panic!("expected published outcome")
+    };
+    report
 }
 
 fn reservation_set(scope: &strata_kernel::InferredScope) -> BTreeSet<&str> {
@@ -202,13 +209,18 @@ fn disjoint_work_is_ready_together_and_commits_after_fresh_claims_in_either_orde
                     .unwrap(),
             );
             assert_eq!(claim.graph_generation, index as u64);
-            let report = kernel
-                .publish_claimed(
-                    &claim,
-                    &NodePatchBuilder::new(vec![(node_id.clone(), format!("\n// committed-{id}"))]),
-                    10 + index as u64,
-                )
-                .unwrap();
+            let report = published(
+                kernel
+                    .publish_claimed(
+                        &claim,
+                        &NodePatchBuilder::new(vec![(
+                            node_id.clone(),
+                            format!("\n// committed-{id}"),
+                        )]),
+                        10 + index as u64,
+                    )
+                    .unwrap(),
+            );
             assert_eq!(report.generation, index as u64 + 1);
         }
         assert_eq!(kernel.snapshot().generation(), 2);
@@ -1023,16 +1035,18 @@ fn composite_change_set_publishes_two_real_nodes_in_exactly_one_generation() {
             .claim_ready(&offer.offer_id, &offer.claim_token, 1)
             .unwrap(),
     );
-    let report = kernel
-        .publish_claimed(
-            &claim,
-            &NodePatchBuilder::new(vec![
-                (user_id.clone(), "\n// composite-user".into()),
-                (parse_id.clone(), "\n// composite-parse".into()),
-            ]),
-            2,
-        )
-        .unwrap();
+    let report = published(
+        kernel
+            .publish_claimed(
+                &claim,
+                &NodePatchBuilder::new(vec![
+                    (user_id.clone(), "\n// composite-user".into()),
+                    (parse_id.clone(), "\n// composite-parse".into()),
+                ]),
+                2,
+            )
+            .unwrap(),
+    );
     assert_eq!(report.generation, 1);
     assert_eq!(kernel.snapshot().generation(), 1);
     assert!(

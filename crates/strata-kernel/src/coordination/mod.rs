@@ -4,6 +4,7 @@ mod coordinator;
 mod durable;
 mod model;
 mod planner;
+mod publication;
 mod resources;
 mod scheduler;
 

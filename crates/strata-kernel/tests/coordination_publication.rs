@@ -159,6 +159,13 @@ fn resource(key: &str) -> ResourceVersion {
     ResourceVersion::new(key, "v0").unwrap()
 }
 
+fn published(outcome: PublishClaimOutcome) -> PublicationReport {
+    let PublishClaimOutcome::Published(report) = outcome else {
+        panic!("expected published outcome")
+    };
+    report
+}
+
 fn analysis(keys: &[String]) -> IntentAnalysis {
     let resources = keys.iter().map(|key| resource(key)).collect::<Vec<_>>();
     IntentAnalysis {
@@ -312,10 +319,10 @@ fn changed_builder_output_for_same_attempt_is_rejected() {
         Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
     let claim = begin_submit_claim(&kernel, "builder-attempt-replay", 0);
     let first_builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
-    let first = kernel.publish_claimed(&claim, &first_builder, 2).unwrap();
+    let first = published(kernel.publish_claimed(&claim, &first_builder, 2).unwrap());
 
     let same_builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
-    let replay = kernel.publish_claimed(&claim, &same_builder, 3).unwrap();
+    let replay = published(kernel.publish_claimed(&claim, &same_builder, 3).unwrap());
     assert_eq!(replay.generation, first.generation);
     assert_eq!(replay.digest, first.digest);
     assert!(replay.already_published);
@@ -352,9 +359,11 @@ fn committed_builder_replay_uses_only_durable_prepared_authority() {
         Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
     let claim = begin_submit_claim(&kernel, "durable-replay-authority", 0);
     let delta = user_delta(&snapshot, "export interface Account {}");
-    let first = kernel
-        .publish_claimed(&claim, &PassiveBuilder(delta.clone()), 2)
-        .unwrap();
+    let first = published(
+        kernel
+            .publish_claimed(&claim, &PassiveBuilder(delta.clone()), 2)
+            .unwrap(),
+    );
     let durable_scope = kernel
         .change_set(&claim.change_set_id)
         .unwrap()
@@ -369,9 +378,11 @@ fn committed_builder_replay_uses_only_durable_prepared_authority() {
     };
     let replay_builder = InspectingBuilder::new(delta);
 
-    let replay = kernel
-        .publish_claimed(&tampered_claim, &replay_builder, 3)
-        .unwrap();
+    let replay = published(
+        kernel
+            .publish_claimed(&tampered_claim, &replay_builder, 3)
+            .unwrap(),
+    );
 
     assert!(replay.already_published);
     assert_eq!(replay.generation, first.generation);
@@ -495,13 +506,13 @@ fn claimed_composite_publication_is_kernel_owned_atomic_and_idempotent_after_reo
     let claim = begin_submit_claim(&kernel, "rename-user", 10);
     let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
 
-    let report = kernel.publish_claimed(&claim, &builder, 20).unwrap();
+    let report = published(kernel.publish_claimed(&claim, &builder, 20).unwrap());
     assert_eq!(report.generation, 1);
     assert!(!report.already_published);
     assert_eq!(builder.calls(), 1);
     assert_eq!(kernel.snapshot().generation(), 1);
 
-    let retry = kernel.publish_claimed(&claim, &builder, 21).unwrap();
+    let retry = published(kernel.publish_claimed(&claim, &builder, 21).unwrap());
     assert_eq!(retry.generation, report.generation);
     assert_eq!(retry.digest, report.digest);
     assert!(retry.already_published);
@@ -534,7 +545,7 @@ fn claimed_composite_publication_is_kernel_owned_atomic_and_idempotent_after_reo
             .count(),
         1
     );
-    let retry_after_reopen = reopened.publish_claimed(&claim, &builder, 30).unwrap();
+    let retry_after_reopen = published(reopened.publish_claimed(&claim, &builder, 30).unwrap());
     assert_eq!(retry_after_reopen.generation, 1);
     assert_eq!(retry_after_reopen.digest, report.digest);
     assert!(retry_after_reopen.already_published);
@@ -594,7 +605,7 @@ fn concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original
     release.wait();
     allow_duplicate_to_lock.wait();
 
-    let first = first.join().unwrap().unwrap();
+    let first = published(first.join().unwrap().unwrap());
     let second = second.join().unwrap().unwrap();
     assert_eq!(first.generation, 1);
     assert_eq!(second.generation, 1);
@@ -632,9 +643,11 @@ fn retry_after_a_later_disjoint_generation_returns_the_earlier_generation_and_di
     .unwrap();
     let first_claim = begin_submit_claim(&kernel, "earlier", 0);
     let first_builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
-    let first = kernel
-        .publish_claimed(&first_claim, &first_builder, 2)
-        .unwrap();
+    let first = published(
+        kernel
+            .publish_claimed(&first_claim, &first_builder, 2)
+            .unwrap(),
+    );
 
     let second_id = "308079c405a147d0";
     let mut second_node = snapshot
@@ -650,26 +663,30 @@ fn retry_after_a_later_disjoint_generation_returns_the_earlier_generation_and_di
     }
     first_analyzer.extend(vec![analysis(&second_scope); 3]);
     let second_claim = begin_submit_claim(&kernel, "later", 3);
-    let second = kernel
-        .publish_claimed(
-            &second_claim,
-            &PassiveBuilder(GraphDelta {
-                schema_version: SCHEMA_VERSION,
-                base_generation: 1,
-                changes: vec![GraphChange::UpsertNode { node: second_node }],
-            }),
-            5,
-        )
-        .unwrap();
+    let second = published(
+        kernel
+            .publish_claimed(
+                &second_claim,
+                &PassiveBuilder(GraphDelta {
+                    schema_version: SCHEMA_VERSION,
+                    base_generation: 1,
+                    changes: vec![GraphChange::UpsertNode { node: second_node }],
+                }),
+                5,
+            )
+            .unwrap(),
+    );
     assert_eq!(second.generation, 2);
     let events_before_retry = kernel.events_after("later-audit", 0, 50).unwrap();
     drop(kernel);
     let (kernel, recovered) = Kernel::open(&path).unwrap();
     assert_eq!(recovered.generation, 2);
 
-    let retry = kernel
-        .publish_claimed(&first_claim, &first_builder, 6)
-        .unwrap();
+    let retry = published(
+        kernel
+            .publish_claimed(&first_claim, &first_builder, 6)
+            .unwrap(),
+    );
     assert!(retry.already_published);
     assert_eq!(retry.generation, 1);
     assert_eq!(retry.digest, first.digest);
@@ -823,8 +840,8 @@ fn publication_reanalysis_happens_before_builder_and_changed_scope_needs_decisio
     let claim = begin_submit_claim(&kernel, "reanalyze", 0);
     let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
 
-    let error = kernel.publish_claimed(&claim, &builder, 2).unwrap_err();
-    assert!(error.to_string().contains("scope changed"));
+    let outcome = kernel.publish_claimed(&claim, &builder, 2).unwrap();
+    assert!(matches!(outcome, PublishClaimOutcome::Requeued { .. }));
     assert_eq!(analyzer.calls(), 4);
     assert_eq!(builder.calls(), 0);
     assert_eq!(kernel.snapshot().generation(), 0);
@@ -881,8 +898,8 @@ fn material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter(
     ));
 
     let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
-    let error = kernel.publish_claimed(&claim, &builder, 10).unwrap_err();
-    assert!(error.to_string().contains("scope changed"));
+    let outcome = kernel.publish_claimed(&claim, &builder, 10).unwrap();
+    assert!(matches!(outcome, PublishClaimOutcome::NeedsDecision { .. }));
     assert_eq!(builder.calls(), 0);
     assert_eq!(
         kernel.change_set("material").unwrap().unwrap().state,
@@ -951,7 +968,11 @@ fn two_intents_publish_one_aggregate_operation_and_generation() {
         panic!("expected claim")
     };
     let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Customer {}"));
-    let PublicationReport { generation, .. } = kernel.publish_claimed(&claim, &builder, 2).unwrap();
+    let PublishClaimOutcome::Published(PublicationReport { generation, .. }) =
+        kernel.publish_claimed(&claim, &builder, 2).unwrap()
+    else {
+        panic!("composite change set did not publish")
+    };
     assert_eq!(generation, 1);
     let operation = kernel.operation(1).unwrap().unwrap();
     assert_eq!(operation.change_set_id, "composite");
