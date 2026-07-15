@@ -60,7 +60,8 @@ pub enum CoordinatedPublishFailpoint {
     None,
     AfterFenceMutation,
     AfterInsert(usize),
-    AfterResourceClockWrites,
+    AfterResourceClockWrite,
+    AfterAttemptWrite,
     BeforeCommit,
 }
 
@@ -270,7 +271,8 @@ impl DurableStore {
                 });
             }
         }
-        self.validate_graph_publication_in_txn(&write, &commit.publication)?;
+        let (_, next_generation, _) =
+            self.validate_graph_publication_in_txn(&write, &commit.publication)?;
         self.issue_and_consume_fences_in_write_txn(
             &write,
             commit.service_epoch,
@@ -278,6 +280,13 @@ impl DurableStore {
         )?;
         if failpoint == CoordinatedPublishFailpoint::AfterFenceMutation {
             bail!("coordinated publication failpoint after fence mutation");
+        }
+        self.coordination()
+            .persist_resource_clock_updates_in_write_txn(&write, &commit.resource_clock_updates)?;
+        self.coordination()
+            .mark_clocked_publication_in_write_txn(&write, next_generation)?;
+        if failpoint == CoordinatedPublishFailpoint::AfterResourceClockWrite {
+            bail!("coordinated publication failpoint after resource clock write");
         }
         let mut insert_count = 0_usize;
         let mut after_insert = || {
@@ -302,16 +311,14 @@ impl DurableStore {
                 &mut after_insert,
             )?;
         self.coordination()
-            .persist_resource_clock_updates_in_write_txn(&write, &commit.resource_clock_updates)?;
-        if failpoint == CoordinatedPublishFailpoint::AfterResourceClockWrites {
-            bail!("coordinated publication failpoint after resource clock writes");
-        }
-        self.coordination()
             .persist_publication_attempt_in_write_txn(
                 &write,
                 &commit.publication_attempt,
                 &mut after_insert,
             )?;
+        if failpoint == CoordinatedPublishFailpoint::AfterAttemptWrite {
+            bail!("coordinated publication failpoint after attempt write");
+        }
         if failpoint == CoordinatedPublishFailpoint::BeforeCommit {
             bail!("coordinated publication failpoint before commit");
         }
@@ -793,7 +800,24 @@ impl DurableStore {
         self.read_structured(OPERATIONS, generation, "operation")
     }
 
-    #[cfg(feature = "redb-spike-api")]
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn atomic_graph_table_counts(&self) -> Result<(u64, String, u64, u64)> {
+        use redb::ReadableTableMetadata;
+
+        let read = self
+            .database
+            .begin_read()
+            .context("begin atomic graph count transaction")?;
+        let generation = self.current_generation()?;
+        Ok((
+            generation,
+            self.generation_digest(generation)?,
+            read.open_table(OPERATIONS)?.len()?,
+            read.open_table(EVENTS)?.len()?,
+        ))
+    }
+
+    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub fn delta(&self, generation: u64) -> Result<Option<GraphDelta>> {
         self.read_structured(DELTAS, generation, "delta")
     }

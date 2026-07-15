@@ -1,65 +1,63 @@
-# Task 7 report — atomic claimed publication
+# Task 7 report — atomic clocks, attempts, lifecycle, and crash recovery
 
 ## Status
 
-Implemented kernel-owned claimed publication with a delta-only `CandidateBuilder`, fresh pre-build analysis, scope containment, one redb transaction for graph + coordination + fresh fences, atomic successor wakeups, committed retry semantics, and default raw-API sealing.
+DONE. Coordinated publication now has explicit clock and attempt failpoint boundaries, complete-old-or-complete-new reopen evidence, and reopen validation for durable clocks, attempts, graph digests, and lifecycle revision metadata.
 
-## TDD evidence
+## Strict TDD evidence
 
-- RED: `cargo test -p strata-kernel --test coordination_publication` failed with `unresolved import strata_kernel::CandidateBuilder` before production changes.
-- Additional REDs: successor-wakeup test failed because `Kernel::ready_offer_for_change_set` did not exist; fence-rollback test failed because `Kernel::fence_state` did not exist. Both were added only after their expected failures.
-- GREEN focused default: `cargo test -p strata-kernel --test coordination_publication` — 5 passed, 0 failed.
-- GREEN focused legacy feature: `cargo test -p strata-kernel --features redb-spike-api --test coordination_publication` — 6 passed, 0 failed, including post-fence, every one of 15 graph/coordination insert boundaries, and final pre-commit rollback.
-- GREEN default full: `cargo test -p strata-kernel` — 44 tests passed (raw proof tests intentionally compile as zero tests without the feature); default trybuild sealing passed.
-- GREEN feature full: `cargo test -p strata-kernel --features redb-spike-api` — 92 tests passed, 0 failed, preserving the legacy redb proof and binary test.
-- Formatting/lints: `cargo fmt --all`; default and `--features redb-spike-api` `cargo clippy -p strata-kernel --all-targets -- -D warnings` both passed.
+- Failpoint RED command: `cargo test -p strata-kernel --features redb-spike-api --test coordination_publication failure_after`.
+- Failpoint RED result: exit 101. The new test failed to compile for exactly the missing graph-count, coordination-count, durable-clock accessors and the missing `AfterResourceClockWrite` / `AfterAttemptWrite` variants. The existing implementation already wrote clocks and attempts in one redb transaction, so no false partial-atomicity failure was manufactured.
+- Corruption RED command: `cargo test -p strata-kernel --features redb-spike-api --test coordination_recovery reopen_`.
+- Corruption RED result: exit 101 with all three new tests failing because reopen incorrectly succeeded for a missing nonzero dependency clock, a changed candidate digest, and a scheduler revision behind lifecycle state.
+- Focused GREEN: the complete failpoint sweep passed 1/1; the recovery suite passed 11/11.
 
-## Files and behavior
+## Atomic recovery proof
 
-- `coordination/analyzer.rs`: production `CandidateBuilder` trait returning only `GraphDelta`.
-- `coordination/coordinator.rs`, `scheduler.rs`: `publish_claimed(..., now_tick)`, exact durable claim validation, fresh analysis, safe requeue/decision, projected release/wakeups, derived records/context, memory install after redb commit, documented lock order.
-- `storage.rs`, `coordination/durable.rs`: shared transaction-local graph writer, lifecycle writer hook, in-transaction fence issuance+consumption, one coordinated commit, insert-boundary failpoints, original-generation idempotency lookup.
-- `Cargo.toml`, `lib.rs`, `kernel.rs`, integration tests: `redb-spike-api` gates raw store/publication/fencing/failpoints and the spike binary; coordinated graph types/lifecycle remain default.
-- `tests/coordination_publication.rs`: real `examples/medium` snapshot coverage for stale epoch/generation/offer/fingerprint, builder ordering, rogue node/parent/reference, composite operation, reopen durability, wakeups, rollback, and retry semantics.
-- `tests/api_sealing.rs` + UI fixture: compile-fail proof for raw imports and `Kernel::issue_fence`/`publish` without default features.
+- `AtomicState` reads durable graph generation/digest, operation and graph-event counts, coordination-event count, change-set/ticket/offer/claim state, durable/live scheduler revision, durable/live resource clocks, the full publication attempt (including prepared generation), fence state, and live graph generation/digest.
+- Complete-old is captured from a recovered executing claim; complete-new is captured from a no-failpoint control publication over the same committed `examples/medium` fixture.
+- Every tested boundary is reopened and compared to those two complete states: `AfterFenceMutation`, every actual `AfterInsert(1..=18)` boundary, `AfterResourceClockWrite`, `AfterAttemptWrite`, and `BeforeCommit`.
+- The coordinated write order is attempt replay/mismatch check, graph validation, fence consumption, resource-clock validation/increment, graph publication, lifecycle/scheduler publication, attempt record, then one redb commit.
+- Live graph, live resource clocks, and live scheduler are still installed only after redb commit.
 
-## Decision
+## Reopen corruption validation
 
-Prepended the required `decisions.md` entry: `publish_claimed` accepts host `now_tick`; reusing the old offer expiry creates stale successor offers, while post-commit reconsideration breaks atomic wakeup. No design-doc signature required updating.
+- A nonzero active-claim dependency must have a durable resource-clock row.
+- `clocked_publication_generation` distinguishes a compatible legacy/pre-clock empty table from corruption after the first coordinated clocked publication.
+- Every publication attempt must match its durable key, generation, generation digest, durable delta, and canonical candidate digest.
+- Candidate-digest reconstruction reverses the only publication transformation: it restores the stored delta's base generation to `prepared_graph_generation`, with the legacy `generation - 1` fallback, then recomputes `canonical_candidate_digest`.
+- `latest_lifecycle_revision` is advanced with every scheduler lifecycle revision; reopen rejects a scheduler revision behind that durable high-water mark. Missing markers are initialized from existing scheduler metadata for legacy databases.
+
+## Files changed
+
+- `crates/strata-kernel/src/storage.rs`
+- `crates/strata-kernel/src/kernel.rs`
+- `crates/strata-kernel/src/coordination/durable.rs`
+- `crates/strata-kernel/tests/coordination_publication.rs`
+- `crates/strata-kernel/tests/coordination_recovery.rs`
+- `.superpowers/sdd/task-7-report.md`
+
+## Final verification
+
+- `cargo fmt --all -- --check` — PASS.
+- `cargo clippy -p strata-kernel --all-targets -- -D warnings` — PASS.
+- `cargo clippy -p strata-kernel --features redb-spike-api --all-targets -- -D warnings` — PASS.
+- `cargo test -p strata-kernel` — PASS, 32 tests.
+- `cargo test -p strata-kernel --features redb-spike-api` — PASS, 153 tests.
+- `git diff --check` — PASS.
 
 ## Self-review
 
-- Audited lock acquisition: coordinated commit is scheduler → publish lock → redb write → live write; no path takes scheduler/publish while holding live write.
-- Corrected a review-found rollback issue so scope-change requeue mutates a cloned scheduler and installs it only after durable lifecycle commit.
-- Confirmed duplicate `coordination-commit:<changeSetId>` returns the stored generation/digest before claim validation and again under both locks, without rebuilding or duplicating events, including after reopen.
-- Confirmed the coordinated transaction never calls legacy `issue_fence`; all fresh tokens are incremented and consumed inside its own write transaction.
+- Confirmed no semantic provider, candidate builder, graph application, digest computation, or readiness planning moved under publication/scheduler locks.
+- Confirmed normal and invalidation lock order remains publication -> scheduler -> redb.
+- Confirmed clocks, their compatibility marker, graph/operation/events, lifecycle/scheduler marker, attempt, fences, and idempotency all share the one redb transaction.
+- Confirmed all in-memory projection updates remain after durable commit and failed failpoints update none of them.
+- Confirmed Task 6 rebased replay remains valid: original prepared generation is persisted and used to reconstruct the canonical candidate digest after reopen.
 
-## Concerns / deferred scope
+## Concerns
 
-- `CandidateBuilder` intentionally has no production implementation; the TypeScript worker bridge remains a later task.
-- The feature-gated failpoint surface is a research harness only. No Node validation, transport, real TypeScript analyzer, or live experiment was added.
+- No blocking concerns. Attempt/candidate recovery validation is feature-gated with the research semantic surface; default builds cannot execute semantic coordinated publications.
 
-## Review fixes
+## Commit
 
-- Terminal scope-change RED: `material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter` failed with `left: Queued`, `right: Ready`; GREEN after persisting terminal release, successor selection, fresh offers, and wake events in the same lifecycle transaction.
-- Bounded wake-context RED: the new test failed with unresolved import `MAX_WAKE_AFFECTED_NODE_IDS`; GREEN after adding the named 64-ID bound and `totalAffectedNodeCount` / `affectedNodeIdsTruncated` metadata while retaining all 65 IDs in the canonical operation record.
-- GREEN focused default: `cargo test -p strata-kernel --test coordination_publication` — 10 passed, 0 failed.
-- GREEN focused feature: `cargo test -p strata-kernel --features redb-spike-api --test coordination_publication` — 11 passed, 0 failed.
-- Added deterministic duplicate-finishing coverage: a barrier holds the first builder while a second caller races; both receive the original generation/digest, the builder runs once, and one committed event is appended.
-- Added earlier-retry-after-later-disjoint-generation coverage: the retry returns its original generation/digest and appends no event.
-- Expanded negative-path coverage: wrong schema/base produce zero graph, coordination, or fence side effects; expanded scope requeues; material scope enters `NeedsDecision` and atomically wakes a newly eligible waiter.
-- Strengthened rollback coverage: each post-fence, insert-boundary, and pre-commit failpoint drops/reopens the database before assertions; a blocked successor proves no partial ready offer/event survived. Successor lifecycle inserts are included in the enumerated insert-boundary sweep.
-- GREEN full default: `cargo test -p strata-kernel` — 49 passed, 0 failed, including the default API-sealing trybuild test.
-- GREEN full feature: `cargo test -p strata-kernel --features redb-spike-api` — 97 passed, 0 failed.
-- Final hygiene gate: `cargo fmt --all`; default and feature `cargo clippy -p strata-kernel --all-targets -- -D warnings`; both full test commands — all passed in one combined run.
-
-### Deterministic duplicate-finishing re-review
-
-- RED: the strengthened feature test failed to compile with `no method named publish_claimed_with_entry_hook found for struct Arc<Kernel>` before the synchronization hook existed.
-- GREEN targeted: `cargo test -p strata-kernel --features redb-spike-api --test coordination_publication concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original_commit` — 1 passed, 0 failed.
-- The second caller now blocks at a hidden feature-gated hook after its outer idempotency miss and before scheduler-lock acquisition. The first builder is released only after the test observes the duplicate at that hook, deterministically exercising the inner duplicate check while preserving the default API surface.
-- GREEN focused default: `cargo test -p strata-kernel --test coordination_publication` — 9 passed, 0 failed; the hook-dependent race test is feature-gated so default commit authority remains sealed.
-- GREEN focused feature: `cargo test -p strata-kernel --features redb-spike-api --test coordination_publication` — 11 passed, 0 failed.
-- GREEN full default: `cargo test -p strata-kernel` — 48 passed, 0 failed, including the API-sealing trybuild test.
-- GREEN full feature: `cargo test -p strata-kernel --features redb-spike-api` — 97 passed, 0 failed.
-- Final hygiene gate: `cargo fmt --all`; strict default and feature Clippy over all targets; both full test commands — all passed in one combined run.
+- Planned subject: `test(kernel): prove atomic optimistic recovery`.

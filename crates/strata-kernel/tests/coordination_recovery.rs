@@ -4,18 +4,31 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use redb::{ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use serde_json::Value;
 use strata_kernel::{
-    BeginChangeSet, ChangeSetState, ClaimOutcome, CoordinationEventKind, CoordinationFailpoint,
-    DurableStore, DynamicExpansionPolicy, GraphGeneration, GraphSnapshot, IdempotencyClass,
-    IntentAnalysis, IntentParameters, IntentRecord, Kernel, ResourceVersion, SCHEMA_VERSION,
+    BeginChangeSet, CandidateBuilder, CandidateEnvelope, ChangeSetState, ClaimOutcome,
+    CoordinationEventKind, CoordinationFailpoint, DurableStore, DynamicExpansionPolicy,
+    GraphChange, GraphDelta, GraphGeneration, GraphSnapshot, IdempotencyClass, IntentAnalysis,
+    IntentParameters, IntentRecord, Kernel, PreparedCandidate, ResourceVersion, SCHEMA_VERSION,
     SubmissionOutcome, TestSemanticProvider, TicketState,
 };
 use tempfile::tempdir;
 
 const GRAPH_META: TableDefinition<&str, &[u8]> = TableDefinition::new("graph_metadata");
 const CHANGE_SETS: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_change_sets");
+const ACTIVE_CLAIMS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("coordination_active_claims");
+const RESOURCE_CLOCKS: TableDefinition<&str, u64> =
+    TableDefinition::new("coordination_resource_clocks");
+const PUBLICATION_ATTEMPTS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("coordination_publication_attempts");
+const COORDINATION_META: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("coordination_metadata");
+
+fn fixture() -> GraphSnapshot {
+    serde_json::from_str(include_str!("fixtures/examples-medium.snapshot.json")).unwrap()
+}
 
 struct TargetAnalyzer;
 
@@ -42,18 +55,51 @@ impl TestSemanticProvider for TargetAnalyzer {
 }
 
 fn create_kernel(path: &Path) -> Kernel {
-    Kernel::create_with_test_semantics(
-        path,
-        GraphSnapshot {
+    Kernel::create_with_test_semantics(path, fixture(), Arc::new(TargetAnalyzer))
+        .unwrap()
+        .0
+}
+
+struct UserBuilder;
+
+impl CandidateBuilder for UserBuilder {
+    fn build_candidate(&self, prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
+        let mut user = prepared.graph.node("fc98295bca9efc3e").unwrap().clone();
+        user.payload = "export interface Account {}".into();
+        CandidateEnvelope::from_delta(GraphDelta {
             schema_version: SCHEMA_VERSION,
-            generation: 0,
-            nodes: vec![],
-            references: vec![],
-        },
-        Arc::new(TargetAnalyzer),
-    )
-    .unwrap()
-    .0
+            base_generation: prepared.graph.generation(),
+            changes: vec![GraphChange::UpsertNode { node: user }],
+        })
+    }
+}
+
+struct UserAnalyzer;
+
+impl TestSemanticProvider for UserAnalyzer {
+    fn analyze(
+        &self,
+        graph: &GraphGeneration,
+        _intent: &IntentRecord,
+    ) -> anyhow::Result<IntentAnalysis> {
+        let user = graph.node("fc98295bca9efc3e").unwrap();
+        let keys = vec![
+            "node:fc98295bca9efc3e".to_owned(),
+            format!("node:{}", user.parent_id.as_deref().unwrap()),
+        ];
+        let resources = keys
+            .iter()
+            .map(|key| ResourceVersion::new(key, "v0").unwrap())
+            .collect::<Vec<_>>();
+        Ok(IntentAnalysis {
+            read_set: resources.clone(),
+            write_set: resources.clone(),
+            validation_set: resources,
+            reservation_keys: keys,
+            dynamic_expansion_policy: DynamicExpansionPolicy::Requeue { max_expansions: 3 },
+            idempotency_class: IdempotencyClass::ReplaySafe,
+        })
+    }
 }
 
 fn begin_and_submit(kernel: &Kernel, id: &str, target: &str, now_tick: u64) -> SubmissionOutcome {
@@ -492,5 +538,222 @@ fn failed_restart_recovery_is_atomic_and_the_next_open_applies_it_once() {
         events_after_second_restart[6..]
             .iter()
             .all(|event| event.kind == CoordinationEventKind::IntentReady)
+    );
+}
+
+#[test]
+fn reopen_rejects_a_missing_resource_clock_for_a_nonzero_dependency() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let kernel = create_kernel(&path);
+    let SubmissionOutcome::Ready { offer, .. } =
+        begin_and_submit(&kernel, "change-set:clock-corruption", "Clock", 1)
+    else {
+        panic!("expected ready change set")
+    };
+    let ClaimOutcome::Claimed(claim) = kernel
+        .claim_ready(&offer.offer_id, &offer.claim_token, 2)
+        .unwrap()
+    else {
+        panic!("expected claimed change set")
+    };
+    drop(kernel);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut claims = write.open_table(ACTIVE_CLAIMS).unwrap();
+        let bytes = claims
+            .get(claim.claim_id.as_str())
+            .unwrap()
+            .unwrap()
+            .value()
+            .to_vec();
+        let mut json: Value = serde_json::from_slice(&bytes).unwrap();
+        json["dependencyVersions"][0]["clock"] = Value::from(1_u64);
+        let encoded = serde_json::to_vec(&json).unwrap();
+        claims
+            .insert(claim.claim_id.as_str(), encoded.as_slice())
+            .unwrap();
+    }
+    write
+        .open_table(RESOURCE_CLOCKS)
+        .unwrap()
+        .remove("symbol:Clock")
+        .unwrap();
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer))
+        .err()
+        .expect("missing nonzero dependency clock must reject reopen");
+    assert!(
+        error.to_string().contains("missing resource clock"),
+        "{error:#}"
+    );
+}
+
+fn publish_user_change(path: &Path) -> String {
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(path, fixture(), Arc::new(UserAnalyzer)).unwrap();
+    let SubmissionOutcome::Ready { offer, .. } = begin_and_submit(
+        &kernel,
+        "change-set:attempt-corruption",
+        "fc98295bca9efc3e",
+        1,
+    ) else {
+        panic!("expected ready change set")
+    };
+    let ClaimOutcome::Claimed(claim) = kernel
+        .claim_ready(&offer.offer_id, &offer.claim_token, 2)
+        .unwrap()
+    else {
+        panic!("expected claimed change set")
+    };
+    kernel.publish_claimed(&claim, &UserBuilder, 3).unwrap();
+    let attempt_id = claim.attempt_id;
+    drop(kernel);
+    attempt_id
+}
+
+#[test]
+fn reopen_rejects_a_changed_candidate_digest_for_the_same_attempt_id() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let attempt_id = publish_user_change(&path);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut attempts = write.open_table(PUBLICATION_ATTEMPTS).unwrap();
+        let bytes = attempts
+            .get(attempt_id.as_str())
+            .unwrap()
+            .unwrap()
+            .value()
+            .to_vec();
+        let mut json: Value = serde_json::from_slice(&bytes).unwrap();
+        json["candidateDigest"] = Value::String("corrupt-candidate-digest".into());
+        let encoded = serde_json::to_vec(&json).unwrap();
+        attempts
+            .insert(attempt_id.as_str(), encoded.as_slice())
+            .unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(UserAnalyzer))
+        .err()
+        .expect("changed candidate digest must reject reopen");
+    assert!(error.to_string().contains("candidate digest"), "{error:#}");
+}
+
+#[test]
+fn reopen_rejects_a_changed_graph_digest_for_a_publication_attempt() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let attempt_id = publish_user_change(&path);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut attempts = write.open_table(PUBLICATION_ATTEMPTS).unwrap();
+        let bytes = attempts
+            .get(attempt_id.as_str())
+            .unwrap()
+            .unwrap()
+            .value()
+            .to_vec();
+        let mut json: Value = serde_json::from_slice(&bytes).unwrap();
+        json["graphDigest"] = Value::String("corrupt-graph-digest".into());
+        let encoded = serde_json::to_vec(&json).unwrap();
+        attempts
+            .insert(attempt_id.as_str(), encoded.as_slice())
+            .unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(UserAnalyzer))
+        .err()
+        .expect("changed graph digest must reject reopen");
+    assert!(error.to_string().contains("graph digest"), "{error:#}");
+}
+
+#[test]
+fn reopen_rejects_scheduler_revision_behind_latest_lifecycle_revision() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let kernel = create_kernel(&path);
+    assert!(matches!(
+        begin_and_submit(&kernel, "change-set:revision-corruption", "Clock", 1),
+        SubmissionOutcome::Ready { .. }
+    ));
+    drop(kernel);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut metadata = write.open_table(COORDINATION_META).unwrap();
+        metadata
+            .insert("scheduler_revision", 0_u64.to_le_bytes().as_slice())
+            .unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer))
+        .err()
+        .expect("scheduler revision behind lifecycle must reject reopen");
+    assert!(
+        error.to_string().contains("lifecycle revision"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn empty_pre_clock_database_remains_compatible_before_first_clocked_publication() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let kernel = create_kernel(&path);
+    drop(kernel);
+
+    let database = redb::Database::open(&path).unwrap();
+    let read = database.begin_read().unwrap();
+    assert_eq!(read.open_table(RESOURCE_CLOCKS).unwrap().len().unwrap(), 0);
+    drop(read);
+    drop(database);
+
+    Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer)).unwrap();
+}
+
+#[test]
+fn empty_clock_table_is_rejected_after_first_clocked_publication() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    publish_user_change(&path);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut clocks = write.open_table(RESOURCE_CLOCKS).unwrap();
+        let keys = clocks
+            .iter()
+            .unwrap()
+            .map(|entry| entry.unwrap().0.value().to_owned())
+            .collect::<Vec<_>>();
+        for key in keys {
+            clocks.remove(key.as_str()).unwrap();
+        }
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(UserAnalyzer))
+        .err()
+        .expect("empty post-publication clock table must reject reopen");
+    assert!(
+        error.to_string().contains("first clocked publication"),
+        "{error:#}"
     );
 }

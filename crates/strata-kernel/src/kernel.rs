@@ -185,6 +185,13 @@ impl Kernel {
             );
         }
 
+        #[cfg(feature = "coordination-test-api")]
+        store.coordination().validate_recovery_state(
+            durable_generation,
+            |generation| store.delta(generation),
+            |generation| store.generation_digest(generation),
+        )?;
+
         let service_epoch = store.begin_service_epoch_and_recover_coordination()?;
         let scheduler_revision = store.coordination().metadata_state()?.scheduler_revision;
         let scheduler = SchedulerState::recover_with_revision(
@@ -250,6 +257,33 @@ impl Kernel {
             .into_iter()
             .map(|dependency| (dependency.resource_key, dependency.clock))
             .collect())
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_durable_resource_clocks(
+        &self,
+        keys: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, u64>> {
+        let clocks = self.store.coordination().resource_clocks()?;
+        Ok(keys
+            .iter()
+            .filter_map(|key| clocks.get(key).copied().map(|clock| (key.clone(), clock)))
+            .collect())
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_graph_table_counts(&self) -> Result<(u64, String, u64, u64)> {
+        self.store.atomic_graph_table_counts()
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_coordination_table_counts(
+        &self,
+    ) -> Result<crate::coordination::CoordinationTableCounts> {
+        self.store.coordination().table_counts()
     }
 
     #[doc(hidden)]

@@ -1,6 +1,8 @@
 #![cfg(feature = "coordination-test-api")]
 
 #[cfg(feature = "redb-spike-api")]
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "redb-spike-api")]
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -244,6 +246,121 @@ fn begin_submit_claim(kernel: &Kernel, id: &str, tick: u64) -> ClaimHandle {
         panic!("expected claimed change set")
     };
     claim
+}
+
+#[cfg(feature = "redb-spike-api")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AtomicState {
+    graph_generation: u64,
+    graph_digest: String,
+    operation_count: u64,
+    graph_event_count: u64,
+    coordination_event_count: usize,
+    change_set_state: ChangeSetState,
+    ticket_state: TicketState,
+    has_offer: bool,
+    has_claim: bool,
+    scheduler_revision: u64,
+    resource_clocks: BTreeMap<String, u64>,
+    attempt: Option<strata_kernel::PublicationAttemptRecord>,
+    fence_states: BTreeMap<String, (Option<u64>, Option<u64>)>,
+    live_generation: u64,
+    live_digest: String,
+    live_resource_clocks: BTreeMap<String, u64>,
+}
+
+#[cfg(feature = "redb-spike-api")]
+impl AtomicState {
+    fn read(
+        kernel: &Kernel,
+        resource_keys: &BTreeSet<String>,
+        change_set_id: &str,
+        attempt_id: &str,
+    ) -> anyhow::Result<Self> {
+        let snapshot = kernel.snapshot();
+        let (graph_generation, graph_digest, operation_count, graph_event_count) =
+            kernel.test_graph_table_counts()?;
+        let coordination_counts = kernel.test_coordination_table_counts()?;
+        let (live_scheduler_revision, scheduler_revision) = kernel.test_scheduler_revisions()?;
+        assert_eq!(live_scheduler_revision, scheduler_revision);
+        Ok(Self {
+            graph_generation,
+            graph_digest,
+            operation_count,
+            graph_event_count,
+            coordination_event_count: coordination_counts.events as usize,
+            change_set_state: kernel
+                .change_set(change_set_id)?
+                .context("atomic-state change set is missing")?
+                .state,
+            ticket_state: kernel
+                .ticket_for_change_set(change_set_id)?
+                .context("atomic-state ticket is missing")?
+                .state,
+            has_offer: kernel.ready_offer_for_change_set(change_set_id)?.is_some(),
+            has_claim: kernel
+                .test_active_claims()?
+                .iter()
+                .any(|claim| claim.change_set_id == change_set_id),
+            scheduler_revision,
+            resource_clocks: kernel.test_durable_resource_clocks(resource_keys)?,
+            attempt: kernel.publication_attempt(attempt_id)?,
+            fence_states: resource_keys
+                .iter()
+                .map(|key| Ok((key.clone(), kernel.fence_state(key)?)))
+                .collect::<anyhow::Result<_>>()?,
+            live_generation: snapshot.generation(),
+            live_digest: snapshot.digest().to_owned(),
+            live_resource_clocks: kernel.test_resource_clocks(resource_keys)?,
+        })
+    }
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn atomic_resource_keys(snapshot: &GraphSnapshot) -> BTreeSet<String> {
+    let user = snapshot
+        .nodes
+        .iter()
+        .find(|node| node.id == "fc98295bca9efc3e")
+        .unwrap();
+    let parent = user.parent_id.as_deref().unwrap();
+    [
+        "node:fc98295bca9efc3e".to_owned(),
+        format!("node:{parent}"),
+        format!("children:{parent}"),
+    ]
+    .into_iter()
+    .collect()
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn atomic_case(
+    path: &std::path::Path,
+) -> (
+    Kernel,
+    Arc<SequencedAnalyzer>,
+    ClaimHandle,
+    RecordingBuilder,
+) {
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = Arc::new(SequencedAnalyzer::new(vec![analysis(&scope); 8]));
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(path, snapshot.clone(), analyzer.clone()).unwrap();
+    let claim = begin_submit_claim(&kernel, "atomic", 0);
+    let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
+    (kernel, analyzer, claim, builder)
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn recovered_atomic_state(
+    path: &std::path::Path,
+    analyzer: Arc<SequencedAnalyzer>,
+    resource_keys: &BTreeSet<String>,
+    attempt_id: &str,
+) -> AtomicState {
+    let (kernel, _) = Kernel::open_with_test_semantics(path, analyzer).unwrap();
+    AtomicState::read(&kernel, resource_keys, "atomic", attempt_id).unwrap()
 }
 
 #[test]
@@ -1237,98 +1354,54 @@ fn wake_event_context_is_bounded_while_canonical_operation_keeps_every_affected_
 #[cfg(feature = "redb-spike-api")]
 #[test]
 fn failure_after_in_transaction_fence_mutation_rolls_back_fences_graph_and_coordination() {
+    let snapshot = fixture();
+    let resource_keys = atomic_resource_keys(&snapshot);
+
+    let old_directory = tempdir().unwrap();
+    let old_path = old_directory.path().join("kernel.redb");
+    let (old_kernel, old_analyzer, old_claim, _) = atomic_case(&old_path);
+    let attempt_id = old_claim.attempt_id.clone();
+    drop(old_kernel);
+    let complete_old_state =
+        recovered_atomic_state(&old_path, old_analyzer, &resource_keys, &attempt_id);
+
+    let new_directory = tempdir().unwrap();
+    let new_path = new_directory.path().join("kernel.redb");
+    let (new_kernel, new_analyzer, new_claim, new_builder) = atomic_case(&new_path);
+    let new_attempt_id = new_claim.attempt_id.clone();
+    new_kernel
+        .publish_claimed(&new_claim, &new_builder, 2)
+        .unwrap();
+    drop(new_kernel);
+    let complete_new_state =
+        recovered_atomic_state(&new_path, new_analyzer, &resource_keys, &new_attempt_id);
+
     let failpoints = std::iter::once(CoordinatedPublishFailpoint::AfterFenceMutation)
-        .chain((1..=20).map(CoordinatedPublishFailpoint::AfterInsert))
+        .chain((1..=18).map(CoordinatedPublishFailpoint::AfterInsert))
+        .chain(std::iter::once(
+            CoordinatedPublishFailpoint::AfterResourceClockWrite,
+        ))
+        .chain(std::iter::once(
+            CoordinatedPublishFailpoint::AfterAttemptWrite,
+        ))
         .chain(std::iter::once(CoordinatedPublishFailpoint::BeforeCommit));
-    for (case, failpoint) in failpoints.enumerate() {
+    for failpoint in failpoints {
         let directory = tempdir().unwrap();
         let path = directory.path().join("kernel.redb");
-        let snapshot = fixture();
-        let scope = user_scope(&snapshot);
-        let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 4]);
-        let (kernel, _) =
-            Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer.clone()))
-                .unwrap();
-        let claim = begin_submit_claim(&kernel, "rollback", 0);
-        kernel
-            .begin_change_set(
-                BeginChangeSet {
-                    change_set_id: "rollback-successor".into(),
-                    actor: "agent:successor".into(),
-                    reasoning: "exercise successor rollback".into(),
-                    submission_idempotency_key: "submission:rollback-successor".into(),
-                },
-                0,
-            )
-            .unwrap();
-        kernel
-            .add_intent(
-                "rollback-successor",
-                IntentParameters::RenameSymbol {
-                    declaration_id: "fc98295bca9efc3e".into(),
-                    new_name: "Customer".into(),
-                },
-            )
-            .unwrap();
-        assert!(matches!(
-            kernel.submit_change_set("rollback-successor", 1).unwrap(),
-            SubmissionOutcome::Queued { .. }
-        ));
-        let builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
+        let (kernel, analyzer, claim, builder) = atomic_case(&path);
+        let attempt_id = claim.attempt_id.clone();
         kernel
             .publish_claimed_with_failpoint(&claim, &builder, 2, failpoint)
             .unwrap_err();
         drop(kernel);
-
-        let (reopened, recovered) =
-            Kernel::open_with_test_semantics(&path, Arc::new(analyzer.clone())).unwrap();
-        assert_eq!(recovered.generation, 0, "failpoint case {case}");
-        assert_eq!(
-            reopened.change_set("rollback").unwrap().unwrap().state,
-            ChangeSetState::Ready,
-            "failpoint case {case}"
-        );
-        assert!(
-            reopened
-                .ready_offer_for_change_set("rollback")
-                .unwrap()
-                .is_some(),
-            "failpoint case {case}"
-        );
-        assert_eq!(
-            reopened
-                .change_set("rollback-successor")
-                .unwrap()
-                .unwrap()
-                .state,
-            ChangeSetState::Queued,
-            "failpoint case {case}"
-        );
-        assert!(
-            reopened
-                .ready_offer_for_change_set("rollback-successor")
-                .unwrap()
-                .is_none(),
-            "failpoint case {case}"
-        );
-        assert!(
-            reopened
-                .events_after("rollback-audit", 0, 50)
-                .unwrap()
-                .iter()
-                .all(|event| {
-                    event.kind != CoordinationEventKind::IntentCommitted
-                        && !(event.change_set_id == "rollback-successor"
-                            && event.kind == CoordinationEventKind::IntentReady)
-                }),
-            "failpoint case {case}"
-        );
-        for key in &scope {
-            assert_eq!(
-                reopened.fence_state(key).unwrap(),
-                (None, None),
-                "failpoint case {case}"
-            );
+        let observed = recovered_atomic_state(&path, analyzer, &resource_keys, &attempt_id);
+        let mut expected_new = complete_new_state.clone();
+        if let Some(attempt) = &mut expected_new.attempt {
+            attempt.attempt_id = attempt_id;
         }
+        assert!(
+            observed == complete_old_state || observed == expected_new,
+            "{failpoint:?}: observed {observed:#?}\nold {complete_old_state:#?}\nnew {expected_new:#?}"
+        );
     }
 }

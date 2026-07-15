@@ -41,6 +41,8 @@ const META: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_me
 const NEXT_QUEUE_SEQUENCE: &str = "next_queue_sequence";
 const CURRENT_EVENT_SEQUENCE: &str = "current_event_sequence";
 const SCHEDULER_REVISION: &str = "scheduler_revision";
+const LATEST_LIFECYCLE_REVISION: &str = "latest_lifecycle_revision";
+const CLOCKED_PUBLICATION_GENERATION: &str = "clocked_publication_generation";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateDraftOutcome {
@@ -208,6 +210,141 @@ impl<'a> CoordinationDurable<'a> {
             clocks
                 .insert(key.as_str(), *update)
                 .with_context(|| format!("write resource clock for {key}"))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn mark_clocked_publication_in_write_txn(
+        &self,
+        write: &WriteTransaction,
+        generation: u64,
+    ) -> Result<()> {
+        if generation == 0 {
+            bail!("clocked publication generation must be nonzero");
+        }
+        let mut metadata = write
+            .open_table(META)
+            .context("open coordination metadata")?;
+        let previous = read_u64_metadata(&metadata, CLOCKED_PUBLICATION_GENERATION)?;
+        if generation <= previous {
+            bail!(
+                "clocked publication generation {generation} does not advance previous generation {previous}"
+            );
+        }
+        metadata
+            .insert(
+                CLOCKED_PUBLICATION_GENERATION,
+                generation.to_le_bytes().as_slice(),
+            )
+            .context("advance clocked publication generation")?;
+        Ok(())
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn validate_recovery_state(
+        &self,
+        current_graph_generation: u64,
+        mut delta_at: impl FnMut(u64) -> Result<Option<crate::GraphDelta>>,
+        mut graph_digest_at: impl FnMut(u64) -> Result<String>,
+    ) -> Result<()> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin coordination recovery validation")?;
+        let metadata = read
+            .open_table(META)
+            .context("open coordination metadata")?;
+        let scheduler_revision = read_u64_metadata(&metadata, SCHEDULER_REVISION)?;
+        let lifecycle_revision = read_u64_metadata(&metadata, LATEST_LIFECYCLE_REVISION)?;
+        if scheduler_revision < lifecycle_revision {
+            bail!(
+                "scheduler revision {scheduler_revision} is behind latest lifecycle revision {lifecycle_revision}"
+            );
+        }
+        let clocked_generation = read_u64_metadata(&metadata, CLOCKED_PUBLICATION_GENERATION)?;
+        if clocked_generation > current_graph_generation {
+            bail!(
+                "clocked publication generation {clocked_generation} exceeds current graph generation {current_graph_generation}"
+            );
+        }
+        drop(metadata);
+
+        let clocks = read
+            .open_table(RESOURCE_CLOCKS)
+            .context("open resource clocks table")?;
+        if clocked_generation > 0 && clocks.is_empty()? {
+            bail!("resource clock table is empty after the first clocked publication");
+        }
+        let claims = read
+            .open_table(ACTIVE_CLAIMS)
+            .context("open active claims table")?;
+        for entry in claims.iter().context("iterate active claims")? {
+            let (_, value) = entry.context("read active claim")?;
+            let claim: ClaimHandle = decode(value.value(), "active claim")?;
+            for dependency in &claim.dependency_versions {
+                if dependency.clock > 0
+                    && clocks
+                        .get(dependency.resource_key.as_str())
+                        .with_context(|| {
+                            format!("read resource clock for {}", dependency.resource_key)
+                        })?
+                        .is_none()
+                {
+                    bail!(
+                        "missing resource clock {} required at nonzero dependency clock {}",
+                        dependency.resource_key,
+                        dependency.clock
+                    );
+                }
+            }
+        }
+        drop(claims);
+        drop(clocks);
+
+        let attempts = read
+            .open_table(PUBLICATION_ATTEMPTS)
+            .context("open publication attempts table")?;
+        for entry in attempts.iter().context("iterate publication attempts")? {
+            let (attempt_id, value) = entry.context("read publication attempt")?;
+            let attempt: PublicationAttemptRecord = decode(value.value(), "publication attempt")?;
+            if attempt.attempt_id != attempt_id.value() {
+                bail!("publication attempt key does not match its attempt ID");
+            }
+            if attempt.generation == 0 || attempt.generation > current_graph_generation {
+                bail!(
+                    "publication attempt {} has invalid generation {}",
+                    attempt.attempt_id,
+                    attempt.generation
+                );
+            }
+            let expected_graph_digest = graph_digest_at(attempt.generation)?;
+            if attempt.graph_digest != expected_graph_digest {
+                bail!(
+                    "publication attempt {} graph digest does not match generation {}",
+                    attempt.attempt_id,
+                    attempt.generation
+                );
+            }
+            let mut delta = delta_at(attempt.generation)?.with_context(|| {
+                format!(
+                    "publication attempt {} is missing delta at generation {}",
+                    attempt.attempt_id, attempt.generation
+                )
+            })?;
+            delta.base_generation = match attempt.prepared_graph_generation {
+                Some(generation) => generation,
+                None => attempt.generation.checked_sub(1).context(
+                    "legacy publication attempt at generation zero has no prepared generation",
+                )?,
+            };
+            let expected_candidate_digest = super::canonical_candidate_digest(&delta)?;
+            if attempt.candidate_digest != expected_candidate_digest {
+                bail!(
+                    "publication attempt {} candidate digest does not match its durable delta",
+                    attempt.attempt_id
+                );
+            }
         }
         Ok(())
     }
@@ -933,6 +1070,9 @@ impl<'a> CoordinationDurable<'a> {
             metadata
                 .insert(SCHEDULER_REVISION, revision_bytes.as_slice())
                 .context("advance scheduler revision")?;
+            metadata
+                .insert(LATEST_LIFECYCLE_REVISION, revision_bytes.as_slice())
+                .context("advance latest lifecycle revision")?;
         }
 
         if failpoint == CoordinationFailpoint::BeforeCommit {
@@ -1231,6 +1371,8 @@ impl<'a> CoordinationDurable<'a> {
             on_write()?;
             metadata.insert(SCHEDULER_REVISION, revision.as_slice())?;
             on_write()?;
+            metadata.insert(LATEST_LIFECYCLE_REVISION, revision.as_slice())?;
+            on_write()?;
         }
         Ok(())
     }
@@ -1448,6 +1590,9 @@ fn advance_scheduler_revision_in_write_txn(write: &WriteTransaction) -> Result<u
     metadata
         .insert(SCHEDULER_REVISION, bytes.as_slice())
         .context("advance scheduler revision")?;
+    metadata
+        .insert(LATEST_LIFECYCLE_REVISION, bytes.as_slice())
+        .context("advance latest lifecycle revision")?;
     Ok(next)
 }
 
@@ -1494,6 +1639,30 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
                 .context("initialize scheduler revision")?;
         } else {
             read_u64_metadata(&metadata, SCHEDULER_REVISION)?;
+        }
+        if metadata
+            .get(LATEST_LIFECYCLE_REVISION)
+            .context("read latest lifecycle revision")?
+            .is_none()
+        {
+            let revision = read_u64_metadata(&metadata, SCHEDULER_REVISION)?.to_le_bytes();
+            metadata
+                .insert(LATEST_LIFECYCLE_REVISION, revision.as_slice())
+                .context("initialize latest lifecycle revision")?;
+        } else {
+            read_u64_metadata(&metadata, LATEST_LIFECYCLE_REVISION)?;
+        }
+        if metadata
+            .get(CLOCKED_PUBLICATION_GENERATION)
+            .context("read clocked publication generation")?
+            .is_none()
+        {
+            let zero = 0_u64.to_le_bytes();
+            metadata
+                .insert(CLOCKED_PUBLICATION_GENERATION, zero.as_slice())
+                .context("initialize clocked publication generation")?;
+        } else {
+            read_u64_metadata(&metadata, CLOCKED_PUBLICATION_GENERATION)?;
         }
     }
     drop(
