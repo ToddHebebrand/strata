@@ -64,6 +64,18 @@ struct RecordingBuilder {
     delta: GraphDelta,
 }
 
+struct EmptyBuilder;
+
+impl CandidateBuilder for EmptyBuilder {
+    fn build_candidate(&self, prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
+        CandidateEnvelope::from_delta(GraphDelta {
+            schema_version: SCHEMA_VERSION,
+            base_generation: prepared.graph.generation(),
+            changes: Vec::new(),
+        })
+    }
+}
+
 impl RecordingBuilder {
     fn new(delta: GraphDelta) -> Self {
         Self {
@@ -255,18 +267,59 @@ struct AtomicState {
     graph_digest: String,
     operation_count: u64,
     graph_event_count: u64,
-    coordination_event_count: usize,
-    change_set_state: ChangeSetState,
-    ticket_state: TicketState,
-    has_offer: bool,
-    has_claim: bool,
-    scheduler_revision: u64,
+    operation: Option<serde_json::Value>,
+    graph_event: Option<serde_json::Value>,
+    graph_ticket: Option<serde_json::Value>,
+    graph_idempotency: Option<(String, u64)>,
+    coordination_events: Vec<serde_json::Value>,
+    change_set: serde_json::Value,
+    ticket: serde_json::Value,
+    offer: Option<serde_json::Value>,
+    claim: Option<serde_json::Value>,
+    metadata: strata_kernel::RecoveryMetadataState,
     resource_clocks: BTreeMap<String, u64>,
-    attempt: Option<strata_kernel::PublicationAttemptRecord>,
+    attempt: Option<serde_json::Value>,
     fence_states: BTreeMap<String, (Option<u64>, Option<u64>)>,
+    referential_consistency: BTreeMap<String, bool>,
     live_generation: u64,
     live_digest: String,
     live_resource_clocks: BTreeMap<String, u64>,
+}
+
+#[cfg(feature = "redb-spike-api")]
+fn normalize_atomic_record<T: serde::Serialize>(
+    record: &T,
+    replacements: &BTreeMap<String, String>,
+) -> serde_json::Value {
+    fn normalize(value: &mut serde_json::Value, replacements: &BTreeMap<String, String>) {
+        match value {
+            serde_json::Value::String(text) => {
+                if let Some(replacement) = replacements.get(text) {
+                    *text = replacement.clone();
+                } else if let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(text) {
+                    // Payload JSON is structural state too. Parsing it prevents a changed linked
+                    // ID or payload field from hiding inside an opaque string.
+                    normalize(&mut payload, replacements);
+                    *value = payload;
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    normalize(value, replacements);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for value in fields.values_mut() {
+                    normalize(value, replacements);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut value = serde_json::to_value(record).unwrap();
+    normalize(&mut value, replacements);
+    value
 }
 
 #[cfg(feature = "redb-spike-api")]
@@ -280,39 +333,200 @@ impl AtomicState {
         let snapshot = kernel.snapshot();
         let (graph_generation, graph_digest, operation_count, graph_event_count) =
             kernel.test_graph_table_counts()?;
-        let coordination_counts = kernel.test_coordination_table_counts()?;
         let (live_scheduler_revision, scheduler_revision) = kernel.test_scheduler_revisions()?;
         assert_eq!(live_scheduler_revision, scheduler_revision);
+        let change_set = kernel
+            .change_set(change_set_id)?
+            .context("atomic-state change set is missing")?;
+        let ticket = kernel
+            .ticket_for_change_set(change_set_id)?
+            .context("atomic-state ticket is missing")?;
+        let offer = kernel.ready_offer_for_change_set(change_set_id)?;
+        let claim = kernel
+            .test_active_claims()?
+            .into_iter()
+            .find(|claim| claim.change_set_id == change_set_id);
+        let attempt = kernel.publication_attempt(attempt_id)?;
+        let operation = (graph_generation > 0)
+            .then(|| kernel.operation(graph_generation))
+            .transpose()?
+            .flatten();
+        let graph_event = (graph_generation > 0)
+            .then(|| kernel.test_graph_event(graph_generation))
+            .transpose()?
+            .flatten();
+        let graph_ticket = kernel.test_graph_ticket(&ticket.ticket_id)?;
+        let idempotency_key = format!("coordination-commit:{change_set_id}");
+        let graph_idempotency = kernel
+            .test_graph_idempotency_generation(&idempotency_key)?
+            .map(|generation| (idempotency_key, generation));
+        let coordination_events = kernel.events_after("atomic-state-reader", 0, 1_000)?;
+
+        // Independent control databases generate different UUID-backed identities. Normalize
+        // exactly those volatile IDs (operation, graph/coordination event, ticket, offer/token,
+        // claim/attempt, and intent IDs) to relationship-preserving aliases. Stable identities,
+        // generations, states, scopes, clocks, payload fields, and all other record contents stay
+        // byte-for-byte comparable.
+        let mut replacements = BTreeMap::new();
+        replacements.insert(ticket.ticket_id.clone(), "<ticket-id>".into());
+        for (index, intent_id) in change_set.intent_ids.iter().enumerate() {
+            replacements.insert(intent_id.clone(), format!("<intent-id:{index}>"));
+        }
+        if let Some(offer) = &offer {
+            replacements.insert(offer.offer_id.clone(), "<offer-id>".into());
+            replacements.insert(offer.claim_token.clone(), "<claim-token>".into());
+        }
+        if let Some(claim) = &claim {
+            replacements.insert(claim.claim_id.clone(), "<claim-id>".into());
+            replacements.insert(claim.offer_id.clone(), "<offer-id>".into());
+            replacements.insert(claim.attempt_id.clone(), "<attempt-id>".into());
+        }
+        if let Some(attempt) = &attempt {
+            replacements.insert(attempt.attempt_id.clone(), "<attempt-id>".into());
+        }
+        if let Some(operation) = &operation {
+            // Operation ID is the sole ignored OperationRecord value; linkage remains explicit
+            // below and inside the normalized graph event payload.
+            replacements.insert(operation.operation_id.clone(), "<operation-id>".into());
+        }
+        if let Some(event) = &graph_event {
+            replacements.insert(event.event_id.clone(), "<graph-event-id>".into());
+        }
+        for event in &coordination_events {
+            replacements.insert(
+                event.event_id.clone(),
+                format!("<coordination-event-id:{}>", event.sequence),
+            );
+        }
+
+        let graph_payload = graph_event
+            .as_ref()
+            .and_then(|event| serde_json::from_str::<serde_json::Value>(&event.payload_json).ok());
+        let mut referential_consistency = BTreeMap::from([
+            (
+                "operation-change-set".into(),
+                operation
+                    .as_ref()
+                    .is_some_and(|operation| operation.change_set_id == change_set_id),
+            ),
+            (
+                "graph-event-change-set".into(),
+                graph_payload
+                    .as_ref()
+                    .is_some_and(|payload| payload["changeSetId"].as_str() == Some(change_set_id)),
+            ),
+            (
+                "graph-event-operation".into(),
+                operation.as_ref().is_some_and(|operation| {
+                    graph_payload.as_ref().is_some_and(|payload| {
+                        payload["operationId"].as_str() == Some(operation.operation_id.as_str())
+                    })
+                }),
+            ),
+            (
+                "graph-ticket-coordination-ticket".into(),
+                graph_ticket
+                    .as_ref()
+                    .is_some_and(|graph_ticket| graph_ticket.ticket_id == ticket.ticket_id),
+            ),
+            (
+                "graph-ticket-scope".into(),
+                graph_ticket.as_ref().is_some_and(|graph_ticket| {
+                    graph_ticket.scope_fingerprint == ticket.scope_fingerprint
+                }),
+            ),
+            (
+                "idempotency-generation".into(),
+                graph_idempotency
+                    .as_ref()
+                    .is_some_and(|(_, generation)| *generation == graph_generation),
+            ),
+            (
+                "attempt-change-set".into(),
+                attempt
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.change_set_id == change_set_id),
+            ),
+            (
+                "attempt-generation".into(),
+                attempt
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.generation == graph_generation),
+            ),
+        ]);
+        for event in &coordination_events {
+            referential_consistency.insert(
+                format!("coordination-event-sequence:{}", event.sequence),
+                event.sequence > 0 && event.change_set_id == change_set_id,
+            );
+        }
         Ok(Self {
             graph_generation,
             graph_digest,
             operation_count,
             graph_event_count,
-            coordination_event_count: coordination_counts.events as usize,
-            change_set_state: kernel
-                .change_set(change_set_id)?
-                .context("atomic-state change set is missing")?
-                .state,
-            ticket_state: kernel
-                .ticket_for_change_set(change_set_id)?
-                .context("atomic-state ticket is missing")?
-                .state,
-            has_offer: kernel.ready_offer_for_change_set(change_set_id)?.is_some(),
-            has_claim: kernel
-                .test_active_claims()?
+            operation: operation
+                .as_ref()
+                .map(|record| normalize_atomic_record(record, &replacements)),
+            graph_event: graph_event
+                .as_ref()
+                .map(|record| normalize_atomic_record(record, &replacements)),
+            graph_ticket: graph_ticket
+                .as_ref()
+                .map(|record| normalize_atomic_record(record, &replacements)),
+            graph_idempotency,
+            coordination_events: coordination_events
                 .iter()
-                .any(|claim| claim.change_set_id == change_set_id),
-            scheduler_revision,
+                .map(|record| normalize_atomic_record(record, &replacements))
+                .collect(),
+            change_set: normalize_atomic_record(&change_set, &replacements),
+            ticket: normalize_atomic_record(&ticket, &replacements),
+            offer: offer
+                .as_ref()
+                .map(|record| normalize_atomic_record(record, &replacements)),
+            claim: claim
+                .as_ref()
+                .map(|record| normalize_atomic_record(record, &replacements)),
+            metadata: kernel.test_recovery_metadata()?,
             resource_clocks: kernel.test_durable_resource_clocks(resource_keys)?,
-            attempt: kernel.publication_attempt(attempt_id)?,
+            attempt: attempt
+                .as_ref()
+                .map(|record| normalize_atomic_record(record, &replacements)),
             fence_states: resource_keys
                 .iter()
                 .map(|key| Ok((key.clone(), kernel.fence_state(key)?)))
                 .collect::<anyhow::Result<_>>()?,
+            referential_consistency,
             live_generation: snapshot.generation(),
             live_digest: snapshot.digest().to_owned(),
             live_resource_clocks: kernel.test_resource_clocks(resource_keys)?,
         })
+    }
+}
+
+#[cfg(feature = "redb-spike-api")]
+#[test]
+fn atomic_state_distinguishes_wrong_graph_publication_content() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let resource_keys = atomic_resource_keys(&snapshot);
+    let (kernel, analyzer, claim, builder) = atomic_case(&path);
+    let attempt_id = claim.attempt_id.clone();
+    kernel.publish_claimed(&claim, &builder, 2).unwrap();
+    drop(kernel);
+    let state = recovered_atomic_state(&path, analyzer, &resource_keys, &attempt_id);
+
+    for mutate in ["operation", "event", "ticket", "idempotency"] {
+        let mut wrong = state.clone();
+        match mutate {
+            "operation" => wrong.operation.as_mut().unwrap()["kind"] = "wrong".into(),
+            "event" => wrong.graph_event.as_mut().unwrap()["kind"] = "wrong".into(),
+            "ticket" => wrong.graph_ticket.as_mut().unwrap()["state"] = "wrong".into(),
+            "idempotency" => wrong.graph_idempotency.as_mut().unwrap().1 += 1,
+            _ => unreachable!(),
+        }
+        assert_ne!(state, wrong, "AtomicState ignored mutated {mutate} content");
     }
 }
 
@@ -430,6 +644,41 @@ fn same_attempt_same_digest_replays_but_changed_digest_is_rejected() {
     assert_eq!(
         error.downcast_ref::<CoordinationError>(),
         Some(&CoordinationError::AttemptDigestMismatch),
+    );
+}
+
+#[test]
+fn empty_delta_publication_reopens_without_a_false_clock_marker() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = Arc::new(SequencedAnalyzer::new(vec![analysis(&scope); 4]));
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot, analyzer.clone()).unwrap();
+    let claim = begin_submit_claim(&kernel, "empty-delta", 0);
+
+    let PublishClaimOutcome::Published(report) =
+        kernel.publish_claimed(&claim, &EmptyBuilder, 2).unwrap()
+    else {
+        panic!("empty delta did not publish")
+    };
+    assert_eq!(report.generation, 1);
+    assert!(
+        kernel
+            .test_durable_resource_clocks(&BTreeSet::new())
+            .unwrap()
+            .is_empty()
+    );
+    drop(kernel);
+
+    let (reopened, _) = Kernel::open_with_test_semantics(&path, analyzer).unwrap();
+    assert_eq!(reopened.snapshot().generation(), 1);
+    assert!(
+        reopened
+            .test_durable_resource_clocks(&BTreeSet::new())
+            .unwrap()
+            .is_empty()
     );
 }
 
@@ -1395,10 +1644,7 @@ fn failure_after_in_transaction_fence_mutation_rolls_back_fences_graph_and_coord
             .unwrap_err();
         drop(kernel);
         let observed = recovered_atomic_state(&path, analyzer, &resource_keys, &attempt_id);
-        let mut expected_new = complete_new_state.clone();
-        if let Some(attempt) = &mut expected_new.attempt {
-            attempt.attempt_id = attempt_id;
-        }
+        let expected_new = complete_new_state.clone();
         assert!(
             observed == complete_old_state || observed == expected_new,
             "{failpoint:?}: observed {observed:#?}\nold {complete_old_state:#?}\nnew {expected_new:#?}"

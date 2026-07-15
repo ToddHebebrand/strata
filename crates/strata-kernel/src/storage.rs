@@ -7,14 +7,16 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTran
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use crate::coordination::{CoordinationDurable, ensure_coordination_schema};
+use crate::coordination::{
+    CoordinationDurable, ensure_coordination_schema, initialize_coordination_validation_metadata,
+};
 #[cfg(feature = "coordination-test-api")]
 use crate::coordination::{CoordinationError, LifecycleTransition, PublicationAttemptRecord};
 #[cfg(feature = "redb-spike-api")]
 use crate::kernel::PublishFailpoint;
 #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
 use crate::model::{FenceClaim, Publication};
-#[cfg(feature = "redb-spike-api")]
+#[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
 use crate::{EventRecord, TicketRecord};
 use crate::{GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord};
 
@@ -71,6 +73,7 @@ impl DurableStore {
             database: Database::create(path).context("create redb database")?,
         };
         ensure_coordination_schema(&store.database)?;
+        initialize_coordination_validation_metadata(&store.database)?;
         Ok(store)
     }
 
@@ -283,8 +286,10 @@ impl DurableStore {
         }
         self.coordination()
             .persist_resource_clock_updates_in_write_txn(&write, &commit.resource_clock_updates)?;
-        self.coordination()
-            .mark_clocked_publication_in_write_txn(&write, next_generation)?;
+        if !commit.resource_clock_updates.is_empty() {
+            self.coordination()
+                .mark_clocked_publication_in_write_txn(&write, next_generation)?;
+        }
         if failpoint == CoordinatedPublishFailpoint::AfterResourceClockWrite {
             bail!("coordinated publication failpoint after resource clock write");
         }
@@ -607,7 +612,16 @@ impl DurableStore {
 
     pub fn begin_service_epoch_and_recover_coordination(&self) -> Result<u64> {
         self.coordination()
-            .begin_service_epoch_and_recover_coordination()
+            .begin_service_epoch_and_recover_coordination(None)
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn begin_service_epoch_and_recover_coordination_with_validation(
+        &self,
+        migration: Option<crate::coordination::RecoveryValidationMigration>,
+    ) -> Result<u64> {
+        self.coordination()
+            .begin_service_epoch_and_recover_coordination(migration)
     }
 
     #[doc(hidden)]
@@ -618,6 +632,19 @@ impl DurableStore {
     ) -> Result<u64> {
         self.coordination()
             .begin_service_epoch_and_recover_coordination_with_failpoint(failpoint)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "redb-spike-api")]
+    pub fn begin_service_epoch_and_recover_coordination_with_migration_and_failpoint(
+        &self,
+        migration: crate::coordination::RecoveryValidationMigration,
+        failpoint: crate::CoordinationFailpoint,
+    ) -> Result<u64> {
+        self.coordination()
+            .begin_service_epoch_and_recover_coordination_with_migration_and_failpoint(
+                migration, failpoint,
+            )
     }
 
     pub fn latest_snapshot(&self) -> Result<GraphSnapshot> {
@@ -822,12 +849,12 @@ impl DurableStore {
         self.read_structured(DELTAS, generation, "delta")
     }
 
-    #[cfg(feature = "redb-spike-api")]
+    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub fn event(&self, sequence: u64) -> Result<Option<EventRecord>> {
         self.read_structured(EVENTS, sequence, "event")
     }
 
-    #[cfg(feature = "redb-spike-api")]
+    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub fn ticket(&self, ticket_id: &str) -> Result<Option<TicketRecord>> {
         let read = self
             .database
@@ -856,7 +883,7 @@ impl DurableStore {
     }
 
     #[doc(hidden)]
-    #[cfg(feature = "redb-spike-api")]
+    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub fn idempotency_generation(&self, idempotency_key: &str) -> Result<Option<u64>> {
         let read = self
             .database

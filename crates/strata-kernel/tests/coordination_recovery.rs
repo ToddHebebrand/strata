@@ -23,6 +23,8 @@ const RESOURCE_CLOCKS: TableDefinition<&str, u64> =
     TableDefinition::new("coordination_resource_clocks");
 const PUBLICATION_ATTEMPTS: TableDefinition<&str, &[u8]> =
     TableDefinition::new("coordination_publication_attempts");
+const GRAPH_OPERATIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("operations");
+const GRAPH_EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("events");
 const COORDINATION_META: TableDefinition<&str, &[u8]> =
     TableDefinition::new("coordination_metadata");
 
@@ -614,6 +616,258 @@ fn publish_user_change(path: &Path) -> String {
     let attempt_id = claim.attempt_id;
     drop(kernel);
     attempt_id
+}
+
+fn raw_coordination_metadata(path: &Path) -> BTreeMap<String, Vec<u8>> {
+    let database = redb::Database::open(path).unwrap();
+    let read = database.begin_read().unwrap();
+    let metadata = read.open_table(COORDINATION_META).unwrap();
+    metadata
+        .iter()
+        .unwrap()
+        .map(|entry| {
+            let (key, value) = entry.unwrap();
+            (key.value().to_owned(), value.value().to_vec())
+        })
+        .collect()
+}
+
+fn metadata_u64(metadata: &BTreeMap<String, Vec<u8>>, key: &str) -> Option<u64> {
+    metadata
+        .get(key)
+        .map(|bytes| u64::from_le_bytes(bytes.as_slice().try_into().unwrap()))
+}
+
+#[test]
+fn legacy_validation_markers_are_backfilled_after_read_only_validation() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    publish_user_change(&path);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut metadata = write.open_table(COORDINATION_META).unwrap();
+        metadata.remove("recovery_validation_version").unwrap();
+        metadata.remove("latest_lifecycle_revision").unwrap();
+        metadata.remove("clocked_publication_generation").unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+    let legacy = raw_coordination_metadata(&path);
+    assert_eq!(metadata_u64(&legacy, "recovery_validation_version"), None);
+
+    let (kernel, _) = Kernel::open_with_test_semantics(&path, Arc::new(UserAnalyzer)).unwrap();
+    drop(kernel);
+    let migrated = raw_coordination_metadata(&path);
+    assert_eq!(
+        metadata_u64(&migrated, "recovery_validation_version"),
+        Some(1)
+    );
+    assert_eq!(
+        metadata_u64(&migrated, "latest_lifecycle_revision"),
+        metadata_u64(&migrated, "scheduler_revision")
+    );
+    assert_eq!(
+        metadata_u64(&migrated, "clocked_publication_generation"),
+        Some(1)
+    );
+}
+
+#[test]
+fn failed_legacy_validation_migration_rolls_back_markers_and_service_epoch() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let kernel = create_kernel(&path);
+    let old_epoch = kernel.service_epoch();
+    drop(kernel);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut metadata = write.open_table(COORDINATION_META).unwrap();
+        metadata.remove("recovery_validation_version").unwrap();
+        metadata.remove("latest_lifecycle_revision").unwrap();
+        metadata.remove("clocked_publication_generation").unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+    let before = raw_coordination_metadata(&path);
+
+    let store = DurableStore::open(&path).unwrap();
+    let error = store
+        .begin_service_epoch_and_recover_coordination_with_migration_and_failpoint(
+            strata_kernel::RecoveryValidationMigration {
+                latest_lifecycle_revision: 0,
+                clocked_publication_generation: 0,
+            },
+            CoordinationFailpoint::BeforeCommit,
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("coordination failpoint"));
+    drop(store);
+
+    assert_eq!(raw_coordination_metadata(&path), before);
+    assert_eq!(raw_service_epoch(&path), old_epoch);
+}
+
+#[test]
+fn failed_open_does_not_self_heal_a_missing_versioned_lifecycle_marker() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let kernel = create_kernel(&path);
+    assert!(matches!(
+        begin_and_submit(&kernel, "change-set:marker-corruption", "Clock", 1),
+        SubmissionOutcome::Ready { .. }
+    ));
+    drop(kernel);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut metadata = write.open_table(COORDINATION_META).unwrap();
+        let version = metadata
+            .get("recovery_validation_version")
+            .unwrap()
+            .map(|value| u64::from_le_bytes(value.value().try_into().unwrap()));
+        assert_eq!(version, Some(1));
+        metadata.remove("latest_lifecycle_revision").unwrap();
+        metadata
+            .insert("scheduler_revision", 0_u64.to_le_bytes().as_slice())
+            .unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let before = raw_coordination_metadata(&path);
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer))
+        .err()
+        .expect("missing versioned lifecycle marker must reject reopen");
+    assert!(error.to_string().contains("lifecycle marker"), "{error:#}");
+    assert_eq!(raw_coordination_metadata(&path), before);
+}
+
+#[test]
+fn failed_open_does_not_self_heal_a_missing_versioned_clock_marker_or_clocks() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    publish_user_change(&path);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut metadata = write.open_table(COORDINATION_META).unwrap();
+        metadata.remove("clocked_publication_generation").unwrap();
+        let mut clocks = write.open_table(RESOURCE_CLOCKS).unwrap();
+        let keys = clocks
+            .iter()
+            .unwrap()
+            .map(|entry| entry.unwrap().0.value().to_owned())
+            .collect::<Vec<_>>();
+        for key in keys {
+            clocks.remove(key.as_str()).unwrap();
+        }
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let before = raw_coordination_metadata(&path);
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(UserAnalyzer))
+        .err()
+        .expect("missing versioned clock marker must reject reopen");
+    assert!(error.to_string().contains("clock marker"), "{error:#}");
+    assert_eq!(raw_coordination_metadata(&path), before);
+    let database = redb::Database::open(&path).unwrap();
+    let read = database.begin_read().unwrap();
+    assert_eq!(read.open_table(RESOURCE_CLOCKS).unwrap().len().unwrap(), 0);
+}
+
+#[test]
+fn reopen_rejects_a_publication_attempt_bound_to_a_different_change_set() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let attempt_id = publish_user_change(&path);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut attempts = write.open_table(PUBLICATION_ATTEMPTS).unwrap();
+        let bytes = attempts
+            .get(attempt_id.as_str())
+            .unwrap()
+            .unwrap()
+            .value()
+            .to_vec();
+        let mut json: Value = serde_json::from_slice(&bytes).unwrap();
+        json["changeSetId"] = Value::String("change-set:different".into());
+        let encoded = serde_json::to_vec(&json).unwrap();
+        attempts
+            .insert(attempt_id.as_str(), encoded.as_slice())
+            .unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(UserAnalyzer))
+        .err()
+        .expect("attempt bound to another change set must reject reopen");
+    assert!(error.to_string().contains("change set"), "{error:#}");
+}
+
+#[test]
+fn reopen_rejects_an_attempt_whose_graph_operation_has_another_change_set() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    publish_user_change(&path);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut operations = write.open_table(GRAPH_OPERATIONS).unwrap();
+        let bytes = operations.get(1).unwrap().unwrap().value().to_vec();
+        let mut json: Value = serde_json::from_slice(&bytes).unwrap();
+        json["changeSetId"] = Value::String("change-set:different".into());
+        let encoded = serde_json::to_vec(&json).unwrap();
+        operations.insert(1, encoded.as_slice()).unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(UserAnalyzer))
+        .err()
+        .expect("operation/change-set mismatch must reject reopen");
+    assert!(error.to_string().contains("graph operation"), "{error:#}");
+}
+
+#[test]
+fn reopen_rejects_an_attempt_whose_graph_event_has_another_operation() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    publish_user_change(&path);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    {
+        let mut events = write.open_table(GRAPH_EVENTS).unwrap();
+        let bytes = events.get(1).unwrap().unwrap().value().to_vec();
+        let mut json: Value = serde_json::from_slice(&bytes).unwrap();
+        let mut payload: Value =
+            serde_json::from_str(json["payloadJson"].as_str().unwrap()).unwrap();
+        payload["operationId"] = Value::String("operation:different".into());
+        json["payloadJson"] = Value::String(payload.to_string());
+        let encoded = serde_json::to_vec(&json).unwrap();
+        events.insert(1, encoded.as_slice()).unwrap();
+    }
+    write.commit().unwrap();
+    drop(database);
+
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(UserAnalyzer))
+        .err()
+        .expect("event/operation mismatch must reject reopen");
+    assert!(
+        error.to_string().contains("graph event identity"),
+        "{error:#}"
+    );
 }
 
 #[test]

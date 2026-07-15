@@ -33,7 +33,11 @@ pub use durable::{
     CoordinationDurable, CoordinationFailpoint, CoordinationMetadataState, CoordinationTableCounts,
     CreateDraftOutcome,
 };
-pub(crate) use durable::{LifecycleTransition, ensure_coordination_schema};
+pub(crate) use durable::{
+    LifecycleTransition, ensure_coordination_schema, initialize_coordination_validation_metadata,
+};
+#[cfg(feature = "coordination-test-api")]
+pub use durable::{RecoveryMetadataState, RecoveryValidationMigration};
 #[cfg(feature = "coordination-test-api")]
 pub use model::PublicationAttemptRecord;
 pub use model::{

@@ -186,12 +186,18 @@ impl Kernel {
         }
 
         #[cfg(feature = "coordination-test-api")]
-        store.coordination().validate_recovery_state(
+        let validation_migration = store.coordination().validate_recovery_state(
             durable_generation,
             |generation| store.delta(generation),
             |generation| store.generation_digest(generation),
+            |generation| store.operation(generation),
+            |generation| store.event(generation),
         )?;
 
+        #[cfg(feature = "coordination-test-api")]
+        let service_epoch = store
+            .begin_service_epoch_and_recover_coordination_with_validation(validation_migration)?;
+        #[cfg(not(feature = "coordination-test-api"))]
         let service_epoch = store.begin_service_epoch_and_recover_coordination()?;
         let scheduler_revision = store.coordination().metadata_state()?.scheduler_revision;
         let scheduler = SchedulerState::recover_with_revision(
@@ -276,6 +282,30 @@ impl Kernel {
     #[cfg(feature = "coordination-test-api")]
     pub fn test_graph_table_counts(&self) -> Result<(u64, String, u64, u64)> {
         self.store.atomic_graph_table_counts()
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_graph_event(&self, sequence: u64) -> Result<Option<crate::EventRecord>> {
+        self.store.event(sequence)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_graph_ticket(&self, ticket_id: &str) -> Result<Option<crate::TicketRecord>> {
+        self.store.ticket(ticket_id)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_graph_idempotency_generation(&self, key: &str) -> Result<Option<u64>> {
+        self.store.idempotency_generation(key)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_recovery_metadata(&self) -> Result<crate::RecoveryMetadataState> {
+        self.store.coordination().recovery_metadata_state()
     }
 
     #[doc(hidden)]

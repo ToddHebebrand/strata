@@ -43,6 +43,8 @@ const CURRENT_EVENT_SEQUENCE: &str = "current_event_sequence";
 const SCHEDULER_REVISION: &str = "scheduler_revision";
 const LATEST_LIFECYCLE_REVISION: &str = "latest_lifecycle_revision";
 const CLOCKED_PUBLICATION_GENERATION: &str = "clocked_publication_generation";
+const RECOVERY_VALIDATION_VERSION: &str = "recovery_validation_version";
+const CURRENT_RECOVERY_VALIDATION_VERSION: u64 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CreateDraftOutcome {
@@ -63,6 +65,25 @@ pub struct CoordinationMetadataState {
     pub next_queue_sequence: u64,
     pub current_event_sequence: u64,
     pub scheduler_revision: u64,
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecoveryMetadataState {
+    pub next_queue_sequence: u64,
+    pub current_event_sequence: u64,
+    pub scheduler_revision: u64,
+    pub latest_lifecycle_revision: Option<u64>,
+    pub clocked_publication_generation: Option<u64>,
+    pub recovery_validation_version: Option<u64>,
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RecoveryValidationMigration {
+    pub latest_lifecycle_revision: u64,
+    pub clocked_publication_generation: u64,
 }
 
 #[doc(hidden)]
@@ -247,7 +268,9 @@ impl<'a> CoordinationDurable<'a> {
         current_graph_generation: u64,
         mut delta_at: impl FnMut(u64) -> Result<Option<crate::GraphDelta>>,
         mut graph_digest_at: impl FnMut(u64) -> Result<String>,
-    ) -> Result<()> {
+        mut operation_at: impl FnMut(u64) -> Result<Option<crate::OperationRecord>>,
+        mut graph_event_at: impl FnMut(u64) -> Result<Option<crate::EventRecord>>,
+    ) -> Result<Option<RecoveryValidationMigration>> {
         let read = self
             .database
             .begin_read()
@@ -256,16 +279,24 @@ impl<'a> CoordinationDurable<'a> {
             .open_table(META)
             .context("open coordination metadata")?;
         let scheduler_revision = read_u64_metadata(&metadata, SCHEDULER_REVISION)?;
-        let lifecycle_revision = read_u64_metadata(&metadata, LATEST_LIFECYCLE_REVISION)?;
+        let validation_version =
+            read_optional_u64_metadata(&metadata, RECOVERY_VALIDATION_VERSION)?;
+        if validation_version.is_some_and(|version| version != CURRENT_RECOVERY_VALIDATION_VERSION)
+        {
+            bail!("unsupported coordination recovery validation version");
+        }
+        let lifecycle_marker = read_optional_u64_metadata(&metadata, LATEST_LIFECYCLE_REVISION)?;
+        let clock_marker = read_optional_u64_metadata(&metadata, CLOCKED_PUBLICATION_GENERATION)?;
+        if validation_version.is_some() && lifecycle_marker.is_none() {
+            bail!("versioned coordination database is missing its lifecycle marker");
+        }
+        if validation_version.is_some() && clock_marker.is_none() {
+            bail!("versioned coordination database is missing its clock marker");
+        }
+        let lifecycle_revision = lifecycle_marker.unwrap_or(scheduler_revision);
         if scheduler_revision < lifecycle_revision {
             bail!(
                 "scheduler revision {scheduler_revision} is behind latest lifecycle revision {lifecycle_revision}"
-            );
-        }
-        let clocked_generation = read_u64_metadata(&metadata, CLOCKED_PUBLICATION_GENERATION)?;
-        if clocked_generation > current_graph_generation {
-            bail!(
-                "clocked publication generation {clocked_generation} exceeds current graph generation {current_graph_generation}"
             );
         }
         drop(metadata);
@@ -273,6 +304,16 @@ impl<'a> CoordinationDurable<'a> {
         let clocks = read
             .open_table(RESOURCE_CLOCKS)
             .context("open resource clocks table")?;
+        let clocked_generation = clock_marker.unwrap_or(if clocks.is_empty()? {
+            0
+        } else {
+            current_graph_generation
+        });
+        if clocked_generation > current_graph_generation {
+            bail!(
+                "clocked publication generation {clocked_generation} exceeds current graph generation {current_graph_generation}"
+            );
+        }
         if clocked_generation > 0 && clocks.is_empty()? {
             bail!("resource clock table is empty after the first clocked publication");
         }
@@ -318,6 +359,65 @@ impl<'a> CoordinationDurable<'a> {
                     attempt.generation
                 );
             }
+            let change_sets = read
+                .open_table(CHANGE_SETS)
+                .context("open change sets table")?;
+            let change_set_value = change_sets
+                .get(attempt.change_set_id.as_str())
+                .context("read publication attempt change set")?
+                .with_context(|| {
+                    format!(
+                        "publication attempt {} refers to missing change set {}",
+                        attempt.attempt_id, attempt.change_set_id
+                    )
+                })?;
+            let change_set: ChangeSetRecord = decode(change_set_value.value(), "change set")?;
+            if change_set.state != ChangeSetState::Committed
+                || change_set.committed_generation != Some(attempt.generation)
+            {
+                bail!(
+                    "publication attempt {} is not bound to a committed change set at generation {}",
+                    attempt.attempt_id,
+                    attempt.generation
+                );
+            }
+            drop(change_sets);
+
+            let operation = operation_at(attempt.generation)?.with_context(|| {
+                format!(
+                    "publication attempt {} is missing its graph operation",
+                    attempt.attempt_id
+                )
+            })?;
+            if operation.change_set_id != attempt.change_set_id {
+                bail!(
+                    "publication attempt {} change set does not match its graph operation",
+                    attempt.attempt_id
+                );
+            }
+            let event = graph_event_at(attempt.generation)?.with_context(|| {
+                format!(
+                    "publication attempt {} is missing its graph event",
+                    attempt.attempt_id
+                )
+            })?;
+            let payload: serde_json::Value = serde_json::from_str(&event.payload_json)
+                .context("decode graph publication event payload")?;
+            if event.graph_generation != attempt.generation
+                || payload
+                    .get("changeSetId")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(attempt.change_set_id.as_str())
+                || payload
+                    .get("operationId")
+                    .and_then(serde_json::Value::as_str)
+                    != Some(operation.operation_id.as_str())
+            {
+                bail!(
+                    "publication attempt {} does not match its graph event identity",
+                    attempt.attempt_id
+                );
+            }
             let expected_graph_digest = graph_digest_at(attempt.generation)?;
             if attempt.graph_digest != expected_graph_digest {
                 bail!(
@@ -346,7 +446,12 @@ impl<'a> CoordinationDurable<'a> {
                 );
             }
         }
-        Ok(())
+        Ok(validation_version
+            .is_none()
+            .then_some(RecoveryValidationMigration {
+                latest_lifecycle_revision: lifecycle_revision,
+                clocked_publication_generation: clocked_generation,
+            }))
     }
 
     pub fn events_after(
@@ -424,8 +529,14 @@ impl<'a> CoordinationDurable<'a> {
         EventCursor::new(client_id, acknowledged_sequence).map_err(anyhow::Error::msg)
     }
 
-    pub(crate) fn begin_service_epoch_and_recover_coordination(&self) -> Result<u64> {
-        self.begin_service_epoch_and_recover_coordination_inner(CoordinationFailpoint::None)
+    pub(crate) fn begin_service_epoch_and_recover_coordination(
+        &self,
+        validation_migration: Option<RecoveryValidationMigration>,
+    ) -> Result<u64> {
+        self.begin_service_epoch_and_recover_coordination_inner(
+            validation_migration,
+            CoordinationFailpoint::None,
+        )
     }
 
     #[doc(hidden)]
@@ -433,11 +544,21 @@ impl<'a> CoordinationDurable<'a> {
         &self,
         failpoint: CoordinationFailpoint,
     ) -> Result<u64> {
-        self.begin_service_epoch_and_recover_coordination_inner(failpoint)
+        self.begin_service_epoch_and_recover_coordination_inner(None, failpoint)
+    }
+
+    #[doc(hidden)]
+    pub fn begin_service_epoch_and_recover_coordination_with_migration_and_failpoint(
+        &self,
+        migration: RecoveryValidationMigration,
+        failpoint: CoordinationFailpoint,
+    ) -> Result<u64> {
+        self.begin_service_epoch_and_recover_coordination_inner(Some(migration), failpoint)
     }
 
     fn begin_service_epoch_and_recover_coordination_inner(
         &self,
+        validation_migration: Option<RecoveryValidationMigration>,
         failpoint: CoordinationFailpoint,
     ) -> Result<u64> {
         let write = self
@@ -453,6 +574,29 @@ impl<'a> CoordinationDurable<'a> {
             (old_epoch, next_epoch)
         };
         let graph_generation = read_current_generation_in_write_txn(&write)?;
+        if let Some(migration) = validation_migration {
+            let mut metadata = write
+                .open_table(META)
+                .context("open coordination metadata")?;
+            if read_optional_u64_metadata(&metadata, RECOVERY_VALIDATION_VERSION)?.is_some() {
+                bail!("coordination recovery validation migration was already applied");
+            }
+            metadata.insert(
+                LATEST_LIFECYCLE_REVISION,
+                migration.latest_lifecycle_revision.to_le_bytes().as_slice(),
+            )?;
+            metadata.insert(
+                CLOCKED_PUBLICATION_GENERATION,
+                migration
+                    .clocked_publication_generation
+                    .to_le_bytes()
+                    .as_slice(),
+            )?;
+            metadata.insert(
+                RECOVERY_VALIDATION_VERSION,
+                CURRENT_RECOVERY_VALIDATION_VERSION.to_le_bytes().as_slice(),
+            )?;
+        }
         let coordination_metadata = {
             let metadata = write
                 .open_table(META)
@@ -1556,6 +1700,35 @@ impl<'a> CoordinationDurable<'a> {
         })
     }
 
+    #[cfg(feature = "coordination-test-api")]
+    #[doc(hidden)]
+    pub fn recovery_metadata_state(&self) -> Result<RecoveryMetadataState> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin coordination recovery metadata read")?;
+        let metadata = read
+            .open_table(META)
+            .context("open coordination metadata")?;
+        Ok(RecoveryMetadataState {
+            next_queue_sequence: read_u64_metadata(&metadata, NEXT_QUEUE_SEQUENCE)?,
+            current_event_sequence: read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?,
+            scheduler_revision: read_u64_metadata(&metadata, SCHEDULER_REVISION)?,
+            latest_lifecycle_revision: read_optional_u64_metadata(
+                &metadata,
+                LATEST_LIFECYCLE_REVISION,
+            )?,
+            clocked_publication_generation: read_optional_u64_metadata(
+                &metadata,
+                CLOCKED_PUBLICATION_GENERATION,
+            )?,
+            recovery_validation_version: read_optional_u64_metadata(
+                &metadata,
+                RECOVERY_VALIDATION_VERSION,
+            )?,
+        })
+    }
+
     #[doc(hidden)]
     pub fn table_counts(&self) -> Result<CoordinationTableCounts> {
         let read = self
@@ -1640,30 +1813,6 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
         } else {
             read_u64_metadata(&metadata, SCHEDULER_REVISION)?;
         }
-        if metadata
-            .get(LATEST_LIFECYCLE_REVISION)
-            .context("read latest lifecycle revision")?
-            .is_none()
-        {
-            let revision = read_u64_metadata(&metadata, SCHEDULER_REVISION)?.to_le_bytes();
-            metadata
-                .insert(LATEST_LIFECYCLE_REVISION, revision.as_slice())
-                .context("initialize latest lifecycle revision")?;
-        } else {
-            read_u64_metadata(&metadata, LATEST_LIFECYCLE_REVISION)?;
-        }
-        if metadata
-            .get(CLOCKED_PUBLICATION_GENERATION)
-            .context("read clocked publication generation")?
-            .is_none()
-        {
-            let zero = 0_u64.to_le_bytes();
-            metadata
-                .insert(CLOCKED_PUBLICATION_GENERATION, zero.as_slice())
-                .context("initialize clocked publication generation")?;
-        } else {
-            read_u64_metadata(&metadata, CLOCKED_PUBLICATION_GENERATION)?;
-        }
     }
     drop(
         write
@@ -1742,6 +1891,43 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn initialize_coordination_validation_metadata(database: &Database) -> Result<()> {
+    let write = database
+        .begin_write()
+        .context("begin coordination validation metadata transaction")?;
+    {
+        let mut metadata = write
+            .open_table(META)
+            .context("open coordination metadata")?;
+        if metadata
+            .get(RECOVERY_VALIDATION_VERSION)
+            .context("read recovery validation version")?
+            .is_some()
+        {
+            bail!("coordination validation metadata is already initialized");
+        }
+        let revision = read_u64_metadata(&metadata, SCHEDULER_REVISION)?.to_le_bytes();
+        metadata
+            .insert(LATEST_LIFECYCLE_REVISION, revision.as_slice())
+            .context("initialize latest lifecycle revision")?;
+        metadata
+            .insert(
+                CLOCKED_PUBLICATION_GENERATION,
+                0_u64.to_le_bytes().as_slice(),
+            )
+            .context("initialize clocked publication generation")?;
+        metadata
+            .insert(
+                RECOVERY_VALIDATION_VERSION,
+                CURRENT_RECOVERY_VALIDATION_VERSION.to_le_bytes().as_slice(),
+            )
+            .context("initialize recovery validation version")?;
+    }
+    write
+        .commit()
+        .context("commit coordination validation metadata transaction")
+}
+
 fn encode<T: Serialize>(value: &T, label: &str) -> Result<Vec<u8>> {
     serde_json::to_vec(value).with_context(|| format!("encode {label}"))
 }
@@ -1759,4 +1945,21 @@ fn update_id<'a>(before: Option<&'a str>, after: Option<&'a str>, label: &str) -
 
 fn decode<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T> {
     serde_json::from_slice(bytes).with_context(|| format!("decode {label}"))
+}
+
+fn read_optional_u64_metadata(
+    table: &impl ReadableTable<&'static str, &'static [u8]>,
+    key: &'static str,
+) -> Result<Option<u64>> {
+    let Some(value) = table
+        .get(key)
+        .with_context(|| format!("read metadata key {key}"))?
+    else {
+        return Ok(None);
+    };
+    let bytes: [u8; 8] = value
+        .value()
+        .try_into()
+        .with_context(|| format!("metadata key {key} must contain exactly eight bytes"))?;
+    Ok(Some(u64::from_le_bytes(bytes)))
 }

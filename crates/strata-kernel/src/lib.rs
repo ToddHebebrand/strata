@@ -20,7 +20,8 @@ pub use coordination::{
 #[cfg(feature = "coordination-test-api")]
 pub use coordination::{
     CandidateBuilder, CandidateEnvelope, PreparedCandidate, PublicationAttemptRecord,
-    PublishClaimOutcome, canonical_candidate_digest,
+    PublishClaimOutcome, RecoveryMetadataState, RecoveryValidationMigration,
+    canonical_candidate_digest,
 };
 #[cfg(feature = "coordination-test-api")]
 pub use coordination::{
