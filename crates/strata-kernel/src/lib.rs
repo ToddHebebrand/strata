@@ -1,3 +1,4 @@
+mod bridge;
 mod coordination;
 mod graph;
 mod kernel;
