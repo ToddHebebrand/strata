@@ -109,6 +109,29 @@ impl Kernel {
         )
     }
 
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn execute_claimed_with_test_hooks(
+        &self,
+        claim: &ClaimHandle,
+        now_tick: u64,
+        before_final_check: &dyn Fn(u32),
+    ) -> Result<PublishClaimOutcome> {
+        let executor = self.candidate_executor()?;
+        self.publish_claimed_inner(
+            claim,
+            CandidateSource::Executor(executor),
+            now_tick,
+            PublicationExecution {
+                test_hooks: PublicationTestHooks {
+                    before_final_check: Some(before_final_check),
+                    ..PublicationTestHooks::default()
+                },
+                ..PublicationExecution::default()
+            },
+        )
+    }
+
     #[cfg(feature = "coordination-test-api")]
     pub fn publish_claimed(
         &self,

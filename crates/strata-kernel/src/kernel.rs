@@ -323,6 +323,41 @@ impl Kernel {
             .collect())
     }
 
+    /// Injects one monotonic in-memory dependency-clock advance without durable or graph writes.
+    /// This is a research-only fault seam for proving stale candidate invalidation.
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_inject_claim_dependency_clock_advance(
+        &self,
+        claim: &crate::coordination::ClaimHandle,
+        resource_key: &str,
+    ) -> Result<u64> {
+        let dependency = claim
+            .dependency_versions
+            .iter()
+            .find(|dependency| dependency.resource_key == resource_key)
+            .with_context(|| format!("claim has no dependency {resource_key}"))?;
+        let publication = self
+            .publish_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("publication lock is poisoned"))?;
+        let before = self.resource_clock_snapshot();
+        if before.clock(resource_key) != dependency.clock {
+            bail!("claim dependency clock is not current for {resource_key}");
+        }
+        let next = dependency
+            .clock
+            .checked_add(1)
+            .with_context(|| format!("resource clock overflow for {resource_key}"))?;
+        let updates = BTreeMap::from([(resource_key.to_owned(), next)]);
+        *self
+            .resource_clocks
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Arc::new(before.apply(&updates));
+        drop(publication);
+        Ok(next)
+    }
+
     #[doc(hidden)]
     #[cfg(feature = "coordination-test-api")]
     pub fn test_graph_table_counts(&self) -> Result<(u64, String, u64, u64)> {
