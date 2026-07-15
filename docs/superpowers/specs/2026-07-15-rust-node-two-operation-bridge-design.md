@@ -1,6 +1,6 @@
 # Rust–Node Two-Operation Bridge Design
 
-**Status:** Approved architecture; written spec awaiting operator review
+**Status:** Operator-reviewed and approved for implementation planning
 
 **Date:** 2026-07-15 (revised same day after repo-grounded review: idempotency
 mapping pinned to product code, G+1 fixture ID-stability constraint,
