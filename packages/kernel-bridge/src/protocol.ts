@@ -423,4 +423,6 @@ export type BuildValidateCandidateRequest = z.infer<typeof buildValidateCandidat
 export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
 export type BridgeResponse = z.infer<typeof bridgeResponseSchema>;
 export type BridgeErrorPayload = z.infer<typeof bridgeErrorPayloadSchema>;
+export type BridgeDiagnostic = z.infer<typeof bridgeDiagnosticSchema>;
+export type SemanticFacts = z.infer<typeof semanticFactsSchema>;
 export type KernelGraphDeltaV1 = z.infer<typeof kernelGraphDeltaV1Schema>;
