@@ -6,9 +6,9 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 #[derive(Clone, Debug)]
@@ -64,69 +64,103 @@ impl NodeBridgeClient {
             .stderr
             .take()
             .ok_or_else(|| anyhow!("Node bridge stderr pipe was not created"))?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("Node bridge stdin pipe was not created"))?;
 
         // Both readers start before any potentially blocking stdin write or wait.
         let stdout_reader = spawn_bounded_reader(stdout, self.config.max_response_bytes);
         let stderr_reader = spawn_bounded_reader(stderr, self.config.max_stderr_bytes);
-
-        let write_result = (|| -> Result<()> {
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or_else(|| anyhow!("Node bridge stdin pipe was not created"))?;
-            stdin
-                .write_all(&request_bytes)
-                .context("write Node bridge request")?;
-            stdin.flush().context("flush Node bridge request")?;
-            drop(stdin);
-            Ok(())
-        })();
-
-        let wait_result = child.wait_timeout(self.config.deadline);
+        let deadline = Instant::now()
+            .checked_add(self.config.deadline)
+            .ok_or_else(|| anyhow!("Node bridge deadline is too large"))?;
+        let mut stdin_writer = Some(spawn_request_writer(stdin, request_bytes));
+        let mut write_result = None;
         let mut timed_out = false;
-        let status = match wait_result {
-            Ok(Some(status)) => Some(status),
-            Ok(None) => {
-                timed_out = true;
-                let kill_result = child.kill();
-                let reap_result = child.wait();
-                if let Err(error) = kill_result {
-                    let _ = reap_result;
-                    return finish_after_reader_join(
-                        stdout_reader,
-                        stderr_reader,
-                        Err(anyhow!(error).context("kill timed-out Node bridge child")),
-                    );
-                }
-                match reap_result {
-                    Ok(status) => Some(status),
-                    Err(error) => {
-                        return finish_after_reader_join(
-                            stdout_reader,
-                            stderr_reader,
-                            Err(anyhow!(error).context("reap timed-out Node bridge child")),
-                        );
+        let mut lifecycle_error = None;
+        let mut status = None;
+
+        match wait_for_writer_or_child(&mut child, stdin_writer.as_ref().unwrap(), deadline) {
+            Ok(InitialEvent::ChildExited(exit_status)) => status = Some(exit_status),
+            Ok(InitialEvent::WriterFinished) => {
+                let result = join_writer(stdin_writer.take().unwrap());
+                if result.is_err() {
+                    write_result = Some(result);
+                    match child
+                        .try_wait()
+                        .context("poll Node bridge child after write failure")
+                    {
+                        Ok(Some(exit_status)) => status = Some(exit_status),
+                        Ok(None) => {
+                            if let Err(cleanup_error) = kill_and_reap(&mut child) {
+                                lifecycle_error = Some(cleanup_error);
+                            }
+                        }
+                        Err(error) => {
+                            lifecycle_error = Some(error);
+                            if let Err(cleanup_error) = kill_and_reap(&mut child) {
+                                lifecycle_error = Some(with_cleanup_error(
+                                    lifecycle_error.take().unwrap(),
+                                    cleanup_error,
+                                ));
+                            }
+                        }
+                    }
+                } else {
+                    write_result = Some(Ok(()));
+                    match child.wait_timeout(deadline.saturating_duration_since(Instant::now())) {
+                        Ok(Some(exit_status)) => status = Some(exit_status),
+                        Ok(None) => {
+                            timed_out = true;
+                            if let Err(error) = kill_and_reap(&mut child) {
+                                lifecycle_error = Some(error);
+                            }
+                        }
+                        Err(error) => {
+                            lifecycle_error =
+                                Some(anyhow!(error).context("wait for Node bridge child"));
+                            if let Err(cleanup_error) = kill_and_reap(&mut child) {
+                                lifecycle_error = Some(with_cleanup_error(
+                                    lifecycle_error.take().unwrap(),
+                                    cleanup_error,
+                                ));
+                            }
+                        }
                     }
                 }
             }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return finish_after_reader_join(
-                    stdout_reader,
-                    stderr_reader,
-                    Err(anyhow!(error).context("wait for Node bridge child")),
-                );
+            Ok(InitialEvent::DeadlineReached) => {
+                timed_out = true;
+                if let Err(error) = kill_and_reap(&mut child) {
+                    lifecycle_error = Some(error);
+                }
             }
-        };
+            Err(error) => {
+                lifecycle_error = Some(error);
+                if let Err(cleanup_error) = kill_and_reap(&mut child) {
+                    lifecycle_error = Some(with_cleanup_error(
+                        lifecycle_error.take().unwrap(),
+                        cleanup_error,
+                    ));
+                }
+            }
+        }
 
-        let stdout_capture = join_reader(stdout_reader, "stdout")?;
-        let stderr_capture = join_reader(stderr_reader, "stderr")?;
+        if write_result.is_none() {
+            write_result = Some(join_writer(stdin_writer.take().unwrap()));
+        }
+
+        let (stdout_result, stderr_result) = join_reader_pair(stdout_reader, stderr_reader);
+        let stdout_capture = stdout_result?;
+        let stderr_capture = stderr_result?;
 
         if timed_out {
             bail!("Node bridge deadline exceeded; child was killed and reaped");
         }
-        write_result?;
+        if let Some(error) = lifecycle_error {
+            return Err(error);
+        }
         if stderr_capture.over_limit {
             bail!("Node bridge stderr exceeded configured byte limit");
         }
@@ -134,14 +168,20 @@ impl NodeBridgeClient {
             bail!("Node bridge stdout response exceeded configured byte limit");
         }
 
-        let status = status.expect("wait always returns or kills and reaps the child");
-        if !status.success() {
+        if let Some(status) = &status
+            && !status.success()
+        {
             let stderr = String::from_utf8_lossy(&stderr_capture.bytes);
             bail!(
                 "Node bridge exited with nonzero status {status}: {}",
                 stderr.trim()
             );
         }
+        write_result.expect("writer result is always collected")?;
+        ensure!(
+            status.is_some(),
+            "Node bridge child status was not collected"
+        );
 
         parse_bridge_response(
             &stdout_capture.bytes,
@@ -149,6 +189,68 @@ impl NodeBridgeClient {
             self.config.max_diagnostics_bytes,
         )
     }
+}
+
+enum InitialEvent {
+    ChildExited(ExitStatus),
+    WriterFinished,
+    DeadlineReached,
+}
+
+fn wait_for_writer_or_child(
+    child: &mut Child,
+    writer: &JoinHandle<Result<()>>,
+    deadline: Instant,
+) -> Result<InitialEvent> {
+    const POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+    loop {
+        if let Some(status) = child.try_wait().context("poll Node bridge child status")? {
+            return Ok(InitialEvent::ChildExited(status));
+        }
+        if writer.is_finished() {
+            return Ok(InitialEvent::WriterFinished);
+        }
+
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(InitialEvent::DeadlineReached);
+        }
+        thread::sleep(remaining.min(POLL_INTERVAL));
+    }
+}
+
+fn spawn_request_writer(mut stdin: ChildStdin, request: Vec<u8>) -> JoinHandle<Result<()>> {
+    thread::spawn(move || {
+        stdin
+            .write_all(&request)
+            .context("write Node bridge request")?;
+        stdin.flush().context("flush Node bridge request")?;
+        drop(stdin);
+        Ok(())
+    })
+}
+
+fn join_writer(handle: JoinHandle<Result<()>>) -> Result<()> {
+    handle
+        .join()
+        .map_err(|_| anyhow!("Node bridge stdin writer panicked"))?
+}
+
+fn kill_and_reap(child: &mut Child) -> Result<ExitStatus> {
+    let kill_result = child.kill();
+    let reap_result = child.wait();
+    match (kill_result, reap_result) {
+        (_, Ok(status)) => Ok(status),
+        (Ok(()), Err(error)) => Err(anyhow!(error).context("reap Node bridge child")),
+        (Err(kill_error), Err(reap_error)) => Err(anyhow!(
+            "kill Node bridge child failed: {kill_error}; reap also failed: {reap_error}"
+        )),
+    }
+}
+
+fn with_cleanup_error(primary: anyhow::Error, cleanup: anyhow::Error) -> anyhow::Error {
+    anyhow!("{primary:#}; child cleanup also failed: {cleanup:#}")
 }
 
 struct BoundedCapture {
@@ -194,14 +296,43 @@ fn join_reader(
         .with_context(|| format!("read Node bridge {stream}"))
 }
 
-fn finish_after_reader_join(
+fn join_reader_pair(
     stdout_reader: JoinHandle<std::io::Result<BoundedCapture>>,
     stderr_reader: JoinHandle<std::io::Result<BoundedCapture>>,
-    result: Result<BridgeResponse>,
-) -> Result<BridgeResponse> {
+) -> (Result<BoundedCapture>, Result<BoundedCapture>) {
     let stdout_result = join_reader(stdout_reader, "stdout");
     let stderr_result = join_reader(stderr_reader, "stderr");
-    stdout_result?;
-    stderr_result?;
-    result
+    (stdout_result, stderr_result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BoundedCapture, join_reader_pair};
+    use std::io;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn reader_pair_join_waits_for_stderr_after_stdout_fails() {
+        let stderr_finished = Arc::new(AtomicBool::new(false));
+        let stdout_reader =
+            thread::spawn(|| Err::<BoundedCapture, _>(io::Error::other("stdout read failed")));
+        let stderr_finished_in_thread = Arc::clone(&stderr_finished);
+        let stderr_reader = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(25));
+            stderr_finished_in_thread.store(true, Ordering::SeqCst);
+            Ok(BoundedCapture {
+                bytes: Vec::new(),
+                over_limit: false,
+            })
+        });
+
+        let (stdout_result, stderr_result) = join_reader_pair(stdout_reader, stderr_reader);
+
+        assert!(stdout_result.is_err());
+        assert!(stderr_result.is_ok());
+        assert!(stderr_finished.load(Ordering::SeqCst));
+    }
 }

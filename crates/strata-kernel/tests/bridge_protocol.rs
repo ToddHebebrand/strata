@@ -12,17 +12,20 @@ use bridge::protocol::{
     parse_bridge_response, serialize_bridge_request, serialize_bridge_response,
 };
 use serde_json::{Value, json};
+use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
+use wait_timeout::ChildExt;
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
 const MAX_DIAGNOSTIC_BYTES: usize = 64 * 1024;
+const BLOCKED_STDIN_PID_PATH: &str = "STRATA_BLOCKED_STDIN_PID_PATH";
 
 fn fixture_path(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -446,4 +449,132 @@ fn process_runner_drains_stdout_before_the_child_reads_a_large_stdin_request() {
 
     let response = NodeBridgeClient::new(config).run(&request).unwrap();
     assert!(matches!(response, BridgeResponse::AnalyzeError(_)));
+}
+
+#[test]
+fn process_runner_deadline_includes_a_blocked_stdin_write() {
+    if let Some(pid_path) = env::var_os(BLOCKED_STDIN_PID_PATH) {
+        let mut value = fixture_value("analyze-request.json");
+        value["snapshot"]["nodes"][0]["payload"] = json!("x".repeat(2 * 1024 * 1024));
+        let request = parse_bridge_request(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let mut config = default_config("never-read-stdin.mjs");
+        config.arguments.push(pid_path.clone());
+        config.deadline = Duration::from_secs(1);
+
+        let error = NodeBridgeClient::new(config)
+            .run(&request)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("deadline") || error.contains("timeout"),
+            "{error}"
+        );
+
+        let pid = fs::read_to_string(pid_path).unwrap();
+        let output = Command::new("kill")
+            .args(["-0", pid.trim()])
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "timed-out child {pid} still exists or is unreaped"
+        );
+        return;
+    }
+
+    let directory = tempdir().unwrap();
+    let pid_path = directory.path().join("blocked-child.pid");
+    let test_executable = env::current_exe().unwrap();
+    let mut helper = Command::new(test_executable)
+        .args([
+            "--exact",
+            "process_runner_deadline_includes_a_blocked_stdin_write",
+            "--nocapture",
+        ])
+        .env(BLOCKED_STDIN_PID_PATH, &pid_path)
+        .spawn()
+        .unwrap();
+
+    match helper.wait_timeout(Duration::from_secs(5)).unwrap() {
+        Some(status) => assert!(status.success(), "blocked-stdin helper failed: {status}"),
+        None => {
+            helper.kill().unwrap();
+            helper.wait().unwrap();
+            if let Ok(pid) = fs::read_to_string(&pid_path) {
+                let _ = Command::new("kill").args(["-KILL", pid.trim()]).status();
+            }
+            panic!("bridge runner exceeded the test harness deadline while writing stdin");
+        }
+    }
+}
+
+#[test]
+fn process_runner_reports_nonzero_exit_when_child_closes_an_active_writer() {
+    let mut value = fixture_value("analyze-request.json");
+    value["snapshot"]["nodes"][0]["payload"] = json!("x".repeat(2 * 1024 * 1024));
+    let request = parse_bridge_request(&serde_json::to_vec(&value).unwrap()).unwrap();
+
+    let error = NodeBridgeClient::new(default_config("early-nonzero.mjs"))
+        .run(&request)
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("status") && error.contains("early-nonzero"),
+        "{error}"
+    );
+}
+
+#[test]
+fn process_runner_cleans_up_after_an_early_stdin_write_error() {
+    let mut value = fixture_value("analyze-request.json");
+    value["snapshot"]["nodes"][0]["payload"] = json!("x".repeat(2 * 1024 * 1024));
+    let request = parse_bridge_request(&serde_json::to_vec(&value).unwrap()).unwrap();
+    let directory = tempdir().unwrap();
+    let pid_path = directory.path().join("closed-stdin-child.pid");
+    let mut config = default_config("close-stdin.mjs");
+    config.arguments.push(pid_path.as_os_str().to_owned());
+
+    let started = Instant::now();
+    let error = NodeBridgeClient::new(config)
+        .run(&request)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("write Node bridge request"), "{error}");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "early write error waited for the process deadline"
+    );
+    let pid = fs::read_to_string(pid_path).unwrap();
+    let output = Command::new("kill")
+        .args(["-0", pid.trim()])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "write-failed child {pid} still exists or is unreaped"
+    );
+}
+
+#[test]
+fn process_runner_wait_uses_only_the_remaining_absolute_deadline() {
+    let mut value = fixture_value("analyze-request.json");
+    value["snapshot"]["nodes"][0]["payload"] = json!("x".repeat(2 * 1024 * 1024));
+    let request = parse_bridge_request(&serde_json::to_vec(&value).unwrap()).unwrap();
+    let mut config = default_config("delayed-read-then-hang.mjs");
+    config.deadline = Duration::from_millis(1_200);
+
+    let started = Instant::now();
+    let error = NodeBridgeClient::new(config)
+        .run(&request)
+        .unwrap_err()
+        .to_string();
+    let elapsed = started.elapsed();
+
+    assert!(error.contains("deadline"), "{error}");
+    assert!(
+        elapsed < Duration::from_millis(1_700),
+        "child wait restarted the deadline after stdin completed: {elapsed:?}"
+    );
 }
