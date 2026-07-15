@@ -2,7 +2,10 @@
 
 **Status:** Approved architecture; written spec awaiting operator review
 
-**Date:** 2026-07-15
+**Date:** 2026-07-15 (revised same day after repo-grounded review: idempotency
+mapping pinned to product code, G+1 fixture ID-stability constraint,
+arity-risk reference policy, `@strata/ingest` dependency, sealing-test
+extension requirement)
 
 **Scope:** Iteration 5 “Two-operation proof” only
 
@@ -94,8 +97,10 @@ Rejected alternatives:
 ### Private TypeScript bridge package
 
 A new private workspace package, `@strata/kernel-bridge`, owns the Node process
-entry point and bridge-only adapters. It depends on the existing store and
-verify packages; no agent tool or existing product package depends on it.
+entry point and bridge-only adapters. It depends on the existing store, ingest,
+and verify packages; no agent tool or existing product package depends on it.
+The canonical `KernelSnapshotV1` wire format lives in `@strata/ingest`
+(`kernelSnapshot.ts`) and is imported, never duplicated.
 
 Its responsibilities are limited to:
 
@@ -154,6 +159,18 @@ Coordination policy remains Rust-owned:
 - dynamic expansion uses the existing bounded requeue policy.
 
 Node cannot select or weaken those policies.
+
+This proof promotes that idempotency mapping from test fixtures into kernel
+product code. No `src/` code currently binds an intent kind to an idempotency
+class: the graph-derived acceptance fixture uses the mapping above, while
+`tests/coordination_scope.rs` deliberately uses the opposite one, so the
+production mapping must be pinned in `strata-kernel` source rather than
+inherited from whichever fixture an implementer reads first. Rationale:
+`add_parameter` scope growth is already governed by the bounded requeue
+policy, so replaying an unchanged-scope intent is safe; a `rename_symbol`
+whose reference closure drifted while queued is a material semantic decision.
+Fixtures may keep divergent mappings only where a test exercises policy
+mechanics rather than production semantics.
 
 ### Production candidate executor
 
@@ -257,6 +274,12 @@ The success response returns an operation-specific semantic-facts union:
 Facts are canonically sorted and duplicate-free. Node does not return resource
 versions, reservation keys, a scope fingerprint, expansion policy, idempotency
 class, or fencing data.
+
+Non-call arity-risk references do not fail analysis. They join the inferred
+read and validation scope, and TypeScript validation of the candidate decides
+whether the widened function type actually breaks them. This matches the
+existing store mutation, which proceeds while surfacing arity-risk counts
+rather than refusing.
 
 Unresolved references are a fail-closed semantic-analysis error for this proof;
 the kernel does not schedule from a knowingly incomplete scope.
@@ -435,6 +458,16 @@ The existing default kernel without installed production semantics must keep
 failing semantic execution without side effects; this preserves the current API
 sealing regression guard.
 
+Moving the publication module and candidate envelope out of the test feature is
+the highest-risk mechanical refactor in this proof: it re-opens exactly the
+surface the 2026-07-14 authority correction sealed. Today the publication
+module, `CandidateEnvelope`, and builder injection compile only under
+`coordination-test-api`, and the executor seam described here is new (the
+current seam is the feature-gated `CandidateBuilder` trait). The trybuild
+compile-fail sealing tests must be extended to cover the newly compiled
+normal-build surface — no injectable provider, builder, or envelope
+constructor — not merely kept passing against the old one.
+
 ## Deterministic acceptance
 
 All bridge tests are key-free and use the real ingest-derived
@@ -476,7 +509,12 @@ All bridge tests are key-free and use the real ingest-derived
    direct callsite. Claim-time bridge analysis observes the callsite and the
    kernel requeues before candidate construction. The fixture publication uses
    existing test-only graph injection and does not create a production
-   structural-insert API.
+   structural-insert API. Because node IDs hash the structural child path, the
+   added callsite must not shift any existing sibling's child index: the
+   fixture appends the new statement at the end of an existing module or adds
+   a new module, so the G→G+1 delta is exactly the new callsite subtree and
+   its reference. A fixture whose diff churns unrelated node IDs is invalid
+   and is rebuilt, not accommodated.
 4. On the next claim, the candidate delta contains the new callsite edit and
    publishes once.
 
