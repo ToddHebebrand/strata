@@ -316,6 +316,77 @@ describe("bounded one-shot worker", () => {
     expect(firstResponse.error.diagnostics[0].message).not.toMatch(/[\n\r]/);
   }, 30_000);
 
+  it("bounds the complete serialized diagnostics array deterministically", async () => {
+    const handler = `() => ({
+      stage: "validate",
+      code: "typescriptFailed",
+      message: "many diagnostics",
+      diagnostics: Array.from({ length: 1000 }, (_, index) => ({
+        nodeId: "node-" + String(index).padStart(4, "0") + "-" + "n".repeat(160),
+        modulePath: "src/generated/" + String(index).padStart(4, "0") + ".ts",
+        message: "diagnostic " + String(index).padStart(4, "0") + " " + "é".repeat(96),
+        code: Number.MAX_SAFE_INTEGER - index
+      }))
+    })`;
+    const first = await runProcess(
+      JSON.stringify(analyzeRequest()),
+      injectedWorker(handler)
+    );
+    const second = await runProcess(
+      JSON.stringify(analyzeRequest()),
+      injectedWorker(handler)
+    );
+
+    const firstResponse = parseSingleFrame(first);
+    const secondResponse = parseSingleFrame(second);
+    expect(firstResponse).toEqual(secondResponse);
+    expect(firstResponse.error.code).toBe("typescriptFailed");
+    expect(
+      Buffer.byteLength(
+        JSON.stringify(firstResponse.error.diagnostics),
+        "utf8"
+      )
+    ).toBeLessThanOrEqual(MAX_DIAGNOSTIC_BYTES);
+    expect(JSON.stringify(firstResponse.error.diagnostics)).not.toContain("�");
+  }, 30_000);
+
+  it("keeps empty diagnostics and omits one indivisibly oversized diagnostic", async () => {
+    const empty = await runProcess(
+      JSON.stringify(analyzeRequest()),
+      injectedWorker(`() => ({
+        stage: "validate",
+        code: "emptyDiagnostics",
+        message: "empty",
+        diagnostics: []
+      })`)
+    );
+    const oversized = await runProcess(
+      JSON.stringify(analyzeRequest()),
+      injectedWorker(`() => ({
+        stage: "validate",
+        code: "oversizedDiagnostic",
+        message: "oversized",
+        diagnostics: [{
+          nodeId: "n".repeat(${MAX_DIAGNOSTIC_BYTES + 1}),
+          modulePath: null,
+          message: "cannot fit",
+          code: 1
+        }]
+      })`)
+    );
+
+    expect(parseSingleFrame(empty).error.diagnostics).toEqual([]);
+    const oversizedResponse = parseSingleFrame(oversized);
+    expect(oversizedResponse.error.code).toBe("oversizedDiagnostic");
+    expect(oversizedResponse.error.diagnostics).toEqual([]);
+    expect(
+      Buffer.byteLength(
+        JSON.stringify(oversizedResponse.error.diagnostics),
+        "utf8"
+      )
+    ).toBeLessThanOrEqual(MAX_DIAGNOSTIC_BYTES);
+  }, 30_000);
+
   it("bounds operational stderr for an oversized thrown error", async () => {
     const result = await runProcess(
       JSON.stringify(analyzeRequest()),

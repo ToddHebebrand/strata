@@ -258,21 +258,87 @@ function normalizeDiagnostics(
         compareText(left.modulePath ?? "", right.modulePath ?? "") ||
         left.code - right.code ||
         compareText(left.message, right.message)
-    );
+  );
 
   const normalized: BridgeDiagnostic[] = [];
-  let remaining = MAX_DIAGNOSTIC_BYTES;
+  let serializedBytes = serializedJsonBytes(normalized);
   for (const diagnostic of canonical) {
-    if (remaining <= 0) break;
+    const separatorBytes = normalized.length === 0 ? 0 : 1;
+    const availableBytes =
+      MAX_DIAGNOSTIC_BYTES - serializedBytes - separatorBytes;
+    if (availableBytes <= 0) break;
+
+    const minimal: BridgeDiagnostic = {
+      ...diagnostic,
+      modulePath: diagnostic.modulePath === null ? null : "",
+      message: ""
+    };
+    if (serializedJsonBytes(minimal) > availableBytes) break;
+
     const modulePath = diagnostic.modulePath === null
       ? null
-      : truncateUtf8(diagnostic.modulePath, remaining);
-    remaining -= Buffer.byteLength(modulePath ?? "", "utf8");
-    const message = truncateUtf8(diagnostic.message, remaining);
-    remaining -= Buffer.byteLength(message, "utf8");
-    normalized.push({ ...diagnostic, modulePath, message });
+      : truncateToJsonBudget(
+          diagnostic.modulePath,
+          availableBytes,
+          (value) => ({ ...minimal, modulePath: value })
+        );
+    const withoutMessage = { ...minimal, modulePath };
+    const message = truncateToJsonBudget(
+      diagnostic.message,
+      availableBytes,
+      (value) => ({ ...withoutMessage, message: value })
+    );
+    const bounded = { ...withoutMessage, message };
+    const boundedBytes = serializedJsonBytes(bounded);
+    normalized.push(bounded);
+    serializedBytes += separatorBytes + boundedBytes;
+  }
+  if (serializedJsonBytes(normalized) > MAX_DIAGNOSTIC_BYTES) {
+    throw new Error("normalized diagnostics exceed diagnostic limit");
   }
   return normalized;
+}
+
+function truncateToJsonBudget<T>(
+  value: string,
+  maxBytes: number,
+  build: (value: string) => T
+): string {
+  if (serializedJsonBytes(build(value)) <= maxBytes) return value;
+
+  let low = 0;
+  let high = value.length;
+  let best = "";
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = codePointSafePrefix(value, middle);
+    if (serializedJsonBytes(build(candidate)) <= maxBytes) {
+      if (candidate.length > best.length) best = candidate;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best;
+}
+
+function codePointSafePrefix(value: string, end: number): string {
+  let safeEnd = end;
+  if (
+    safeEnd > 0 &&
+    safeEnd < value.length &&
+    value.charCodeAt(safeEnd - 1) >= 0xd800 &&
+    value.charCodeAt(safeEnd - 1) <= 0xdbff &&
+    value.charCodeAt(safeEnd) >= 0xdc00 &&
+    value.charCodeAt(safeEnd) <= 0xdfff
+  ) {
+    safeEnd -= 1;
+  }
+  return value.slice(0, safeEnd);
+}
+
+function serializedJsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
 }
 
 function normalizeText(value: string): string {
