@@ -43,6 +43,7 @@ struct ValidatedCandidate {
 #[derive(Clone, Copy, Default)]
 struct PublicationTestHooks<'a> {
     before_final_check: Option<&'a dyn Fn(u32)>,
+    before_invalidation_final_check: Option<&'a dyn Fn(u32)>,
     before_redb_commit: Option<&'a dyn Fn()>,
     after_digest_validation: Option<&'a dyn Fn()>,
 }
@@ -130,6 +131,34 @@ impl Kernel {
             PublicationExecution {
                 test_hooks: PublicationTestHooks {
                     before_final_check: Some(before_final_check),
+                    before_invalidation_final_check: None,
+                    before_redb_commit: Some(before_redb_commit),
+                    after_digest_validation: None,
+                },
+                ..PublicationExecution::default()
+            },
+        )
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn publish_claimed_with_invalidation_test_hooks(
+        &self,
+        claim: &ClaimHandle,
+        candidate_builder: &dyn CandidateBuilder,
+        now_tick: u64,
+        before_final_check: &dyn Fn(u32),
+        before_invalidation_final_check: &dyn Fn(u32),
+        before_redb_commit: &dyn Fn(),
+    ) -> Result<PublishClaimOutcome> {
+        self.publish_claimed_inner(
+            claim,
+            CandidateSource::Builder(candidate_builder),
+            now_tick,
+            PublicationExecution {
+                test_hooks: PublicationTestHooks {
+                    before_final_check: Some(before_final_check),
+                    before_invalidation_final_check: Some(before_invalidation_final_check),
                     before_redb_commit: Some(before_redb_commit),
                     after_digest_validation: None,
                 },
@@ -154,6 +183,7 @@ impl Kernel {
             PublicationExecution {
                 test_hooks: PublicationTestHooks {
                     before_final_check: None,
+                    before_invalidation_final_check: None,
                     before_redb_commit: None,
                     after_digest_validation: Some(after_digest_validation),
                 },
@@ -258,7 +288,7 @@ impl Kernel {
         let fresh_scope = analyze_change_set(&prepared_graph, &intents, semantic_provider)?;
         let scope_change = classify_scope_change(previous_scope, &fresh_scope);
         if scope_change != ScopeChange::Unchanged {
-            self.persist_changed_publication_scope(claim, now_tick, test_hooks.before_redb_commit)?;
+            self.persist_changed_publication_scope(claim, now_tick, test_hooks)?;
             return self.invalidated_claim_outcome(claim);
         }
 
@@ -333,7 +363,7 @@ impl Kernel {
         let graph = self.snapshot();
         let clocks = self.resource_clock_snapshot();
         if !clocks.matches(&claim.dependency_versions) {
-            self.persist_changed_publication_scope(claim, now_tick, test_hooks.before_redb_commit)?;
+            self.persist_changed_publication_scope(claim, now_tick, test_hooks)?;
             return self.invalidated_claim_outcome(claim);
         }
         if before_scheduler.revision() < captured_revision {
@@ -342,7 +372,7 @@ impl Kernel {
         let current_authority = plan_change_set(&graph, &intents, semantic_provider)?;
         let current_scope_change = classify_scope_change(previous_scope, &current_authority.scope);
         if current_scope_change != ScopeChange::Unchanged {
-            self.persist_changed_publication_scope(claim, now_tick, test_hooks.before_redb_commit)?;
+            self.persist_changed_publication_scope(claim, now_tick, test_hooks)?;
             return self.invalidated_claim_outcome(claim);
         }
         let fresh_scope = current_authority.scope;
@@ -566,7 +596,7 @@ impl Kernel {
         {
             drop(scheduler);
             drop(_publish);
-            self.persist_changed_publication_scope(claim, now_tick, test_hooks.before_redb_commit)?;
+            self.persist_changed_publication_scope(claim, now_tick, test_hooks)?;
             return self.invalidated_claim_outcome(claim);
         }
         if self.snapshot().generation() != prepared_publication.expected_graph_generation
@@ -822,9 +852,12 @@ impl Kernel {
         &self,
         claim: &ClaimHandle,
         now_tick: u64,
-        before_redb_commit: Option<&dyn Fn()>,
+        test_hooks: PublicationTestHooks<'_>,
     ) -> Result<()> {
-        let mut unrelated_losses = 0;
+        let mut invalidation_attempt = 0;
+        // Once authority is known stale, unrelated optimistic losses cannot safely return while
+        // the exact claim is still active. Replan until this claim is atomically removed or a
+        // concurrent lifecycle transition makes validate_executing_claim return its typed error.
         loop {
             let durable = self.store.coordination();
             let graph = self.snapshot();
@@ -856,14 +889,6 @@ impl Kernel {
             let planned_dependencies = clocks.dependencies(&authority.dependency_keys);
             let metadata = durable.metadata_state()?;
             if metadata.scheduler_revision != expected_revision {
-                unrelated_losses += 1;
-                if unrelated_losses >= super::MAX_OPTIMISTIC_RETRIES {
-                    return Err(anyhow::Error::new(
-                        super::CoordinationError::OptimisticRetryExhausted {
-                            attempts: super::MAX_OPTIMISTIC_RETRIES,
-                        },
-                    ));
-                }
                 continue;
             }
             let mut base = transition(metadata)?;
@@ -936,6 +961,10 @@ impl Kernel {
             let mut final_scheduler = plan.next_scheduler;
             final_scheduler.set_revision(combined.next_metadata.scheduler_revision);
 
+            if let Some(hook) = test_hooks.before_invalidation_final_check {
+                hook(invalidation_attempt);
+            }
+            invalidation_attempt = invalidation_attempt.saturating_add(1);
             let publication = self
                 .publish_lock
                 .lock()
@@ -971,17 +1000,9 @@ impl Kernel {
             {
                 drop(scheduler);
                 drop(publication);
-                unrelated_losses += 1;
-                if unrelated_losses >= super::MAX_OPTIMISTIC_RETRIES {
-                    return Err(anyhow::Error::new(
-                        super::CoordinationError::OptimisticRetryExhausted {
-                            attempts: super::MAX_OPTIMISTIC_RETRIES,
-                        },
-                    ));
-                }
                 continue;
             }
-            if let Some(hook) = before_redb_commit {
+            if let Some(hook) = test_hooks.before_redb_commit {
                 hook();
             }
             durable.persist_lifecycle(&combined)?;

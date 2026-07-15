@@ -844,6 +844,188 @@ fn third_final_check_dependency_drift_atomically_requeues_and_fences_the_stale_c
 }
 
 #[test]
+fn known_dependency_drift_survives_three_invalidation_losses_without_stranding_authority() {
+    let fixture = MediumCoordinationFixture::load();
+    let graph = GraphGeneration::from_snapshot(fixture.snapshot().clone()).unwrap();
+    let user = fixture.declaration_named("User").clone();
+    let parse = fixture.declaration_named("parseArgs").clone();
+    let format = fixture.declaration_named("formatTimestamp").clone();
+    let mut changed_user = user.clone();
+    changed_user.payload.push_str("\n// dependency drift");
+    let publisher_changes = vec![GraphChange::UpsertNode { node: changed_user }];
+    let mut changed_parse = parse.clone();
+    changed_parse.payload.push_str("\n// stale candidate");
+    let stale_changes = vec![GraphChange::UpsertNode {
+        node: changed_parse,
+    }];
+    let stale_authority = required_delta_authority(
+        &graph,
+        &GraphDelta {
+            schema_version: SCHEMA_VERSION,
+            base_generation: 0,
+            changes: stale_changes.clone(),
+        },
+    )
+    .unwrap();
+    let publisher_authority = required_delta_authority(
+        &graph,
+        &GraphDelta {
+            schema_version: SCHEMA_VERSION,
+            base_generation: 0,
+            changes: publisher_changes.clone(),
+        },
+    )
+    .unwrap();
+    let mut stale_keys = stale_authority.write_resources;
+    stale_keys.push(format!("node:{}", user.id));
+    let loss_scope = vec![format!("node:{}", format.id)];
+    let provider = RoleProvider {
+        analyses: Arc::new(BTreeMap::from([
+            (
+                parse.id.clone(),
+                fixed_analysis(stale_keys, stale_authority.reservation_coverage),
+            ),
+            (
+                user.id.clone(),
+                fixed_analysis(
+                    publisher_authority.write_resources,
+                    publisher_authority.reservation_coverage,
+                ),
+            ),
+            (
+                format.id.clone(),
+                fixed_analysis(loss_scope.clone(), loss_scope),
+            ),
+        ])),
+    };
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, fixture.snapshot().clone(), Arc::new(provider))
+            .unwrap();
+    let kernel = Arc::new(kernel);
+    begin_with_intents(
+        &kernel,
+        "stale-invalidation",
+        [rename(&parse.id, "parseStale")],
+    )
+    .unwrap();
+    begin_with_intents(
+        &kernel,
+        "invalidation-dependency-publisher",
+        [rename(&user.id, "Account")],
+    )
+    .unwrap();
+    for attempt in 0..3 {
+        begin_with_intents(
+            &kernel,
+            &format!("invalidation-loss-{attempt}"),
+            [rename(&format.id, &format!("formatLoss{attempt}"))],
+        )
+        .unwrap();
+    }
+    let stale_offer = ready(kernel.submit_change_set("stale-invalidation", 0).unwrap());
+    let publisher_offer = ready(
+        kernel
+            .submit_change_set("invalidation-dependency-publisher", 0)
+            .unwrap(),
+    );
+    let stale_claim = claimed(
+        kernel
+            .claim_ready(&stale_offer.offer_id, &stale_offer.claim_token, 1)
+            .unwrap(),
+    );
+    let publisher_claim = claimed(
+        kernel
+            .claim_ready(&publisher_offer.offer_id, &publisher_offer.claim_token, 1)
+            .unwrap(),
+    );
+    let stale_builder = CountingDeltaBuilder::new(stale_changes);
+    let publisher_builder = DeltaBuilder(publisher_changes);
+    let before_final_check = |attempt: u32| {
+        assert_eq!(
+            attempt, 0,
+            "dependency drift should enter invalidation immediately"
+        );
+        assert!(matches!(
+            kernel
+                .publish_claimed(&publisher_claim, &publisher_builder, 20)
+                .unwrap(),
+            PublishClaimOutcome::Published(_)
+        ));
+    };
+    let invalidation_checks = AtomicUsize::new(0);
+    let before_invalidation_final_check = |attempt: u32| {
+        assert!(kernel.test_publication_mutexes_available());
+        invalidation_checks.fetch_add(1, Ordering::SeqCst);
+        if attempt < 3 {
+            kernel
+                .submit_change_set(
+                    &format!("invalidation-loss-{attempt}"),
+                    21 + u64::from(attempt),
+                )
+                .unwrap();
+        } else {
+            assert_eq!(attempt, 3, "unexpected extra invalidation retry");
+        }
+    };
+    let invalidation_commits = AtomicUsize::new(0);
+    let before_redb = || {
+        assert!(kernel.test_publication_mutexes_held());
+        invalidation_commits.fetch_add(1, Ordering::SeqCst);
+    };
+
+    let outcome = kernel
+        .publish_claimed_with_invalidation_test_hooks(
+            &stale_claim,
+            &stale_builder,
+            30,
+            &before_final_check,
+            &before_invalidation_final_check,
+            &before_redb,
+        )
+        .unwrap();
+
+    assert!(matches!(outcome, PublishClaimOutcome::Requeued { .. }));
+    assert_eq!(invalidation_checks.load(Ordering::SeqCst), 4);
+    assert_eq!(invalidation_commits.load(Ordering::SeqCst), 1);
+    assert_eq!(stale_builder.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        kernel
+            .change_set("stale-invalidation")
+            .unwrap()
+            .unwrap()
+            .state,
+        ChangeSetState::Queued
+    );
+    let durable_ticket = kernel
+        .ticket_for_change_set("stale-invalidation")
+        .unwrap()
+        .unwrap();
+    assert_eq!(durable_ticket.state, TicketState::Queued);
+    assert_eq!(
+        kernel
+            .test_scheduler_ticket_for_change_set("stale-invalidation")
+            .unwrap(),
+        durable_ticket
+    );
+    assert!(
+        kernel
+            .test_active_claims()
+            .unwrap()
+            .iter()
+            .all(|active| active.claim_id != stale_claim.claim_id)
+    );
+    let late = kernel
+        .publish_claimed(&stale_claim, &stale_builder, 31)
+        .unwrap_err();
+    assert_eq!(
+        late.downcast_ref::<CoordinationError>(),
+        Some(&CoordinationError::LeaseExpired)
+    );
+}
+
+#[test]
 fn three_unrelated_final_state_losses_exhaust_once_without_rebuilding() {
     let fixture = MediumCoordinationFixture::load();
     let user = fixture.declaration_named("User").clone();

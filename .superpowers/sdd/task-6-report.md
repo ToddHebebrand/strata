@@ -93,3 +93,32 @@ Status: DONE
 - Candidate construction, semantic analysis, digest work, graph application, readiness planning, and replay building remain outside both global mutexes.
 - The durable prepared-generation field implements the already approved idempotency/replay contract and is backward compatible, so no `decisions.md` or design-spec change is required.
 - No blocking concerns remain.
+
+## Non-stranding invalidation follow-up (2026-07-15)
+
+Status: DONE
+
+### Finding and correction
+
+- A known dependency mismatch entered `persist_changed_publication_scope`, but three unrelated graph/scheduler/metadata losses inside that helper could still return `OptimisticRetryExhausted { attempts: 3 }` while the exact stale claim remained active and the change set remained `Executing`.
+- Invalidation no longer applies the normal publication retry bound after authority is known stale. It repeats fresh semantic and readiness planning outside both global mutexes until the publication -> scheduler -> redb critical section atomically removes the exact claim and commits `Queued`/`NeedsDecision`, or exact-claim validation observes a concurrent lifecycle transition and returns its current typed error.
+- Dependency-fresh normal publication retains the exact three-attempt bound.
+
+### Strict TDD evidence
+
+- RED command: `cargo test -p strata-kernel --features coordination-test-api --test coordination_optimistic known_dependency_drift_survives_three_invalidation_losses_without_stranding_authority -- --exact --nocapture`.
+- RED result: exit 101; after three deterministic scheduler losses inside invalidation, the call returned `optimistic coordination retry exhausted after 3 attempts` at the expected successful-outcome assertion.
+- GREEN regression: the same test passed after a fourth fresh invalidation plan committed. It verifies `Requeued`, exact durable `Queued` state, durable/live scheduler ticket equality, old-claim absence, stale-claim fencing with exact `LeaseExpired`, one builder call, unlocked retry planning, and publication -> scheduler lock ownership at redb commit.
+- GREEN control: `three_unrelated_final_state_losses_exhaust_once_without_rebuilding` still returns exactly `OptimisticRetryExhausted { attempts: 3 }`, invokes the builder once, and preserves the fresh active claim.
+
+### Final verification
+
+- Exact Task 6 acceptance command passed 40/40: optimistic 12/12, publication 17/17, acceptance 11/11.
+- Full coordination-test-api suite passed 94/94.
+- Full all-features suite passed 147/147.
+- Default and all-features strict Clippy passed with `-D warnings`.
+- `cargo fmt --all -- --check` and `git diff --check` passed.
+
+### Concerns
+
+- None blocking. The invalidation loop is intentionally not bounded by unrelated optimistic state loss: returning while known-stale authority remains active is the unsafe outcome the loop prevents.
