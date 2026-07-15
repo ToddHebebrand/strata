@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(feature = "coordination-test-api")]
 use anyhow::Result;
 
+#[cfg(feature = "coordination-test-api")]
 use crate::{GraphChange, GraphDelta, GraphGeneration, NodeRecord};
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -41,6 +43,7 @@ impl ResourceClockSnapshot {
             .all(|dependency| self.clock(&dependency.resource_key) == dependency.clock)
     }
 
+    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn apply(&self, updates: &BTreeMap<String, u64>) -> Self {
         let mut next = self.clone();
         next.clocks.extend(updates.clone());
@@ -48,6 +51,7 @@ impl ResourceClockSnapshot {
     }
 }
 
+#[cfg(feature = "coordination-test-api")]
 pub fn affected_resource_keys(
     graph: &GraphGeneration,
     delta: &GraphDelta,
@@ -93,6 +97,7 @@ pub fn affected_resource_keys(
     Ok(keys)
 }
 
+#[cfg(feature = "coordination-test-api")]
 fn add_parent_bucket(keys: &mut BTreeSet<String>, node: &NodeRecord) {
     let parent = node.parent_id.as_deref().unwrap_or("root");
     keys.insert(format!("children:{parent}"));

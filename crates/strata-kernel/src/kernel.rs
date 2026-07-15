@@ -52,6 +52,7 @@ pub enum PublishFailpoint {
 pub struct Kernel {
     pub(crate) store: DurableStore,
     pub(crate) live: RwLock<Arc<GraphGeneration>>,
+    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub(crate) publish_lock: Mutex<()>,
     pub(crate) resource_clocks: RwLock<Arc<ResourceClockSnapshot>>,
     service_epoch: u64,
@@ -391,6 +392,7 @@ impl Kernel {
         Self {
             store,
             live: RwLock::new(graph),
+            #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
             publish_lock: Mutex::new(()),
             resource_clocks: RwLock::new(resource_clocks),
             service_epoch,

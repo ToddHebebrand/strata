@@ -313,6 +313,7 @@ impl SchedulerState {
     }
 
     // `coordination/planner.rs` is the sole caller so Ready authority is centralized.
+    #[cfg(feature = "coordination-test-api")]
     pub(super) fn mark_ready(&mut self, ticket_id: &str, offer: ReadyOffer) -> Result<()> {
         self.mark_ready_excluding(ticket_id, offer, &BTreeSet::new())
     }
@@ -433,6 +434,7 @@ impl SchedulerState {
         Ok(())
     }
 
+    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn requeue_claim_with_scope(
         &mut self,
         claim_id: &str,

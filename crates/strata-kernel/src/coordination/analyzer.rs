@@ -9,17 +9,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-/// Builds only a candidate graph delta. Publication authority and every audit,
-/// coordination, fencing, and idempotency record remain kernel-owned.
-pub trait CandidateBuilder: Send + Sync {
-    fn build_candidate(
-        &self,
-        graph: &GraphGeneration,
-        change_set: &super::ChangeSetRecord,
-        intents: &[IntentRecord],
-    ) -> Result<GraphDelta>;
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntentAnalysis {
     pub read_set: Vec<ResourceVersion>,

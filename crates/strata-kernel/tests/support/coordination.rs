@@ -6,10 +6,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use strata_kernel::{
-    BeginChangeSet, CandidateBuilder, ChangeSetRecord, DynamicExpansionPolicy, GraphChange,
-    GraphDelta, GraphGeneration, GraphSnapshot, IdempotencyClass, IntentAnalysis, IntentParameters,
-    IntentRecord, Kernel, NodeRecord, ReferenceRecord, ResourceVersion, SCHEMA_VERSION,
-    TestSemanticProvider,
+    BeginChangeSet, CandidateBuilder, CandidateEnvelope, ChangeSetRecord, DynamicExpansionPolicy,
+    GraphChange, GraphDelta, GraphGeneration, GraphSnapshot, IdempotencyClass, IntentAnalysis,
+    IntentParameters, IntentRecord, Kernel, NodeRecord, PreparedCandidate, ReferenceRecord,
+    ResourceVersion, SCHEMA_VERSION, TestSemanticProvider,
 };
 
 const SNAPSHOT_JSON: &str = include_str!("../fixtures/examples-medium.snapshot.json");
@@ -443,18 +443,14 @@ impl NodePatchBuilder {
 }
 
 impl CandidateBuilder for NodePatchBuilder {
-    fn build_candidate(
-        &self,
-        graph: &GraphGeneration,
-        _change_set: &ChangeSetRecord,
-        _intents: &[IntentRecord],
-    ) -> Result<GraphDelta> {
+    fn build_candidate(&self, prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let changes = self
             .patches
             .iter()
             .map(|(node_id, marker)| {
-                let mut node = graph
+                let mut node = prepared
+                    .graph
                     .node(node_id)
                     .with_context(|| format!("patch node {node_id} does not exist"))?
                     .clone();
@@ -462,9 +458,9 @@ impl CandidateBuilder for NodePatchBuilder {
                 Ok(GraphChange::UpsertNode { node })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(GraphDelta {
+        CandidateEnvelope::from_delta(GraphDelta {
             schema_version: SCHEMA_VERSION,
-            base_generation: graph.generation(),
+            base_generation: prepared.graph.generation(),
             changes,
         })
     }
@@ -473,13 +469,8 @@ impl CandidateBuilder for NodePatchBuilder {
 pub struct FixedDeltaBuilder(pub GraphDelta);
 
 impl CandidateBuilder for FixedDeltaBuilder {
-    fn build_candidate(
-        &self,
-        _graph: &GraphGeneration,
-        _change_set: &ChangeSetRecord,
-        _intents: &[IntentRecord],
-    ) -> Result<GraphDelta> {
-        Ok(self.0.clone())
+    fn build_candidate(&self, _prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
+        CandidateEnvelope::from_delta(self.0.clone())
     }
 }
 
@@ -500,12 +491,7 @@ impl FailingProbeBuilder {
 }
 
 impl CandidateBuilder for FailingProbeBuilder {
-    fn build_candidate(
-        &self,
-        _graph: &GraphGeneration,
-        _change_set: &ChangeSetRecord,
-        _intents: &[IntentRecord],
-    ) -> Result<GraphDelta> {
+    fn build_candidate(&self, _prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         bail!("probe candidate reached after claim validation")
     }

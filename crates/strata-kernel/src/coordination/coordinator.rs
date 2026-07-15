@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "coordination-test-api")]
 use std::sync::Arc;
+#[cfg(feature = "coordination-test-api")]
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
@@ -10,24 +12,47 @@ use super::analyzer::analyze_change_set;
 use super::authority::plan_change_set;
 use super::durable::{CoordinationMetadataState, LifecycleTransition};
 use super::planner::{PlannerSnapshot, plan_readiness};
+#[cfg(feature = "coordination-test-api")]
+use super::resource_keys;
+#[cfg(feature = "coordination-test-api")]
 use super::{
-    CandidateBuilder, ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome,
-    CoordinationEvent, CoordinationEventKind, CoordinationTicket, CreateDraftOutcome,
-    DynamicExpansionPolicy, EventCursor, IntentParameters, IntentRecord, LeaseExpiryOutcome,
-    ReadyOffer, SchedulerState, ScopeChange, SubmissionOutcome, TicketState, classify_scope_change,
-    resource_keys,
+    CandidateBuilder, CandidateEnvelope, PreparedCandidate, PublicationAttemptRecord,
+    PublishClaimOutcome,
 };
+use super::{
+    ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEvent,
+    CoordinationEventKind, CoordinationTicket, CreateDraftOutcome, DynamicExpansionPolicy,
+    EventCursor, IntentParameters, IntentRecord, LeaseExpiryOutcome, ReadyOffer, SchedulerState,
+    ScopeChange, SubmissionOutcome, TicketState, classify_scope_change,
+};
+#[cfg(feature = "coordination-test-api")]
 use crate::model::{FenceClaim, Publication};
+#[cfg(feature = "coordination-test-api")]
 use crate::storage::{CoordinatedCommit, CoordinatedPublishFailpoint, PublishOutcome};
-use crate::{
-    EventRecord, GraphChange, Kernel, OperationRecord, PublicationReport, SCHEMA_VERSION,
-    TicketRecord,
-};
+#[cfg(feature = "coordination-test-api")]
+use crate::{EventRecord, GraphChange, PublicationReport, TicketRecord};
+use crate::{Kernel, OperationRecord, SCHEMA_VERSION};
 
 pub const READY_OFFER_TTL_TICKS: u64 = 30;
 pub const DRAFT_TTL_TICKS: u64 = 120;
 pub const CLAIM_TTL_TICKS: u64 = 60;
 pub const MAX_WAKE_AFFECTED_NODE_IDS: usize = 64;
+
+#[cfg(feature = "coordination-test-api")]
+enum CandidateSource<'a> {
+    Builder(&'a dyn CandidateBuilder),
+    Envelope(CandidateEnvelope),
+}
+
+#[cfg(feature = "coordination-test-api")]
+impl CandidateSource<'_> {
+    fn candidate_digest(&self) -> Option<&str> {
+        match self {
+            Self::Builder(_) => None,
+            Self::Envelope(envelope) => Some(&envelope.candidate_digest),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +95,14 @@ impl Kernel {
             .ready_offers()?
             .into_iter()
             .find(|offer| offer.change_set_id == id))
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub fn publication_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<PublicationAttemptRecord>> {
+        self.store.coordination().publication_attempt(attempt_id)
     }
 
     pub fn events_after(
@@ -958,11 +991,7 @@ impl Kernel {
         ))
     }
 
-    /// Publishes an executing claim through the only default commit-authority path.
-    ///
-    /// Lock order is scheduler -> publish lock -> redb write transaction -> live write.
-    /// Methods that need a subset of these locks preserve that order; no method may acquire
-    /// scheduler or publish locks while holding the live write lock.
+    #[cfg(feature = "coordination-test-api")]
     pub fn publish_claimed(
         &self,
         claim: &ClaimHandle,
@@ -971,15 +1000,32 @@ impl Kernel {
     ) -> Result<PublicationReport> {
         self.publish_claimed_inner(
             claim,
-            candidate_builder,
+            CandidateSource::Builder(candidate_builder),
             now_tick,
             CoordinatedPublishFailpoint::None,
             None,
         )
     }
 
+    #[cfg(feature = "coordination-test-api")]
+    pub fn publish_claimed_envelope(
+        &self,
+        claim: &ClaimHandle,
+        envelope: CandidateEnvelope,
+        now_tick: u64,
+    ) -> Result<PublishClaimOutcome> {
+        envelope.validate_digest()?;
+        Ok(PublishClaimOutcome::Published(self.publish_claimed_inner(
+            claim,
+            CandidateSource::Envelope(envelope),
+            now_tick,
+            CoordinatedPublishFailpoint::None,
+            None,
+        )?))
+    }
+
     #[doc(hidden)]
-    #[cfg(feature = "redb-spike-api")]
+    #[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub fn publish_claimed_with_failpoint(
         &self,
         claim: &ClaimHandle,
@@ -987,12 +1033,18 @@ impl Kernel {
         now_tick: u64,
         failpoint: CoordinatedPublishFailpoint,
     ) -> Result<PublicationReport> {
-        self.publish_claimed_inner(claim, candidate_builder, now_tick, failpoint, None)
+        self.publish_claimed_inner(
+            claim,
+            CandidateSource::Builder(candidate_builder),
+            now_tick,
+            failpoint,
+            None,
+        )
     }
 
     /// Test synchronization point for observing an idempotency miss before lock acquisition.
     #[doc(hidden)]
-    #[cfg(feature = "redb-spike-api")]
+    #[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub fn publish_claimed_with_entry_hook(
         &self,
         claim: &ClaimHandle,
@@ -1002,24 +1054,32 @@ impl Kernel {
     ) -> Result<PublicationReport> {
         self.publish_claimed_inner(
             claim,
-            candidate_builder,
+            CandidateSource::Builder(candidate_builder),
             now_tick,
             CoordinatedPublishFailpoint::None,
             Some(after_outer_idempotency_lookup),
         )
     }
 
+    #[cfg(feature = "coordination-test-api")]
     fn publish_claimed_inner(
         &self,
         claim: &ClaimHandle,
-        candidate_builder: &dyn CandidateBuilder,
+        candidate_source: CandidateSource<'_>,
         now_tick: u64,
         failpoint: CoordinatedPublishFailpoint,
         after_outer_idempotency_lookup: Option<&dyn Fn()>,
     ) -> Result<PublicationReport> {
         let semantic_provider = self.semantic_provider()?;
         let idempotency_key = coordination_commit_key(&claim.change_set_id);
-        if let Some(report) = self.committed_publication_report(&idempotency_key)? {
+        if let Some(candidate_digest) = candidate_source.candidate_digest()
+            && let Some(report) = self.committed_attempt_report(claim, candidate_digest)?
+        {
+            return Ok(report);
+        }
+        if candidate_source.candidate_digest().is_none()
+            && let Some(report) = self.committed_publication_report(&idempotency_key)?
+        {
             return Ok(report);
         }
         if let Some(hook) = after_outer_idempotency_lookup {
@@ -1034,7 +1094,14 @@ impl Kernel {
             .publish_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("publication lock is poisoned"))?;
-        if let Some(report) = self.committed_publication_report(&idempotency_key)? {
+        if let Some(candidate_digest) = candidate_source.candidate_digest()
+            && let Some(report) = self.committed_attempt_report(claim, candidate_digest)?
+        {
+            return Ok(report);
+        }
+        if candidate_source.candidate_digest().is_none()
+            && let Some(report) = self.committed_publication_report(&idempotency_key)?
+        {
             return Ok(report);
         }
 
@@ -1061,7 +1128,22 @@ impl Kernel {
             bail!("publication scope changed before candidate construction");
         }
 
-        let delta = candidate_builder.build_candidate(&graph, &before_change_set, &intents)?;
+        let envelope = match candidate_source {
+            CandidateSource::Builder(candidate_builder) => {
+                let prepared = PreparedCandidate {
+                    change_set: before_change_set.clone(),
+                    intents: intents.clone(),
+                    graph: graph.clone(),
+                    attempt_id: claim.attempt_id.clone(),
+                    scope_fingerprint: fresh_scope.scope_fingerprint.clone(),
+                };
+                candidate_builder.build_candidate(&prepared)?
+            }
+            CandidateSource::Envelope(envelope) => envelope,
+        };
+        envelope.validate_digest()?;
+        let candidate_digest = envelope.candidate_digest.clone();
+        let delta = envelope.delta;
         if delta.schema_version != SCHEMA_VERSION {
             bail!(
                 "candidate delta has unsupported schema version {}",
@@ -1373,6 +1455,13 @@ impl Kernel {
             service_epoch: self.service_epoch(),
             reservation_keys: fresh_scope.reservation_keys,
             resource_clock_updates,
+            publication_attempt: PublicationAttemptRecord {
+                change_set_id: claim.change_set_id.clone(),
+                attempt_id: claim.attempt_id.clone(),
+                candidate_digest,
+                generation: next_generation,
+                graph_digest: next.digest().to_owned(),
+            },
         };
         let persistence_started = Instant::now();
         let outcome = self
@@ -1417,6 +1506,7 @@ impl Kernel {
         }
     }
 
+    #[cfg(feature = "coordination-test-api")]
     fn committed_publication_report(&self, key: &str) -> Result<Option<PublicationReport>> {
         let Some(generation) = self.store.idempotency_generation(key)? else {
             return Ok(None);
@@ -1430,6 +1520,36 @@ impl Kernel {
         }))
     }
 
+    #[cfg(feature = "coordination-test-api")]
+    fn committed_attempt_report(
+        &self,
+        claim: &ClaimHandle,
+        candidate_digest: &str,
+    ) -> Result<Option<PublicationReport>> {
+        let Some(attempt) = self
+            .store
+            .coordination()
+            .publication_attempt(&claim.attempt_id)?
+        else {
+            return Ok(None);
+        };
+        if attempt.change_set_id != claim.change_set_id
+            || attempt.candidate_digest != candidate_digest
+        {
+            return Err(anyhow::Error::new(
+                super::CoordinationError::AttemptDigestMismatch,
+            ));
+        }
+        Ok(Some(PublicationReport {
+            generation: attempt.generation,
+            digest: attempt.graph_digest,
+            persistence_ns: 0,
+            memory_publish_ns: 0,
+            already_published: true,
+        }))
+    }
+
+    #[cfg(feature = "coordination-test-api")]
     fn validate_executing_claim(
         &self,
         scheduler: &SchedulerState,
@@ -1469,6 +1589,7 @@ impl Kernel {
         Ok(())
     }
 
+    #[cfg(feature = "coordination-test-api")]
     fn persist_changed_publication_scope(
         &self,
         claim: &ClaimHandle,
@@ -1598,10 +1719,12 @@ impl Kernel {
     }
 }
 
+#[cfg(feature = "coordination-test-api")]
 fn coordination_commit_key(change_set_id: &str) -> String {
     format!("coordination-commit:{change_set_id}")
 }
 
+#[cfg(feature = "coordination-test-api")]
 fn affected_node_ids(delta: &crate::GraphDelta) -> Vec<String> {
     let mut ids = BTreeSet::new();
     for change in &delta.changes {
@@ -1624,6 +1747,7 @@ fn affected_node_ids(delta: &crate::GraphDelta) -> Vec<String> {
     ids.into_iter().collect()
 }
 
+#[cfg(feature = "coordination-test-api")]
 fn intent_kind(intent: &IntentRecord) -> &'static str {
     match intent.parameters {
         IntentParameters::RenameSymbol { .. } => "RenameSymbol",
@@ -1631,6 +1755,7 @@ fn intent_kind(intent: &IntentRecord) -> &'static str {
     }
 }
 
+#[cfg(feature = "coordination-test-api")]
 fn bounded_wake_payload(
     operation_field: &str,
     operation_id: &str,
@@ -1657,6 +1782,7 @@ fn bounded_wake_payload(
     payload.to_string()
 }
 
+#[cfg(feature = "coordination-test-api")]
 fn bounded_wake_payload_with_scope(
     operation_field: &str,
     operation_id: &str,

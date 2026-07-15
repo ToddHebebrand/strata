@@ -9,6 +9,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
+#[cfg(feature = "coordination-test-api")]
+use super::PublicationAttemptRecord;
 use super::{
     ChangeSetRecord, ChangeSetState, ClaimHandle, CoordinationEvent, CoordinationEventKind,
     CoordinationTicket, DRAFT_TTL_TICKS, EventCursor, IntentRecord, ReadyOffer, TicketState,
@@ -33,6 +35,8 @@ const SUBMISSION_IDEMPOTENCY: TableDefinition<&str, &str> =
     TableDefinition::new("coordination_submission_idempotency");
 const RESOURCE_CLOCKS: TableDefinition<&str, u64> =
     TableDefinition::new("coordination_resource_clocks");
+pub(crate) const PUBLICATION_ATTEMPTS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("coordination_publication_attempts");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("coordination_metadata");
 const NEXT_QUEUE_SEQUENCE: &str = "next_queue_sequence";
 const CURRENT_EVENT_SEQUENCE: &str = "current_event_sequence";
@@ -71,6 +75,7 @@ pub struct CoordinationTableCounts {
     pub event_ids: u64,
     pub event_cursors: u64,
     pub submission_idempotency: u64,
+    pub publication_attempts: u64,
     pub metadata: u64,
 }
 
@@ -110,6 +115,57 @@ impl<'a> CoordinationDurable<'a> {
         Ok(clocks)
     }
 
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn publication_attempt(
+        &self,
+        attempt_id: &str,
+    ) -> Result<Option<PublicationAttemptRecord>> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin publication attempt read")?;
+        let table = read
+            .open_table(PUBLICATION_ATTEMPTS)
+            .context("open publication attempts table")?;
+        table
+            .get(attempt_id)
+            .context("read publication attempt")?
+            .map(|value| decode(value.value(), "publication attempt"))
+            .transpose()
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn persist_publication_attempt_in_write_txn(
+        &self,
+        write: &WriteTransaction,
+        record: &PublicationAttemptRecord,
+        on_write: &mut dyn FnMut() -> Result<()>,
+    ) -> Result<()> {
+        if record.change_set_id.is_empty()
+            || record.attempt_id.is_empty()
+            || record.candidate_digest.is_empty()
+            || record.graph_digest.is_empty()
+        {
+            bail!("publication attempt fields must be non-empty");
+        }
+        let mut table = write
+            .open_table(PUBLICATION_ATTEMPTS)
+            .context("open publication attempts table")?;
+        if table
+            .get(record.attempt_id.as_str())
+            .context("read publication attempt before insert")?
+            .is_some()
+        {
+            bail!("publication attempt already exists: {}", record.attempt_id);
+        }
+        let bytes = encode(record, "publication attempt")?;
+        table
+            .insert(record.attempt_id.as_str(), bytes.as_slice())
+            .context("persist publication attempt")?;
+        on_write()
+    }
+
+    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn next_resource_clock_updates(
         &self,
         keys: &BTreeSet<String>,
@@ -128,6 +184,7 @@ impl<'a> CoordinationDurable<'a> {
             .collect()
     }
 
+    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn persist_resource_clock_updates_in_write_txn(
         &self,
         write: &WriteTransaction,
@@ -1373,6 +1430,7 @@ impl<'a> CoordinationDurable<'a> {
             event_ids: read.open_table(EVENT_IDS)?.len()?,
             event_cursors: read.open_table(EVENT_CURSORS)?.len()?,
             submission_idempotency: read.open_table(SUBMISSION_IDEMPOTENCY)?.len()?,
+            publication_attempts: read.open_table(PUBLICATION_ATTEMPTS)?.len()?,
             metadata: read.open_table(META)?.len()?,
         })
     }
@@ -1454,6 +1512,11 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
         write
             .open_table(ACTIVE_CLAIMS)
             .context("create active claims table")?,
+    );
+    drop(
+        write
+            .open_table(PUBLICATION_ATTEMPTS)
+            .context("create publication attempts table")?,
     );
     drop(
         write

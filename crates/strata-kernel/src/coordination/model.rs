@@ -11,6 +11,16 @@ pub enum CoordinationError {
     LeaseExpired,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicationAttemptRecord {
+    pub change_set_id: String,
+    pub attempt_id: String,
+    pub candidate_digest: String,
+    pub generation: u64,
+    pub graph_digest: String,
+}
+
 impl std::fmt::Display for CoordinationError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -9,11 +9,12 @@ use anyhow::Context;
 #[cfg(feature = "redb-spike-api")]
 use strata_kernel::CoordinatedPublishFailpoint;
 use strata_kernel::{
-    BeginChangeSet, CandidateBuilder, ChangeSetRecord, ChangeSetState, ClaimHandle, ClaimOutcome,
-    CoordinationEventKind, DynamicExpansionPolicy, GraphChange, GraphDelta, GraphGeneration,
-    GraphSnapshot, IdempotencyClass, IntentAnalysis, IntentParameters, IntentRecord, Kernel,
-    MAX_WAKE_AFFECTED_NODE_IDS, PublicationReport, ResourceVersion, SCHEMA_VERSION,
-    SubmissionOutcome, TestSemanticProvider, TicketState,
+    BeginChangeSet, CandidateBuilder, CandidateEnvelope, ChangeSetState, ClaimHandle, ClaimOutcome,
+    CoordinationError, CoordinationEventKind, DynamicExpansionPolicy, GraphChange, GraphDelta,
+    GraphGeneration, GraphSnapshot, IdempotencyClass, IntentAnalysis, IntentParameters,
+    IntentRecord, Kernel, MAX_WAKE_AFFECTED_NODE_IDS, PreparedCandidate, PublicationReport,
+    PublishClaimOutcome, ResourceVersion, SCHEMA_VERSION, SubmissionOutcome, TestSemanticProvider,
+    TicketState,
 };
 use tempfile::tempdir;
 
@@ -75,17 +76,14 @@ impl RecordingBuilder {
 }
 
 impl CandidateBuilder for RecordingBuilder {
-    fn build_candidate(
-        &self,
-        graph: &GraphGeneration,
-        change_set: &ChangeSetRecord,
-        intents: &[IntentRecord],
-    ) -> anyhow::Result<GraphDelta> {
+    fn build_candidate(&self, prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(graph.generation(), 0);
-        assert_eq!(change_set.state, ChangeSetState::Executing);
-        assert!(!intents.is_empty());
-        Ok(self.delta.clone())
+        assert_eq!(prepared.graph.generation(), 0);
+        assert_eq!(prepared.change_set.state, ChangeSetState::Executing);
+        assert!(!prepared.intents.is_empty());
+        assert!(!prepared.attempt_id.is_empty());
+        assert!(!prepared.scope_fingerprint.is_empty());
+        CandidateEnvelope::from_delta(self.delta.clone())
     }
 }
 
@@ -99,29 +97,19 @@ struct BlockingBuilder {
 
 #[cfg(feature = "redb-spike-api")]
 impl CandidateBuilder for BlockingBuilder {
-    fn build_candidate(
-        &self,
-        _graph: &GraphGeneration,
-        _change_set: &ChangeSetRecord,
-        _intents: &[IntentRecord],
-    ) -> anyhow::Result<GraphDelta> {
+    fn build_candidate(&self, _prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.entered.wait();
         self.release.wait();
-        Ok(self.delta.clone())
+        CandidateEnvelope::from_delta(self.delta.clone())
     }
 }
 
 struct PassiveBuilder(GraphDelta);
 
 impl CandidateBuilder for PassiveBuilder {
-    fn build_candidate(
-        &self,
-        _graph: &GraphGeneration,
-        _change_set: &ChangeSetRecord,
-        _intents: &[IntentRecord],
-    ) -> anyhow::Result<GraphDelta> {
-        Ok(self.0.clone())
+    fn build_candidate(&self, _prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
+        CandidateEnvelope::from_delta(self.0.clone())
     }
 }
 
@@ -203,6 +191,126 @@ fn begin_submit_claim(kernel: &Kernel, id: &str, tick: u64) -> ClaimHandle {
         panic!("expected claimed change set")
     };
     claim
+}
+
+#[test]
+fn same_attempt_same_digest_replays_but_changed_digest_is_rejected() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = Arc::new(SequencedAnalyzer::new(vec![analysis(&scope); 6]));
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), analyzer.clone()).unwrap();
+    let claim = begin_submit_claim(&kernel, "attempt-replay", 0);
+    let envelope =
+        CandidateEnvelope::from_delta(user_delta(&snapshot, "export interface Account {}"))
+            .unwrap();
+
+    let PublishClaimOutcome::Published(first) = kernel
+        .publish_claimed_envelope(&claim, envelope.clone(), 2)
+        .unwrap()
+    else {
+        panic!("first attempt did not publish")
+    };
+    let committed_envelope = envelope.clone();
+    let PublishClaimOutcome::Published(replay) = kernel
+        .publish_claimed_envelope(&claim, envelope, 3)
+        .unwrap()
+    else {
+        panic!("duplicate attempt did not replay publication")
+    };
+    assert_eq!(
+        (replay.generation, replay.digest.as_str()),
+        (first.generation, first.digest.as_str())
+    );
+    assert!(replay.already_published);
+    let attempt = kernel
+        .publication_attempt(&claim.attempt_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(attempt.change_set_id, claim.change_set_id);
+    assert_eq!(attempt.attempt_id, claim.attempt_id);
+    assert_eq!(
+        attempt.candidate_digest,
+        committed_envelope.candidate_digest
+    );
+    assert_eq!(attempt.generation, first.generation);
+    assert_eq!(attempt.graph_digest, first.digest);
+    drop(kernel);
+
+    let (kernel, recovered) = Kernel::open_with_test_semantics(&path, analyzer).unwrap();
+    assert_eq!(recovered.generation, first.generation);
+    let PublishClaimOutcome::Published(reopened_replay) = kernel
+        .publish_claimed_envelope(&claim, committed_envelope, 4)
+        .unwrap()
+    else {
+        panic!("reopened duplicate attempt did not replay publication")
+    };
+    assert!(reopened_replay.already_published);
+    assert_eq!(reopened_replay.generation, first.generation);
+    assert_eq!(reopened_replay.digest, first.digest);
+
+    let changed =
+        CandidateEnvelope::from_delta(user_delta(&snapshot, "export interface Customer {}"))
+            .unwrap();
+    let error = kernel
+        .publish_claimed_envelope(&claim, changed, 5)
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<CoordinationError>(),
+        Some(&CoordinationError::AttemptDigestMismatch),
+    );
+}
+
+#[test]
+fn malicious_candidate_digest_is_rejected_before_graph_or_lifecycle_state_changes() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 6]);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
+    let claim = begin_submit_claim(&kernel, "malicious-digest", 0);
+    let before_change_set = kernel.change_set("malicious-digest").unwrap().unwrap();
+    let before_ticket = kernel
+        .ticket_for_change_set("malicious-digest")
+        .unwrap()
+        .unwrap();
+    let before_events = kernel.events_after("malicious-audit", 0, 20).unwrap();
+    let digest_for_other_delta =
+        CandidateEnvelope::from_delta(user_delta(&snapshot, "export interface Customer {}"))
+            .unwrap()
+            .candidate_digest;
+    let malicious = CandidateEnvelope {
+        delta: user_delta(&snapshot, "export interface Account {}"),
+        candidate_digest: digest_for_other_delta,
+    };
+
+    let error = kernel
+        .publish_claimed_envelope(&claim, malicious, 2)
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<CoordinationError>(),
+        Some(&CoordinationError::CandidateDigestMismatch),
+    );
+    assert_eq!(kernel.snapshot().generation(), 0);
+    assert_eq!(
+        kernel.change_set("malicious-digest").unwrap().unwrap(),
+        before_change_set
+    );
+    assert_eq!(
+        kernel
+            .ticket_for_change_set("malicious-digest")
+            .unwrap()
+            .unwrap(),
+        before_ticket
+    );
+    assert_eq!(
+        kernel.events_after("malicious-audit", 0, 20).unwrap(),
+        before_events
+    );
 }
 
 #[test]

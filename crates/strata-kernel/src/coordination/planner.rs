@@ -304,6 +304,7 @@ pub(super) fn make_offer(
     .map_err(anyhow::Error::msg)
 }
 
+#[cfg(feature = "coordination-test-api")]
 pub(super) fn mark_ready(
     scheduler: &mut SchedulerState,
     ticket_id: &str,

@@ -4,10 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use strata_kernel::{
-    BeginChangeSet, CandidateBuilder, ChangeSetRecord, ChangeSetState, ClaimOutcome,
+    BeginChangeSet, CandidateBuilder, CandidateEnvelope, ChangeSetState, ClaimOutcome,
     CoordinationError, CoordinationEventKind, DRAFT_TTL_TICKS, DynamicExpansionPolicy, GraphDelta,
     GraphGeneration, GraphSnapshot, IdempotencyClass, IntentAnalysis, IntentParameters,
-    IntentRecord, Kernel, ResourceVersion, SCHEMA_VERSION, SubmissionOutcome, TestSemanticProvider,
+    IntentRecord, Kernel, PreparedCandidate, ResourceVersion, SCHEMA_VERSION, SubmissionOutcome,
+    TestSemanticProvider,
 };
 use tempfile::tempdir;
 
@@ -60,15 +61,10 @@ impl TestSemanticProvider for CountingProvider {
 struct EmptyBuilder;
 
 impl CandidateBuilder for EmptyBuilder {
-    fn build_candidate(
-        &self,
-        graph: &GraphGeneration,
-        _change_set: &ChangeSetRecord,
-        _intents: &[IntentRecord],
-    ) -> anyhow::Result<GraphDelta> {
-        Ok(GraphDelta {
+    fn build_candidate(&self, prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
+        CandidateEnvelope::from_delta(GraphDelta {
             schema_version: SCHEMA_VERSION,
-            base_generation: graph.generation(),
+            base_generation: prepared.graph.generation(),
             changes: vec![],
         })
     }
