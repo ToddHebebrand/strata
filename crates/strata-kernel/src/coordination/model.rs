@@ -38,7 +38,7 @@ impl std::fmt::Display for CoordinationError {
             }
             Self::AttemptDigestMismatch => write!(
                 formatter,
-                "attempt id was reused with a different candidate digest"
+                "attempt id was reused with a different change set or candidate digest"
             ),
             Self::LeaseExpired => write!(formatter, "coordination authority lease has expired"),
         }

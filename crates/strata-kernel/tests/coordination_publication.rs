@@ -98,9 +98,11 @@ struct BlockingBuilder {
 #[cfg(feature = "redb-spike-api")]
 impl CandidateBuilder for BlockingBuilder {
     fn build_candidate(&self, _prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        self.entered.wait();
-        self.release.wait();
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 {
+            self.entered.wait();
+            self.release.wait();
+        }
         CandidateEnvelope::from_delta(self.delta.clone())
     }
 }
@@ -264,6 +266,91 @@ fn same_attempt_same_digest_replays_but_changed_digest_is_rejected() {
 }
 
 #[test]
+fn changed_builder_output_for_same_attempt_is_rejected() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 6]);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
+    let claim = begin_submit_claim(&kernel, "builder-attempt-replay", 0);
+    let first_builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
+    let first = kernel.publish_claimed(&claim, &first_builder, 2).unwrap();
+
+    let same_builder = RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}"));
+    let replay = kernel.publish_claimed(&claim, &same_builder, 3).unwrap();
+    assert_eq!(replay.generation, first.generation);
+    assert_eq!(replay.digest, first.digest);
+    assert!(replay.already_published);
+    assert_eq!(
+        same_builder.calls(),
+        1,
+        "builder replay must bind its digest"
+    );
+
+    let changed_builder =
+        RecordingBuilder::new(user_delta(&snapshot, "export interface Customer {}"));
+    let error = kernel
+        .publish_claimed(&claim, &changed_builder, 4)
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<CoordinationError>(),
+        Some(&CoordinationError::AttemptDigestMismatch),
+    );
+    assert_eq!(
+        changed_builder.calls(),
+        1,
+        "changed builder output must be digested"
+    );
+}
+
+#[test]
+fn committed_envelope_replays_without_semantic_provider() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = SequencedAnalyzer::new(vec![analysis(&scope); 6]);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
+    let claim = begin_submit_claim(&kernel, "provider-free-replay", 0);
+    let envelope =
+        CandidateEnvelope::from_delta(user_delta(&snapshot, "export interface Account {}"))
+            .unwrap();
+    let PublishClaimOutcome::Published(first) = kernel
+        .publish_claimed_envelope(&claim, envelope.clone(), 2)
+        .unwrap()
+    else {
+        panic!("first attempt did not publish")
+    };
+    drop(kernel);
+
+    let (reopened, recovered) = Kernel::open(&path).unwrap();
+    assert_eq!(recovered.generation, first.generation);
+    let PublishClaimOutcome::Published(replay) = reopened
+        .publish_claimed_envelope(&claim, envelope, 3)
+        .unwrap()
+    else {
+        panic!("provider-free replay did not return the publication")
+    };
+    assert!(replay.already_published);
+    assert_eq!(replay.generation, first.generation);
+    assert_eq!(replay.digest, first.digest);
+
+    let changed =
+        CandidateEnvelope::from_delta(user_delta(&snapshot, "export interface Customer {}"))
+            .unwrap();
+    let error = reopened
+        .publish_claimed_envelope(&claim, changed, 4)
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<CoordinationError>(),
+        Some(&CoordinationError::AttemptDigestMismatch),
+    );
+}
+
+#[test]
 fn malicious_candidate_digest_is_rejected_before_graph_or_lifecycle_state_changes() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
@@ -336,7 +423,11 @@ fn claimed_composite_publication_is_kernel_owned_atomic_and_idempotent_after_reo
     assert_eq!(retry.generation, report.generation);
     assert_eq!(retry.digest, report.digest);
     assert!(retry.already_published);
-    assert_eq!(builder.calls(), 1, "committed retries must not rebuild");
+    assert_eq!(
+        builder.calls(),
+        2,
+        "committed builder retries must rebuild to bind the candidate digest"
+    );
     drop(kernel);
 
     let (reopened, recovered) =
@@ -365,6 +456,7 @@ fn claimed_composite_publication_is_kernel_owned_atomic_and_idempotent_after_reo
     assert_eq!(retry_after_reopen.generation, 1);
     assert_eq!(retry_after_reopen.digest, report.digest);
     assert!(retry_after_reopen.already_published);
+    assert_eq!(builder.calls(), 3);
 }
 
 #[cfg(feature = "redb-spike-api")]
@@ -426,7 +518,11 @@ fn concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original
     assert_eq!(second.generation, 1);
     assert_eq!(first.digest, second.digest);
     assert_ne!(first.already_published, second.already_published);
-    assert_eq!(builder.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        builder.calls.load(Ordering::SeqCst),
+        2,
+        "the racing retry must rebuild and verify the recorded candidate digest"
+    );
     assert_eq!(kernel.snapshot().generation(), 1);
     assert_eq!(
         kernel
@@ -485,6 +581,9 @@ fn retry_after_a_later_disjoint_generation_returns_the_earlier_generation_and_di
         .unwrap();
     assert_eq!(second.generation, 2);
     let events_before_retry = kernel.events_after("later-audit", 0, 50).unwrap();
+    drop(kernel);
+    let (kernel, recovered) = Kernel::open(&path).unwrap();
+    assert_eq!(recovered.generation, 2);
 
     let retry = kernel
         .publish_claimed(&first_claim, &first_builder, 6)

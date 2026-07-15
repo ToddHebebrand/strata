@@ -44,16 +44,6 @@ enum CandidateSource<'a> {
     Envelope(CandidateEnvelope),
 }
 
-#[cfg(feature = "coordination-test-api")]
-impl CandidateSource<'_> {
-    fn candidate_digest(&self) -> Option<&str> {
-        match self {
-            Self::Builder(_) => None,
-            Self::Envelope(envelope) => Some(&envelope.candidate_digest),
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BeginChangeSet {
@@ -1070,16 +1060,8 @@ impl Kernel {
         failpoint: CoordinatedPublishFailpoint,
         after_outer_idempotency_lookup: Option<&dyn Fn()>,
     ) -> Result<PublicationReport> {
-        let semantic_provider = self.semantic_provider()?;
         let idempotency_key = coordination_commit_key(&claim.change_set_id);
-        if let Some(candidate_digest) = candidate_source.candidate_digest()
-            && let Some(report) = self.committed_attempt_report(claim, candidate_digest)?
-        {
-            return Ok(report);
-        }
-        if candidate_source.candidate_digest().is_none()
-            && let Some(report) = self.committed_publication_report(&idempotency_key)?
-        {
+        if let Some(report) = self.committed_candidate_report(claim, &candidate_source)? {
             return Ok(report);
         }
         if let Some(hook) = after_outer_idempotency_lookup {
@@ -1094,17 +1076,11 @@ impl Kernel {
             .publish_lock
             .lock()
             .map_err(|_| anyhow::anyhow!("publication lock is poisoned"))?;
-        if let Some(candidate_digest) = candidate_source.candidate_digest()
-            && let Some(report) = self.committed_attempt_report(claim, candidate_digest)?
-        {
-            return Ok(report);
-        }
-        if candidate_source.candidate_digest().is_none()
-            && let Some(report) = self.committed_publication_report(&idempotency_key)?
-        {
+        if let Some(report) = self.committed_candidate_report(claim, &candidate_source)? {
             return Ok(report);
         }
 
+        let semantic_provider = self.semantic_provider()?;
         let graph = self.snapshot();
         self.validate_executing_claim(&scheduler, claim, graph.generation(), now_tick)?;
         let durable = self.store.coordination();
@@ -1507,24 +1483,10 @@ impl Kernel {
     }
 
     #[cfg(feature = "coordination-test-api")]
-    fn committed_publication_report(&self, key: &str) -> Result<Option<PublicationReport>> {
-        let Some(generation) = self.store.idempotency_generation(key)? else {
-            return Ok(None);
-        };
-        Ok(Some(PublicationReport {
-            generation,
-            digest: self.store.generation_digest(generation)?,
-            persistence_ns: 0,
-            memory_publish_ns: 0,
-            already_published: true,
-        }))
-    }
-
-    #[cfg(feature = "coordination-test-api")]
-    fn committed_attempt_report(
+    fn committed_candidate_report(
         &self,
         claim: &ClaimHandle,
-        candidate_digest: &str,
+        candidate_source: &CandidateSource<'_>,
     ) -> Result<Option<PublicationReport>> {
         let Some(attempt) = self
             .store
@@ -1533,9 +1495,38 @@ impl Kernel {
         else {
             return Ok(None);
         };
-        if attempt.change_set_id != claim.change_set_id
-            || attempt.candidate_digest != candidate_digest
-        {
+        if attempt.change_set_id != claim.change_set_id {
+            return Err(anyhow::Error::new(
+                super::CoordinationError::AttemptDigestMismatch,
+            ));
+        }
+        let candidate_digest = match candidate_source {
+            CandidateSource::Envelope(envelope) => {
+                envelope.validate_digest()?;
+                envelope.candidate_digest.clone()
+            }
+            CandidateSource::Builder(builder) => {
+                let graph = Arc::new(self.store.graph_generation(claim.graph_generation)?);
+                let durable = self.store.coordination();
+                let mut change_set =
+                    durable.change_set(&claim.change_set_id)?.with_context(|| {
+                        format!("change set {} does not exist", claim.change_set_id)
+                    })?;
+                change_set.state = ChangeSetState::Executing;
+                change_set.committed_generation = None;
+                let prepared = PreparedCandidate {
+                    change_set,
+                    intents: durable.intents_for(&claim.change_set_id)?,
+                    graph,
+                    attempt_id: claim.attempt_id.clone(),
+                    scope_fingerprint: claim.scope_fingerprint.clone(),
+                };
+                let envelope = builder.build_candidate(&prepared)?;
+                envelope.validate_digest()?;
+                envelope.candidate_digest
+            }
+        };
+        if attempt.candidate_digest != candidate_digest {
             return Err(anyhow::Error::new(
                 super::CoordinationError::AttemptDigestMismatch,
             ));

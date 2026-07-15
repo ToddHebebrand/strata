@@ -678,6 +678,68 @@ impl DurableStore {
         Ok(deltas)
     }
 
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn graph_generation(&self, generation: u64) -> Result<GraphGeneration> {
+        let current_generation = self.current_generation()?;
+        if generation > current_generation {
+            bail!(
+                "requested graph generation {generation} exceeds current generation {current_generation}"
+            );
+        }
+        let read = self
+            .database
+            .begin_read()
+            .context("begin historical snapshot read")?;
+        let snapshots = read.open_table(SNAPSHOTS).context("open snapshots table")?;
+        let mut selected = None;
+        for entry in snapshots.iter().context("iterate historical snapshots")? {
+            let (key, value) = entry.context("read historical snapshot")?;
+            if key.value() > generation {
+                break;
+            }
+            selected = Some(decode::<GraphSnapshot>(value.value(), "snapshot")?);
+        }
+        let snapshot = selected.with_context(|| {
+            format!("no durable snapshot exists at or before generation {generation}")
+        })?;
+        let snapshot_generation = snapshot.generation;
+        let mut graph = GraphGeneration::from_snapshot(snapshot)?;
+        let expected_snapshot_digest = self.generation_digest(snapshot_generation)?;
+        if graph.digest() != expected_snapshot_digest {
+            bail!(
+                "historical snapshot digest {} does not match durable digest {expected_snapshot_digest}",
+                graph.digest()
+            );
+        }
+        for (delta_generation, delta) in self.deltas_after(snapshot_generation)? {
+            if delta_generation > generation {
+                break;
+            }
+            if delta.base_generation != graph.generation() {
+                bail!(
+                    "historical delta at generation {delta_generation} has base generation {}, expected {}",
+                    delta.base_generation,
+                    graph.generation()
+                );
+            }
+            graph = graph.apply(&delta)?;
+            let expected_digest = self.generation_digest(delta_generation)?;
+            if graph.digest() != expected_digest {
+                bail!(
+                    "historical replay digest {} does not match durable digest {expected_digest} for generation {delta_generation}",
+                    graph.digest()
+                );
+            }
+        }
+        if graph.generation() != generation {
+            bail!(
+                "historical replay ended at generation {}, expected {generation}",
+                graph.generation()
+            );
+        }
+        Ok(graph)
+    }
+
     pub fn write_snapshot(&self, snapshot: &GraphSnapshot) -> Result<()> {
         let snapshot_digest = GraphGeneration::from_snapshot(snapshot.clone())?
             .digest()
@@ -770,7 +832,7 @@ impl DurableStore {
     }
 
     #[doc(hidden)]
-    #[cfg(feature = "coordination-test-api")]
+    #[cfg(feature = "redb-spike-api")]
     pub fn idempotency_generation(&self, idempotency_key: &str) -> Result<Option<u64>> {
         let read = self
             .database
