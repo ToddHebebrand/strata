@@ -2,14 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail};
 use redb::{
-    Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
+    Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition, TableHandle,
     WriteTransaction,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
-#[cfg(feature = "coordination-test-api")]
 use super::PublicationAttemptRecord;
 use super::{
     ChangeSetRecord, ChangeSetState, ClaimHandle, CoordinationEvent, CoordinationEventKind,
@@ -84,6 +83,13 @@ pub struct RecoveryMetadataState {
 pub struct RecoveryValidationMigration {
     pub latest_lifecycle_revision: u64,
     pub clocked_publication_generation: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct RecoveryMigrationPlan {
+    validation: RecoveryValidationMigration,
+    metadata: CoordinationMetadataState,
+    event_id_mappings: Vec<(String, u64)>,
 }
 
 #[doc(hidden)]
@@ -262,7 +268,6 @@ impl<'a> CoordinationDurable<'a> {
         Ok(())
     }
 
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn validate_recovery_state(
         &self,
         current_graph_generation: u64,
@@ -270,36 +275,146 @@ impl<'a> CoordinationDurable<'a> {
         mut graph_digest_at: impl FnMut(u64) -> Result<String>,
         mut operation_at: impl FnMut(u64) -> Result<Option<crate::OperationRecord>>,
         mut graph_event_at: impl FnMut(u64) -> Result<Option<crate::EventRecord>>,
-    ) -> Result<Option<RecoveryValidationMigration>> {
+    ) -> Result<Option<RecoveryMigrationPlan>> {
         let read = self
             .database
             .begin_read()
             .context("begin coordination recovery validation")?;
+        let table_names = read
+            .list_tables()
+            .context("list tables for coordination recovery validation")?
+            .map(|table| table.name().to_owned())
+            .collect::<BTreeSet<_>>();
+        if !table_names.contains(META.name()) {
+            return Ok(Some(RecoveryMigrationPlan {
+                validation: RecoveryValidationMigration {
+                    latest_lifecycle_revision: 0,
+                    clocked_publication_generation: 0,
+                },
+                metadata: CoordinationMetadataState {
+                    next_queue_sequence: 1,
+                    current_event_sequence: 0,
+                    scheduler_revision: 0,
+                },
+                event_id_mappings: Vec::new(),
+            }));
+        }
         let metadata = read
             .open_table(META)
             .context("open coordination metadata")?;
-        let scheduler_revision = read_u64_metadata(&metadata, SCHEDULER_REVISION)?;
         let validation_version =
             read_optional_u64_metadata(&metadata, RECOVERY_VALIDATION_VERSION)?;
         if validation_version.is_some_and(|version| version != CURRENT_RECOVERY_VALIDATION_VERSION)
         {
             bail!("unsupported coordination recovery validation version");
         }
+        let versioned = validation_version.is_some();
+        let next_queue_sequence = read_optional_u64_metadata(&metadata, NEXT_QUEUE_SEQUENCE)?;
+        let current_event_sequence = read_optional_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?;
+        let scheduler_revision = read_optional_u64_metadata(&metadata, SCHEDULER_REVISION)?;
         let lifecycle_marker = read_optional_u64_metadata(&metadata, LATEST_LIFECYCLE_REVISION)?;
         let clock_marker = read_optional_u64_metadata(&metadata, CLOCKED_PUBLICATION_GENERATION)?;
-        if validation_version.is_some() && lifecycle_marker.is_none() {
+        if versioned && next_queue_sequence.is_none() {
+            bail!("versioned coordination database is missing next_queue_sequence");
+        }
+        if versioned && current_event_sequence.is_none() {
+            bail!("versioned coordination database is missing current_event_sequence");
+        }
+        if versioned && scheduler_revision.is_none() {
+            bail!("versioned coordination database is missing scheduler_revision");
+        }
+        if versioned && lifecycle_marker.is_none() {
             bail!("versioned coordination database is missing its lifecycle marker");
         }
-        if validation_version.is_some() && clock_marker.is_none() {
+        if versioned && clock_marker.is_none() {
             bail!("versioned coordination database is missing its clock marker");
         }
+        if !versioned && (lifecycle_marker.is_some() || clock_marker.is_some()) {
+            bail!("unversioned coordination database has incomplete recovery markers");
+        }
+        let scheduler_revision = scheduler_revision.unwrap_or(0);
         let lifecycle_revision = lifecycle_marker.unwrap_or(scheduler_revision);
-        if scheduler_revision < lifecycle_revision {
+        if scheduler_revision != lifecycle_revision {
             bail!(
-                "scheduler revision {scheduler_revision} is behind latest lifecycle revision {lifecycle_revision}"
+                "scheduler revision {scheduler_revision} does not match latest lifecycle revision {lifecycle_revision}"
             );
         }
         drop(metadata);
+
+        let tickets = read
+            .open_table(TICKETS)
+            .context("open coordination tickets during recovery validation")?;
+        let mut maximum_queue_sequence = 0;
+        for entry in tickets.iter().context("iterate coordination tickets")? {
+            let (_, value) = entry.context("read coordination ticket")?;
+            let ticket: CoordinationTicket = decode(value.value(), "coordination ticket")?;
+            maximum_queue_sequence = maximum_queue_sequence.max(ticket.queue_sequence);
+        }
+        drop(tickets);
+        let derived_next_queue_sequence = maximum_queue_sequence
+            .checked_add(1)
+            .context("derived next queue sequence overflow")?
+            .max(1);
+        let next_queue_sequence = next_queue_sequence.unwrap_or(derived_next_queue_sequence);
+        if next_queue_sequence != derived_next_queue_sequence {
+            bail!(
+                "next_queue_sequence {next_queue_sequence} does not follow maximum durable queue sequence {maximum_queue_sequence}"
+            );
+        }
+
+        let events = read
+            .open_table(EVENTS)
+            .context("open coordination events during recovery validation")?;
+        let mut event_mappings = BTreeMap::new();
+        let mut maximum_event_sequence = 0;
+        for entry in events.iter().context("iterate coordination events")? {
+            let (sequence, value) = entry.context("read coordination event")?;
+            let sequence = sequence.value();
+            let event: CoordinationEvent = decode(value.value(), "coordination event")?;
+            if event.sequence != sequence {
+                bail!("coordination event key does not match its sequence");
+            }
+            if event_mappings
+                .insert(event.event_id.clone(), sequence)
+                .is_some()
+            {
+                bail!("duplicate coordination event ID {}", event.event_id);
+            }
+            maximum_event_sequence = maximum_event_sequence.max(sequence);
+        }
+        drop(events);
+        let current_event_sequence = current_event_sequence.unwrap_or(maximum_event_sequence);
+        if current_event_sequence != maximum_event_sequence {
+            bail!(
+                "current_event_sequence {current_event_sequence} does not match maximum durable event sequence {maximum_event_sequence}"
+            );
+        }
+
+        let event_ids = read
+            .open_table(EVENT_IDS)
+            .context("open coordination event ID index during recovery validation")?;
+        let mut indexed_event_ids = BTreeMap::new();
+        for entry in event_ids
+            .iter()
+            .context("iterate coordination event ID index")?
+        {
+            let (event_id, sequence) = entry.context("read coordination event ID mapping")?;
+            indexed_event_ids.insert(event_id.value().to_owned(), sequence.value());
+        }
+        drop(event_ids);
+        for (event_id, sequence) in &indexed_event_ids {
+            if event_mappings.get(event_id) != Some(sequence) {
+                bail!("coordination event ID {event_id} has an inconsistent index mapping");
+            }
+        }
+        if versioned && indexed_event_ids != event_mappings {
+            bail!("versioned coordination event ID index is incomplete");
+        }
+        let missing_event_id_mappings = event_mappings
+            .iter()
+            .filter(|(event_id, _)| !indexed_event_ids.contains_key(*event_id))
+            .map(|(event_id, sequence)| (event_id.clone(), *sequence))
+            .collect::<Vec<_>>();
 
         let clocks = read
             .open_table(RESOURCE_CLOCKS)
@@ -446,12 +561,18 @@ impl<'a> CoordinationDurable<'a> {
                 );
             }
         }
-        Ok(validation_version
-            .is_none()
-            .then_some(RecoveryValidationMigration {
+        Ok((!versioned).then_some(RecoveryMigrationPlan {
+            validation: RecoveryValidationMigration {
                 latest_lifecycle_revision: lifecycle_revision,
                 clocked_publication_generation: clocked_generation,
-            }))
+            },
+            metadata: CoordinationMetadataState {
+                next_queue_sequence,
+                current_event_sequence,
+                scheduler_revision,
+            },
+            event_id_mappings: missing_event_id_mappings,
+        }))
     }
 
     pub fn events_after(
@@ -531,7 +652,7 @@ impl<'a> CoordinationDurable<'a> {
 
     pub(crate) fn begin_service_epoch_and_recover_coordination(
         &self,
-        validation_migration: Option<RecoveryValidationMigration>,
+        validation_migration: Option<RecoveryMigrationPlan>,
     ) -> Result<u64> {
         self.begin_service_epoch_and_recover_coordination_inner(
             validation_migration,
@@ -553,12 +674,20 @@ impl<'a> CoordinationDurable<'a> {
         migration: RecoveryValidationMigration,
         failpoint: CoordinationFailpoint,
     ) -> Result<u64> {
-        self.begin_service_epoch_and_recover_coordination_inner(Some(migration), failpoint)
+        let metadata = self.metadata_state()?;
+        self.begin_service_epoch_and_recover_coordination_inner(
+            Some(RecoveryMigrationPlan {
+                validation: migration,
+                metadata,
+                event_id_mappings: Vec::new(),
+            }),
+            failpoint,
+        )
     }
 
     fn begin_service_epoch_and_recover_coordination_inner(
         &self,
-        validation_migration: Option<RecoveryValidationMigration>,
+        validation_migration: Option<RecoveryMigrationPlan>,
         failpoint: CoordinationFailpoint,
     ) -> Result<u64> {
         let write = self
@@ -575,6 +704,7 @@ impl<'a> CoordinationDurable<'a> {
         };
         let graph_generation = read_current_generation_in_write_txn(&write)?;
         if let Some(migration) = validation_migration {
+            ensure_coordination_tables_in_write_txn(&write)?;
             let mut metadata = write
                 .open_table(META)
                 .context("open coordination metadata")?;
@@ -583,11 +713,16 @@ impl<'a> CoordinationDurable<'a> {
             }
             metadata.insert(
                 LATEST_LIFECYCLE_REVISION,
-                migration.latest_lifecycle_revision.to_le_bytes().as_slice(),
+                migration
+                    .validation
+                    .latest_lifecycle_revision
+                    .to_le_bytes()
+                    .as_slice(),
             )?;
             metadata.insert(
                 CLOCKED_PUBLICATION_GENERATION,
                 migration
+                    .validation
                     .clocked_publication_generation
                     .to_le_bytes()
                     .as_slice(),
@@ -596,6 +731,37 @@ impl<'a> CoordinationDurable<'a> {
                 RECOVERY_VALIDATION_VERSION,
                 CURRENT_RECOVERY_VALIDATION_VERSION.to_le_bytes().as_slice(),
             )?;
+            metadata.insert(
+                NEXT_QUEUE_SEQUENCE,
+                migration
+                    .metadata
+                    .next_queue_sequence
+                    .to_le_bytes()
+                    .as_slice(),
+            )?;
+            metadata.insert(
+                CURRENT_EVENT_SEQUENCE,
+                migration
+                    .metadata
+                    .current_event_sequence
+                    .to_le_bytes()
+                    .as_slice(),
+            )?;
+            metadata.insert(
+                SCHEDULER_REVISION,
+                migration
+                    .metadata
+                    .scheduler_revision
+                    .to_le_bytes()
+                    .as_slice(),
+            )?;
+            drop(metadata);
+            let mut event_ids = write
+                .open_table(EVENT_IDS)
+                .context("open coordination event ID index for migration")?;
+            for (event_id, sequence) in migration.event_id_mappings {
+                event_ids.insert(event_id.as_str(), sequence)?;
+            }
         }
         let coordination_metadata = {
             let metadata = write
@@ -1773,47 +1939,19 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
     let write = database
         .begin_write()
         .context("begin coordination schema transaction")?;
-    {
-        let mut metadata = write
+    ensure_coordination_tables_in_write_txn(&write)?;
+    write
+        .commit()
+        .context("commit coordination schema transaction")?;
+    Ok(())
+}
+
+fn ensure_coordination_tables_in_write_txn(write: &WriteTransaction) -> Result<()> {
+    drop(
+        write
             .open_table(META)
-            .context("open coordination metadata")?;
-        if metadata
-            .get(NEXT_QUEUE_SEQUENCE)
-            .context("read next queue sequence")?
-            .is_none()
-        {
-            let first = 1_u64.to_le_bytes();
-            metadata
-                .insert(NEXT_QUEUE_SEQUENCE, first.as_slice())
-                .context("initialize next queue sequence")?;
-        } else {
-            read_u64_metadata(&metadata, NEXT_QUEUE_SEQUENCE)?;
-        }
-        if metadata
-            .get(CURRENT_EVENT_SEQUENCE)
-            .context("read current event sequence")?
-            .is_none()
-        {
-            let zero = 0_u64.to_le_bytes();
-            metadata
-                .insert(CURRENT_EVENT_SEQUENCE, zero.as_slice())
-                .context("initialize current event sequence")?;
-        } else {
-            read_u64_metadata(&metadata, CURRENT_EVENT_SEQUENCE)?;
-        }
-        if metadata
-            .get(SCHEDULER_REVISION)
-            .context("read scheduler revision")?
-            .is_none()
-        {
-            let zero = 0_u64.to_le_bytes();
-            metadata
-                .insert(SCHEDULER_REVISION, zero.as_slice())
-                .context("initialize scheduler revision")?;
-        } else {
-            read_u64_metadata(&metadata, SCHEDULER_REVISION)?;
-        }
-    }
+            .context("create coordination metadata table")?,
+    );
     drop(
         write
             .open_table(CHANGE_SETS)
@@ -1841,35 +1979,11 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
             .open_table(EVENTS)
             .context("create coordination events table")?,
     );
-    {
-        let events = write
-            .open_table(EVENTS)
-            .context("open coordination events table")?;
-        let mut event_ids = write
+    drop(
+        write
             .open_table(EVENT_IDS)
-            .context("create coordination event ID table")?;
-        for entry in events.iter().context("iterate coordination events")? {
-            let (sequence, value) = entry.context("read coordination event entry")?;
-            let sequence = sequence.value();
-            let event: CoordinationEvent = decode(value.value(), "coordination event")?;
-            if let Some(existing) = event_ids
-                .get(event.event_id.as_str())
-                .context("read coordination event ID")?
-            {
-                if existing.value() != sequence {
-                    bail!(
-                        "coordination event ID {} maps to both sequences {} and {sequence}",
-                        event.event_id,
-                        existing.value()
-                    );
-                }
-            } else {
-                event_ids
-                    .insert(event.event_id.as_str(), sequence)
-                    .context("backfill coordination event ID")?;
-            }
-        }
-    }
+            .context("create coordination event ID table")?,
+    );
     drop(
         write
             .open_table(EVENT_CURSORS)
@@ -1885,9 +1999,6 @@ pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {
             .open_table(RESOURCE_CLOCKS)
             .context("create resource clocks table")?,
     );
-    write
-        .commit()
-        .context("commit coordination schema transaction")?;
     Ok(())
 }
 
@@ -1906,15 +2017,21 @@ pub(crate) fn initialize_coordination_validation_metadata(database: &Database) -
         {
             bail!("coordination validation metadata is already initialized");
         }
-        let revision = read_u64_metadata(&metadata, SCHEDULER_REVISION)?.to_le_bytes();
+        let zero = 0_u64.to_le_bytes();
         metadata
-            .insert(LATEST_LIFECYCLE_REVISION, revision.as_slice())
+            .insert(NEXT_QUEUE_SEQUENCE, 1_u64.to_le_bytes().as_slice())
+            .context("initialize next queue sequence")?;
+        metadata
+            .insert(CURRENT_EVENT_SEQUENCE, zero.as_slice())
+            .context("initialize current event sequence")?;
+        metadata
+            .insert(SCHEDULER_REVISION, zero.as_slice())
+            .context("initialize scheduler revision")?;
+        metadata
+            .insert(LATEST_LIFECYCLE_REVISION, zero.as_slice())
             .context("initialize latest lifecycle revision")?;
         metadata
-            .insert(
-                CLOCKED_PUBLICATION_GENERATION,
-                0_u64.to_le_bytes().as_slice(),
-            )
+            .insert(CLOCKED_PUBLICATION_GENERATION, zero.as_slice())
             .context("initialize clocked publication generation")?;
         metadata
             .insert(

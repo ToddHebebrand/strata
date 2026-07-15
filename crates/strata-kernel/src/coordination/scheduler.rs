@@ -234,12 +234,20 @@ impl SchedulerState {
         &mut self,
         deferred_change_set_ids: &BTreeSet<String>,
     ) -> Result<Vec<String>> {
+        self.select_ready_with_constraints(deferred_change_set_ids, deferred_change_set_ids)
+    }
+
+    pub(crate) fn select_ready_with_constraints(
+        &mut self,
+        nonselectable_change_set_ids: &BTreeSet<String>,
+        fifo_bypass_change_set_ids: &BTreeSet<String>,
+    ) -> Result<Vec<String>> {
         let mut ordered = self
             .tickets
             .values()
             .filter(|ticket| {
                 ticket.state == TicketState::Queued
-                    && !deferred_change_set_ids.contains(&ticket.change_set_id)
+                    && !nonselectable_change_set_ids.contains(&ticket.change_set_id)
             })
             .map(|ticket| (ticket.queue_sequence, ticket.age_rounds))
             .collect::<Vec<_>>();
@@ -273,7 +281,7 @@ impl SchedulerState {
                 .any(|offered| !offered.is_disjoint(&keys));
             let selected_overlap = !selected_keys.is_disjoint(&keys);
             let older_overlap = self.tickets.range(..sequence).any(|(_, older)| {
-                !deferred_change_set_ids.contains(&older.change_set_id)
+                !fifo_bypass_change_set_ids.contains(&older.change_set_id)
                     && matches!(older.state, TicketState::Queued | TicketState::Ready)
                     && older.reservation_keys.iter().any(|key| keys.contains(key))
             });

@@ -3,12 +3,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use anyhow::Result;
-#[cfg(feature = "coordination-test-api")]
 use sha2::{Digest, Sha256};
 
+use crate::GraphDelta;
 use crate::GraphGeneration;
 #[cfg(feature = "coordination-test-api")]
-use crate::{GraphDelta, PublicationReport};
+use crate::PublicationReport;
 
 use super::{IntentAnalysis, IntentRecord};
 
@@ -64,7 +64,6 @@ pub enum PublishClaimOutcome {
     },
 }
 
-#[cfg(feature = "coordination-test-api")]
 pub fn canonical_candidate_digest(delta: &GraphDelta) -> Result<String> {
     let bytes = serde_json::to_vec(delta)?;
     let digest = Sha256::digest(bytes);

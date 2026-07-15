@@ -97,6 +97,7 @@ pub(crate) fn plan_readiness(
     let mut requeued = Vec::new();
     let mut needs_decision = Vec::new();
     let mut pending_events = Vec::new();
+    let mut semantic_failures = BTreeSet::new();
 
     for ticket_id in queued_ticket_ids {
         let ticket_before = next_scheduler
@@ -111,7 +112,13 @@ pub(crate) fn plan_readiness(
             .as_ref()
             .context("queued change set has no inferred scope")?;
         let intents = durable.intents_for(&ticket_before.change_set_id)?;
-        let authority = plan_change_set(&snapshot.graph, &intents, provider)?;
+        let authority = match plan_change_set(&snapshot.graph, &intents, provider) {
+            Ok(authority) => authority,
+            Err(_) => {
+                semantic_failures.insert(ticket_before.change_set_id.clone());
+                continue;
+            }
+        };
         if authority.dependency_keys.iter().any(String::is_empty) {
             bail!("authority plan contains an empty dependency key");
         }
@@ -174,7 +181,12 @@ pub(crate) fn plan_readiness(
         }
     }
 
-    let selected = next_scheduler.select_ready_excluding(&snapshot.deferred_change_set_ids)?;
+    let mut nonselectable_change_set_ids = snapshot.deferred_change_set_ids.clone();
+    nonselectable_change_set_ids.extend(semantic_failures);
+    let selected = next_scheduler.select_ready_with_constraints(
+        &nonselectable_change_set_ids,
+        &snapshot.deferred_change_set_ids,
+    )?;
     let mut offers = Vec::new();
     for ticket_id in selected {
         let ticket_before = next_scheduler

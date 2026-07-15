@@ -7,7 +7,7 @@ use strata_kernel::{
     ChangeSetRecord, ChangeSetState, CoordinationEvent, CoordinationEventKind,
     CoordinationFailpoint, CoordinationTicket, CreateDraftOutcome, DurableStore,
     DynamicExpansionPolicy, GraphGeneration, GraphSnapshot, IdempotencyClass, InferredScope,
-    IntentParameters, IntentRecord, ResourceVersion, SCHEMA_VERSION, TicketState,
+    IntentParameters, IntentRecord, Kernel, ResourceVersion, SCHEMA_VERSION, TicketState,
 };
 use tempfile::tempdir;
 
@@ -454,11 +454,14 @@ fn failed_draft_creation_rolls_back_its_idempotency_mapping() {
 }
 
 #[test]
-fn opening_a_pre_coordination_database_upgrades_schema_idempotently() {
+fn kernel_open_upgrades_a_pre_coordination_database_atomically_and_idempotently() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("legacy.redb");
     let snapshot = seed_prior_spike_database(&path);
 
+    let (kernel, recovered) = Kernel::open(&path).unwrap();
+    assert_eq!(recovered.generation, 0);
+    drop(kernel);
     let store = DurableStore::open(&path).unwrap();
     assert_eq!(store.current_generation().unwrap(), 0);
     assert_eq!(store.latest_snapshot().unwrap(), snapshot);
@@ -472,6 +475,9 @@ fn opening_a_pre_coordination_database_upgrades_schema_idempotently() {
     let metadata = store.coordination().metadata_state().unwrap();
     drop(store);
 
+    let (kernel, recovered) = Kernel::open(&path).unwrap();
+    assert_eq!(recovered.generation, 0);
+    drop(kernel);
     let reopened = DurableStore::open(&path).unwrap();
     assert_eq!(reopened.coordination().table_counts().unwrap(), counts);
     assert_eq!(reopened.coordination().metadata_state().unwrap(), metadata);

@@ -185,7 +185,6 @@ impl Kernel {
             );
         }
 
-        #[cfg(feature = "coordination-test-api")]
         let validation_migration = store.coordination().validate_recovery_state(
             durable_generation,
             |generation| store.delta(generation),
@@ -194,11 +193,8 @@ impl Kernel {
             |generation| store.event(generation),
         )?;
 
-        #[cfg(feature = "coordination-test-api")]
         let service_epoch = store
             .begin_service_epoch_and_recover_coordination_with_validation(validation_migration)?;
-        #[cfg(not(feature = "coordination-test-api"))]
-        let service_epoch = store.begin_service_epoch_and_recover_coordination()?;
         let scheduler_revision = store.coordination().metadata_state()?.scheduler_revision;
         let scheduler = SchedulerState::recover_with_revision(
             scheduler_revision,

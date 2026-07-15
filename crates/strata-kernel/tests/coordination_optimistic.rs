@@ -5,7 +5,7 @@
 mod coordination_support;
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::Result;
@@ -56,9 +56,23 @@ struct LifecycleProbeBuilder {
 
 impl CandidateBuilder for LifecycleProbeBuilder {
     fn build_candidate(&self, prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
-        let _ = ready(self.kernel.submit_change_set("disjoint", 4)?);
-        self.kernel.cancel_change_set("other", 5)?;
-        self.kernel.expire_leases(6)?;
+        let disjoint_offer = ready(self.kernel.submit_change_set("disjoint", 52)?);
+        let disjoint_claim = claimed(self.kernel.claim_ready(
+            &disjoint_offer.offer_id,
+            &disjoint_offer.claim_token,
+            53,
+        )?);
+        assert_eq!(disjoint_claim.change_set_id, "disjoint");
+        assert!(self.kernel.reconsider_tickets(54)?.is_empty());
+        let cancelled = self.kernel.cancel_change_set("other", 55)?;
+        assert_eq!(cancelled.change_set.state, ChangeSetState::Cancelled);
+        let expired = self.kernel.expire_leases(61)?;
+        assert!(
+            expired.iter().any(|outcome| {
+                outcome.change_set_id == "expiring" && outcome.authority_kind == "claim"
+            }),
+            "builder progress must exercise an actually due claim expiry"
+        );
         assert!(!self.kernel.events_after("observer", 0, 100)?.is_empty());
         self.inner.build_candidate(prepared)
     }
@@ -133,6 +147,131 @@ struct CountingDeltaBuilder {
 struct RecordingGenerationBuilder {
     generations: Arc<Mutex<Vec<u64>>>,
     changes: Vec<GraphChange>,
+}
+
+#[derive(Clone)]
+struct FailingContractingProvider {
+    inner: GraphDerivedAnalyzer,
+    blocker_id: String,
+    contracting_change_set_id: String,
+    failing_change_set_id: String,
+    stable_change_set_id: String,
+    fail_queued: Arc<AtomicBool>,
+    contracting_calls: Arc<AtomicUsize>,
+    stable_analysis: Arc<Mutex<Option<IntentAnalysis>>>,
+}
+
+impl TestSemanticProvider for FailingContractingProvider {
+    fn analyze(&self, graph: &GraphGeneration, intent: &IntentRecord) -> Result<IntentAnalysis> {
+        if intent.change_set_id == self.failing_change_set_id
+            && self.fail_queued.load(Ordering::SeqCst)
+        {
+            anyhow::bail!("deterministic queued semantic failure")
+        }
+        if intent.change_set_id == self.stable_change_set_id {
+            let mut stable = self.stable_analysis.lock().unwrap();
+            if let Some(analysis) = stable.as_ref() {
+                return Ok(analysis.clone());
+            }
+            let analysis = self.inner.analyze(graph, intent)?;
+            *stable = Some(analysis.clone());
+            return Ok(analysis);
+        }
+        let mut analysis = self.inner.analyze(graph, intent)?;
+        if intent.change_set_id == self.contracting_change_set_id
+            && self.contracting_calls.fetch_add(1, Ordering::SeqCst) < 2
+        {
+            analysis
+                .reservation_keys
+                .push(format!("symbol:{}", self.blocker_id));
+        }
+        Ok(analysis)
+    }
+}
+
+struct ProviderFailureScenario {
+    kernel: Kernel,
+    provider: Arc<FailingContractingProvider>,
+    trigger_claim: ClaimHandle,
+    trigger_node_id: String,
+}
+
+fn provider_failure_scenario(path: &std::path::Path) -> ProviderFailureScenario {
+    let fixture = MediumCoordinationFixture::load();
+    let user_id = fixture.declaration_named("User").id.clone();
+    let parse_id = fixture.declaration_named("parseArgs").id.clone();
+    let provider = Arc::new(FailingContractingProvider {
+        inner: GraphDerivedAnalyzer::new(),
+        blocker_id: user_id.clone(),
+        contracting_change_set_id: "disjoint".into(),
+        failing_change_set_id: "failed".into(),
+        stable_change_set_id: "younger".into(),
+        fail_queued: Arc::new(AtomicBool::new(false)),
+        contracting_calls: Arc::new(AtomicUsize::new(0)),
+        stable_analysis: Arc::new(Mutex::new(None)),
+    });
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(path, fixture.snapshot().clone(), provider.clone())
+            .unwrap();
+    begin_with_intents(&kernel, "trigger", [rename(&user_id, "Account")]).unwrap();
+    let trigger_offer = ready(kernel.submit_change_set("trigger", 0).unwrap());
+    let trigger_claim = claimed(
+        kernel
+            .claim_ready(&trigger_offer.offer_id, &trigger_offer.claim_token, 1)
+            .unwrap(),
+    );
+    begin_with_intents(&kernel, "failed", [rename(&user_id, "Customer")]).unwrap();
+    assert!(matches!(
+        kernel.submit_change_set("failed", 2).unwrap(),
+        SubmissionOutcome::Queued { .. }
+    ));
+    begin_with_intents(&kernel, "disjoint", [rename(&parse_id, "parseTokens")]).unwrap();
+    assert!(matches!(
+        kernel.submit_change_set("disjoint", 3).unwrap(),
+        SubmissionOutcome::Queued { .. }
+    ));
+    begin_with_intents(&kernel, "younger", [rename(&user_id, "Member")]).unwrap();
+    assert!(matches!(
+        kernel.submit_change_set("younger", 3).unwrap(),
+        SubmissionOutcome::Queued { .. }
+    ));
+    provider.fail_queued.store(true, Ordering::SeqCst);
+    ProviderFailureScenario {
+        kernel,
+        provider,
+        trigger_claim,
+        trigger_node_id: user_id,
+    }
+}
+
+fn assert_provider_failure_release_state(kernel: &Kernel, trigger_state: ChangeSetState) {
+    assert_eq!(
+        kernel.change_set("trigger").unwrap().unwrap().state,
+        trigger_state
+    );
+    assert_eq!(
+        kernel.change_set("failed").unwrap().unwrap().state,
+        ChangeSetState::Queued
+    );
+    assert_eq!(
+        kernel
+            .ticket_for_change_set("failed")
+            .unwrap()
+            .unwrap()
+            .state,
+        TicketState::Queued,
+        "a ticket whose provider failed must never receive Ready authority"
+    );
+    assert_eq!(
+        kernel.change_set("disjoint").unwrap().unwrap().state,
+        ChangeSetState::Ready,
+        "fresh disjoint work must continue through the same planner pass"
+    );
+    assert_eq!(
+        kernel.change_set("younger").unwrap().unwrap().state,
+        ChangeSetState::Queued,
+        "a failed older ticket must remain a FIFO blocker for younger overlapping work"
+    );
 }
 
 impl CandidateBuilder for RecordingGenerationBuilder {
@@ -319,6 +458,93 @@ fn two_disjoint_claims_captured_before_publication_both_commit_in_either_order()
 }
 
 #[test]
+fn queued_provider_failure_does_not_abort_claimed_publication_or_disjoint_readiness() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let ProviderFailureScenario {
+        kernel,
+        provider,
+        trigger_claim,
+        trigger_node_id,
+    } = provider_failure_scenario(&path);
+
+    let report = published(
+        kernel
+            .publish_claimed(
+                &trigger_claim,
+                &NodePatchBuilder::new(vec![(
+                    trigger_node_id,
+                    "\n// provider failure publication".into(),
+                )]),
+                4,
+            )
+            .unwrap(),
+    );
+    assert_eq!(report.generation, 1);
+    assert_provider_failure_release_state(&kernel, ChangeSetState::Committed);
+    let live_digest = kernel.snapshot().digest().to_owned();
+    drop(kernel);
+
+    let (reopened, recovered) = Kernel::open_with_test_semantics(&path, provider).unwrap();
+    assert_eq!(recovered.generation, 1);
+    assert_eq!(reopened.snapshot().digest(), live_digest);
+    assert_provider_failure_release_state(&reopened, ChangeSetState::Committed);
+}
+
+#[test]
+fn queued_provider_failure_does_not_abort_claimed_cancellation_or_disjoint_readiness() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let ProviderFailureScenario {
+        kernel, provider, ..
+    } = provider_failure_scenario(&path);
+
+    let outcome = kernel.cancel_change_set("trigger", 4).unwrap();
+    assert_eq!(outcome.change_set.state, ChangeSetState::Cancelled);
+    assert_provider_failure_release_state(&kernel, ChangeSetState::Cancelled);
+    let live_digest = kernel.snapshot().digest().to_owned();
+    drop(kernel);
+
+    let (reopened, recovered) = Kernel::open_with_test_semantics(&path, provider).unwrap();
+    assert_eq!(recovered.generation, 0);
+    assert_eq!(reopened.snapshot().digest(), live_digest);
+    assert_provider_failure_release_state(&reopened, ChangeSetState::Cancelled);
+}
+
+#[test]
+fn queued_provider_failure_does_not_abort_due_claim_expiry_or_disjoint_readiness() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let ProviderFailureScenario {
+        kernel,
+        provider,
+        trigger_claim,
+        ..
+    } = provider_failure_scenario(&path);
+
+    let outcomes = kernel.expire_leases(trigger_claim.expires_at_tick).unwrap();
+    assert!(outcomes.iter().any(|outcome| {
+        outcome.change_set_id == "trigger" && outcome.authority_kind == "claim"
+    }));
+    assert_provider_failure_release_state(&kernel, ChangeSetState::Queued);
+    assert!(
+        kernel
+            .test_active_claims()
+            .unwrap()
+            .iter()
+            .all(|claim| claim.change_set_id != "trigger")
+    );
+    let live_digest = kernel.snapshot().digest().to_owned();
+    drop(kernel);
+
+    let (reopened, recovered) = Kernel::open_with_test_semantics(&path, provider).unwrap();
+    assert_eq!(recovered.generation, 0);
+    assert_eq!(reopened.snapshot().digest(), live_digest);
+    assert_provider_failure_release_state(&reopened, ChangeSetState::Ready);
+    assert!(reopened.test_active_claims().unwrap().is_empty());
+}
+
+#[test]
 fn candidate_builder_observes_both_global_mutexes_unlocked() {
     let fixture = MediumCoordinationFixture::load();
     let user_id = fixture.declaration_named("User").id.clone();
@@ -351,6 +577,7 @@ fn builder_can_run_disjoint_lifecycle_and_event_replay_without_global_lock_block
     let fixture = MediumCoordinationFixture::load();
     let user_id = fixture.declaration_named("User").id.clone();
     let parse_id = fixture.declaration_named("parseArgs").id.clone();
+    let format_id = fixture.declaration_named("formatTimestamp").id.clone();
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let (kernel, _) = Kernel::create_with_test_semantics(
@@ -360,8 +587,21 @@ fn builder_can_run_disjoint_lifecycle_and_event_replay_without_global_lock_block
     )
     .unwrap();
     let kernel = Arc::new(kernel);
+    begin_with_intents(&kernel, "expiring", [rename(&parse_id, "parseExpired")]).unwrap();
+    let expiring_offer = ready(kernel.submit_change_set("expiring", 0).unwrap());
+    let expiring_claim = claimed(
+        kernel
+            .claim_ready(&expiring_offer.offer_id, &expiring_offer.claim_token, 1)
+            .unwrap(),
+    );
+    assert_eq!(expiring_claim.expires_at_tick, 61);
     begin_with_intents(&kernel, "publishing", [rename(&user_id, "Account")]).unwrap();
-    begin_with_intents(&kernel, "disjoint", [rename(&parse_id, "parseTokens")]).unwrap();
+    begin_with_intents(
+        &kernel,
+        "disjoint",
+        [rename(&format_id, "formatTimelineTimestamp")],
+    )
+    .unwrap();
     kernel
         .begin_change_set(
             BeginChangeSet {
@@ -373,18 +613,19 @@ fn builder_can_run_disjoint_lifecycle_and_event_replay_without_global_lock_block
             0,
         )
         .unwrap();
-    let offer = ready(kernel.submit_change_set("publishing", 0).unwrap());
+    let offer = ready(kernel.submit_change_set("publishing", 50).unwrap());
     let claim = claimed(
         kernel
-            .claim_ready(&offer.offer_id, &offer.claim_token, 1)
+            .claim_ready(&offer.offer_id, &offer.claim_token, 51)
             .unwrap(),
     );
+    assert_eq!(claim.expires_at_tick, 111);
     let builder = LifecycleProbeBuilder {
         kernel: kernel.clone(),
         inner: NodePatchBuilder::new(vec![(user_id, "\n// Account".into())]),
     };
 
-    let report = published(kernel.publish_claimed(&claim, &builder, 2).unwrap());
+    let report = published(kernel.publish_claimed(&claim, &builder, 60).unwrap());
     assert_eq!(report.generation, 1);
     assert_eq!(kernel.snapshot().generation(), 1);
     assert!(
@@ -401,11 +642,27 @@ fn builder_can_run_disjoint_lifecycle_and_event_replay_without_global_lock_block
     );
     assert_eq!(
         kernel.change_set("disjoint").unwrap().unwrap().state,
-        ChangeSetState::Ready
+        ChangeSetState::Executing
     );
     assert_eq!(
         kernel.change_set("other").unwrap().unwrap().state,
         ChangeSetState::Cancelled
+    );
+    assert_eq!(
+        kernel.change_set("expiring").unwrap().unwrap().state,
+        ChangeSetState::Ready
+    );
+    assert!(
+        kernel
+            .test_active_claims()
+            .unwrap()
+            .iter()
+            .any(|claim| { claim.change_set_id == "disjoint" })
+    );
+    assert!(
+        kernel.test_active_claims().unwrap().iter().all(|claim| {
+            claim.change_set_id != "expiring" && claim.change_set_id != "publishing"
+        })
     );
     let live_digest = kernel.snapshot().digest().to_owned();
     drop(builder);
@@ -420,9 +677,18 @@ fn builder_can_run_disjoint_lifecycle_and_event_replay_without_global_lock_block
         ChangeSetState::Committed
     );
     assert_eq!(
+        reopened.change_set("disjoint").unwrap().unwrap().state,
+        ChangeSetState::Ready
+    );
+    assert_eq!(
+        reopened.change_set("expiring").unwrap().unwrap().state,
+        ChangeSetState::Ready
+    );
+    assert_eq!(
         reopened.change_set("other").unwrap().unwrap().state,
         ChangeSetState::Cancelled
     );
+    assert!(reopened.test_active_claims().unwrap().is_empty());
 }
 
 #[test]

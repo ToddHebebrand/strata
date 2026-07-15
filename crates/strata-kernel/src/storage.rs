@@ -7,8 +7,11 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTran
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+#[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
+use crate::TicketRecord;
 use crate::coordination::{
-    CoordinationDurable, ensure_coordination_schema, initialize_coordination_validation_metadata,
+    CoordinationDurable, RecoveryMigrationPlan, ensure_coordination_schema,
+    initialize_coordination_validation_metadata,
 };
 #[cfg(feature = "coordination-test-api")]
 use crate::coordination::{CoordinationError, LifecycleTransition, PublicationAttemptRecord};
@@ -16,9 +19,7 @@ use crate::coordination::{CoordinationError, LifecycleTransition, PublicationAtt
 use crate::kernel::PublishFailpoint;
 #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
 use crate::model::{FenceClaim, Publication};
-#[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
-use crate::{EventRecord, TicketRecord};
-use crate::{GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord};
+use crate::{EventRecord, GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord};
 
 pub(crate) const META: TableDefinition<&str, &[u8]> = TableDefinition::new("graph_metadata");
 const SNAPSHOTS: TableDefinition<u64, &[u8]> = TableDefinition::new("snapshots");
@@ -78,11 +79,9 @@ impl DurableStore {
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        let store = Self {
+        Ok(Self {
             database: Database::open(path).context("open redb database")?,
-        };
-        ensure_coordination_schema(&store.database)?;
-        Ok(store)
+        })
     }
 
     pub fn seed(&self, snapshot: &GraphSnapshot) -> Result<()> {
@@ -610,15 +609,9 @@ impl DurableStore {
         Ok(next_epoch)
     }
 
-    pub fn begin_service_epoch_and_recover_coordination(&self) -> Result<u64> {
-        self.coordination()
-            .begin_service_epoch_and_recover_coordination(None)
-    }
-
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn begin_service_epoch_and_recover_coordination_with_validation(
         &self,
-        migration: Option<crate::coordination::RecoveryValidationMigration>,
+        migration: Option<RecoveryMigrationPlan>,
     ) -> Result<u64> {
         self.coordination()
             .begin_service_epoch_and_recover_coordination(migration)
@@ -844,12 +837,10 @@ impl DurableStore {
         ))
     }
 
-    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub fn delta(&self, generation: u64) -> Result<Option<GraphDelta>> {
         self.read_structured(DELTAS, generation, "delta")
     }
 
-    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub fn event(&self, sequence: u64) -> Result<Option<EventRecord>> {
         self.read_structured(EVENTS, sequence, "event")
     }

@@ -18,10 +18,14 @@ pub use analyzer::{
 pub(crate) use authority::SemanticProvider;
 #[cfg(feature = "coordination-test-api")]
 pub(crate) use authority::TestSemanticAdapter;
+#[cfg(not(feature = "coordination-test-api"))]
+pub(crate) use authority::canonical_candidate_digest;
+#[cfg(feature = "coordination-test-api")]
+pub use authority::canonical_candidate_digest;
 #[cfg(feature = "coordination-test-api")]
 pub use authority::{
     CandidateBuilder, CandidateEnvelope, PreparedCandidate, PublishClaimOutcome,
-    TestSemanticProvider, analyze_change_set, canonical_candidate_digest,
+    TestSemanticProvider, analyze_change_set,
 };
 pub use coordinator::{
     BeginChangeSet, CLAIM_TTL_TICKS, CancellationOutcome, DRAFT_TTL_TICKS,
@@ -34,10 +38,13 @@ pub use durable::{
     CreateDraftOutcome,
 };
 pub(crate) use durable::{
-    LifecycleTransition, ensure_coordination_schema, initialize_coordination_validation_metadata,
+    LifecycleTransition, RecoveryMigrationPlan, ensure_coordination_schema,
+    initialize_coordination_validation_metadata,
 };
 #[cfg(feature = "coordination-test-api")]
 pub use durable::{RecoveryMetadataState, RecoveryValidationMigration};
+#[cfg(not(feature = "coordination-test-api"))]
+pub(crate) use model::PublicationAttemptRecord;
 #[cfg(feature = "coordination-test-api")]
 pub use model::PublicationAttemptRecord;
 pub use model::{

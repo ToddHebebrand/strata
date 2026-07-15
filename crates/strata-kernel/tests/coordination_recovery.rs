@@ -27,6 +27,10 @@ const GRAPH_OPERATIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("oper
 const GRAPH_EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("events");
 const COORDINATION_META: TableDefinition<&str, &[u8]> =
     TableDefinition::new("coordination_metadata");
+const COORDINATION_EVENTS: TableDefinition<u64, &[u8]> =
+    TableDefinition::new("coordination_events");
+const COORDINATION_EVENT_IDS: TableDefinition<&str, u64> =
+    TableDefinition::new("coordination_event_ids");
 
 fn fixture() -> GraphSnapshot {
     serde_json::from_str(include_str!("fixtures/examples-medium.snapshot.json")).unwrap()
@@ -632,6 +636,20 @@ fn raw_coordination_metadata(path: &Path) -> BTreeMap<String, Vec<u8>> {
         .collect()
 }
 
+fn raw_coordination_event_ids(path: &Path) -> BTreeMap<String, u64> {
+    let database = redb::Database::open(path).unwrap();
+    let read = database.begin_read().unwrap();
+    let event_ids = read.open_table(COORDINATION_EVENT_IDS).unwrap();
+    event_ids
+        .iter()
+        .unwrap()
+        .map(|entry| {
+            let (key, value) = entry.unwrap();
+            (key.value().to_owned(), value.value())
+        })
+        .collect()
+}
+
 fn metadata_u64(metadata: &BTreeMap<String, Vec<u8>>, key: &str) -> Option<u64> {
     metadata
         .get(key)
@@ -780,6 +798,118 @@ fn failed_open_does_not_self_heal_a_missing_versioned_clock_marker_or_clocks() {
     let database = redb::Database::open(&path).unwrap();
     let read = database.begin_read().unwrap();
     assert_eq!(read.open_table(RESOURCE_CLOCKS).unwrap().len().unwrap(), 0);
+}
+
+#[test]
+fn failed_open_does_not_recreate_missing_versioned_event_sequence_metadata() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let kernel = create_kernel(&path);
+    assert!(matches!(
+        begin_and_submit(&kernel, "change-set:event-sequence-corruption", "Clock", 1),
+        SubmissionOutcome::Ready { .. }
+    ));
+    drop(kernel);
+
+    let database = redb::Database::open(&path).unwrap();
+    let write = database.begin_write().unwrap();
+    write
+        .open_table(COORDINATION_META)
+        .unwrap()
+        .remove("current_event_sequence")
+        .unwrap();
+    write.commit().unwrap();
+    drop(database);
+    let before_metadata = raw_coordination_metadata(&path);
+    let before_event_ids = raw_coordination_event_ids(&path);
+
+    let error = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer))
+        .err()
+        .expect("missing versioned current event sequence must reject reopen");
+    assert!(
+        error.to_string().contains("current_event_sequence"),
+        "{error:#}"
+    );
+    assert_eq!(raw_coordination_metadata(&path), before_metadata);
+    assert_eq!(raw_coordination_event_ids(&path), before_event_ids);
+}
+
+#[test]
+fn failed_open_does_not_recreate_missing_versioned_queue_or_revision_metadata() {
+    for missing_key in ["next_queue_sequence", "scheduler_revision"] {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join(format!("{missing_key}.redb"));
+        let kernel = create_kernel(&path);
+        assert!(matches!(
+            begin_and_submit(&kernel, "change-set:metadata-corruption", "Clock", 1),
+            SubmissionOutcome::Ready { .. }
+        ));
+        drop(kernel);
+
+        let database = redb::Database::open(&path).unwrap();
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(COORDINATION_META)
+            .unwrap()
+            .remove(missing_key)
+            .unwrap();
+        write.commit().unwrap();
+        drop(database);
+        let before_metadata = raw_coordination_metadata(&path);
+        let before_event_ids = raw_coordination_event_ids(&path);
+
+        let error = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer))
+            .err()
+            .unwrap_or_else(|| panic!("missing versioned {missing_key} must reject reopen"));
+        assert!(error.to_string().contains(missing_key), "{error:#}");
+        assert_eq!(raw_coordination_metadata(&path), before_metadata);
+        assert_eq!(raw_coordination_event_ids(&path), before_event_ids);
+    }
+}
+
+#[test]
+fn failed_open_does_not_backfill_or_rewrite_versioned_event_id_mappings() {
+    for wrong_sequence in [None, Some(999_u64)] {
+        let directory = tempdir().unwrap();
+        let path = directory
+            .path()
+            .join(format!("event-id-{wrong_sequence:?}.redb"));
+        let kernel = create_kernel(&path);
+        assert!(matches!(
+            begin_and_submit(&kernel, "change-set:event-id-corruption", "Clock", 1),
+            SubmissionOutcome::Ready { .. }
+        ));
+        drop(kernel);
+
+        let database = redb::Database::open(&path).unwrap();
+        let read = database.begin_read().unwrap();
+        let events = read.open_table(COORDINATION_EVENTS).unwrap();
+        let event_id = {
+            let (_, first_event_bytes) = events.iter().unwrap().next().unwrap().unwrap();
+            let first_event: Value = serde_json::from_slice(first_event_bytes.value()).unwrap();
+            first_event["eventId"].as_str().unwrap().to_owned()
+        };
+        drop(events);
+        drop(read);
+        let write = database.begin_write().unwrap();
+        let mut ids = write.open_table(COORDINATION_EVENT_IDS).unwrap();
+        ids.remove(event_id.as_str()).unwrap();
+        if let Some(sequence) = wrong_sequence {
+            ids.insert(event_id.as_str(), sequence).unwrap();
+        }
+        drop(ids);
+        write.commit().unwrap();
+        drop(database);
+        let before_metadata = raw_coordination_metadata(&path);
+        let before_event_ids = raw_coordination_event_ids(&path);
+
+        let error = Kernel::open_with_test_semantics(&path, Arc::new(TargetAnalyzer))
+            .err()
+            .expect("missing or wrong versioned event-ID mapping must reject reopen");
+        assert!(error.to_string().contains("event ID"), "{error:#}");
+        assert_eq!(raw_coordination_metadata(&path), before_metadata);
+        assert_eq!(raw_coordination_event_ids(&path), before_event_ids);
+    }
 }
 
 #[test]
