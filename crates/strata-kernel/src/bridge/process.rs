@@ -42,6 +42,9 @@ impl NodeBridgeClient {
         // Validation policy is service-startup-owned configuration. Candidate request
         // construction consumes it in the executor task; intent input never does.
         let _startup_validation_profile = &self.config.validation_profile;
+        let deadline = Instant::now()
+            .checked_add(self.config.deadline)
+            .ok_or_else(|| anyhow!("Node bridge deadline is too large"))?;
 
         let mut command = Command::new(&self.config.executable);
         command
@@ -72,9 +75,6 @@ impl NodeBridgeClient {
         // Both readers start before any potentially blocking stdin write or wait.
         let stdout_reader = spawn_bounded_reader(stdout, self.config.max_response_bytes);
         let stderr_reader = spawn_bounded_reader(stderr, self.config.max_stderr_bytes);
-        let deadline = Instant::now()
-            .checked_add(self.config.deadline)
-            .ok_or_else(|| anyhow!("Node bridge deadline is too large"))?;
         let mut stdin_writer = Some(spawn_request_writer(stdin, request_bytes));
         let mut write_result = None;
         let mut timed_out = false;
@@ -152,15 +152,10 @@ impl NodeBridgeClient {
         }
 
         let (stdout_result, stderr_result) = join_reader_pair(stdout_reader, stderr_reader);
+        resolve_lifecycle_result(timed_out, lifecycle_error)?;
         let stdout_capture = stdout_result?;
         let stderr_capture = stderr_result?;
 
-        if timed_out {
-            bail!("Node bridge deadline exceeded; child was killed and reaped");
-        }
-        if let Some(error) = lifecycle_error {
-            return Err(error);
-        }
         if stderr_capture.over_limit {
             bail!("Node bridge stderr exceeded configured byte limit");
         }
@@ -253,6 +248,17 @@ fn with_cleanup_error(primary: anyhow::Error, cleanup: anyhow::Error) -> anyhow:
     anyhow!("{primary:#}; child cleanup also failed: {cleanup:#}")
 }
 
+fn resolve_lifecycle_result(timed_out: bool, lifecycle_error: Option<anyhow::Error>) -> Result<()> {
+    match (timed_out, lifecycle_error) {
+        (true, Some(error)) => Err(anyhow!(
+            "Node bridge deadline exceeded; child cleanup failed: {error:#}"
+        )),
+        (true, None) => bail!("Node bridge deadline exceeded; child was killed and reaped"),
+        (false, Some(error)) => Err(error),
+        (false, None) => Ok(()),
+    }
+}
+
 struct BoundedCapture {
     bytes: Vec<u8>,
     over_limit: bool,
@@ -307,7 +313,8 @@ fn join_reader_pair(
 
 #[cfg(test)]
 mod tests {
-    use super::{BoundedCapture, join_reader_pair};
+    use super::{BoundedCapture, join_reader_pair, resolve_lifecycle_result};
+    use anyhow::anyhow;
     use std::io;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -334,5 +341,17 @@ mod tests {
         assert!(stdout_result.is_err());
         assert!(stderr_result.is_ok());
         assert!(stderr_finished.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn timeout_cleanup_failure_is_not_hidden_by_successful_cleanup_text() {
+        let error = resolve_lifecycle_result(true, Some(anyhow!("synthetic kill failure")))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("deadline"), "{error}");
+        assert!(error.contains("cleanup"), "{error}");
+        assert!(error.contains("synthetic kill failure"), "{error}");
+        assert!(!error.contains("was killed and reaped"), "{error}");
     }
 }

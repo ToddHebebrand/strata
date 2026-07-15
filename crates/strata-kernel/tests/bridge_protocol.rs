@@ -440,6 +440,28 @@ fn process_runner_rejects_an_oversized_request_before_execution() {
 }
 
 #[test]
+fn process_runner_rejects_an_unrepresentable_deadline_before_spawning() {
+    let request = parse_request_fixture("analyze-request.json");
+    let directory = tempdir().unwrap();
+    let marker_path = directory.path().join("spawned.marker");
+    let mut config = default_config("mark-started.mjs");
+    config.arguments.push(marker_path.as_os_str().to_owned());
+    config.deadline = Duration::MAX;
+
+    let error = NodeBridgeClient::new(config)
+        .run(&request)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("deadline"), "{error}");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(
+        !marker_path.exists(),
+        "bridge child was spawned before deadline validation"
+    );
+}
+
+#[test]
 fn process_runner_drains_stdout_before_the_child_reads_a_large_stdin_request() {
     let mut value = fixture_value("analyze-request.json");
     value["snapshot"]["nodes"][0]["payload"] = json!("x".repeat(1024 * 1024));
