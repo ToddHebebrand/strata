@@ -64,7 +64,7 @@ fn analyze_request(
     }))
 }
 
-fn wire_intent(intent: &IntentRecord, analysis_generation: u64) -> WireIntentRecord {
+pub(crate) fn wire_intent(intent: &IntentRecord, analysis_generation: u64) -> WireIntentRecord {
     let parameters = match &intent.parameters {
         IntentParameters::RenameSymbol {
             declaration_id,

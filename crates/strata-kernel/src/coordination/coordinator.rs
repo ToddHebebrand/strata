@@ -16,7 +16,6 @@ use super::{
     EventCursor, IntentParameters, IntentRecord, LeaseExpiryOutcome, ReadyOffer, SchedulerState,
     ScopeChange, SubmissionOutcome, TicketState, classify_scope_change,
 };
-#[cfg(feature = "coordination-test-api")]
 use crate::GraphChange;
 use crate::{Kernel, OperationRecord, SCHEMA_VERSION};
 
@@ -962,12 +961,10 @@ impl Kernel {
         ))
     }
 }
-#[cfg(feature = "coordination-test-api")]
 pub(super) fn coordination_commit_key(change_set_id: &str) -> String {
     format!("coordination-commit:{change_set_id}")
 }
 
-#[cfg(feature = "coordination-test-api")]
 pub(super) fn affected_node_ids(delta: &crate::GraphDelta) -> Vec<String> {
     let mut ids = BTreeSet::new();
     for change in &delta.changes {
@@ -990,7 +987,6 @@ pub(super) fn affected_node_ids(delta: &crate::GraphDelta) -> Vec<String> {
     ids.into_iter().collect()
 }
 
-#[cfg(feature = "coordination-test-api")]
 pub(super) fn intent_kind(intent: &IntentRecord) -> &'static str {
     match intent.parameters {
         IntentParameters::RenameSymbol { .. } => "RenameSymbol",
@@ -998,7 +994,6 @@ pub(super) fn intent_kind(intent: &IntentRecord) -> &'static str {
     }
 }
 
-#[cfg(feature = "coordination-test-api")]
 pub(super) fn bounded_wake_payload(
     operation_field: &str,
     operation_id: &str,
@@ -1025,7 +1020,6 @@ pub(super) fn bounded_wake_payload(
     payload.to_string()
 }
 
-#[cfg(feature = "coordination-test-api")]
 pub(super) fn bounded_wake_payload_with_scope(
     operation_field: &str,
     operation_id: &str,

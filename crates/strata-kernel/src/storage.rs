@@ -1,4 +1,3 @@
-#[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -13,11 +12,9 @@ use crate::coordination::{
     CoordinationDurable, RecoveryMigrationPlan, ensure_coordination_schema,
     initialize_coordination_validation_metadata,
 };
-#[cfg(feature = "coordination-test-api")]
 use crate::coordination::{CoordinationError, LifecycleTransition, PublicationAttemptRecord};
 #[cfg(feature = "redb-spike-api")]
 use crate::kernel::PublishFailpoint;
-#[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
 use crate::model::{FenceClaim, Publication};
 use crate::{EventRecord, GraphDelta, GraphGeneration, GraphSnapshot, OperationRecord};
 
@@ -36,7 +33,6 @@ const CURRENT_GENERATION: &str = "current_generation";
 const CURRENT_EVENT_SEQUENCE: &str = "current_event_sequence";
 pub(crate) const SERVICE_EPOCH: &str = "service_epoch";
 
-#[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublishOutcome {
     Published { generation: u64 },
@@ -47,7 +43,6 @@ pub struct DurableStore {
     database: Database,
 }
 
-#[cfg(feature = "coordination-test-api")]
 pub(crate) struct CoordinatedCommit {
     pub publication: Publication,
     pub lifecycle: LifecycleTransition,
@@ -57,7 +52,6 @@ pub(crate) struct CoordinatedCommit {
     pub publication_attempt: PublicationAttemptRecord,
 }
 
-#[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoordinatedPublishFailpoint {
     None,
@@ -232,7 +226,6 @@ impl DurableStore {
         })
     }
 
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn publish_coordinated(
         &self,
         commit: &CoordinatedCommit,
@@ -332,7 +325,6 @@ impl DurableStore {
         Ok(PublishOutcome::Published { generation })
     }
 
-    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     fn write_graph_publication_in_txn_with_hook(
         &self,
         write: &WriteTransaction,
@@ -382,7 +374,6 @@ impl DurableStore {
         Ok(next_generation)
     }
 
-    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     fn validate_graph_publication_in_txn(
         &self,
         write: &WriteTransaction,
@@ -425,7 +416,6 @@ impl DurableStore {
         Ok((current_generation, next_generation, next_event_sequence))
     }
 
-    #[cfg(feature = "coordination-test-api")]
     fn issue_and_consume_fences_in_write_txn(
         &self,
         write: &WriteTransaction,
@@ -705,7 +695,6 @@ impl DurableStore {
         Ok(deltas)
     }
 
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn graph_generation(&self, generation: u64) -> Result<GraphGeneration> {
         let current_generation = self.current_generation()?;
         if generation > current_generation {
@@ -890,7 +879,7 @@ impl DurableStore {
     }
 
     #[doc(hidden)]
-    #[cfg(feature = "redb-spike-api")]
+    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub fn fence_state(&self, resource: &str) -> Result<(Option<u64>, Option<u64>)> {
         let read = self
             .database

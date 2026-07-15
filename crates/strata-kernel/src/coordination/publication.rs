@@ -1,11 +1,11 @@
-#![cfg(feature = "coordination-test-api")]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 
+#[cfg(feature = "coordination-test-api")]
+use super::CandidateBuilder;
 use super::analyzer::analyze_change_set;
 use super::authority::plan_change_set;
 use super::coordinator::{
@@ -16,11 +16,11 @@ use super::coordinator::{
 use super::planner::{PlannerSnapshot, plan_readiness};
 use super::resource_keys;
 use super::{
-    CandidateBuilder, CandidateEnvelope, ChangeSetState, ClaimHandle, CoordinationEventKind,
-    DependencyVersion, DynamicExpansionPolicy, LifecycleTransition, PreparedCandidate,
-    PublicationAttemptRecord, PublishClaimOutcome, SchedulerState, ScopeChange, TicketState,
-    classify_scope_change,
+    CandidateEnvelope, ChangeSetState, ClaimHandle, CoordinationEventKind, DependencyVersion,
+    DynamicExpansionPolicy, LifecycleTransition, PreparedCandidate, PublicationAttemptRecord,
+    PublishClaimOutcome, SchedulerState, ScopeChange, TicketState, classify_scope_change,
 };
+use crate::bridge::CandidateExecutor;
 use crate::model::{FenceClaim, Publication};
 use crate::storage::{CoordinatedCommit, CoordinatedPublishFailpoint, PublishOutcome};
 use crate::{
@@ -29,9 +29,20 @@ use crate::{
 };
 
 enum CandidateSource<'a> {
-    Builder(&'a dyn CandidateBuilder),
+    Executor(&'a dyn CandidateExecutor),
+    #[cfg(feature = "coordination-test-api")]
     ExternalEnvelope(CandidateEnvelope),
     Validated(ValidatedCandidate),
+}
+
+#[cfg(feature = "coordination-test-api")]
+struct TestCandidateExecutor<'a>(&'a dyn CandidateBuilder);
+
+#[cfg(feature = "coordination-test-api")]
+impl CandidateExecutor for TestCandidateExecutor<'_> {
+    fn build_candidate(&self, prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
+        self.0.build_candidate(prepared)
+    }
 }
 
 #[derive(Clone)]
@@ -84,6 +95,20 @@ pub(crate) struct PreparedPublication {
 }
 
 impl Kernel {
+    pub fn execute_claimed(
+        &self,
+        claim: &ClaimHandle,
+        now_tick: u64,
+    ) -> Result<PublishClaimOutcome> {
+        let executor = self.candidate_executor()?;
+        self.publish_claimed_inner(
+            claim,
+            CandidateSource::Executor(executor),
+            now_tick,
+            PublicationExecution::default(),
+        )
+    }
+
     #[cfg(feature = "coordination-test-api")]
     pub fn publish_claimed(
         &self,
@@ -91,9 +116,10 @@ impl Kernel {
         candidate_builder: &dyn CandidateBuilder,
         now_tick: u64,
     ) -> Result<PublishClaimOutcome> {
+        let executor = TestCandidateExecutor(candidate_builder);
         self.publish_claimed_inner(
             claim,
-            CandidateSource::Builder(candidate_builder),
+            CandidateSource::Executor(&executor),
             now_tick,
             PublicationExecution::default(),
         )
@@ -124,9 +150,10 @@ impl Kernel {
         before_final_check: &dyn Fn(u32),
         before_redb_commit: &dyn Fn(),
     ) -> Result<PublishClaimOutcome> {
+        let executor = TestCandidateExecutor(candidate_builder);
         self.publish_claimed_inner(
             claim,
-            CandidateSource::Builder(candidate_builder),
+            CandidateSource::Executor(&executor),
             now_tick,
             PublicationExecution {
                 test_hooks: PublicationTestHooks {
@@ -151,9 +178,10 @@ impl Kernel {
         before_invalidation_final_check: &dyn Fn(u32),
         before_redb_commit: &dyn Fn(),
     ) -> Result<PublishClaimOutcome> {
+        let executor = TestCandidateExecutor(candidate_builder);
         self.publish_claimed_inner(
             claim,
-            CandidateSource::Builder(candidate_builder),
+            CandidateSource::Executor(&executor),
             now_tick,
             PublicationExecution {
                 test_hooks: PublicationTestHooks {
@@ -201,9 +229,10 @@ impl Kernel {
         now_tick: u64,
         failpoint: CoordinatedPublishFailpoint,
     ) -> Result<PublicationReport> {
+        let executor = TestCandidateExecutor(candidate_builder);
         let outcome = self.publish_claimed_inner(
             claim,
-            CandidateSource::Builder(candidate_builder),
+            CandidateSource::Executor(&executor),
             now_tick,
             PublicationExecution {
                 failpoint,
@@ -226,9 +255,10 @@ impl Kernel {
         now_tick: u64,
         after_outer_idempotency_lookup: &dyn Fn(),
     ) -> Result<PublicationReport> {
+        let executor = TestCandidateExecutor(candidate_builder);
         let outcome = self.publish_claimed_inner(
             claim,
-            CandidateSource::Builder(candidate_builder),
+            CandidateSource::Executor(&executor),
             now_tick,
             PublicationExecution {
                 after_outer_idempotency_lookup: Some(after_outer_idempotency_lookup),
@@ -241,7 +271,6 @@ impl Kernel {
         Ok(report)
     }
 
-    #[cfg(feature = "coordination-test-api")]
     fn publish_claimed_inner(
         &self,
         claim: &ClaimHandle,
@@ -293,7 +322,7 @@ impl Kernel {
         }
 
         let (validated_candidate, candidate_may_rebase) = match candidate_source {
-            CandidateSource::Builder(candidate_builder) => {
+            CandidateSource::Executor(candidate_executor) => {
                 let prepared = PreparedCandidate {
                     change_set: before_change_set.clone(),
                     intents: intents.clone(),
@@ -302,7 +331,7 @@ impl Kernel {
                     scope_fingerprint: fresh_scope.scope_fingerprint.clone(),
                 };
                 let envelope = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    candidate_builder.build_candidate(&prepared)
+                    candidate_executor.build_candidate(&prepared)
                 }))
                 .map_err(|_| anyhow::anyhow!("candidate builder panicked"))??;
                 envelope.validate_digest()?;
@@ -317,6 +346,7 @@ impl Kernel {
                     false,
                 )
             }
+            #[cfg(feature = "coordination-test-api")]
             CandidateSource::ExternalEnvelope(envelope) => {
                 envelope.validate_digest()?;
                 if let Some(hook) = test_hooks.after_digest_validation {
@@ -677,7 +707,6 @@ impl Kernel {
         }
     }
 
-    #[cfg(feature = "coordination-test-api")]
     fn committed_candidate_report(
         &self,
         claim: &ClaimHandle,
@@ -696,12 +725,13 @@ impl Kernel {
             ));
         }
         let candidate_digest = match candidate_source {
+            #[cfg(feature = "coordination-test-api")]
             CandidateSource::ExternalEnvelope(envelope) => {
                 envelope.validate_digest()?;
                 envelope.candidate_digest.clone()
             }
             CandidateSource::Validated(candidate) => candidate.envelope.candidate_digest.clone(),
-            CandidateSource::Builder(builder) => {
+            CandidateSource::Executor(executor) => {
                 let base_generation = match attempt.prepared_graph_generation {
                     Some(generation) => generation,
                     None => attempt.generation.checked_sub(1).with_context(|| {
@@ -735,7 +765,7 @@ impl Kernel {
                     scope_fingerprint,
                 };
                 let envelope = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    builder.build_candidate(&prepared)
+                    executor.build_candidate(&prepared)
                 }))
                 .map_err(|_| anyhow::anyhow!("committed replay builder panicked"))??;
                 envelope.validate_digest()?;
@@ -756,7 +786,6 @@ impl Kernel {
         }))
     }
 
-    #[cfg(feature = "coordination-test-api")]
     fn committed_candidate_report_for_digest(
         &self,
         claim: &ClaimHandle,
@@ -785,7 +814,6 @@ impl Kernel {
         }))
     }
 
-    #[cfg(feature = "coordination-test-api")]
     fn validate_executing_claim(
         &self,
         scheduler: &SchedulerState,
@@ -821,7 +849,6 @@ impl Kernel {
         Ok(())
     }
 
-    #[cfg(feature = "coordination-test-api")]
     fn invalidated_claim_outcome(&self, claim: &ClaimHandle) -> Result<PublishClaimOutcome> {
         let durable = self.store.coordination();
         let change_set = durable
@@ -847,7 +874,6 @@ impl Kernel {
         }
     }
 
-    #[cfg(feature = "coordination-test-api")]
     fn persist_changed_publication_scope(
         &self,
         claim: &ClaimHandle,

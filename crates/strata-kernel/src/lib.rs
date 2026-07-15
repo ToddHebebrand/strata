@@ -16,15 +16,14 @@ pub use coordination::{
     CoordinationTableCounts, CoordinationTicket, CreateDraftOutcome, DRAFT_TTL_TICKS,
     DependencyVersion, DynamicExpansionPolicy, EventCursor, IdempotencyClass, InferredScope,
     IntentParameters, IntentRecord, LeaseExpiryOutcome, MAX_WAKE_AFFECTED_NODE_IDS,
-    READY_OFFER_TTL_TICKS, ReadyOffer, ResourceVersion, SchedulerState, ScopeChange,
-    SubmissionOutcome, TicketState, canonical_scope_fingerprint, classify_scope_change,
-    validate_delta_containment,
+    PublishClaimOutcome, READY_OFFER_TTL_TICKS, ReadyOffer, ResourceVersion, SchedulerState,
+    ScopeChange, SubmissionOutcome, TicketState, canonical_scope_fingerprint,
+    classify_scope_change, validate_delta_containment,
 };
 #[cfg(feature = "coordination-test-api")]
 pub use coordination::{
     CandidateBuilder, CandidateEnvelope, PreparedCandidate, PublicationAttemptRecord,
-    PublishClaimOutcome, RecoveryMetadataState, RecoveryValidationMigration,
-    canonical_candidate_digest,
+    RecoveryMetadataState, RecoveryValidationMigration,
 };
 #[cfg(feature = "coordination-test-api")]
 pub use coordination::{

@@ -226,6 +226,10 @@ impl NodeBridgeClient {
         )
     }
 
+    pub(crate) fn validation_profile(&self) -> ValidationProfile {
+        self.config.validation_profile.clone()
+    }
+
     #[cfg(test)]
     pub(crate) fn run_count(&self) -> usize {
         self.run_count.load(Ordering::SeqCst)

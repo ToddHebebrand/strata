@@ -1,43 +1,79 @@
 use std::collections::BTreeSet;
-#[cfg(feature = "coordination-test-api")]
 use std::sync::Arc;
 
 use anyhow::Result;
 use sha2::{Digest, Sha256};
 
 use crate::GraphDelta;
-use crate::GraphGeneration;
-#[cfg(feature = "coordination-test-api")]
-use crate::PublicationReport;
+use crate::{GraphGeneration, PublicationReport};
 
 use super::{IntentAnalysis, IntentRecord};
 
-#[cfg(feature = "coordination-test-api")]
 #[derive(Clone)]
 pub struct PreparedCandidate {
-    pub change_set: super::ChangeSetRecord,
-    pub intents: Vec<IntentRecord>,
-    pub graph: Arc<GraphGeneration>,
-    pub attempt_id: String,
-    pub scope_fingerprint: String,
+    pub(crate) change_set: super::ChangeSetRecord,
+    pub(crate) intents: Vec<IntentRecord>,
+    pub(crate) graph: Arc<GraphGeneration>,
+    pub(crate) attempt_id: String,
+    pub(crate) scope_fingerprint: String,
 }
 
 #[cfg(feature = "coordination-test-api")]
+impl PreparedCandidate {
+    pub fn change_set(&self) -> &super::ChangeSetRecord {
+        &self.change_set
+    }
+
+    pub fn intents(&self) -> &[IntentRecord] {
+        &self.intents
+    }
+
+    pub fn graph(&self) -> &Arc<GraphGeneration> {
+        &self.graph
+    }
+
+    pub fn attempt_id(&self) -> &str {
+        &self.attempt_id
+    }
+
+    pub fn scope_fingerprint(&self) -> &str {
+        &self.scope_fingerprint
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CandidateEnvelope {
-    pub delta: GraphDelta,
-    pub candidate_digest: String,
+    pub(crate) delta: GraphDelta,
+    pub(crate) candidate_digest: String,
 }
 
-#[cfg(feature = "coordination-test-api")]
 impl CandidateEnvelope {
+    #[cfg(feature = "coordination-test-api")]
     pub fn from_delta(delta: GraphDelta) -> Result<Self> {
+        Self::from_internal_delta(delta)
+    }
+
+    pub(crate) fn from_internal_delta(delta: GraphDelta) -> Result<Self> {
         let candidate_digest = canonical_candidate_digest(&delta)?;
         Ok(Self {
             delta,
             candidate_digest,
         })
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    #[doc(hidden)]
+    pub fn test_with_digest(delta: GraphDelta, candidate_digest: impl Into<String>) -> Self {
+        Self {
+            delta,
+            candidate_digest: candidate_digest.into(),
+        }
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub fn candidate_digest(&self) -> &str {
+        &self.candidate_digest
     }
 
     pub(crate) fn validate_digest(&self) -> Result<()> {
@@ -50,7 +86,6 @@ impl CandidateEnvelope {
     }
 }
 
-#[cfg(feature = "coordination-test-api")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PublishClaimOutcome {
     Published(PublicationReport),
@@ -64,7 +99,7 @@ pub enum PublishClaimOutcome {
     },
 }
 
-pub fn canonical_candidate_digest(delta: &GraphDelta) -> Result<String> {
+pub(crate) fn canonical_candidate_digest(delta: &GraphDelta) -> Result<String> {
     let bytes = serde_json::to_vec(delta)?;
     let digest = Sha256::digest(bytes);
     Ok(format!("{digest:x}"))

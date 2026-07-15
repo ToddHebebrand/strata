@@ -144,7 +144,6 @@ impl<'a> CoordinationDurable<'a> {
         Ok(clocks)
     }
 
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn publication_attempt(
         &self,
         attempt_id: &str,
@@ -163,7 +162,6 @@ impl<'a> CoordinationDurable<'a> {
             .transpose()
     }
 
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn persist_publication_attempt_in_write_txn(
         &self,
         write: &WriteTransaction,
@@ -194,7 +192,6 @@ impl<'a> CoordinationDurable<'a> {
         on_write()
     }
 
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn next_resource_clock_updates(
         &self,
         keys: &BTreeSet<String>,
@@ -213,7 +210,6 @@ impl<'a> CoordinationDurable<'a> {
             .collect()
     }
 
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn persist_resource_clock_updates_in_write_txn(
         &self,
         write: &WriteTransaction,
@@ -241,7 +237,6 @@ impl<'a> CoordinationDurable<'a> {
         Ok(())
     }
 
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn mark_clocked_publication_in_write_txn(
         &self,
         write: &WriteTransaction,

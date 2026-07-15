@@ -450,7 +450,7 @@ impl CandidateBuilder for NodePatchBuilder {
             .iter()
             .map(|(node_id, marker)| {
                 let mut node = prepared
-                    .graph
+                    .graph()
                     .node(node_id)
                     .with_context(|| format!("patch node {node_id} does not exist"))?
                     .clone();
@@ -460,7 +460,7 @@ impl CandidateBuilder for NodePatchBuilder {
             .collect::<Result<Vec<_>>>()?;
         CandidateEnvelope::from_delta(GraphDelta {
             schema_version: SCHEMA_VERSION,
-            base_generation: prepared.graph.generation(),
+            base_generation: prepared.graph().generation(),
             changes,
         })
     }

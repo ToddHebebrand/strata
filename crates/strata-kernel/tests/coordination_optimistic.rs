@@ -279,10 +279,10 @@ impl CandidateBuilder for RecordingGenerationBuilder {
         self.generations
             .lock()
             .unwrap()
-            .push(prepared.graph.generation());
+            .push(prepared.graph().generation());
         CandidateEnvelope::from_delta(GraphDelta {
             schema_version: SCHEMA_VERSION,
-            base_generation: prepared.graph.generation(),
+            base_generation: prepared.graph().generation(),
             changes: self.changes.clone(),
         })
     }
@@ -302,7 +302,7 @@ impl CandidateBuilder for CountingDeltaBuilder {
         self.calls.fetch_add(1, Ordering::SeqCst);
         CandidateEnvelope::from_delta(GraphDelta {
             schema_version: SCHEMA_VERSION,
-            base_generation: prepared.graph.generation(),
+            base_generation: prepared.graph().generation(),
             changes: self.changes.clone(),
         })
     }
@@ -347,7 +347,7 @@ impl CandidateBuilder for DeltaBuilder {
     fn build_candidate(&self, prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
         CandidateEnvelope::from_delta(GraphDelta {
             schema_version: SCHEMA_VERSION,
-            base_generation: prepared.graph.generation(),
+            base_generation: prepared.graph().generation(),
             changes: self.0.clone(),
         })
     }

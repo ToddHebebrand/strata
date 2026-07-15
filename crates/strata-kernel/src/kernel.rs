@@ -8,7 +8,10 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 
-use crate::bridge::{NodeBridgeClient, NodeBridgeConfig, NodeSemanticProvider};
+use crate::bridge::{
+    CandidateExecutor, NodeBridgeClient, NodeBridgeConfig, NodeCandidateExecutor,
+    NodeSemanticProvider,
+};
 use crate::coordination::{
     CoordinationError, DependencyVersion, ResourceClockSnapshot, SemanticProvider,
 };
@@ -53,12 +56,12 @@ pub enum PublishFailpoint {
 pub struct Kernel {
     pub(crate) store: DurableStore,
     pub(crate) live: RwLock<Arc<GraphGeneration>>,
-    #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
     pub(crate) publish_lock: Mutex<()>,
     pub(crate) resource_clocks: RwLock<Arc<ResourceClockSnapshot>>,
     service_epoch: u64,
     pub(crate) scheduler: Mutex<SchedulerState>,
     semantic_provider: Option<Arc<dyn SemanticProvider>>,
+    candidate_executor: Option<Arc<dyn CandidateExecutor>>,
 }
 
 impl Kernel {
@@ -66,7 +69,7 @@ impl Kernel {
         path: impl AsRef<Path>,
         initial: GraphSnapshot,
     ) -> Result<(Self, RecoveryReport)> {
-        Self::create_inner(path, initial, None)
+        Self::create_inner(path, initial, None, None)
     }
 
     pub fn create_with_node_bridge(
@@ -74,9 +77,14 @@ impl Kernel {
         initial: GraphSnapshot,
         config: NodeBridgeConfig,
     ) -> Result<(Self, RecoveryReport)> {
-        let (mut kernel, report) = Self::create_inner(path, initial, None)?;
+        let (mut kernel, report) = Self::create_inner(path, initial, None, None)?;
+        let client = Arc::new(NodeBridgeClient::new(config));
         kernel.semantic_provider = Some(Arc::new(NodeSemanticProvider::new(
-            Arc::new(NodeBridgeClient::new(config)),
+            client.clone(),
+            report.service_epoch,
+        )));
+        kernel.candidate_executor = Some(Arc::new(NodeCandidateExecutor::new(
+            client,
             report.service_epoch,
         )));
         Ok((kernel, report))
@@ -88,13 +96,19 @@ impl Kernel {
         initial: GraphSnapshot,
         provider: Arc<dyn TestSemanticProvider>,
     ) -> Result<(Self, RecoveryReport)> {
-        Self::create_inner(path, initial, Some(Arc::new(TestSemanticAdapter(provider))))
+        Self::create_inner(
+            path,
+            initial,
+            Some(Arc::new(TestSemanticAdapter(provider))),
+            None,
+        )
     }
 
     fn create_inner(
         path: impl AsRef<Path>,
         initial: GraphSnapshot,
         semantic_provider: Option<Arc<dyn SemanticProvider>>,
+        candidate_executor: Option<Arc<dyn CandidateExecutor>>,
     ) -> Result<(Self, RecoveryReport)> {
         let graph = Arc::new(GraphGeneration::from_snapshot(initial.clone())?);
         let store = DurableStore::create(path)?;
@@ -125,22 +139,28 @@ impl Kernel {
                 service_epoch,
                 scheduler,
                 semantic_provider,
+                candidate_executor,
             ),
             report,
         ))
     }
 
     pub fn open(path: impl AsRef<Path>) -> Result<(Self, RecoveryReport)> {
-        Self::open_inner(path, None)
+        Self::open_inner(path, None, None)
     }
 
     pub fn open_with_node_bridge(
         path: impl AsRef<Path>,
         config: NodeBridgeConfig,
     ) -> Result<(Self, RecoveryReport)> {
-        let (mut kernel, report) = Self::open_inner(path, None)?;
+        let (mut kernel, report) = Self::open_inner(path, None, None)?;
+        let client = Arc::new(NodeBridgeClient::new(config));
         kernel.semantic_provider = Some(Arc::new(NodeSemanticProvider::new(
-            Arc::new(NodeBridgeClient::new(config)),
+            client.clone(),
+            report.service_epoch,
+        )));
+        kernel.candidate_executor = Some(Arc::new(NodeCandidateExecutor::new(
+            client,
             report.service_epoch,
         )));
         kernel.plan_and_apply_readiness(0, crate::coordination::TransitionCause::Restart, None)?;
@@ -152,12 +172,13 @@ impl Kernel {
         path: impl AsRef<Path>,
         provider: Arc<dyn TestSemanticProvider>,
     ) -> Result<(Self, RecoveryReport)> {
-        Self::open_inner(path, Some(Arc::new(TestSemanticAdapter(provider))))
+        Self::open_inner(path, Some(Arc::new(TestSemanticAdapter(provider))), None)
     }
 
     fn open_inner(
         path: impl AsRef<Path>,
         semantic_provider: Option<Arc<dyn SemanticProvider>>,
+        candidate_executor: Option<Arc<dyn CandidateExecutor>>,
     ) -> Result<(Self, RecoveryReport)> {
         let store = DurableStore::open(path)?;
         let snapshot = store.latest_snapshot()?;
@@ -248,6 +269,7 @@ impl Kernel {
             service_epoch,
             scheduler,
             semantic_provider,
+            candidate_executor,
         );
         if plan_after_recovery {
             kernel.plan_and_apply_readiness(
@@ -375,6 +397,12 @@ impl Kernel {
 
     #[doc(hidden)]
     #[cfg(feature = "coordination-test-api")]
+    pub fn test_fence_state(&self, resource: &str) -> Result<(Option<u64>, Option<u64>)> {
+        self.store.fence_state(resource)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
     pub fn test_scheduler_ticket_for_change_set(
         &self,
         change_set_id: &str,
@@ -495,6 +523,12 @@ impl Kernel {
             .ok_or_else(|| anyhow::Error::new(CoordinationError::SemanticProviderUnavailable))
     }
 
+    pub(crate) fn candidate_executor(&self) -> Result<&dyn CandidateExecutor> {
+        self.candidate_executor
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("candidate executor is unavailable"))
+    }
+
     #[doc(hidden)]
     #[cfg(feature = "redb-spike-api")]
     pub fn fence_state(&self, resource: &str) -> Result<(Option<u64>, Option<u64>)> {
@@ -508,16 +542,17 @@ impl Kernel {
         service_epoch: u64,
         scheduler: SchedulerState,
         semantic_provider: Option<Arc<dyn SemanticProvider>>,
+        candidate_executor: Option<Arc<dyn CandidateExecutor>>,
     ) -> Self {
         Self {
             store,
             live: RwLock::new(graph),
-            #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
             publish_lock: Mutex::new(()),
             resource_clocks: RwLock::new(resource_clocks),
             service_epoch,
             scheduler: Mutex::new(scheduler),
             semantic_provider,
+            candidate_executor,
         }
     }
 }

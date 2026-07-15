@@ -45,7 +45,6 @@ impl ResourceClockSnapshot {
             .all(|dependency| self.clock(&dependency.resource_key) == dependency.clock)
     }
 
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn apply(&self, updates: &BTreeMap<String, u64>) -> Self {
         let mut next = self.clone();
         next.clocks.extend(updates.clone());

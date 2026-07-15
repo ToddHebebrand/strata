@@ -1,7 +1,8 @@
 #![cfg(feature = "coordination-test-api")]
 
 #[cfg(feature = "redb-spike-api")]
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 #[cfg(feature = "redb-spike-api")]
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -70,7 +71,7 @@ impl CandidateBuilder for EmptyBuilder {
     fn build_candidate(&self, prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
         CandidateEnvelope::from_delta(GraphDelta {
             schema_version: SCHEMA_VERSION,
-            base_generation: prepared.graph.generation(),
+            base_generation: prepared.graph().generation(),
             changes: Vec::new(),
         })
     }
@@ -92,11 +93,11 @@ impl RecordingBuilder {
 impl CandidateBuilder for RecordingBuilder {
     fn build_candidate(&self, prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(prepared.graph.generation(), 0);
-        assert_eq!(prepared.change_set.state, ChangeSetState::Executing);
-        assert!(!prepared.intents.is_empty());
-        assert!(!prepared.attempt_id.is_empty());
-        assert!(!prepared.scope_fingerprint.is_empty());
+        assert_eq!(prepared.graph().generation(), 0);
+        assert_eq!(prepared.change_set().state, ChangeSetState::Executing);
+        assert!(!prepared.intents().is_empty());
+        assert!(!prepared.attempt_id().is_empty());
+        assert!(!prepared.scope_fingerprint().is_empty());
         CandidateEnvelope::from_delta(self.delta.clone())
     }
 }
@@ -165,9 +166,9 @@ impl InspectingBuilder {
 impl CandidateBuilder for InspectingBuilder {
     fn build_candidate(&self, prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
         self.observations.lock().unwrap().push(PreparedObservation {
-            graph_generation: prepared.graph.generation(),
-            scope_fingerprint: prepared.scope_fingerprint.clone(),
-            attempt_id: prepared.attempt_id.clone(),
+            graph_generation: prepared.graph().generation(),
+            scope_fingerprint: prepared.scope_fingerprint().to_owned(),
+            attempt_id: prepared.attempt_id().to_owned(),
         });
         CandidateEnvelope::from_delta(self.delta.clone())
     }
@@ -617,7 +618,7 @@ fn same_attempt_same_digest_replays_but_changed_digest_is_rejected() {
     assert_eq!(attempt.attempt_id, claim.attempt_id);
     assert_eq!(
         attempt.candidate_digest,
-        committed_envelope.candidate_digest
+        committed_envelope.candidate_digest()
     );
     assert_eq!(attempt.generation, first.generation);
     assert_eq!(attempt.graph_digest, first.digest);
@@ -849,11 +850,12 @@ fn malicious_candidate_digest_is_rejected_before_graph_or_lifecycle_state_change
     let digest_for_other_delta =
         CandidateEnvelope::from_delta(user_delta(&snapshot, "export interface Customer {}"))
             .unwrap()
-            .candidate_digest;
-    let malicious = CandidateEnvelope {
-        delta: user_delta(&snapshot, "export interface Account {}"),
-        candidate_digest: digest_for_other_delta,
-    };
+            .candidate_digest()
+            .to_owned();
+    let malicious = CandidateEnvelope::test_with_digest(
+        user_delta(&snapshot, "export interface Account {}"),
+        digest_for_other_delta,
+    );
 
     let error = kernel
         .publish_claimed_envelope(&claim, malicious, 2)

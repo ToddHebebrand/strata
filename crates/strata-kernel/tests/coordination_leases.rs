@@ -64,7 +64,7 @@ impl CandidateBuilder for EmptyBuilder {
     fn build_candidate(&self, prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
         CandidateEnvelope::from_delta(GraphDelta {
             schema_version: SCHEMA_VERSION,
-            base_generation: prepared.graph.generation(),
+            base_generation: prepared.graph().generation(),
             changes: vec![],
         })
     }

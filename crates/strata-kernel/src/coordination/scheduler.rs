@@ -443,7 +443,6 @@ impl SchedulerState {
         Ok(())
     }
 
-    #[cfg(feature = "coordination-test-api")]
     pub(crate) fn requeue_claim_with_scope(
         &mut self,
         claim_id: &str,
