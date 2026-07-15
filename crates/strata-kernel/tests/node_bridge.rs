@@ -1,13 +1,16 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(feature = "coordination-test-api")]
-use std::sync::{Arc, Barrier};
+use std::sync::Arc;
+#[cfg(feature = "coordination-test-api")]
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::time::Duration;
 
+use serde::Deserialize;
 use strata_kernel::{
     BeginChangeSet, ChangeSetState, ClaimHandle, ClaimOutcome, GraphSnapshot, IntentParameters,
     Kernel, NodeBridgeConfig, NodeRecord, PublishClaimOutcome, SubmissionOutcome, TicketState,
@@ -124,8 +127,12 @@ exec node "$worker"
     )
 }
 
+fn portable_medium_snapshot() -> GraphSnapshot {
+    serde_json::from_str(SNAPSHOT_JSON).unwrap()
+}
+
 fn trusted_medium_snapshot() -> GraphSnapshot {
-    let mut snapshot: GraphSnapshot = serde_json::from_str(SNAPSHOT_JSON).unwrap();
+    let mut snapshot = portable_medium_snapshot();
     let corpus_root = repo_root().join("examples/medium");
     let mut retained_ids = snapshot
         .nodes
@@ -177,6 +184,82 @@ fn launch_count(path: &Path) -> usize {
         .map_or(0, |value| value.trim().parse().unwrap())
 }
 
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct RenderedSnapshot {
+    modules: BTreeMap<String, String>,
+    target_texts: BTreeMap<String, String>,
+}
+
+fn render_snapshot(snapshot: &GraphSnapshot, target_ids: &[String]) -> RenderedSnapshot {
+    const HELPER: &str = r#"
+import fs from "node:fs";
+const input = JSON.parse(fs.readFileSync(0, "utf8"));
+const { hydrateSnapshot } = await import("./packages/kernel-bridge/dist/snapshot.js");
+const { findNodeById, listChildren, listModules, loadModule } = await import("./packages/store/dist/index.js");
+const { renderWithSourceMap } = await import("./packages/render/dist/index.js");
+
+const snapshot = { ...input.snapshot, generation: String(input.snapshot.generation) };
+const targets = new Set(input.targetIds);
+const targetTexts = {};
+const modules = {};
+const db = hydrateSnapshot(snapshot);
+try {
+  for (const module of listModules(db)) {
+    const loaded = loadModule(db, module.id);
+    const children = [...loaded.children];
+    for (const child of loaded.children) {
+      if (child.kind !== "Identifier") {
+        children.push(...listChildren(db, child.id).filter((node) => node.kind === "Identifier"));
+      }
+    }
+    const rendered = renderWithSourceMap(loaded.module, children);
+    modules[module.payload] = rendered.text;
+
+    for (const targetId of targets) {
+      const identifier = findNodeById(db, targetId);
+      if (!identifier || identifier.kind !== "Identifier" || !identifier.parentId) continue;
+      const source = rendered.sourceMap.find((entry) => entry.nodeId === identifier.parentId);
+      if (!source) continue;
+      const payload = JSON.parse(identifier.payload);
+      targetTexts[targetId] = rendered.text.slice(
+        source.renderedStart + payload.offset,
+        source.renderedStart + payload.offset + payload.text.length
+      );
+    }
+  }
+  if (Object.keys(targetTexts).length !== targets.size) {
+    throw new Error(`rendered ${Object.keys(targetTexts).length} of ${targets.size} target identifiers`);
+  }
+  process.stdout.write(JSON.stringify({ modules, targetTexts }));
+} finally {
+  db.close();
+}
+"#;
+
+    let mut child = Command::new("node")
+        .args(["--input-type=module", "--eval", HELPER])
+        .current_dir(repo_root())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    serde_json::to_writer(
+        child.stdin.as_mut().unwrap(),
+        &serde_json::json!({ "snapshot": snapshot, "targetIds": target_ids }),
+    )
+    .unwrap();
+    drop(child.stdin.take());
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "render helper failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
 fn fixture_declaration<'a>(
     snapshot: &'a GraphSnapshot,
     name: &str,
@@ -219,6 +302,90 @@ fn published(outcome: PublishClaimOutcome) -> strata_kernel::PublicationReport {
 }
 
 #[cfg(feature = "coordination-test-api")]
+fn await_leader_publication(
+    receiver: &Receiver<Result<(), String>>,
+    timeout: Duration,
+) -> Result<(), String> {
+    match receiver.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => {
+            Err("timed out waiting for leader publication".to_owned())
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            Err("leader publication channel disconnected".to_owned())
+        }
+    }
+}
+
+#[cfg(feature = "coordination-test-api")]
+fn await_peer_candidate(receiver: &Receiver<()>, timeout: Duration) -> Result<(), String> {
+    match receiver.recv_timeout(timeout) {
+        Ok(()) => Ok(()),
+        Err(RecvTimeoutError::Timeout) => Err("timed out waiting for peer candidate".to_owned()),
+        Err(RecvTimeoutError::Disconnected) => {
+            Err("peer candidate channel disconnected".to_owned())
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "coordination-test-api")]
+fn bounded_leader_wait_propagates_failure_and_timeout() {
+    let (sender, receiver) = sync_channel(1);
+    sender
+        .send(Err("leader publication failed".to_owned()))
+        .unwrap();
+    assert_eq!(
+        await_leader_publication(&receiver, Duration::from_millis(10)),
+        Err("leader publication failed".to_owned())
+    );
+
+    let (_sender, receiver) = sync_channel(1);
+    assert_eq!(
+        await_leader_publication(&receiver, Duration::from_millis(10)),
+        Err("timed out waiting for leader publication".to_owned())
+    );
+
+    let (_sender, receiver) = sync_channel(1);
+    assert_eq!(
+        await_peer_candidate(&receiver, Duration::from_millis(10)),
+        Err("timed out waiting for peer candidate".to_owned())
+    );
+}
+
+#[cfg(feature = "coordination-test-api")]
+fn execute_real_claim_in_order(
+    kernel: &Kernel,
+    claim: &ClaimHandle,
+    ready_sender: SyncSender<()>,
+    peer_ready_receiver: Receiver<()>,
+    leader_sender: Option<SyncSender<Result<(), String>>>,
+    follower_receiver: Option<Receiver<Result<(), String>>>,
+) -> anyhow::Result<PublishClaimOutcome> {
+    let before_final = |attempt| {
+        if attempt != 0 {
+            return;
+        }
+        ready_sender
+            .send(())
+            .expect("peer must retain the candidate-ready receiver");
+        await_peer_candidate(&peer_ready_receiver, Duration::from_secs(30))
+            .unwrap_or_else(|error| panic!("{error}"));
+        if let Some(receiver) = &follower_receiver {
+            await_leader_publication(receiver, Duration::from_secs(30))
+                .unwrap_or_else(|error| panic!("{error}"));
+        }
+    };
+    let outcome = kernel.execute_claimed_with_test_hooks(claim, 10, &before_final);
+    if let Some(sender) = leader_sender {
+        sender
+            .send(outcome.as_ref().map(|_| ()).map_err(ToString::to_string))
+            .expect("follower must retain the publication receiver");
+    }
+    outcome
+}
+
+#[cfg(feature = "coordination-test-api")]
 fn run_real_disjoint_rename_order(format_first: bool) {
     let snapshot = trusted_medium_snapshot();
     let directory = tempdir().unwrap();
@@ -252,37 +419,38 @@ fn run_real_disjoint_rename_order(format_first: bool) {
     let user_attempt_id = user_claim.attempt_id.clone();
     let format_attempt_id = format_claim.attempt_id.clone();
 
-    let barrier = Arc::new(Barrier::new(2));
+    let (user_ready_sender, format_ready_receiver) = sync_channel(1);
+    let (format_ready_sender, user_ready_receiver) = sync_channel(1);
+    let (leader_sender, follower_receiver) = sync_channel(1);
+    let user_sender = (!format_first).then(|| leader_sender.clone());
+    let format_sender = format_first.then_some(leader_sender);
+    let (user_receiver, format_receiver) = if format_first {
+        (Some(follower_receiver), None)
+    } else {
+        (None, Some(follower_receiver))
+    };
     let (user_outcome, format_outcome) = std::thread::scope(|scope| {
         let user_kernel = kernel.clone();
-        let user_barrier = barrier.clone();
         let user = scope.spawn(move || {
-            let before_final = |attempt| {
-                if attempt == 0 {
-                    user_barrier.wait();
-                    if format_first {
-                        while user_kernel.snapshot().generation() == 0 {
-                            std::thread::yield_now();
-                        }
-                    }
-                }
-            };
-            user_kernel.execute_claimed_with_test_hooks(&user_claim, 10, &before_final)
+            execute_real_claim_in_order(
+                &user_kernel,
+                &user_claim,
+                user_ready_sender,
+                user_ready_receiver,
+                user_sender,
+                user_receiver,
+            )
         });
         let format_kernel = kernel.clone();
-        let format_barrier = barrier;
         let format = scope.spawn(move || {
-            let before_final = |attempt| {
-                if attempt == 0 {
-                    format_barrier.wait();
-                    if !format_first {
-                        while format_kernel.snapshot().generation() == 0 {
-                            std::thread::yield_now();
-                        }
-                    }
-                }
-            };
-            format_kernel.execute_claimed_with_test_hooks(&format_claim, 10, &before_final)
+            execute_real_claim_in_order(
+                &format_kernel,
+                &format_claim,
+                format_ready_sender,
+                format_ready_receiver,
+                format_sender,
+                format_receiver,
+            )
         });
         (user.join().unwrap(), format.join().unwrap())
     });
@@ -340,14 +508,60 @@ fn worker_validation_slice(
 #[ignore = "requires pnpm kernel:bridge:build"]
 #[cfg(feature = "coordination-test-api")]
 fn real_disjoint_renames_build_at_g0_and_publish_in_both_orders() {
-    let snapshot = trusted_medium_snapshot();
-    let user_slice = worker_validation_slice(&snapshot, "fc98295bca9efc3e", "Account");
-    let format_slice = worker_validation_slice(&snapshot, "9a25d67ed4b74807", "renderTimestamp");
+    let full_snapshot = portable_medium_snapshot();
+    let user_slice = worker_validation_slice(&full_snapshot, "fc98295bca9efc3e", "Account");
+    let format_slice =
+        worker_validation_slice(&full_snapshot, "9a25d67ed4b74807", "renderTimestamp");
     assert!(user_slice.0.is_disjoint(&format_slice.0));
     assert!(user_slice.1.is_disjoint(&format_slice.1));
 
     run_real_disjoint_rename_order(true);
     run_real_disjoint_rename_order(false);
+}
+
+#[test]
+#[ignore = "requires pnpm kernel:bridge:build"]
+#[cfg(feature = "coordination-test-api")]
+fn trusted_source_projection_has_explicit_counts_and_cross_boundary_exclusions() {
+    let portable = portable_medium_snapshot();
+    let trusted = trusted_medium_snapshot();
+    assert_eq!(portable.nodes.len(), 1_282);
+    assert_eq!(portable.references.len(), 614);
+    assert_eq!(trusted.nodes.len(), 1_203);
+    assert_eq!(trusted.references.len(), 592);
+
+    let trusted_ids = trusted
+        .nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let excluded_format_references = portable
+        .references
+        .iter()
+        .filter(|reference| {
+            reference.to_node_id == "08ac77e5918b0150"
+                && !trusted_ids.contains(reference.from_node_id.as_str())
+        })
+        .map(|reference| reference.from_node_id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        excluded_format_references,
+        BTreeSet::from([
+            "7c6f5211c022bc27",
+            "9f36e72694da9581",
+            "e42c8d4899cb6c1e",
+            "ff17f3448091a13f",
+        ])
+    );
+
+    let corpus_root = repo_root().join("examples/medium");
+    assert!(
+        trusted
+            .nodes
+            .iter()
+            .filter(|node| node.kind == "Module")
+            .all(|module| Path::new(&module.payload).starts_with(&corpus_root))
+    );
 }
 
 #[test]
@@ -588,6 +802,15 @@ fn real_user_rename_publishes_one_rust_operation_and_recovers_without_node() {
     assert_eq!(published_graph.generation(), 1);
     assert_eq!(published_graph.digest(), report.digest);
     let published_snapshot = published_graph.snapshot();
+    let rendered_before_reopen = render_snapshot(&published_snapshot, &expected_affected);
+    assert_eq!(rendered_before_reopen.modules.len(), 22);
+    assert_eq!(rendered_before_reopen.target_texts.len(), 16);
+    assert!(
+        rendered_before_reopen
+            .target_texts
+            .values()
+            .all(|text| text == "Account")
+    );
 
     let operation = kernel.operation(1).unwrap().unwrap();
     assert_eq!(operation.change_set_id, "bridge-real-rename");
@@ -622,6 +845,9 @@ fn real_user_rename_publishes_one_rust_operation_and_recovers_without_node() {
     assert_eq!(recovered.generation, 1);
     assert_eq!(recovered.digest, expected_digest);
     assert_eq!(reopened.snapshot().snapshot(), expected_graph);
+    let rendered_after_reopen =
+        render_snapshot(&reopened.snapshot().snapshot(), &expected_affected);
+    assert_eq!(rendered_after_reopen, rendered_before_reopen);
     assert_eq!(reopened.operation(1).unwrap().unwrap(), operation);
     assert!(reopened.operation(2).unwrap().is_none());
     assert_eq!(
