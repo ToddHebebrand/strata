@@ -522,6 +522,7 @@ fn publication_reanalysis_happens_before_builder_and_changed_scope_needs_decisio
     let analyzer = SequencedAnalyzer::new(vec![
         analysis(&old_scope),
         analysis(&old_scope),
+        analysis(&old_scope),
         analysis(&changed_scope),
     ]);
     let (kernel, _) =
@@ -532,7 +533,7 @@ fn publication_reanalysis_happens_before_builder_and_changed_scope_needs_decisio
 
     let error = kernel.publish_claimed(&claim, &builder, 2).unwrap_err();
     assert!(error.to_string().contains("scope changed"));
-    assert_eq!(analyzer.calls(), 3);
+    assert_eq!(analyzer.calls(), 4);
     assert_eq!(builder.calls(), 0);
     assert_eq!(kernel.snapshot().generation(), 0);
     assert_eq!(
@@ -549,6 +550,8 @@ fn material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter(
     let old_scope = user_scope(&snapshot);
     let material_scope = vec!["node:308079c405a147d0".into()];
     let changing = SequencedAnalyzer::new(vec![
+        analysis(&old_scope),
+        analysis(&old_scope),
         analysis(&old_scope),
         analysis(&old_scope),
         analysis(&old_scope),

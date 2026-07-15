@@ -155,6 +155,61 @@ fn coordination_lifecycle_round_trips_after_reopen() {
 }
 
 #[test]
+fn draft_and_intent_mutations_advance_scheduler_revision_exactly_once() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let store = DurableStore::create(&path).unwrap();
+    seed_graph_schema(&store);
+    let durable = store.coordination();
+    assert_eq!(durable.metadata_state().unwrap().scheduler_revision, 0);
+
+    let original = draft("change-set:revision", "submission:revision");
+    assert!(matches!(
+        durable.create_draft(&original).unwrap(),
+        CreateDraftOutcome::Created { .. }
+    ));
+    assert_eq!(durable.metadata_state().unwrap().scheduler_revision, 1);
+
+    assert!(matches!(
+        durable
+            .create_draft(&draft("change-set:duplicate", "submission:revision"))
+            .unwrap(),
+        CreateDraftOutcome::Duplicate { .. }
+    ));
+    assert_eq!(
+        durable.metadata_state().unwrap().scheduler_revision,
+        1,
+        "idempotent draft creation must not consume a revision"
+    );
+
+    let first = intent("intent:first", "change-set:revision", "Clock");
+    durable.append_intent(&first).unwrap();
+    assert_eq!(durable.metadata_state().unwrap().scheduler_revision, 2);
+    assert!(durable.append_intent(&first).is_err());
+    assert_eq!(
+        durable.metadata_state().unwrap().scheduler_revision,
+        2,
+        "a rejected duplicate intent must not consume a revision"
+    );
+
+    let second = intent("intent:second", "change-set:revision", "User");
+    durable.append_intent(&second).unwrap();
+    assert_eq!(durable.metadata_state().unwrap().scheduler_revision, 3);
+
+    drop(store);
+    let reopened = DurableStore::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .coordination()
+            .metadata_state()
+            .unwrap()
+            .scheduler_revision,
+        3,
+        "reopen must preserve the durable scheduler revision"
+    );
+}
+
+#[test]
 fn submission_key_always_returns_the_current_original_change_set() {
     for state in [
         ChangeSetState::Draft,

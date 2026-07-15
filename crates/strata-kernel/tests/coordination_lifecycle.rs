@@ -116,6 +116,10 @@ fn submit_atomically_persists_ready_offer_and_holds_full_priority_scope() {
     let path = directory.path().join("kernel.redb");
     let analyzer = SequencedAnalyzer::new(vec![
         analysis(&["symbol:A", "node:X"], 3),
+        analysis(&["symbol:A", "node:X"], 3),
+        analysis(&["node:X"], 3),
+        analysis(&["node:X"], 3),
+        analysis(&["symbol:B"], 3),
         analysis(&["node:X"], 3),
         analysis(&["symbol:B"], 3),
     ]);
@@ -198,7 +202,7 @@ fn claim_validation_failures_leave_the_offer_claimable_exactly_once() {
         .claim_ready(&offer.offer_id, &offer.claim_token, 6)
         .unwrap_err();
     assert!(duplicate.to_string().contains("does not exist"));
-    assert_eq!(analyzer.calls(), 2, "invalid claims must not run analysis");
+    assert_eq!(analyzer.calls(), 3, "invalid claims must not run analysis");
 
     drop(kernel);
     let store = DurableStore::open(&path).unwrap();
@@ -262,6 +266,7 @@ fn claim_reanalyzes_and_strict_expansion_requeues_three_times_then_needs_decisio
     let path = directory.path().join("kernel.redb");
     let analyzer = SequencedAnalyzer::new(vec![
         analysis(&["symbol:A"], 3),
+        analysis(&["symbol:A"], 3),
         analysis(&["symbol:A", "node:1"], 3),
         analysis(&["symbol:A", "node:1"], 3),
         analysis(&["symbol:A", "node:1", "node:2"], 3),
@@ -296,7 +301,7 @@ fn claim_reanalyzes_and_strict_expansion_requeues_three_times_then_needs_decisio
     assert_eq!(change_set.state, ChangeSetState::NeedsDecision);
     assert_eq!(change_set.expansion_count, 3);
     assert_eq!(event.kind, CoordinationEventKind::IntentNeedsDecision);
-    assert_eq!(analyzer.calls(), 8);
+    assert_eq!(analyzer.calls(), 9);
     drop(kernel);
     let store = DurableStore::open(&path).unwrap();
     assert_eq!(
@@ -315,6 +320,7 @@ fn material_scope_change_needs_decision_and_cancellation_unblocks_waiters() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
     let changing = SequencedAnalyzer::new(vec![
+        analysis(&["symbol:A"], 3),
         analysis(&["symbol:A"], 3),
         analysis(&["symbol:B"], 3),
         analysis(&["node:X"], 3),

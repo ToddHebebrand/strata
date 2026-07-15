@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
-use super::authority::{AuthorityPlan, plan_change_set};
+use super::authority::plan_change_set;
 use super::coordinator::{append_event, scheduler_ticket_updates};
 use super::{
     ChangeSetRecord, ChangeSetState, CoordinationDurable, CoordinationEventKind,
@@ -77,15 +77,9 @@ pub(crate) fn plan_readiness(
     let metadata = durable.metadata_state()?;
     let before_scheduler = snapshot.scheduler.clone();
     let mut next_scheduler = snapshot.scheduler;
-    let submitted_sequence = (snapshot.cause == TransitionCause::Submission)
-        .then(|| metadata.next_queue_sequence.checked_sub(1))
-        .flatten();
     let queued_ticket_ids = next_scheduler
         .tickets()
-        .filter(|ticket| {
-            ticket.state == TicketState::Queued
-                && submitted_sequence.is_none_or(|sequence| ticket.queue_sequence == sequence)
-        })
+        .filter(|ticket| ticket.state == TicketState::Queued)
         .map(|ticket| ticket.ticket_id.clone())
         .collect::<Vec<_>>();
     let mut change_set_updates = BTreeMap::<String, (ChangeSetRecord, ChangeSetRecord)>::new();
@@ -107,21 +101,8 @@ pub(crate) fn plan_readiness(
             .inferred_scope
             .as_ref()
             .context("queued change set has no inferred scope")?;
-        let authority = if snapshot.cause == TransitionCause::Submission {
-            AuthorityPlan {
-                scope: previous_scope.clone(),
-                dependency_keys: previous_scope
-                    .read_set
-                    .iter()
-                    .chain(&previous_scope.write_set)
-                    .chain(&previous_scope.validation_set)
-                    .map(|resource| resource.resource_key.clone())
-                    .collect(),
-            }
-        } else {
-            let intents = durable.intents_for(&ticket_before.change_set_id)?;
-            plan_change_set(&snapshot.graph, &intents, provider)?
-        };
+        let intents = durable.intents_for(&ticket_before.change_set_id)?;
+        let authority = plan_change_set(&snapshot.graph, &intents, provider)?;
         if authority.dependency_keys.iter().any(String::is_empty) {
             bail!("authority plan contains an empty dependency key");
         }
@@ -180,14 +161,7 @@ pub(crate) fn plan_readiness(
         }
     }
 
-    let mut selected = next_scheduler.select_ready()?;
-    if let Some(submitted_sequence) = submitted_sequence {
-        selected.retain(|ticket_id| {
-            next_scheduler
-                .ticket(ticket_id)
-                .is_some_and(|ticket| ticket.queue_sequence == submitted_sequence)
-        });
-    }
+    let selected = next_scheduler.select_ready()?;
     let mut offers = Vec::new();
     for ticket_id in selected {
         let ticket_before = next_scheduler

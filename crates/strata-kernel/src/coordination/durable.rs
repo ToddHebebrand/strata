@@ -541,6 +541,7 @@ impl<'a> CoordinationDurable<'a> {
                 record.change_set_id.as_str(),
             )
             .context("write submission idempotency key")?;
+        advance_scheduler_revision_in_write_txn(&write)?;
         if failpoint == CoordinationFailpoint::BeforeCommit {
             bail!("coordination failpoint before commit");
         }
@@ -610,6 +611,7 @@ impl<'a> CoordinationDurable<'a> {
                 change_set_bytes.as_slice(),
             )
             .context("write change set intent list")?;
+        advance_scheduler_revision_in_write_txn(&write)?;
         write.commit().context("commit append-intent transaction")?;
         Ok(())
     }
@@ -1342,6 +1344,21 @@ impl<'a> CoordinationDurable<'a> {
             metadata: read.open_table(META)?.len()?,
         })
     }
+}
+
+fn advance_scheduler_revision_in_write_txn(write: &WriteTransaction) -> Result<u64> {
+    let mut metadata = write
+        .open_table(META)
+        .context("open coordination metadata")?;
+    let current = read_u64_metadata(&metadata, SCHEDULER_REVISION)?;
+    let next = current
+        .checked_add(1)
+        .context("scheduler revision overflow")?;
+    let bytes = next.to_le_bytes();
+    metadata
+        .insert(SCHEDULER_REVISION, bytes.as_slice())
+        .context("advance scheduler revision")?;
+    Ok(next)
 }
 
 pub(crate) fn ensure_coordination_schema(database: &Database) -> Result<()> {

@@ -85,7 +85,7 @@ impl Kernel {
     }
 
     pub fn begin_change_set(&self, input: BeginChangeSet) -> Result<ChangeSetRecord> {
-        let _scheduler = self
+        let mut scheduler = self
             .scheduler
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
@@ -99,7 +99,10 @@ impl Kernel {
             &[],
         )
         .map_err(anyhow::Error::msg)?;
-        match self.store.coordination().create_draft(&record)? {
+        let durable = self.store.coordination();
+        let outcome = durable.create_draft(&record)?;
+        scheduler.set_revision(durable.metadata_state()?.scheduler_revision);
+        match outcome {
             CreateDraftOutcome::Created { change_set }
             | CreateDraftOutcome::Duplicate { change_set } => Ok(change_set),
         }
@@ -110,7 +113,7 @@ impl Kernel {
         change_set_id: &str,
         parameters: IntentParameters,
     ) -> Result<IntentRecord> {
-        let _scheduler = self
+        let mut scheduler = self
             .scheduler
             .lock()
             .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
@@ -134,6 +137,12 @@ impl Kernel {
         )
         .map_err(anyhow::Error::msg)?;
         self.store.coordination().append_intent(&intent)?;
+        scheduler.set_revision(
+            self.store
+                .coordination()
+                .metadata_state()?
+                .scheduler_revision,
+        );
         Ok(intent)
     }
 
@@ -224,17 +233,13 @@ impl Kernel {
         *scheduler = next_scheduler;
         drop(scheduler);
 
-        let offers =
-            self.plan_and_apply_readiness(now_tick, super::TransitionCause::Submission, None)?;
+        self.plan_and_apply_readiness(now_tick, super::TransitionCause::Submission, None)?;
         let ticket = durable
             .all_tickets()?
             .into_iter()
             .find(|ticket| ticket.change_set_id == change_set_id)
             .context("submitted ticket missing after readiness planning")?;
-        if let Some(offer) = offers
-            .into_iter()
-            .find(|offer| offer.change_set_id == change_set_id)
-        {
+        if let Some(offer) = self.ready_offer_for_change_set(change_set_id)? {
             Ok(SubmissionOutcome::Ready { ticket, offer })
         } else {
             Ok(SubmissionOutcome::Queued { ticket })
