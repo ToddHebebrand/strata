@@ -2,15 +2,16 @@
 
 ## Status
 
-Phase A and the integrated-review correction wave are complete. The eight correction scenarios are
-mapped to explicit real-corpus tests, the two remaining toy-fixture gaps were corrected, and the
-review findings were fixed and verified at exact implementation head
-`1f3b2a834bdc3656cbcd4fcb255bda037e20679e`.
+Phase A, the integrated-review correction wave, and the legacy redb compatibility follow-up are
+complete. The eight correction scenarios are mapped to explicit real-corpus tests, the two
+remaining toy-fixture gaps were corrected, and the review findings were fixed and verified. The
+final implementation and test head is `f02b9095aa0c9d8752f08068db5cc70b7bbf6337`.
 
 The initial Phase A audit changed acceptance tests only. Integrated review then required production
-corrections for provider-failure containment and validate-before-migrate recovery. This work still
-deliberately did not edit `decisions.md`, `docs/product-roadmap.md`, or the correction evidence
-report.
+corrections for provider-failure containment and validate-before-migrate recovery. The compatibility
+follow-up corrected marker-absent databases created by the actual `8422f4e` coordination schema,
+which lacks the resource-clock and publication-attempt tables. This work still deliberately did not
+edit `decisions.md`, `docs/product-roadmap.md`, or the correction evidence report.
 
 The bounded Rust/ingest/build gate passes. The exact `pnpm -r test` command reproduces only the
 documented `@strata/verify` TS2454 baseline before pnpm stops. A supplemental non-bailing run also
@@ -107,6 +108,21 @@ No production correction was necessary during the initial audit.
   marker deletion. Only that legacy state receives a derived migration plan, applied atomically
   with schema creation/backfill, service-epoch advancement, and authority recovery.
 
+### `8422f4e` physical-schema compatibility
+
+- RED: a regression populated real coordination lifecycle records, stripped the database to the
+  exact ten-table coordination schema and two-key metadata shape present at `8422f4e`, and failed
+  reopen at `coordination_resource_clocks does not exist`. That historical schema has neither
+  `coordination_resource_clocks` nor `coordination_publication_attempts`.
+- GREEN: only marker-absent/unversioned legacy validation treats an absent clock or attempt table as
+  empty. A nonzero active-claim dependency still requires a durable clock, so the existing
+  corruption rule is preserved. Recovery creates both absent tables in the same write transaction
+  as marker backfill, service-epoch advancement, and authority recovery; a `BeforeCommit`
+  failpoint proves schema creation, metadata, and epoch all roll back together.
+- Retained/versioned databases still require both tables. Deleting either one makes reopen fail
+  closed before any write; a second raw read proves the missing table was not recreated, metadata
+  was unchanged, and service epoch did not advance.
+
 ### Builder-progress acceptance
 
 - RED: asserting an actually due claim expiry exposed the old tick-6 call as a no-op.
@@ -117,11 +133,9 @@ No production correction was necessary during the initial audit.
 ## Required ordered gate
 
 The first formatting check found only rustfmt differences in the initial assertions. After
-mechanical formatting, the complete sequence was restarted at command 1. The Rust portion was
-rerun after integrated-review fixes against exact implementation head
-`1f3b2a834bdc3656cbcd4fcb255bda037e20679e`; the TypeScript/ingest portion below is the initial
-Phase A result from the acceptance tree committed as `0437246`. Per review scope, pnpm was not
-rerun because the follow-up changed only the Rust kernel and Rust tests.
+mechanical formatting, the complete sequence was restarted at command 1. The parent agent's exact
+full ordered gate at report head `ef4d9cf471895b1e835ee2163e7d3a136a18154a` covered implementation
+head `1f3b2a834bdc3656cbcd4fcb255bda037e20679e` and produced:
 
 1. `cargo fmt --all -- --check` — PASS, exit 0.
 2. `cargo clippy -p strata-kernel --all-targets -- -D warnings` — PASS, exit 0, zero warnings.
@@ -144,6 +158,20 @@ rerun because the follow-up changed only the Rust kernel and Rust tests.
      No correction file touches that TypeScript surface.
    - pnpm stopped at the first failing package, so agent/cli/bench/lab were not run by this exact
      command.
+
+The compatibility follow-up changed only the Rust kernel and Rust recovery tests. The complete Rust
+portion was therefore rerun from command 1 against exact final implementation head
+`f02b9095aa0c9d8752f08068db5cc70b7bbf6337`:
+
+1. `cargo fmt --all -- --check` — PASS, exit 0.
+2. `cargo clippy -p strata-kernel --all-targets -- -D warnings` — PASS, exit 0, zero warnings.
+3. `cargo clippy -p strata-kernel --features redb-spike-api --all-targets -- -D warnings` — PASS,
+   exit 0, zero warnings.
+4. `cargo test -p strata-kernel` — PASS, 33 passed, 0 failed.
+5. `cargo test -p strata-kernel --features redb-spike-api` — PASS, 171 passed, 0 failed. The two-test
+   increase over the parent gate is exactly the legacy physical-schema migration regression and
+   the retained/versioned missing-table fail-closed regression.
+6. Focused `coordination_recovery` suite — PASS, 23 passed, 0 failed.
 
 ## Supplemental non-bailing workspace check
 
@@ -180,6 +208,9 @@ first-failure behavior:
 - Default and feature builds run the same read-only recovery integrity validation before writes;
   versioned corruption fails without metadata/index self-healing, while complete marker absence is
   the documented legacy migration rule.
+- Actual `8422f4e` marker-absent databases may omit resource-clock and publication-attempt tables;
+  they validate those tables as empty and create them atomically during recovery. The same absence
+  in retained/versioned state remains corruption and does not self-heal.
 - No bridge, transport, authentication, live-model, task orchestration, or production TypeScript
   semantic claim was added.
 
