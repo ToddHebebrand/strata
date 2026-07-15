@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 
+use crate::bridge::{NodeBridgeClient, NodeBridgeConfig, NodeSemanticProvider};
 use crate::coordination::{
     CoordinationError, DependencyVersion, ResourceClockSnapshot, SemanticProvider,
 };
@@ -68,6 +69,19 @@ impl Kernel {
         Self::create_inner(path, initial, None)
     }
 
+    pub fn create_with_node_bridge(
+        path: impl AsRef<Path>,
+        initial: GraphSnapshot,
+        config: NodeBridgeConfig,
+    ) -> Result<(Self, RecoveryReport)> {
+        let (mut kernel, report) = Self::create_inner(path, initial, None)?;
+        kernel.semantic_provider = Some(Arc::new(NodeSemanticProvider::new(
+            Arc::new(NodeBridgeClient::new(config)),
+            report.service_epoch,
+        )));
+        Ok((kernel, report))
+    }
+
     #[cfg(feature = "coordination-test-api")]
     pub fn create_with_test_semantics(
         path: impl AsRef<Path>,
@@ -118,6 +132,19 @@ impl Kernel {
 
     pub fn open(path: impl AsRef<Path>) -> Result<(Self, RecoveryReport)> {
         Self::open_inner(path, None)
+    }
+
+    pub fn open_with_node_bridge(
+        path: impl AsRef<Path>,
+        config: NodeBridgeConfig,
+    ) -> Result<(Self, RecoveryReport)> {
+        let (mut kernel, report) = Self::open_inner(path, None)?;
+        kernel.semantic_provider = Some(Arc::new(NodeSemanticProvider::new(
+            Arc::new(NodeBridgeClient::new(config)),
+            report.service_epoch,
+        )));
+        kernel.plan_and_apply_readiness(0, crate::coordination::TransitionCause::Restart, None)?;
+        Ok((kernel, report))
     }
 
     #[cfg(feature = "coordination-test-api")]

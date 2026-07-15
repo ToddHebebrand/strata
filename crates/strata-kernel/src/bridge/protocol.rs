@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fmt;
 
-const PROTOCOL_VERSION: u32 = 1;
+pub(crate) const PROTOCOL_VERSION: u32 = 1;
 const MAX_ARRAY_ITEMS: usize = 1_000_000;
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -254,7 +254,7 @@ impl WireReference {
         non_empty(&self.kind, &format!("{context}.kind"))
     }
 
-    fn to_reference_record(&self) -> ReferenceRecord {
+    pub(crate) fn to_reference_record(&self) -> ReferenceRecord {
         ReferenceRecord {
             from_node_id: self.from_node_id.clone(),
             to_node_id: self.to_node_id.clone(),
@@ -717,7 +717,7 @@ pub(crate) enum SemanticFacts {
 }
 
 impl SemanticFacts {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         match self {
             Self::RenameSymbol {
                 declaration_id,

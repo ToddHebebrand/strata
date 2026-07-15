@@ -15,6 +15,7 @@ pub use analyzer::{DeltaAuthority, IntentAnalysis, required_delta_authority};
 pub use analyzer::{
     ScopeChange, canonical_scope_fingerprint, classify_scope_change, validate_delta_containment,
 };
+pub(crate) use analyzer::{expansion_policy_for_intent, idempotency_for_intent};
 pub(crate) use authority::SemanticProvider;
 #[cfg(feature = "coordination-test-api")]
 pub(crate) use authority::TestSemanticAdapter;
@@ -60,4 +61,7 @@ pub(crate) use resources::ResourceClockSnapshot;
 pub use resources::affected_resource_keys;
 #[cfg(feature = "coordination-test-api")]
 pub(crate) use resources::affected_resource_keys as resource_keys;
+pub(crate) use resources::{
+    children_resource, edge_resource, membership_resource, node_resource, references_to_resource,
+};
 pub use scheduler::SchedulerState;

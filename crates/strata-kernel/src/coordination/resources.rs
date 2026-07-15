@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-#[cfg(feature = "coordination-test-api")]
 use anyhow::Result;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 
-#[cfg(feature = "coordination-test-api")]
-use crate::{GraphChange, GraphDelta, GraphGeneration, NodeRecord};
+use crate::{GraphChange, GraphDelta, GraphGeneration, NodeRecord, ReferenceRecord};
+
+use super::ResourceVersion;
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -51,7 +53,7 @@ impl ResourceClockSnapshot {
     }
 }
 
-#[cfg(feature = "coordination-test-api")]
+#[allow(dead_code)] // Production candidate publication consumes this in Task 8.
 pub fn affected_resource_keys(
     graph: &GraphGeneration,
     delta: &GraphDelta,
@@ -97,8 +99,49 @@ pub fn affected_resource_keys(
     Ok(keys)
 }
 
-#[cfg(feature = "coordination-test-api")]
+#[allow(dead_code)]
 fn add_parent_bucket(keys: &mut BTreeSet<String>, node: &NodeRecord) {
     let parent = node.parent_id.as_deref().unwrap_or("root");
     keys.insert(format!("children:{parent}"));
+}
+
+pub(crate) fn node_resource(node: &NodeRecord) -> Result<ResourceVersion> {
+    hashed_resource(format!("node:{}", node.id), node)
+}
+
+pub(crate) fn edge_resource(reference: &ReferenceRecord) -> Result<ResourceVersion> {
+    hashed_resource(format!("edge:{}", reference.from_node_id), reference)
+}
+
+pub(crate) fn children_resource(
+    graph: &GraphGeneration,
+    parent_id: &str,
+) -> Result<ResourceVersion> {
+    let members: Vec<_> = graph
+        .snapshot()
+        .nodes
+        .into_iter()
+        .filter(|node| node.parent_id.as_deref() == Some(parent_id))
+        .collect();
+    hashed_resource(format!("children:{parent_id}"), &members)
+}
+
+pub(crate) fn references_to_resource(
+    graph: &GraphGeneration,
+    target_id: &str,
+) -> Result<ResourceVersion> {
+    let members: Vec<_> = graph.references_to(target_id).cloned().collect();
+    hashed_resource(format!("references-to:{target_id}"), &members)
+}
+
+pub(crate) fn membership_resource<T: Serialize>(
+    resource_key: String,
+    canonical_members: &[T],
+) -> Result<ResourceVersion> {
+    hashed_resource(resource_key, canonical_members)
+}
+
+fn hashed_resource(key: String, value: &(impl Serialize + ?Sized)) -> Result<ResourceVersion> {
+    let digest = Sha256::digest(serde_json::to_vec(value)?);
+    ResourceVersion::new(key, format!("{digest:x}")).map_err(anyhow::Error::msg)
 }

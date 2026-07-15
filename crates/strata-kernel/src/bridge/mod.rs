@@ -4,3 +4,8 @@
 
 pub(crate) mod process;
 pub(crate) mod protocol;
+pub(crate) mod provider;
+
+pub(crate) use process::NodeBridgeClient;
+pub use process::NodeBridgeConfig;
+pub(crate) use provider::NodeSemanticProvider;

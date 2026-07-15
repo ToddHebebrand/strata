@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 #[derive(Clone, Debug)]
-pub(crate) struct NodeBridgeConfig {
+pub struct NodeBridgeConfig {
     pub(crate) executable: PathBuf,
     pub(crate) arguments: Vec<OsString>,
     pub(crate) deadline: Duration,
@@ -21,6 +21,34 @@ pub(crate) struct NodeBridgeConfig {
     pub(crate) max_stderr_bytes: usize,
     pub(crate) max_diagnostics_bytes: usize,
     pub(crate) validation_profile: ValidationProfile,
+}
+
+impl NodeBridgeConfig {
+    pub fn tsc_only(
+        executable: impl Into<PathBuf>,
+        arguments: Vec<OsString>,
+        deadline: Duration,
+        source_root: impl Into<PathBuf>,
+        corpus_root: impl Into<PathBuf>,
+        strict_src_only_tsc_scope: bool,
+    ) -> Self {
+        let source_root = source_root.into();
+        let corpus_root = corpus_root.into();
+        Self {
+            executable: executable.into(),
+            arguments,
+            deadline,
+            max_request_bytes: 32 * 1024 * 1024,
+            max_response_bytes: 16 * 1024 * 1024,
+            max_stderr_bytes: 64 * 1024,
+            max_diagnostics_bytes: 64 * 1024,
+            validation_profile: ValidationProfile::tsc_only(
+                source_root.to_string_lossy(),
+                corpus_root.to_string_lossy(),
+                strict_src_only_tsc_scope,
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

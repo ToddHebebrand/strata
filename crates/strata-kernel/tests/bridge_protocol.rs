@@ -3,11 +3,17 @@ pub use strata_kernel::{
     SCHEMA_VERSION,
 };
 
-#[path = "../src/bridge/mod.rs"]
-mod bridge;
+// Path-include the two Task 6 seams directly so later private bridge consumers do not
+// become part of this standalone protocol/process harness's synthetic crate root.
+#[path = "../src/bridge/process.rs"]
+#[allow(dead_code)]
+mod process;
+#[path = "../src/bridge/protocol.rs"]
+#[allow(dead_code)]
+mod protocol;
 
-use bridge::process::{NodeBridgeClient, NodeBridgeConfig};
-use bridge::protocol::{
+use process::{NodeBridgeClient, NodeBridgeConfig};
+use protocol::{
     BridgeRequest, BridgeResponse, ValidationProfile, WireU64, parse_bridge_request,
     parse_bridge_response, serialize_bridge_request, serialize_bridge_response,
 };

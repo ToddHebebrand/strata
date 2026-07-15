@@ -33,6 +33,19 @@ pub struct DeltaAuthority {
     pub reservation_coverage: Vec<String>,
 }
 
+pub(crate) fn idempotency_for_intent(parameters: &super::IntentParameters) -> IdempotencyClass {
+    match parameters {
+        super::IntentParameters::RenameSymbol { .. } => IdempotencyClass::RequiresDecision,
+        super::IntentParameters::AddParameter { .. } => IdempotencyClass::ReplaySafe,
+    }
+}
+
+pub(crate) fn expansion_policy_for_intent(
+    _parameters: &super::IntentParameters,
+) -> DynamicExpansionPolicy {
+    DynamicExpansionPolicy::Requeue { max_expansions: 3 }
+}
+
 pub(crate) fn analyze_change_set(
     graph: &GraphGeneration,
     intents: &[IntentRecord],
@@ -237,10 +250,14 @@ pub fn validate_delta_containment(
     let allowed_reservations: BTreeSet<_> =
         scope.reservation_keys.iter().map(String::as_str).collect();
 
+    let materialized_children = materialized_identifier_children(current, delta, &allowed_writes);
     let missing_writes: Vec<_> = required
         .write_resources
         .iter()
-        .filter(|resource| !allowed_writes.contains(resource.as_str()))
+        .filter(|resource| {
+            !allowed_writes.contains(resource.as_str())
+                && !materialized_children.contains(resource.as_str())
+        })
         .cloned()
         .collect();
     let missing_reservations: Vec<_> = required
@@ -256,6 +273,57 @@ pub fn validate_delta_containment(
         );
     }
     Ok(())
+}
+
+fn materialized_identifier_children(
+    current: &GraphGeneration,
+    delta: &GraphDelta,
+    allowed_writes: &BTreeSet<&str>,
+) -> BTreeSet<String> {
+    let upserted: BTreeMap<_, _> = delta
+        .changes
+        .iter()
+        .filter_map(|change| match change {
+            GraphChange::UpsertNode { node } => Some((node.id.as_str(), node)),
+            _ => None,
+        })
+        .collect();
+    let mut allowed = BTreeSet::new();
+
+    for change in &delta.changes {
+        let candidate = match change {
+            GraphChange::UpsertNode { node } if node.kind == "Identifier" => Some(node),
+            GraphChange::DeleteNode { node_id } => current
+                .node(node_id)
+                .filter(|node| node.kind == "Identifier"),
+            GraphChange::UpsertReference { reference } => upserted
+                .get(reference.from_node_id.as_str())
+                .copied()
+                .or_else(|| current.node(&reference.from_node_id))
+                .filter(|node| node.kind == "Identifier"),
+            GraphChange::DeleteReference { from_node_id } => current
+                .node(from_node_id)
+                .filter(|node| node.kind == "Identifier"),
+            _ => None,
+        };
+        let Some(identifier) = candidate else {
+            continue;
+        };
+        let Some(parent_id) = identifier.parent_id.as_deref() else {
+            continue;
+        };
+        if current.node(parent_id).is_some_and(is_writable_container)
+            && allowed_writes.contains(format!("node:{parent_id}").as_str())
+        {
+            allowed.insert(format!("node:{}", identifier.id));
+            allowed.insert(format!("edge:{}", identifier.id));
+        }
+    }
+    allowed
+}
+
+fn is_writable_container(node: &crate::NodeRecord) -> bool {
+    node.kind.ends_with("Statement") || node.kind.ends_with("Declaration")
 }
 
 fn strictest_policy(
@@ -305,4 +373,157 @@ fn node_key(node_id: &str) -> String {
 
 fn edge_key(from_node_id: &str) -> String {
     format!("edge:{from_node_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{expansion_policy_for_intent, idempotency_for_intent, validate_delta_containment};
+    use crate::coordination::{
+        DynamicExpansionPolicy, IdempotencyClass, InferredScope, IntentParameters, ResourceVersion,
+    };
+    use crate::{
+        GraphChange, GraphDelta, GraphGeneration, GraphSnapshot, NodeRecord, ReferenceRecord,
+        SCHEMA_VERSION,
+    };
+
+    #[test]
+    fn production_idempotency_and_expansion_policy_are_rust_owned() {
+        let rename = IntentParameters::RenameSymbol {
+            declaration_id: "declaration:user".into(),
+            new_name: "Account".into(),
+        };
+        let add_parameter = IntentParameters::AddParameter {
+            function_id: "function:greet".into(),
+            name: "traceId".into(),
+            type_text: "string".into(),
+            position: 1,
+            default_value: None,
+        };
+
+        assert_eq!(
+            idempotency_for_intent(&rename),
+            IdempotencyClass::RequiresDecision
+        );
+        assert_eq!(
+            idempotency_for_intent(&add_parameter),
+            IdempotencyClass::ReplaySafe
+        );
+        assert_eq!(
+            expansion_policy_for_intent(&rename),
+            DynamicExpansionPolicy::Requeue { max_expansions: 3 }
+        );
+        assert_eq!(
+            expansion_policy_for_intent(&add_parameter),
+            DynamicExpansionPolicy::Requeue { max_expansions: 3 }
+        );
+    }
+
+    fn record(id: &str, kind: &str, parent_id: Option<&str>, child_index: i64) -> NodeRecord {
+        NodeRecord {
+            id: id.into(),
+            kind: kind.into(),
+            parent_id: parent_id.map(str::to_owned),
+            child_index: Some(child_index),
+            payload: id.into(),
+        }
+    }
+
+    fn containment_graph() -> GraphGeneration {
+        GraphGeneration::from_snapshot(GraphSnapshot {
+            schema_version: SCHEMA_VERSION,
+            generation: 4,
+            nodes: vec![
+                record("module", "Module", None, 0),
+                record("writable", "ExpressionStatement", Some("module"), 0),
+                record("direct", "Identifier", Some("writable"), 0),
+                record("non-writable", "ExpressionStatement", Some("module"), 1),
+                record("other-direct", "Identifier", Some("non-writable"), 0),
+                record("target", "Identifier", Some("module"), 2),
+                record("unrelated", "Identifier", Some("module"), 3),
+            ],
+            references: vec![ReferenceRecord {
+                from_node_id: "direct".into(),
+                to_node_id: "target".into(),
+                kind: "reference".into(),
+            }],
+        })
+        .unwrap()
+    }
+
+    fn containment_scope() -> InferredScope {
+        InferredScope {
+            read_set: vec![],
+            write_set: vec![ResourceVersion::new("node:writable", "v").unwrap()],
+            validation_set: vec![],
+            reservation_keys: vec![
+                "node:direct".into(),
+                "node:target".into(),
+                "node:writable".into(),
+            ],
+            scope_fingerprint: "scope".into(),
+            dynamic_expansion_policy: DynamicExpansionPolicy::Requeue { max_expansions: 3 },
+            idempotency_class: IdempotencyClass::ReplaySafe,
+        }
+    }
+
+    fn delta(changes: Vec<GraphChange>) -> GraphDelta {
+        GraphDelta {
+            schema_version: SCHEMA_VERSION,
+            base_generation: 4,
+            changes,
+        }
+    }
+
+    #[test]
+    fn writable_statement_narrowly_authorizes_materialized_identifier_children_and_edges() {
+        let graph = containment_graph();
+        let scope = containment_scope();
+
+        validate_delta_containment(
+            &graph,
+            &delta(vec![
+                GraphChange::UpsertNode {
+                    node: record("direct", "Identifier", Some("writable"), 0),
+                },
+                GraphChange::UpsertReference {
+                    reference: ReferenceRecord {
+                        from_node_id: "direct".into(),
+                        to_node_id: "target".into(),
+                        kind: "reference".into(),
+                    },
+                },
+            ]),
+            &scope,
+        )
+        .unwrap();
+
+        for rogue in [
+            record("other-kind", "CallExpression", Some("writable"), 1),
+            record("grandchild", "Identifier", Some("direct"), 0),
+            record("other-direct", "Identifier", Some("non-writable"), 0),
+        ] {
+            let error = validate_delta_containment(
+                &graph,
+                &delta(vec![GraphChange::UpsertNode {
+                    node: rogue.clone(),
+                }]),
+                &scope,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(&format!("node:{}", rogue.id)), "{error}");
+        }
+
+        let unrelated_endpoint = delta(vec![GraphChange::UpsertReference {
+            reference: ReferenceRecord {
+                from_node_id: "direct".into(),
+                to_node_id: "unrelated".into(),
+                kind: "reference".into(),
+            },
+        }]);
+        let error = validate_delta_containment(&graph, &unrelated_endpoint, &scope)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("node:unrelated"), "{error}");
+    }
 }
