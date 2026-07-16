@@ -392,6 +392,23 @@ pub struct LocalizedAddParameterFixture {
     pub request_counts: PathBuf,
 }
 
+#[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
+pub struct LocalizedOnlyGreenTogetherFixture {
+    pub corpus_root: PathBuf,
+    pub g0: GraphSnapshot,
+    pub user_id: String,
+    pub greet_id: String,
+    pub new_callsite_id: String,
+    pub worker_config: NodeBridgeConfig,
+    pub request_counts: PathBuf,
+}
+
+#[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
+pub struct ClassifiedWorkerExchange {
+    pub request: serde_json::Value,
+    pub response: serde_json::Value,
+}
+
 /// Builds the mechanically ingested G/G+1 fixture used to exercise dynamic expansion.
 ///
 /// This support exists only when both test features are enabled. The returned G+1 snapshot may
@@ -430,12 +447,93 @@ pub fn localized_add_parameter_fixture(directory: &Path) -> LocalizedAddParamete
     }
 }
 
+/// Builds the row-10 source projection from a fresh localized ingest.
+///
+/// The deterministic extra callsite is part of the initial source here. Its mechanically ingested
+/// G+1 fixture is deliberately normalized to generation zero so the two accepted intents are the
+/// only canonical publication exercised by the acceptance scenario.
+#[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
+pub fn localized_only_green_together_fixture(
+    directory: &Path,
+) -> LocalizedOnlyGreenTogetherFixture {
+    let LocalizedAddParameterFixture {
+        corpus_root,
+        g0: _,
+        mut g1,
+        greet_id,
+        new_callsite_id,
+        worker_config,
+        request_counts,
+    } = localized_add_parameter_fixture(directory);
+    g1.generation = 0;
+    assert_eq!(g1.nodes.len(), 1_212, "localized row-10 node count");
+    assert_eq!(g1.references.len(), 594, "localized row-10 reference count");
+
+    let user_id = g1
+        .nodes
+        .iter()
+        .find(|node| {
+            node.kind == "InterfaceDeclaration" && node.payload.contains("export interface User {")
+        })
+        .expect("localized row-10 User declaration")
+        .id
+        .clone();
+    for (label, id) in [
+        ("User", &user_id),
+        ("greet", &greet_id),
+        ("deterministic callsite", &new_callsite_id),
+    ] {
+        assert!(
+            g1.nodes.iter().any(|node| &node.id == id),
+            "localized row-10 {label} ID must exist"
+        );
+    }
+    assert_eq!(
+        BTreeSet::from([
+            user_id.as_str(),
+            greet_id.as_str(),
+            new_callsite_id.as_str(),
+        ])
+        .len(),
+        3,
+        "row-10 target IDs must be distinct"
+    );
+
+    LocalizedOnlyGreenTogetherFixture {
+        corpus_root,
+        g0: g1,
+        user_id,
+        greet_id,
+        new_callsite_id,
+        worker_config,
+        request_counts,
+    }
+}
+
 #[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
 pub fn classified_request_count(prefix: &Path, kind: &str) -> usize {
     fs::read_to_string(format!("{}.{}", prefix.display(), kind))
         .ok()
         .and_then(|value| value.trim().parse().ok())
         .unwrap_or(0)
+}
+
+#[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
+pub fn classified_worker_exchange(prefix: &Path, kind: &str) -> ClassifiedWorkerExchange {
+    let request_path = format!("{}.{}.last-request", prefix.display(), kind);
+    let response_path = format!("{}.{}.last-response", prefix.display(), kind);
+    ClassifiedWorkerExchange {
+        request: serde_json::from_slice(&fs::read(&request_path).unwrap_or_else(|error| {
+            panic!("read classified worker request {request_path}: {error}")
+        }))
+        .unwrap_or_else(|error| panic!("parse classified worker request {request_path}: {error}")),
+        response: serde_json::from_slice(&fs::read(&response_path).unwrap_or_else(|error| {
+            panic!("read classified worker response {response_path}: {error}")
+        }))
+        .unwrap_or_else(|error| {
+            panic!("parse classified worker response {response_path}: {error}")
+        }),
+    }
 }
 
 /// Publishes the validated ingest-derived G+1 fixture through the raw redb spike surface.
@@ -518,14 +616,18 @@ fn classified_worker_config(directory: &Path, corpus_root: &Path) -> (NodeBridge
     fs::write(
         &wrapper,
         r#"input=$(mktemp)
+output=$(mktemp)
 cat > "$input"
 kind=$(node -e 'const fs=require("fs");process.stdout.write(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).kind)' "$input")
 counter="$1.$kind"
 count=$(cat "$counter" 2>/dev/null || printf 0)
 printf '%s\n' "$((count + 1))" > "$counter"
-node "$2" < "$input"
+cp "$input" "$1.$kind.last-request"
+node "$2" < "$input" > "$output"
 status=$?
-rm -f "$input"
+cp "$output" "$1.$kind.last-response"
+cat "$output"
+rm -f "$input" "$output"
 exit "$status"
 "#,
     )

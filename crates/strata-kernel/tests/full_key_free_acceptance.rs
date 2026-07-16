@@ -10,8 +10,9 @@ use std::process::Command;
 use full_key_free_support::{
     CanonicalFinalState, ClientActor, assert_canonical_final_state,
     assert_projected_typescript_green, assert_typescript_green, classified_request_count,
-    create_classified_projected_kernel, create_projected_kernel, inject_validated_add_parameter_g1,
-    localized_add_parameter_fixture, reopen_projected_kernel,
+    classified_worker_exchange, create_classified_projected_kernel, create_projected_kernel,
+    inject_validated_add_parameter_g1, localized_add_parameter_fixture,
+    localized_only_green_together_fixture, reopen_projected_kernel,
 };
 use strata_kernel::{
     ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEventKind, IntentParameters, Kernel,
@@ -1378,4 +1379,301 @@ fn row_9_real_publications_replay_exactly_across_a_generation_two_snapshot() {
     assert_eq!(actual_graph.digest(), expected_digest);
     assert_eq!(actual_snapshot, expected_snapshot);
     assert_projected_typescript_green(&actual_snapshot);
+}
+
+#[test]
+#[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
+fn row_10_add_parameter_alone_fails_validation_without_publication() {
+    let directory = tempdir().unwrap();
+    let fixture = localized_only_green_together_fixture(directory.path());
+    assert_eq!(fixture.g0.generation, 0);
+    assert_eq!(fixture.g0.nodes.len(), 1_212);
+    assert_eq!(fixture.g0.references.len(), 594);
+
+    let database_path = directory.path().join("negative-control.redb");
+    let (kernel, created) = Kernel::create_with_node_bridge(
+        &database_path,
+        fixture.g0.clone(),
+        fixture.worker_config.clone(),
+    )
+    .unwrap();
+    assert_eq!(created.generation, 0);
+
+    let actor = ClientActor::new("agent:row-10-negative", "events:row-10-negative");
+    actor
+        .begin_change_set(
+            &kernel,
+            "row-10-add-parameter-alone",
+            "prove Account is unresolved without the grouped rename",
+            0,
+        )
+        .unwrap();
+    let added = actor
+        .add_intent(
+            &kernel,
+            "row-10-add-parameter-alone",
+            IntentParameters::AddParameter {
+                function_id: fixture.greet_id.clone(),
+                name: "account".into(),
+                type_text: "Account".into(),
+                position: 1,
+                default_value: Some("undefined as never".into()),
+            },
+        )
+        .unwrap();
+    let offer = ready(
+        actor
+            .submit_change_set(&kernel, "row-10-add-parameter-alone", 1)
+            .unwrap(),
+    );
+    let claimed = claim(&actor, &kernel, &offer, 2);
+    let durable = kernel
+        .change_set("row-10-add-parameter-alone")
+        .unwrap()
+        .unwrap();
+    assert_eq!(durable.intent_ids, [added.intent_id]);
+
+    let before =
+        CanonicalFinalState::capture(&kernel, &["row-10-add-parameter-alone"], &[&actor]).unwrap();
+    let before_graph_tables = kernel.test_graph_table_counts().unwrap();
+    let before_clocks = kernel.test_all_resource_clocks().unwrap();
+    let before_claims = kernel.test_active_claims().unwrap();
+    assert_eq!(before_claims.as_slice(), std::slice::from_ref(&claimed));
+
+    let error = actor.execute_claimed(&kernel, &claimed, 3).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("Validate/typescriptFailed"), "{error:#}");
+    assert!(
+        message.contains("candidate TypeScript validation failed"),
+        "{error:#}"
+    );
+    assert_eq!(
+        classified_request_count(&fixture.request_counts, "buildValidateCandidate"),
+        1
+    );
+
+    let exchange = classified_worker_exchange(&fixture.request_counts, "buildValidateCandidate");
+    assert_eq!(exchange.response["ok"], false);
+    assert_eq!(exchange.response["error"]["code"], "typescriptFailed");
+    let diagnostics = exchange.response["error"]["diagnostics"]
+        .as_array()
+        .expect("candidate diagnostics array");
+    assert_eq!(diagnostics.len(), 1, "bounded negative-control diagnostics");
+    assert_eq!(diagnostics[0]["code"], 2304);
+    assert_eq!(diagnostics[0]["nodeId"], fixture.greet_id);
+    assert_eq!(diagnostics[0]["message"], "Cannot find name 'Account'.");
+    assert!(
+        diagnostics[0]["modulePath"]
+            .as_str()
+            .is_some_and(|path| path.ends_with("/src/users/greet.ts"))
+    );
+    assert!(
+        serde_json::to_vec(diagnostics).unwrap().len() <= 64 * 1024,
+        "diagnostics must remain within the production bridge bound"
+    );
+
+    let after =
+        CanonicalFinalState::capture(&kernel, &["row-10-add-parameter-alone"], &[&actor]).unwrap();
+    assert_canonical_final_state(&before, &after);
+    assert_eq!(
+        kernel.test_graph_table_counts().unwrap(),
+        before_graph_tables
+    );
+    assert_eq!(kernel.test_all_resource_clocks().unwrap(), before_clocks);
+    assert_eq!(kernel.test_active_claims().unwrap(), before_claims);
+    assert!(
+        kernel
+            .publication_attempt(&claimed.attempt_id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(kernel.operation(1).unwrap().is_none());
+    assert_eq!(
+        kernel
+            .change_set("row-10-add-parameter-alone")
+            .unwrap()
+            .unwrap()
+            .state,
+        ChangeSetState::Executing
+    );
+    for stable_id in [
+        &fixture.user_id,
+        &fixture.greet_id,
+        &fixture.new_callsite_id,
+    ] {
+        assert_eq!(
+            kernel.snapshot().node(stable_id),
+            fixture.g0.nodes.iter().find(|node| &node.id == stable_id),
+            "failed candidate must preserve stable logical ID {stable_id}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
+fn row_10_only_green_together_change_set_publishes_once() {
+    let directory = tempdir().unwrap();
+    let fixture = localized_only_green_together_fixture(directory.path());
+    assert_eq!(fixture.g0.generation, 0);
+    assert_eq!(fixture.g0.nodes.len(), 1_212);
+    assert_eq!(fixture.g0.references.len(), 594);
+
+    let database_path = directory.path().join("grouped.redb");
+    let (kernel, created) = Kernel::create_with_node_bridge(
+        &database_path,
+        fixture.g0.clone(),
+        fixture.worker_config.clone(),
+    )
+    .unwrap();
+    assert_eq!(created.generation, 0);
+    assert!(kernel.operation(1).unwrap().is_none());
+
+    let actor = ClientActor::new("agent:row-10-grouped", "events:row-10-grouped");
+    actor
+        .begin_change_set(
+            &kernel,
+            "row-10-only-green-together",
+            "rename User and add the Account parameter atomically",
+            0,
+        )
+        .unwrap();
+    let renamed = actor
+        .add_intent(
+            &kernel,
+            "row-10-only-green-together",
+            IntentParameters::RenameSymbol {
+                declaration_id: fixture.user_id.clone(),
+                new_name: "Account".into(),
+            },
+        )
+        .unwrap();
+    let added = actor
+        .add_intent(
+            &kernel,
+            "row-10-only-green-together",
+            IntentParameters::AddParameter {
+                function_id: fixture.greet_id.clone(),
+                name: "account".into(),
+                type_text: "Account".into(),
+                position: 1,
+                default_value: Some("undefined as never".into()),
+            },
+        )
+        .unwrap();
+    let ordered_intent_ids = [renamed.intent_id.clone(), added.intent_id.clone()];
+    let draft_change_set = kernel
+        .change_set("row-10-only-green-together")
+        .unwrap()
+        .unwrap();
+    assert_eq!(draft_change_set.state, ChangeSetState::Draft);
+    assert_eq!(draft_change_set.intent_ids, ordered_intent_ids);
+    let offer = ready(
+        actor
+            .submit_change_set(&kernel, "row-10-only-green-together", 1)
+            .unwrap(),
+    );
+    let claimed = claim(&actor, &kernel, &offer, 2);
+    let before = kernel.snapshot().snapshot();
+    assert_eq!(before, fixture.g0);
+
+    let report = published(actor.execute_claimed(&kernel, &claimed, 3).unwrap());
+    assert_eq!(report.generation, 1);
+    assert_eq!(
+        classified_request_count(&fixture.request_counts, "buildValidateCandidate"),
+        1,
+        "the ordered pair must execute in one Node scratch transaction"
+    );
+
+    let exchange = classified_worker_exchange(&fixture.request_counts, "buildValidateCandidate");
+    let ordered_intents = exchange.request["changeSet"]["orderedIntents"]
+        .as_array()
+        .expect("ordered candidate intents");
+    assert_eq!(ordered_intents.len(), 2);
+    assert_eq!(ordered_intents[0]["intentId"], ordered_intent_ids[0]);
+    assert_eq!(ordered_intents[0]["parameters"]["type"], "renameSymbol");
+    assert_eq!(ordered_intents[1]["intentId"], ordered_intent_ids[1]);
+    assert_eq!(ordered_intents[1]["parameters"]["type"], "addParameter");
+    assert_eq!(exchange.response["ok"], true);
+    assert_eq!(
+        exchange.response["result"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    let changes = exchange.response["result"]["delta"]["changes"]
+        .as_array()
+        .expect("validated grouped delta");
+    assert_eq!(changes.len(), 64);
+    let change_kinds = changes.iter().fold(BTreeMap::new(), |mut counts, change| {
+        *counts
+            .entry(change["type"].as_str().unwrap().to_owned())
+            .or_insert(0_usize) += 1;
+        counts
+    });
+    assert_eq!(
+        change_kinds,
+        BTreeMap::from([
+            ("deleteReference".to_owned(), 1),
+            ("upsertNode".to_owned(), 60),
+            ("upsertReference".to_owned(), 3),
+        ])
+    );
+
+    let operation = kernel.operation(1).unwrap().unwrap();
+    assert_eq!(operation.change_set_id, "row-10-only-green-together");
+    assert_eq!(operation.actor, actor.actor_id());
+    assert_eq!(
+        operation.reasoning,
+        "rename User and add the Account parameter atomically"
+    );
+    assert_eq!(operation.kind, "CompositeChangeSet(2)");
+    for stable_id in [
+        &fixture.user_id,
+        &fixture.greet_id,
+        &fixture.new_callsite_id,
+    ] {
+        assert!(operation.affected_node_ids.contains(stable_id));
+    }
+    assert!(kernel.operation(2).unwrap().is_none());
+    let committed_change_set = kernel
+        .change_set("row-10-only-green-together")
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed_change_set.state, ChangeSetState::Committed);
+    assert_eq!(committed_change_set.intent_ids, ordered_intent_ids);
+    assert_eq!(
+        kernel
+            .ticket_for_change_set("row-10-only-green-together")
+            .unwrap()
+            .unwrap()
+            .state,
+        TicketState::Completed
+    );
+
+    let after = kernel.snapshot().snapshot();
+    assert_eq!(after.generation, 1);
+    let user = after
+        .nodes
+        .iter()
+        .find(|node| node.id == fixture.user_id)
+        .expect("stable localized User declaration ID");
+    assert!(user.payload.contains("interface Account"));
+    let greet = after
+        .nodes
+        .iter()
+        .find(|node| node.id == fixture.greet_id)
+        .expect("stable localized greet declaration ID");
+    assert!(
+        greet
+            .payload
+            .contains("greet(user: Account, account: Account = undefined as never)")
+    );
+    let callsite = after
+        .nodes
+        .iter()
+        .find(|node| node.id == fixture.new_callsite_id)
+        .expect("stable localized deterministic callsite ID");
+    assert!(callsite.payload.contains("}, undefined as never)"));
+    assert_typescript_green(&after, &fixture.corpus_root);
 }
