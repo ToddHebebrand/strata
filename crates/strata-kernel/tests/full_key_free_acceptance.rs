@@ -5,7 +5,9 @@ mod full_key_free_support;
 
 use full_key_free_support::{
     CanonicalFinalState, ClientActor, assert_canonical_final_state,
-    assert_projected_typescript_green, create_projected_kernel, reopen_projected_kernel,
+    assert_projected_typescript_green, assert_typescript_green, classified_request_count,
+    create_projected_kernel, inject_validated_add_parameter_g1, localized_add_parameter_fixture,
+    reopen_projected_kernel,
 };
 use strata_kernel::{
     ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEventKind, IntentParameters, Kernel,
@@ -16,6 +18,38 @@ use tempfile::tempdir;
 const USER_DECLARATION_ID: &str = "fc98295bca9efc3e";
 const FORMAT_TIMESTAMP_DECLARATION_ID: &str = "9a25d67ed4b74807";
 const GREET_DECLARATION_ID: &str = "603b2ae524ee3c70";
+
+fn submit_wide_rename(
+    actor: &ClientActor,
+    kernel: &Kernel,
+    change_set_id: &str,
+    parse_declaration_id: &str,
+    now_tick: u64,
+) -> SubmissionOutcome {
+    actor
+        .begin_change_set(
+            kernel,
+            change_set_id,
+            "rename User and parseArgs as one old wide change",
+            now_tick,
+        )
+        .unwrap();
+    for parameters in [
+        IntentParameters::RenameSymbol {
+            declaration_id: USER_DECLARATION_ID.into(),
+            new_name: "WideUser".into(),
+        },
+        IntentParameters::RenameSymbol {
+            declaration_id: parse_declaration_id.into(),
+            new_name: "parseWideArgs".into(),
+        },
+    ] {
+        actor.add_intent(kernel, change_set_id, parameters).unwrap();
+    }
+    actor
+        .submit_change_set(kernel, change_set_id, now_tick + 1)
+        .unwrap()
+}
 
 fn submit_rename(
     actor: &ClientActor,
@@ -52,6 +86,7 @@ fn submit_add_parameter(
     actor: &ClientActor,
     kernel: &Kernel,
     change_set_id: &str,
+    function_id: &str,
     now_tick: u64,
 ) -> SubmissionOutcome {
     actor
@@ -67,7 +102,7 @@ fn submit_add_parameter(
             kernel,
             change_set_id,
             IntentParameters::AddParameter {
-                function_id: GREET_DECLARATION_ID.into(),
+                function_id: function_id.into(),
                 name: "excited".into(),
                 type_text: "boolean".into(),
                 position: 1,
@@ -450,9 +485,13 @@ fn row_3_real_reference_facts_infer_overlap_before_mutation() {
         0,
     ));
     let rename_claim = claim(&rename, &kernel, &rename_offer, 2);
-    let SubmissionOutcome::Queued { ticket } =
-        submit_add_parameter(&parameter, &kernel, "row-3-parameter-greet", 1)
-    else {
+    let SubmissionOutcome::Queued { ticket } = submit_add_parameter(
+        &parameter,
+        &kernel,
+        "row-3-parameter-greet",
+        GREET_DECLARATION_ID,
+        1,
+    ) else {
         panic!("the reference-mediated add-parameter must queue before mutation")
     };
     assert_eq!(ticket.state, TicketState::Queued);
@@ -491,4 +530,390 @@ fn row_3_real_reference_facts_infer_overlap_before_mutation() {
             .payload,
         before.node(GREET_DECLARATION_ID).unwrap().payload
     );
+}
+
+#[test]
+#[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
+fn row_4_add_parameter_requeues_before_build_and_updates_the_new_callsite() {
+    let directory = tempdir().unwrap();
+    let fixture = localized_add_parameter_fixture(directory.path());
+    let database_path = directory.path().join("kernel.redb");
+    let (kernel, created) =
+        Kernel::create_with_node_bridge(&database_path, fixture.g0.clone(), fixture.worker_config)
+            .unwrap();
+    assert_eq!(created.generation, 0);
+
+    let publisher = ClientActor::new("agent:row-4-publisher", "events:row-4-publisher");
+    let parameter = ClientActor::new("agent:row-4-parameter", "events:row-4-parameter");
+    let offer = ready(submit_add_parameter(
+        &parameter,
+        &kernel,
+        "row-4-add-parameter",
+        &fixture.greet_id,
+        0,
+    ));
+    let submitted_scope = kernel
+        .change_set("row-4-add-parameter")
+        .unwrap()
+        .unwrap()
+        .inferred_scope
+        .unwrap();
+    assert!(
+        !submitted_scope.write_set.iter().any(|resource| {
+            resource.resource_key == format!("node:{}", fixture.new_callsite_id)
+        })
+    );
+    let analyses_before_claim = classified_request_count(&fixture.request_counts, "analyzeIntent");
+    assert!(analyses_before_claim >= 1);
+    assert_eq!(
+        classified_request_count(&fixture.request_counts, "buildValidateCandidate"),
+        0
+    );
+
+    // This is a combined-feature fixture publisher, never a client or production storage path.
+    inject_validated_add_parameter_g1(&kernel, &fixture.g0, &fixture.g1);
+    let ClaimOutcome::Requeued { ticket, event } =
+        parameter.claim_ready(&kernel, &offer, 2).unwrap()
+    else {
+        panic!("the G+1 callsite must expand scope and requeue")
+    };
+    assert_eq!(ticket.state, TicketState::Queued);
+    assert_eq!(event.kind, CoordinationEventKind::ScopeExpanded);
+    assert_eq!(event.change_set_id, "row-4-add-parameter");
+    assert!(
+        classified_request_count(&fixture.request_counts, "analyzeIntent") > analyses_before_claim
+    );
+    assert_eq!(
+        classified_request_count(&fixture.request_counts, "buildValidateCandidate"),
+        0,
+        "fresh expansion must requeue before any candidate construction"
+    );
+    let expanded_scope = kernel
+        .change_set("row-4-add-parameter")
+        .unwrap()
+        .unwrap()
+        .inferred_scope
+        .unwrap();
+    assert_ne!(
+        expanded_scope.scope_fingerprint,
+        submitted_scope.scope_fingerprint
+    );
+    assert!(
+        expanded_scope.write_set.iter().any(|resource| {
+            resource.resource_key == format!("node:{}", fixture.new_callsite_id)
+        })
+    );
+
+    kernel.reconsider_tickets(3).unwrap();
+    let fresh_offer = kernel
+        .ready_offer_for_change_set("row-4-add-parameter")
+        .unwrap()
+        .expect("expanded replay-safe intent must receive fresh authority");
+    let fresh_claim = claim(&parameter, &kernel, &fresh_offer, 4);
+    let report = published(parameter.execute_claimed(&kernel, &fresh_claim, 5).unwrap());
+    assert_eq!(report.generation, 2);
+    assert!(!report.already_published);
+    assert_eq!(
+        classified_request_count(&fixture.request_counts, "buildValidateCandidate"),
+        1
+    );
+
+    let final_state =
+        CanonicalFinalState::capture(&kernel, &["row-4-add-parameter"], &[&publisher, &parameter])
+            .unwrap();
+    assert_eq!(final_state.graph_generation, 2);
+    assert_eq!(final_state.operations.len(), 2);
+    assert_eq!(final_state.operations[0].actor, "fixture:ingest-exporter");
+    assert_eq!(final_state.operations[1].actor, parameter.actor_id());
+    assert_eq!(
+        final_state.operations[1].change_set_id,
+        "row-4-add-parameter"
+    );
+    assert!(
+        final_state.operations[1]
+            .affected_node_ids
+            .contains(&fixture.greet_id)
+    );
+    assert!(
+        final_state.operations[1]
+            .affected_node_ids
+            .contains(&fixture.new_callsite_id)
+    );
+    assert!(kernel.operation(3).unwrap().is_none());
+    let callsite = final_state
+        .nodes
+        .iter()
+        .find(|node| node.id == fixture.new_callsite_id)
+        .unwrap();
+    assert_eq!(callsite.payload.matches("false").count(), 1);
+    assert!(
+        parameter
+            .read_events(&kernel, 100)
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event.change_set_id == "row-4-add-parameter"
+                    && event.kind == CoordinationEventKind::IntentCommitted
+            })
+    );
+    assert_typescript_green(&final_state.graph_snapshot(), &fixture.corpus_root);
+}
+
+#[test]
+#[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
+fn row_5_real_scopes_age_the_old_wide_ticket_while_only_disjoint_work_bypasses() {
+    let directory = tempdir().unwrap();
+    let database_path = directory.path().join("kernel.redb");
+    let (kernel, created) = create_projected_kernel(&database_path).unwrap();
+    assert_eq!(created.generation, 0);
+    let parse_declaration_id = kernel
+        .snapshot()
+        .snapshot()
+        .nodes
+        .into_iter()
+        .find(|node| {
+            node.kind == "FunctionDeclaration" && node.payload.contains("function parseArgs(")
+        })
+        .expect("real parseArgs declaration")
+        .id;
+
+    let active = ClientActor::new("agent:row-5-active", "events:row-5-active");
+    let wide = ClientActor::new("agent:row-5-wide", "events:row-5-wide");
+    let disjoint = ClientActor::new("agent:row-5-disjoint", "events:row-5-disjoint");
+    let active_offer = ready(submit_rename(
+        &active,
+        &kernel,
+        "row-5-active-user",
+        USER_DECLARATION_ID,
+        "HeldUser",
+        0,
+    ));
+    let _active_claim = claim(&active, &kernel, &active_offer, 2);
+    let SubmissionOutcome::Queued { ticket } =
+        submit_wide_rename(&wide, &kernel, "row-5-old-wide", &parse_declaration_id, 1)
+    else {
+        panic!("the old wide change must queue behind the held User claim")
+    };
+    assert_eq!(ticket.state, TicketState::Queued);
+
+    let overlap_clients = (0..1)
+        .map(|index| {
+            ClientActor::new(
+                format!("agent:row-5-overlap-{index}"),
+                format!("events:row-5-overlap-{index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (index, actor) in overlap_clients.iter().enumerate() {
+        let change_set_id = format!("row-5-newer-overlap-{index}");
+        let SubmissionOutcome::Queued { .. } = submit_rename(
+            actor,
+            &kernel,
+            &change_set_id,
+            USER_DECLARATION_ID,
+            &format!("NewerUser{index}"),
+            3 + index as u64,
+        ) else {
+            panic!("newer overlapping work must remain bounded behind the old wide ticket")
+        };
+    }
+
+    for index in 0..2 {
+        let change_set_id = format!("row-5-disjoint-{index}");
+        let offer = ready(submit_rename(
+            &disjoint,
+            &kernel,
+            &change_set_id,
+            FORMAT_TIMESTAMP_DECLARATION_ID,
+            &format!("renderTimestamp{index}"),
+            10 + index * 4,
+        ));
+        let disjoint_claim = claim(&disjoint, &kernel, &offer, 12 + index * 4);
+        let report = published(
+            disjoint
+                .execute_claimed(&kernel, &disjoint_claim, 13 + index * 4)
+                .unwrap(),
+        );
+        assert_eq!(report.generation, index + 1);
+        for overlap_index in 0..overlap_clients.len() {
+            assert!(
+                kernel
+                    .ready_offer_for_change_set(&format!("row-5-newer-overlap-{overlap_index}"))
+                    .unwrap()
+                    .is_none(),
+                "newer overlap bypassed FIFO after disjoint round {index}"
+            );
+        }
+    }
+    let aged = kernel
+        .ticket_for_change_set("row-5-old-wide")
+        .unwrap()
+        .unwrap();
+    assert_eq!(aged.state, TicketState::Queued);
+    assert!(
+        aged.age_rounds >= 2,
+        "each deterministic bypass round must age the old ticket"
+    );
+
+    let cancellation = active
+        .cancel_change_set(&kernel, "row-5-active-user", 50)
+        .unwrap();
+    let wide_offer = cancellation
+        .ready_offers
+        .into_iter()
+        .find(|offer| offer.change_set_id == "row-5-old-wide")
+        .expect("releasing the blocker must offer the oldest wide ticket immediately");
+    let wide_claim = claim(&wide, &kernel, &wide_offer, 51);
+    assert_eq!(wide_claim.change_set_id, "row-5-old-wide");
+    for overlap_index in 0..overlap_clients.len() {
+        assert!(
+            kernel
+                .ready_offer_for_change_set(&format!("row-5-newer-overlap-{overlap_index}"))
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+#[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
+fn rows_6_7_11_restart_fences_old_claim_and_preserves_queue_events_and_exactly_once_publish() {
+    let directory = tempdir().unwrap();
+    let database_path = directory.path().join("kernel.redb");
+    let (kernel, created) = create_projected_kernel(&database_path).unwrap();
+    assert_eq!(created.generation, 0);
+
+    let first = ClientActor::new("agent:rows-6-7-11-first", "events:rows-6-7-11-first");
+    let queued = ClientActor::new("agent:rows-6-7-11-queued", "events:rows-6-7-11-queued");
+    let mut observer =
+        ClientActor::new("agent:rows-6-7-11-observer", "events:rows-6-7-11-observer");
+    let first_offer = ready(submit_rename(
+        &first,
+        &kernel,
+        "rows-6-7-11-first",
+        USER_DECLARATION_ID,
+        "Account",
+        0,
+    ));
+    let old_claim = claim(&first, &kernel, &first_offer, 2);
+    let SubmissionOutcome::Queued { .. } = submit_rename(
+        &queued,
+        &kernel,
+        "rows-6-7-11-queued",
+        USER_DECLARATION_ID,
+        "Customer",
+        1,
+    ) else {
+        panic!("the second real client must be durably queued")
+    };
+    let first_ticket_id = kernel
+        .ticket_for_change_set("rows-6-7-11-first")
+        .unwrap()
+        .unwrap()
+        .ticket_id;
+    let queued_ticket_id = kernel
+        .ticket_for_change_set("rows-6-7-11-queued")
+        .unwrap()
+        .unwrap()
+        .ticket_id;
+    let events_before_restart = observer.read_events(&kernel, 100).unwrap();
+    assert!(!events_before_restart.is_empty());
+    assert_eq!(observer.acknowledged_event_sequence(), 0);
+    let old_epoch = old_claim.service_epoch;
+    drop(kernel);
+
+    let (reopened, recovered) = reopen_projected_kernel(&database_path).unwrap();
+    assert!(recovered.service_epoch > old_epoch);
+    assert_eq!(
+        reopened
+            .ticket_for_change_set("rows-6-7-11-first")
+            .unwrap()
+            .unwrap()
+            .ticket_id,
+        first_ticket_id
+    );
+    let recovered_queued = reopened
+        .ticket_for_change_set("rows-6-7-11-queued")
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovered_queued.ticket_id, queued_ticket_id);
+    assert_eq!(recovered_queued.state, TicketState::Queued);
+
+    let before_stale_attempt = reopened.snapshot().digest().to_owned();
+    let stale_error = first
+        .execute_claimed(&reopened, &old_claim, 3)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        stale_error.contains("claim")
+            || stale_error.contains("epoch")
+            || stale_error.contains("lease has expired"),
+        "old real claim must be rejected by recovered authority: {stale_error}"
+    );
+    assert_eq!(reopened.snapshot().generation(), 0);
+    assert_eq!(reopened.snapshot().digest(), before_stale_attempt);
+    assert!(reopened.operation(1).unwrap().is_none());
+
+    let delivery_one = observer.read_events(&reopened, 100).unwrap();
+    let delivery_two = observer.read_events(&reopened, 100).unwrap();
+    assert_eq!(
+        delivery_one, delivery_two,
+        "redelivery before acknowledgement is stable"
+    );
+    assert_eq!(
+        &delivery_one[..events_before_restart.len()],
+        events_before_restart.as_slice(),
+        "unacknowledged event IDs and payloads must survive restart"
+    );
+    let delivered_ids = delivery_one
+        .iter()
+        .map(|event| event.event_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(delivered_ids.len(), delivery_one.len());
+    let acknowledged = delivery_one.last().unwrap().sequence;
+    let first_ack = observer
+        .acknowledge_events(&reopened, acknowledged)
+        .unwrap();
+    let duplicate_ack = observer
+        .acknowledge_events(&reopened, acknowledged)
+        .unwrap();
+    let older_ack = observer
+        .acknowledge_events(&reopened, acknowledged.saturating_sub(1))
+        .unwrap();
+    assert_eq!(first_ack, duplicate_ack);
+    assert_eq!(older_ack.acknowledged_sequence, acknowledged);
+    assert!(observer.read_events(&reopened, 100).unwrap().is_empty());
+
+    let fresh_offer = reopened
+        .ready_offer_for_change_set("rows-6-7-11-first")
+        .unwrap()
+        .expect("restart must issue fresh authority for the oldest recovered ticket");
+    assert_ne!(fresh_offer.service_epoch, old_claim.service_epoch);
+    let fresh_claim = claim(&first, &reopened, &fresh_offer, 4);
+    let first_publish = published(first.execute_claimed(&reopened, &fresh_claim, 5).unwrap());
+    assert_eq!(first_publish.generation, 1);
+    assert!(!first_publish.already_published);
+    let duplicate_publish = published(first.execute_claimed(&reopened, &fresh_claim, 6).unwrap());
+    assert_eq!(duplicate_publish.generation, 1);
+    assert!(duplicate_publish.already_published);
+    assert_eq!(reopened.snapshot().generation(), 1);
+    assert!(reopened.operation(2).unwrap().is_none());
+    assert_eq!(
+        (1..=reopened.snapshot().generation())
+            .filter_map(|generation| reopened.operation(generation).unwrap())
+            .filter(|operation| operation.change_set_id == "rows-6-7-11-first")
+            .count(),
+        1
+    );
+    let committed_events = reopened
+        .events_after("events:rows-6-7-11-audit", 0, 100)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.change_set_id == "rows-6-7-11-first"
+                && event.kind == CoordinationEventKind::IntentCommitted
+        })
+        .count();
+    assert_eq!(committed_events, 1);
+    assert_projected_typescript_green(&reopened.snapshot().snapshot());
 }

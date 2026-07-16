@@ -331,7 +331,7 @@ fn fixture_delta(g0: &GraphSnapshot, g1: &GraphSnapshot) -> GraphDelta {
     delta
 }
 
-#[cfg(feature = "redb-spike-api")]
+#[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
 fn inject_validated_g1(kernel: &Kernel, g0: &GraphSnapshot, g1: &GraphSnapshot) {
     let delta = fixture_delta(g0, g1);
     let fence = kernel
@@ -1065,7 +1065,7 @@ fn identifier_text(node: &NodeRecord) -> Option<String> {
 
 #[test]
 #[ignore = "requires pnpm kernel:bridge:build"]
-#[cfg(feature = "redb-spike-api")]
+#[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
 fn real_add_parameter_on_g1_publishes_declaration_and_new_callsite_once() {
     let directory = tempdir().unwrap();
     let corpus_root = directory.path().join("medium");
@@ -1151,7 +1151,7 @@ fn real_add_parameter_on_g1_publishes_declaration_and_new_callsite_once() {
 
 #[test]
 #[ignore = "requires pnpm kernel:bridge:build"]
-#[cfg(feature = "redb-spike-api")]
+#[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
 fn add_parameter_claim_reanalyzes_g1_and_requeues_before_candidate_construction() {
     let directory = tempdir().unwrap();
     let corpus_root = directory.path().join("medium");
@@ -1282,7 +1282,7 @@ fn add_parameter_claim_reanalyzes_g1_and_requeues_before_candidate_construction(
 
 #[test]
 #[ignore = "requires pnpm kernel:bridge:build"]
-#[cfg(feature = "redb-spike-api")]
+#[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
 fn ordered_composite_publishes_once_and_a_failing_second_intent_publishes_nothing() {
     let directory = tempdir().unwrap();
     let corpus_root = directory.path().join("medium");
