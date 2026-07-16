@@ -80,8 +80,11 @@ function validateDeadline(deadlineMs: number): void {
 
 function redact(value: unknown, secrets: readonly string[]): string {
   let message = value instanceof Error ? value.message : String(value);
-  for (const secret of secrets) {
-    if (secret.length > 0) message = message.split(secret).join("[redacted]");
+  const longestFirst = [...new Set(secrets)]
+    .filter((secret) => secret.length > 0)
+    .sort((left, right) => right.length - left.length);
+  for (const secret of longestFirst) {
+    message = message.split(secret).join("[redacted]");
   }
   return message;
 }
@@ -133,10 +136,11 @@ function requestOnce(
       chunks.push(Buffer.from(chunk));
     });
     socket.once("end", () => {
-      if (chunks.length === 0) {
-        fail(new TransportFailure("disconnect", "connection ended before response"));
+      const response = Buffer.concat(chunks);
+      if (response.length === 0 || response[response.length - 1] !== 0x0a) {
+        fail(new TransportFailure("disconnect", "connection ended during response"));
       } else {
-        finish(Buffer.concat(chunks));
+        finish(response);
       }
     });
     socket.once("error", (error) => {
@@ -149,8 +153,12 @@ function requestOnce(
     });
     socket.once("close", () => {
       if (!settled) {
-        if (chunks.length > 0) finish(Buffer.concat(chunks));
-        else fail(new TransportFailure("disconnect", "connection closed before response"));
+        const response = Buffer.concat(chunks);
+        if (response.length > 0 && response[response.length - 1] === 0x0a) {
+          finish(response);
+        } else {
+          fail(new TransportFailure("disconnect", "connection closed during response"));
+        }
       }
     });
   });

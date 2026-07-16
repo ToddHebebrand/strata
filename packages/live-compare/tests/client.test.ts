@@ -31,20 +31,29 @@ afterEach(async () => {
 
 async function unixServer(
   handler: (socket: Socket, request: LocalServiceRequest, connection: number) => void
-): Promise<{ socketPath: string; requests: LocalServiceRequest[] }> {
+): Promise<{
+  socketPath: string;
+  requests: LocalServiceRequest[];
+  rawRequests: Buffer[];
+}> {
   const root = mkdtempSync("/tmp/strata-lc-client-");
   roots.push(root);
   const socketPath = path.join(root, "service.sock");
   const requests: LocalServiceRequest[] = [];
+  const rawRequests: Buffer[] = [];
   let connections = 0;
   const server = createServer((socket) => {
     sockets.push(socket);
     connections += 1;
     const chunks: Buffer[] = [];
+    let handled = false;
     socket.on("data", (chunk) => {
       chunks.push(Buffer.from(chunk));
-      if (!Buffer.concat(chunks).includes(0x0a)) return;
-      const request = parseRequestFrame(Buffer.concat(chunks));
+      const raw = Buffer.concat(chunks);
+      if (handled || !raw.includes(0x0a)) return;
+      handled = true;
+      rawRequests.push(Buffer.from(raw));
+      const request = parseRequestFrame(raw);
       requests.push(request);
       handler(socket, request, connections);
     });
@@ -54,7 +63,7 @@ async function unixServer(
     server.once("error", reject);
     server.listen(socketPath, resolve);
   });
-  return { socketPath, requests };
+  return { socketPath, requests, rawRequests };
 }
 
 function success(
@@ -126,6 +135,41 @@ describe("unprivileged coordination Unix-socket client", () => {
       service.requests[1]!.idempotencyKey
     );
     expect(service.requests[0]!.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+    expect(service.rawRequests).toHaveLength(2);
+    expect(service.rawRequests[0]!.equals(service.rawRequests[1]!)).toBe(true);
+  });
+
+  it("retries a mutation after a nonempty response is truncated before LF", async () => {
+    const service = await unixServer((socket, request, connection) => {
+      if (connection === 1) {
+        socket.end(Buffer.from('{"protocolVersion":1,"requestId":"truncated"'));
+        return;
+      }
+      socket.end(
+        success(request.requestId, {
+          type: "change_set",
+          changeSetId: "change:partial",
+          state: "draft",
+          ticketState: null,
+          graphGeneration: "0",
+          operationId: null,
+          affectedNodeIds: [],
+          diagnostics: [],
+          publicationDigest: null
+        })
+      );
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:partial"
+    });
+
+    await expect(client.beginChangeSet("retry truncated response", 1_000)).resolves.toMatchObject({
+      type: "change_set",
+      changeSetId: "change:partial"
+    });
+    expect(service.rawRequests).toHaveLength(2);
+    expect(service.rawRequests[0]!.equals(service.rawRequests[1]!)).toBe(true);
   });
 
   it("does not retry a read after an ambiguous disconnect", async () => {
@@ -225,6 +269,36 @@ describe("unprivileged coordination Unix-socket client", () => {
     const error = await client.hello(500).catch((caught: unknown) => caught);
     expect(String(error)).not.toContain(clientToken);
     expect(String(error)).not.toContain(service.socketPath);
+    expect(String(error)).toContain("[redacted]");
+  });
+
+  it("redacts overlapping secrets longest-first without leaking a client-token suffix", async () => {
+    const service = await unixServer((socket, request) => {
+      const overlappingClientToken = `${service.socketPath}-client-token-suffix`;
+      socket.end(
+        serializeResponseFrame({
+          protocolVersion: 1,
+          requestId: request.requestId,
+          ok: false,
+          error: {
+            code: "request_failed",
+            message: `failed for ${overlappingClientToken}`,
+            retryable: false,
+            diagnostics: []
+          }
+        })
+      );
+    });
+    const overlappingClientToken = `${service.socketPath}-client-token-suffix`;
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: overlappingClientToken
+    });
+
+    const error = await client.hello(500).catch((caught: unknown) => caught);
+    expect(String(error)).not.toContain(overlappingClientToken);
+    expect(String(error)).not.toContain(service.socketPath);
+    expect(String(error)).not.toContain("client-token-suffix");
     expect(String(error)).toContain("[redacted]");
   });
 
