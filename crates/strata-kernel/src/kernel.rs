@@ -323,6 +323,17 @@ impl Kernel {
             .collect())
     }
 
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_all_resource_clocks(
+        &self,
+    ) -> Result<(BTreeMap<String, u64>, BTreeMap<String, u64>)> {
+        Ok((
+            self.resource_clock_snapshot().all(),
+            self.store.coordination().resource_clocks()?,
+        ))
+    }
+
     /// Injects one monotonic in-memory dependency-clock advance without durable or graph writes.
     /// This is a research-only fault seam for proving stale candidate invalidation.
     #[doc(hidden)]

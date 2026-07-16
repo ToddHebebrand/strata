@@ -29,6 +29,11 @@ impl ResourceClockSnapshot {
         self.clocks.get(key).copied().unwrap_or(0)
     }
 
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn all(&self) -> BTreeMap<String, u64> {
+        self.clocks.clone()
+    }
+
     pub(crate) fn dependencies(&self, keys: &BTreeSet<String>) -> Vec<DependencyVersion> {
         keys.iter()
             .map(|key| DependencyVersion {
