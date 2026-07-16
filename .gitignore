@@ -9,6 +9,8 @@ dist/
 .env.*
 !.env.example
 .worktrees/
+/target/
+*.redb
 
 # Phase 4 benchmark round artifacts (operator-run; not committed)
 packages/bench/results/*

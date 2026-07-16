@@ -1,0 +1,73 @@
+error[E0432]: unresolved imports `strata_kernel::DurableStore`, `strata_kernel::FenceClaim`, `strata_kernel::Publication`, `strata_kernel::PublishFailpoint`, `strata_kernel::PublishOutcome`
+ --> tests/ui/raw_publication_is_sealed.rs:2:5
+  |
+2 |     DurableStore, FenceClaim, Publication, PublishFailpoint, PublishOutcome,
+  |     ^^^^^^^^^^^^  ^^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^ no `PublishOutcome` in the root
+  |     |             |           |            |
+  |     |             |           |            no `PublishFailpoint` in the root
+  |     |             |           no `Publication` in the root
+  |     |             no `FenceClaim` in the root
+  |     no `DurableStore` in the root
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | pub use storage::{CoordinatedPublishFailpoint, DurableStore, PublishOutcome};
+  |                                                ^^^^^^^^^^^^
+note: the item is gated behind the `redb-spike-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "redb-spike-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | pub use model::{FenceClaim, Publication};
+  |                 ^^^^^^^^^^
+note: the item is gated behind the `redb-spike-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "redb-spike-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | pub use model::{FenceClaim, Publication};
+  |                             ^^^^^^^^^^^
+note: the item is gated behind the `redb-spike-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "redb-spike-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | pub use kernel::PublishFailpoint;
+  |                 ^^^^^^^^^^^^^^^^
+note: the item is gated behind the `redb-spike-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "redb-spike-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | pub use storage::{CoordinatedPublishFailpoint, DurableStore, PublishOutcome};
+  |                                                              ^^^^^^^^^^^^^^
+note: the item is gated behind the `redb-spike-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "redb-spike-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `issue_fence` found for reference `&Kernel` in the current scope
+ --> tests/ui/raw_publication_is_sealed.rs:6:20
+  |
+6 |     let _ = kernel.issue_fence(&[]);
+  |                    ^^^^^^^^^^^ method not found in `&Kernel`
+
+error[E0599]: no method named `publish` found for reference `&Kernel` in the current scope
+ --> tests/ui/raw_publication_is_sealed.rs:7:20
+  |
+7 |     let _ = kernel.publish(publication);
+  |                    ^^^^^^^ method not found in `&Kernel`

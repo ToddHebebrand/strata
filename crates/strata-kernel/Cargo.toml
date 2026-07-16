@@ -1,0 +1,32 @@
+[package]
+name = "strata-kernel"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+
+[features]
+default = []
+coordination-test-api = []
+redb-spike-api = ["coordination-test-api"]
+
+[lib]
+name = "strata_kernel"
+path = "src/lib.rs"
+
+[[bin]]
+name = "redb-spike"
+path = "src/bin/redb_spike.rs"
+required-features = ["redb-spike-api"]
+
+[dependencies]
+anyhow = "1.0"
+redb = "4.1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+uuid = { version = "1.0", features = ["serde", "v4"] }
+wait-timeout = "0.2"
+
+[dev-dependencies]
+tempfile = "3.0"
+trybuild = "1"

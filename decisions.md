@@ -7,6 +7,112 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-15 — Two-operation bridge passes on the explicit source projection; complete-fixture candidate validation remains unproved
+
+**Context:** The approved Rust–Node bridge design required real `rename_symbol` and `add_parameter` analysis, candidate construction, TypeScript validation, Rust containment/publication, and recovery on `examples/medium`. The committed ingest fixture contains 1,282 nodes and 614 references across source, tests, and tool configuration. The existing validation profile also requires every rendered module to remain under its trusted `sourceRoot`.
+
+**What was tried first:** The real-worker acceptance first retained the existing ingest-derived `src/**` modules. Independent review then required the preferred complete-snapshot experiment. All 25 module paths were localized below the trusted corpus and `sourceRoot` was widened to the corpus root without weakening path checks or containment. The existing tsc-only candidate gate reached validation and returned `Validate/typescriptFailed`.
+
+**Decided:** The two-operation bridge is a bounded PASS on the exact ingest-derived `src/**` source projection: 1,203 nodes and 592 references across 22 modules. The untouched 1,282-node/614-reference snapshot remains the input for semantic-scope and disjointness checks, but real candidate publication does not claim full-fixture validation. The projection excludes 79 nodes, 22 references, and four pinned cross-boundary `formatTimestamp` reference sources. This boundary is fixed in deterministic tests and the spike evidence; it is not permission to relax trusted-root validation or omit arbitrary dependencies.
+
+**Why:** The source projection is the existing product compiler scope and is sufficient to prove the Rust/Node authority split and both real structural operations. Treating the failed complete-fixture experiment as a pass would overstate the evidence; treating unrelated test/tool modules as required candidate publication content would fold an existing corpus-validation limitation into the coordination protocol.
+
+**Unaffected boundaries:** Rust still owns scope versions, reservations, policy, digest, containment, fencing, canonical redb publication, and recovery. Node still owns TypeScript semantics and validation but has no canonical-write authority. G+1 remains exactly +9 nodes/+2 references with zero churn among G0 records. The existing SQLite path remains supported.
+
+**Design-doc impact:** None. `strata-design.md` already separates transient validation artifacts from canonical graph authority. The approved bridge design's full-fixture reading is narrowed by this evidence entry; the later full key-free acceptance gate and live comparison remain unapproved.
+
+## 2026-07-15 — Coordination kernel bounded PASS restored after authority and concurrency correction
+
+**Context:** The 2026-07-14 withdrawal correctly rejected the initial scheduler result because default callers could mint semantic authority, two already-claimed disjoint changes could not both publish, candidate construction held global locks, release paths could create stale Ready authority, and leases could strand authority. The approved correction replaced those mechanisms with a sealed provider boundary, durable dependency clocks, centralized fresh readiness planning, deterministic leases, and unlocked optimistic publication.
+
+**Evidence:** The integrated correction from base `8422f4e` through implementation commit `f02b909` passes the eight real-corpus correction scenarios over the committed `examples/medium` snapshot (1,282 nodes, 614 references): default authority sealing; two claims captured before either publication; affected dependency invalidation; disjoint lifecycle progress during a blocked builder; fresh analysis on every release path; restart/expiry fencing; same-attempt replay and mismatch rejection; and complete-old-or-complete-new reopen at the enumerated publication failpoints. At final pre-documentation head `f8d0d99`, formatting and strict default/`redb-spike-api` Clippy passed, the default Rust suite passed 33/33, the feature suite passed 171/171, focused recovery passed 23/23, ingest passed 8/8, and all 8 buildable pnpm projects built. The exact recursive test command reproduced only the authorized `@strata/verify` TS2454 baseline (69/70) before pnpm stopped. A supplemental non-bailing run also exposed two pre-existing stale agent replay-fixture failures; therefore the workspace is not represented as green. Full evidence is in `docs/spikes/2026-07-14-coordination-scheduler-correction.md`.
+
+**Reviews:** The fresh integrated reviewer approved with no findings after provider-failure isolation and validate-before-migrate recovery were corrected. A separate read-only, repo-grounded GPT-5.6-sol review at reasoning `xhigh` returned **APPROVE BOUNDED PASS** after the actual `8422f4e` physical-schema compatibility regression was added and the evidence wording was narrowed. Pivotal review claims were checked against the implementation and exact tests.
+
+**Decided:** Restore `PASS` only for the **Coordination kernel** roadmap item: a deterministic, feature-gated Rust/redb research proof that kernel-owned test semantics, graph-derived resource clocks, centralized readiness, deterministic leases, optimistic disjoint publication, fencing, recovery validation, and atomic publication work at the tested boundaries. Default builds still cannot execute semantic coordination because the production TypeScript semantic provider does not exist, although the common read-only recovery-integrity validator runs in default builds.
+
+**Compatibility correction:** Compatibility is proved by reproducing the physical ten-table/two-metadata-key schema at commit `8422f4e`; no archived database artifact exists. Complete absence of the recovery-validation version and both subordinate markers is treated as legacy and migrated atomically with schema creation and authority recovery. That rule necessarily cannot distinguish a genuine legacy database from deliberate deletion of the complete marker triplet. Retained/versioned databases fail closed on missing tables, markers, metadata, event-ID mappings, clocks, or attempt linkages and are not self-healed before validation.
+
+**Boundaries:** The unlocked-work claim applies only to claimed coordination publication. Attempt binding is cross-record consistency among attempt, change set, operation, graph event, generation, delta, and digest—not cryptographic provenance. Crash evidence covers the explicit enumerated pre-commit/in-transaction failpoints and redb transaction rollback, not instruction-level fault injection inside redb. Production TypeScript semantics and candidate generation, the Node worker bridge, transport/authentication, process isolation, task orchestration, multi-host consensus, the two-operation proof, full key-free acceptance, and live model comparison remain unimplemented and blocked. The existing SQLite product path remains supported.
+
+**Design-doc impact:** None. The correction restores the authority, progress, and durability boundaries already required by the approved Phase-6 design; it does not change `strata-design.md` or authorize the next roadmap gates.
+
+## 2026-07-14 — Coordination scheduler PASS withdrawn; authority and concurrency correction required
+
+**Context:** Task-scoped reviews approved the scheduler incrementally, but the required final whole-branch review found four integrated failures: default callers could inject the analyzer that minted semantic scope authority; simultaneous disjoint claims were invalidated by an unrelated global-generation advance; candidate construction held the global scheduler/publication locks; and several release paths created Ready authority without fresh trusted analysis. Drafts and claims also lacked a complete deterministic expiry model.
+
+**Falsified evidence:** The prior acceptance test claimed and published disjoint work sequentially in either order. It did not claim both before either publication, so it missed the global-generation failure. Raw-publication compile sealing did not test malicious analyzer injection. Publication-time successor analysis did not cover submission, reconsideration, expiry, cancellation, or claim-time terminal release. Passing durability and containment tests therefore did not establish independent multi-agent progress or kernel-owned semantic authority.
+
+**Independent review:** A read-only, repo-grounded GPT-5.6-sol architecture review compared global serialization, optimistic resource validation, and structural replay/merge. It recommended kernel-owned semantics plus an unlocked prepare/build/revalidate protocol and monotonic resource/index clocks. The recommendation's premises were verified against the exported analyzer traits, exact claim-generation check, builder lock scope, wake paths, and acceptance tests.
+
+**Decided:** The scheduler PASS below is superseded and the TypeScript validation bridge is blocked again. The **Coordination kernel** roadmap item returns to unchecked. The correction will: remove analyzer arguments from client-callable APIs; make default semantic execution unavailable until a kernel-owned TypeScript provider exists; expose deterministic provider injection only behind a research feature; run candidate construction outside global locks; validate dependency clocks rather than global generation; centralize every Ready transition behind fresh analysis; and add deterministic draft/claim expiry.
+
+**Why:** These properties are the coordination hypothesis itself. Preserving a PASS by calling them future service concerns would leave clients able to mint authority and would serialize or strand the exact disjoint work Strata is intended to enable.
+
+**Design:** `docs/superpowers/specs/2026-07-14-coordination-authority-concurrency-correction-design.md`.
+
+**Unaffected findings:** The bounded redb durability/replay/fencing spike remains a PASS. The existing SQLite product path and single-agent bulk-propagation results are unchanged. The scheduler's existing FIFO, recovery, event, and atomic-commit tests remain useful regression evidence but are insufficient for a PASS until the correction gate succeeds.
+
+**Design-doc impact:** This corrects the implementation boundary to match the approved coordination design: the kernel owns semantic analyzers, validation does not hold the commit sequencer, and disjoint work remains runnable. `strata-design.md` needs no architectural change.
+
+## 2026-07-14 — Coordination scheduler passes; TypeScript validation bridge unblocked
+
+**Context:** The approved Phase-6 scheduler plan required a deterministic, key-free proof of typed intent records, graph-inferred semantic scopes, all-or-ticket scheduling, durable tickets/events, FIFO fairness, fresh-state wakeups, fencing, restart recovery, delta containment, and atomic claimed publication before production TypeScript analyzers or a Node validation bridge could begin.
+
+**Evidence:** At implementation commit `1410eaa44db618a29a2398cd08c6503c3281d4fa`, formatting and strict default/`redb-spike-api` Clippy passed. The default kernel suite passed 59 tests and the feature suite passed 109. The deterministic acceptance harness uses the committed ingest-derived `examples/medium` graph (1,282 nodes, 614 references), derives scopes from typed `RenameSymbol`/`AddParameter` parameters plus graph records rather than intent IDs or client keys, and passed disjoint progress, same-symbol fresh decision, inferred reference overlap, dynamic expansion/requeue, FIFO aging, restart/event cursor, malicious-delta containment, and composite atomic-publication cases. Default compile-fail coverage proves raw Rust publication authority is sealed; feature tests preserve the bounded redb crash/replay/fencing proof. Full evidence is in `docs/spikes/2026-07-14-coordination-scheduler.md`.
+
+**Baseline exception:** `pnpm -r build`, ingest build, and all 8 ingest tests passed. `pnpm -r test` reproduced exactly the authorized pre-scheduler `@strata/verify` failure at `extractFunctionCommit.test.ts:228`: the extractor accepts an unsafe `let args` span, then the commit gate rejects diagnostic TS2454 (`args` used before assignment). Store passed 177/177, render 13/13, ingest 8/8, and verify passed 69/70 before the recursive run stopped. The scheduler work did not modify that path, so the known analyzer-test mismatch is recorded and is not classified as a scheduler failure.
+
+**Decided:** The bounded coordination scheduler is `PASS`. Only the roadmap's **Coordination kernel** item is complete. This unlocks a separate TypeScript validation-bridge plan; it does not complete the **Two-operation proof**, full **Key-free acceptance**, multi-client service authority boundary, or **Live falsifiable comparison**, and it does not authorize model spend. The existing SQLite product path remains supported.
+
+**Scope/version clarification:** Node-resource versions in the deterministic analyzer are SHA-256 hashes of `(NodeRecord, appeared_at_generation)`: ordinary fixture nodes use appearance generation 0, while the deliberately scripted newly appearing callsite source node uses its actual appearance generation. Reference-resource versions hash the complete `ReferenceRecord` without a generation component. Global graph generation remains separate claim and publication authority. Hashing that global generation into every existing-resource version would make unrelated publications change every scope, incorrectly classify disjoint work as material drift, and falsify disjoint progress. This resolves ambiguous plan wording without changing the production schema.
+
+**Boundaries:** Rows 1–5 are scheduler-level proofs using an intent-and-graph-derived test analyzer, not production TypeScript rename/add-parameter semantics. Real analyzers, candidate generation, bounded rendering, tsc/vitest validation, result binding, worker-crash behavior, transport/authentication, process isolation, and live agent comparison remain unimplemented. Redb crash claims remain bounded to the explicit tested boundaries; engine-internal commit instructions are not fault-injected.
+
+**Design-doc impact:** None. This advances the approved Phase-6 sequence without changing its architecture or acceptance boundaries.
+
+**Revisit when:** The TypeScript validation bridge either proves real `rename_symbol`/`add_parameter` analysis and grouped validation or falsifies an assumption that the scheduler-level harness could not exercise.
+
+## 2026-07-14 — Claimed publication takes the host logical tick for atomic successor offers
+
+**Context:** The Task-7 plan showed `Kernel::publish_claimed` without the logical tick used by submit, claim, and cancel. Claimed publication releases the active scope and must create newly eligible successor offers in the same atomic graph-and-coordination transaction.
+
+**Decided:** `Kernel::publish_claimed` accepts a host-supplied `now_tick: u64` and derives every successor offer expiry as `now_tick + READY_OFFER_TTL_TICKS`.
+
+**Why / what was tried first:** Reusing the completed claim's original offer expiry would create successor offers that are already stale or have less than the promised 30-tick lease. Deferring reconsideration until after publication would violate atomic wakeup by committing the release without its newly eligible offers.
+
+**Design-doc impact:** None. The design requires time-limited ready offers and atomic release/notification but does not specify the Rust method signature.
+
+## 2026-07-14 — Coordination tickets represent `NeedsDecision` explicitly
+
+**Context:** Task 5 initially terminalized a scheduler ticket as `Failed` when claim-time reanalysis required agent judgment, because Task 1's fixed `TicketState` list omitted a `NeedsDecision` variant even though `ChangeSetState` and lifecycle events distinguish that outcome.
+
+**Decided:** Add the schema-v1 camel-case `TicketState::NeedsDecision` terminal state and use it for both dynamic-expansion-limit and material-scope-change outcomes. `Failed` remains reserved for actual execution or coordination failure.
+
+**Why / what was tried first:** Encoding these outcomes as `Failed` kept them out of the active scheduler but collapsed a deliberate governance handoff into an error. The explicit terminal state preserves durable lifecycle meaning while still releasing the scheduler hold.
+
+**Design-doc impact:** None. `strata-design.md` does not enumerate ticket wire states; this corrects the coordination plan/model omission.
+
+## 2026-07-14 — Redb kernel spike passes; coordination scheduler unblocked
+
+**Context:** The 2026-07-13 coordination-kernel decision made redb conditional on a bounded stop/go proof over `examples/medium`. The required properties were atomic publication of graph delta + operation + event + ticket + fencing state, complete-old-or-new recovery at tested publication boundaries, snapshot-plus-operation replay with per-generation digest verification, immutable concurrent readers, stale-token/service-epoch rejection, and separate persistence versus in-memory publication timings.
+
+**Evidence:** All 35 `strata-kernel` tests pass with formatting clean and clippy warnings denied. Child-process failure injection recovered a complete old durable tuple immediately before the redb write transaction and inside it before commit, and a complete new durable tuple immediately after commit/before memory swap and after memory swap. No tested adjacent boundary produced partial graph-delta, operation, event, ticket, idempotency, or fence-consumption state. Snapshot replay validates every intermediate generation digest and rejects deliberately malformed/missing inputs. Eight synchronized immutable readers, fencing-token supersession, one-use claims, and restart epoch invalidation all pass. A real-corpus seed contained 1,282 nodes and 614 references. Three consecutive 100-publication measurements performed real writes and advanced generations 0 → 100 → 200 → 300 while retaining those counts and producing distinct verified digests. Full evidence and unedited JSON are in `docs/spikes/2026-07-13-redb-kernel-spike.md`.
+
+**Crash-test boundary:** The failure-injection test does not terminate the process during redb's internal commit implementation. It tests the four explicit adjacent boundaries listed above and relies on redb's transaction atomicity within the engine-controlled commit operation. The PASS must not be read as instruction-by-instruction crash injection inside redb itself.
+
+**Baseline exception:** `pnpm -r build` passes. `pnpm -r test` reproduces the authorized pre-spike `@strata/verify` failure at `extractFunctionCommit.test.ts:228`: the extractor accepts an unsafe `let args` span, then the commit gate correctly refuses diagnostic 2454 (`args` used before assignment). Before the recursive run stopped, store passed 177/177, render 13/13, ingest 8/8, and verify passed 69/70. This existing analyzer-test mismatch is unrelated to redb durability/recovery/fencing, was not modified in this spike, and is recorded rather than silently represented as an all-green pnpm gate.
+
+**Decided:** The redb spike is `PASS`. Redb remains the intended durable engine for the Rust memory-native kernel, and a separate coordination-scheduler plan is now unblocked. Only the roadmap's Redb spike gate is complete. Typed intent analyzers, semantic scope inference, all-or-ticket scheduling, durable queued-ticket/event-cursor behavior, the Node validation bridge, a multi-client service, and live agent comparison remain unimplemented and must retain their own deterministic gates.
+
+**Why:** Every bounded property included in this spike passed. The measurements are characterization only—three unoptimized development-build runs, no performance threshold, no SQLite comparison—and therefore do not support a production throughput claim. The pass is a durability/correctness decision at the tested boundaries, not a declaration that the multi-agent thesis has been proven or that redb internals were exhaustively fault-injected.
+
+**What was tried first:** The initial Task-8 evidence attempt stopped because `measure` exposed only total/average latency and reused iteration-based idempotency keys across invocations. The interface was returned to Task 7, extended with seed/recovery/count/file-size and separate percentile evidence, then fixed to derive identities from the durable next generation. Regression tests now prove consecutive runs advance and report nonzero real-write distributions. Independent review approved the corrected interface before measurements were recorded.
+
+**Design-doc impact:** None. This resolves the explicit redb spike gate in the approved design without changing its architecture or follow-on boundaries. The SQLite product path remains supported.
+
+**Revisit when:** The coordination scheduler plan is reviewed; if later deterministic tests expose a durability property not exercised here—including a need for lower-level crash injection inside the engine commit—reopen the engine decision with the exact failing boundary rather than treating this spike as blanket production validation.
+
 ## 2026-07-14 — Redb spike plan review: durable-table divergence, composite publication in v1, and five gates that could not fail
 
 **Context:** The redb kernel spike plan (`docs/superpowers/plans/2026-07-13-redb-kernel-spike.md`) was reviewed before execution, per the repo rule that a different-class lever gets an independent review with pivotal claims verified against real code rather than accepted on faith. Four parallel reviews ran: TypeScript-bridge verification against `packages/ingest`, dependency/toolchain verification, spec-vs-plan consistency, and an adversarial systems review. The review found no problem with the plan's sequencing or TDD discipline, and empirically **refuted** the two failure modes that looked most likely on inspection (see "Verified, not changed" below). The real defects were concentrated in the gates themselves.

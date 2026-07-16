@@ -1,0 +1,24 @@
+{
+  "protocolVersion": 1,
+  "requestId": "request-analyze-1",
+  "kind": "analyzeIntent",
+  "binding": {
+    "serviceEpoch": "1",
+    "graphGeneration": "0",
+    "graphDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "ok": false,
+  "error": {
+    "stage": "analyze",
+    "code": "unresolvedReference",
+    "message": "semantic analysis found an unresolved reference",
+    "diagnostics": [
+      {
+        "nodeId": "decl:greet",
+        "modulePath": "/project/main.ts",
+        "message": "reference target could not be resolved",
+        "code": 2304
+      }
+    ]
+  }
+}

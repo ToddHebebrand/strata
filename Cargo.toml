@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/strata-kernel"]
+resolver = "2"

@@ -90,16 +90,16 @@ Goal: the architectural argument is publishable.
 - [ ] Demo capture (see Iteration 3).
 - [ ] Publication venue + final edit pass (operator).
 
-### Iteration 5 — Multi-agent coordination kernel (approved, not started)
+### Iteration 5 — Multi-agent coordination kernel (in progress)
 
 Goal: test Strata's original motivation directly — multiple agents sharing one canonical structural codebase without Git branches, worktrees, or manual text merges.
 
 Approved design: [`docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md`](superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md).
 
-- [ ] **Redb spike gate.** Rust memory-native graph; atomic operation+delta+event+ticket publication; snapshot+replay recovery; fencing and crash-boundary tests on `examples/medium`.
-- [ ] **Coordination kernel.** Typed intents, inferred semantic scopes, all-or-ticket scheduling, durable tickets/events, service epochs, fencing, FIFO aging, and fresh-state wakeups.
-- [ ] **Two-operation proof.** `rename_symbol` (wide closure) and `add_parameter` (dynamic scope) through the Rust kernel while existing TypeScript ingest/render/verify remain authoritative.
-- [ ] **Key-free acceptance.** Zero lost updates, dirty reads, partial commits, and stale-fence publications across deterministic multi-client interleavings and injected crashes.
+- [x] **Redb spike gate.** Rust memory-native graph; atomic operation+delta+event+ticket publication; snapshot+replay recovery; fencing and crash-boundary tests on `examples/medium`. (PASS 2026-07-14; evidence: [`docs/spikes/2026-07-13-redb-kernel-spike.md`](spikes/2026-07-13-redb-kernel-spike.md))
+- [x] **Coordination kernel.** Bounded deterministic Rust/redb correction PASS (2026-07-15): default semantic authority is sealed; feature-gated kernel semantics, resource-clock validation, centralized fresh readiness, deterministic leases, optimistic disjoint publication, and atomic recovery pass on the real ingest-derived fixture. This is not the TypeScript bridge or the full Phase-6 proof. Correction evidence: [`docs/spikes/2026-07-14-coordination-scheduler-correction.md`](spikes/2026-07-14-coordination-scheduler-correction.md). Historical superseded evidence: [`docs/spikes/2026-07-14-coordination-scheduler.md`](spikes/2026-07-14-coordination-scheduler.md).
+- [x] **Two-operation proof.** Bounded deterministic bridge PASS (2026-07-15): real `rename_symbol` (wide closure) and uniform-value `add_parameter` (dynamic G+1 callsite scope) run through the Rust kernel while existing TypeScript ingest/render/verify remain authoritative. Candidate validation is explicitly limited to the ingest-derived `src/**` source projection; the later full key-free gate remains open. Evidence: [`docs/spikes/2026-07-15-rust-node-two-operation-bridge.md`](spikes/2026-07-15-rust-node-two-operation-bridge.md).
+- [x] **Key-free acceptance.** Projection-bounded deterministic PASS (2026-07-15): all twelve named rows are green across real independent clients, inferred overlap and expansion, logical-tick fairness, restart/fencing/event resumption, only-green-together publication, real Node crash joins, byte-exact replay, and default authority sealing. Candidate validation remains bounded to the approved `src/**` projection; no model key or live spend was used. Evidence: [`docs/spikes/2026-07-15-deterministic-full-key-free-acceptance.md`](spikes/2026-07-15-deterministic-full-key-free-acceptance.md).
 - [ ] **Live falsifiable comparison.** Only after correctness: two agents on Strata versus Git worktrees plus an integration agent; primary metric is time-to-one-shared-green-codebase.
 
 The current SQLite product path remains supported until this proof passes. This iteration coordinates code activity only; task decomposition and assignment stay outside Strata.

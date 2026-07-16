@@ -1,0 +1,27 @@
+{
+  "protocolVersion": 1,
+  "requestId": "request-analyze-1",
+  "kind": "analyzeIntent",
+  "binding": {
+    "serviceEpoch": "1",
+    "graphGeneration": "0",
+    "graphDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "ok": true,
+  "result": {
+    "facts": {
+      "type": "renameSymbol",
+      "declarationId": "decl:greet",
+      "declarationNameIdentifierId": "identifier:greet",
+      "references": [],
+      "writableStatementIds": [
+        "decl:greet"
+      ],
+      "validationDependencyNodeIds": [
+        "decl:greet",
+        "module:main"
+      ],
+      "validationDependencyReferenceFromNodeIds": []
+    }
+  }
+}

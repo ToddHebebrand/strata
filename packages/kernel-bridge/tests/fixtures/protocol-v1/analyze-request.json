@@ -1,0 +1,42 @@
+{
+  "protocolVersion": 1,
+  "requestId": "request-analyze-1",
+  "kind": "analyzeIntent",
+  "binding": {
+    "serviceEpoch": "1",
+    "graphGeneration": "0",
+    "graphDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "snapshot": {
+    "schemaVersion": 1,
+    "generation": "0",
+    "nodes": [
+      {
+        "id": "decl:greet",
+        "kind": "FunctionDeclaration",
+        "parentId": "module:main",
+        "childIndex": 0,
+        "payload": "export function greet() {}"
+      },
+      {
+        "id": "module:main",
+        "kind": "Module",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "/project/main.ts"
+      }
+    ],
+    "references": []
+  },
+  "intent": {
+    "schemaVersion": 1,
+    "intentId": "intent-1",
+    "changeSetId": "change-set-1",
+    "baseGeneration": "0",
+    "parameters": {
+      "type": "renameSymbol",
+      "declarationId": "decl:greet",
+      "newName": "welcome"
+    }
+  }
+}

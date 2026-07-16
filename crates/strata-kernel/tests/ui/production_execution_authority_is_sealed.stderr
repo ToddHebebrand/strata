@@ -1,0 +1,80 @@
+error[E0432]: unresolved imports `strata_kernel::BridgeRequest`, `strata_kernel::BuildValidateCandidateRequest`, `strata_kernel::CandidateBinding`, `strata_kernel::CandidateEnvelope`, `strata_kernel::CandidateExecutor`, `strata_kernel::NodeSemanticProvider`, `strata_kernel::PreparedCandidate`, `strata_kernel::ValidationProfile`
+ --> tests/ui/production_execution_authority_is_sealed.rs:2:5
+  |
+2 |     BridgeRequest, BuildValidateCandidateRequest, CandidateBinding, CandidateEnvelope,
+  |     ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^ no `CandidateEnvelope` in the root
+  |     |              |                              |
+  |     |              |                              no `CandidateBinding` in the root
+  |     |              no `BuildValidateCandidateRequest` in the root
+  |     no `BridgeRequest` in the root
+3 |     CandidateExecutor, NodeSemanticProvider, PreparedCandidate, ValidationProfile,
+  |     ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^ no `ValidationProfile` in the root
+  |     |                  |                     |
+  |     |                  |                     no `PreparedCandidate` in the root
+  |     |                  no `NodeSemanticProvider` in the root
+  |     no `CandidateExecutor` in the root
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  |     CandidateBuilder, CandidateEnvelope, PreparedCandidate, PublicationAttemptRecord,
+  |                       ^^^^^^^^^^^^^^^^^
+note: the item is gated behind the `coordination-test-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "coordination-test-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  |     CandidateBuilder, CandidateEnvelope, PreparedCandidate, PublicationAttemptRecord,
+  |                                          ^^^^^^^^^^^^^^^^^
+note: the item is gated behind the `coordination-test-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "coordination-test-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0422]: cannot find struct, variant or union type `CandidateEnvelope` in crate `strata_kernel`
+  --> tests/ui/production_execution_authority_is_sealed.rs:10:28
+   |
+10 |     let _ = strata_kernel::CandidateEnvelope {
+   |                            ^^^^^^^^^^^^^^^^^ not found in `strata_kernel`
+   |
+note: found an item that was configured out
+  --> src/lib.rs
+   |
+   |     CandidateBuilder, CandidateEnvelope, PreparedCandidate, PublicationAttemptRecord,
+   |                       ^^^^^^^^^^^^^^^^^
+note: the item is gated behind the `coordination-test-api` feature
+  --> src/lib.rs
+   |
+   | #[cfg(feature = "coordination-test-api")]
+   |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0061]: this method takes 2 arguments but 6 arguments were supplied
+  --> tests/ui/production_execution_authority_is_sealed.rs:24:20
+   |
+24 |     let _ = kernel.execute_claimed(
+   |                    ^^^^^^^^^^^^^^^
+...
+27 |         &provider,
+   |         --------- unexpected argument #3 of type `&ClientProvider`
+28 |         &builder,
+   |         -------- unexpected argument #4 of type `&ClientBuilder`
+29 |         worker_path,
+   |         ----------- unexpected argument #5 of type `&str`
+30 |         validation_profile,
+   |         ------------------ unexpected argument #6 of type `&str`
+   |
+note: method defined here
+  --> src/coordination/publication.rs
+   |
+   |     pub fn execute_claimed(
+   |            ^^^^^^^^^^^^^^^
+help: remove the extra arguments
+   |
+26 -         0,
+27 -         &provider,
+26 +         0,
+   |

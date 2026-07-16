@@ -1,0 +1,15 @@
+error[E0599]: no method named `execute_claimed_with_failpoint` found for reference `&Kernel` in the current scope
+ --> tests/ui/coordinated_crash_execution_is_sealed.rs:5:20
+  |
+5 |     let _ = kernel.execute_claimed_with_failpoint(claim, 0, ());
+  |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+help: there is a method `execute_claimed` with a similar name, but with different arguments
+ --> src/coordination/publication.rs
+  |
+  | /     pub fn execute_claimed(
+  | |         &self,
+  | |         claim: &ClaimHandle,
+  | |         now_tick: u64,
+  | |     ) -> Result<PublishClaimOutcome> {
+  | |____________________________________^
