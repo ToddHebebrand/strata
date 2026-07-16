@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, TryLockError};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
@@ -12,23 +13,37 @@ use strata_kernel::{
 };
 
 use super::audit::{
-    AuditEvent, PendingRequest, RequestJournal, RequestLedgerEntry, ServiceAudit, action_body_hash,
-    client_hash, request_identity,
+    AuditEvent, FollowUp, PendingRequest, RequestJournal, RequestLedgerEntry, ServiceAudit,
+    action_body_hash, client_hash, request_identity,
 };
 use super::protocol::{
-    CancelledState, ChangeSetState, Diagnostic, InspectedNode, Intent, LocalServiceRequest,
-    LocalServiceResponse, NodeRelationship, RequestAction, ResponseResult, ServiceEvent,
-    TicketState, WireU64, parse_request_frame,
+    CancelledState, ChangeSetState, Diagnostic, InspectedNode, Intent, LocalServiceProtocolContext,
+    LocalServiceRequest, LocalServiceResponse, NodeRelationship, RequestAction, ResponseResult,
+    ServiceEvent, TicketState, WireU64, parse_request_frame,
 };
 
 const MAX_INTENTS: usize = 256;
 const MAX_RELATIONSHIPS: usize = 256;
+const MIN_LOCAL_MUTATION_MS: u64 = 10;
+const MIN_BRIDGE_ANALYSIS_MS: u64 = 30_100;
+const MIN_BRIDGE_PUBLICATION_MS: u64 = 60_100;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ServiceFailpoint {
+    None,
+    AfterPending,
+    AfterEffect,
+    AfterPrepared,
+    AfterFollowUp,
+    AfterCompleted,
+}
 
 pub(super) struct ServiceConfig {
     pub db_path: PathBuf,
     pub snapshot_path: PathBuf,
     pub bridge_config: NodeBridgeConfig,
     pub audit_path: PathBuf,
+    pub failpoint: ServiceFailpoint,
 }
 
 pub(super) struct ServiceSession {
@@ -38,6 +53,8 @@ pub(super) struct ServiceSession {
     next_tick: AtomicU64,
     change_set_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     delivered_events: Mutex<BTreeMap<String, u64>>,
+    protocol: Mutex<LocalServiceProtocolContext>,
+    failpoint: ServiceFailpoint,
     recovered: bool,
 }
 
@@ -66,6 +83,8 @@ impl ServiceSession {
             next_tick: AtomicU64::new(next_tick),
             change_set_locks: Mutex::new(BTreeMap::new()),
             delivered_events: Mutex::new(BTreeMap::new()),
+            protocol: Mutex::new(LocalServiceProtocolContext::default()),
+            failpoint: config.failpoint,
             recovered: existed,
         });
         session.resolve_pending_before_bind()?;
@@ -91,9 +110,47 @@ impl ServiceSession {
     }
 
     pub fn handle_frame(&self, bytes: &[u8]) -> LocalServiceResponse {
-        let parsed = parse_request_frame(bytes, None);
+        let started = Instant::now();
+        let parsed = self
+            .protocol
+            .lock()
+            .map_err(lock_error)
+            .and_then(|mut context| parse_request_frame(bytes, Some(&mut context)));
         match parsed {
-            Ok(request) => self.handle_request(request),
+            Ok(request) => {
+                let binding = self
+                    .journal
+                    .lock()
+                    .map_err(lock_error)
+                    .and_then(|mut journal| journal.bind_request(&request));
+                match binding {
+                    Ok(true) => {
+                        if let Ok(mut context) = self.protocol.lock() {
+                            context.forget_request(&request.request_id);
+                        }
+                        self.handle_request(request, started)
+                    }
+                    Ok(false) => {
+                        if let Ok(mut context) = self.protocol.lock() {
+                            context.forget_request(&request.request_id);
+                        }
+                        LocalServiceResponse::error(
+                            &request.request_id,
+                            "invalid_request",
+                            "request ID was already used with a different body",
+                            false,
+                            Vec::new(),
+                        )
+                    }
+                    Err(_) => LocalServiceResponse::error(
+                        &request.request_id,
+                        "request_failed",
+                        "request could not be recorded",
+                        false,
+                        Vec::new(),
+                    ),
+                }
+            }
             Err(error) => LocalServiceResponse::error(
                 request_id_from_untrusted_frame(bytes),
                 "invalid_request",
@@ -104,7 +161,15 @@ impl ServiceSession {
         }
     }
 
-    fn handle_request(&self, request: LocalServiceRequest) -> LocalServiceResponse {
+    fn handle_request(
+        &self,
+        request: LocalServiceRequest,
+        started: Instant,
+    ) -> LocalServiceResponse {
+        let deadline = started + Duration::from_millis(request.deadline_ms.get());
+        if remaining_ms(deadline) < minimum_action_budget_ms(&request.action) {
+            return deadline_response(&request.request_id);
+        }
         if !request.action.is_mutating() {
             return match self.execute_read(&request.client_id, &request.action) {
                 Ok(result) => {
@@ -122,7 +187,7 @@ impl ServiceSession {
             };
         }
 
-        match self.handle_mutation(&request) {
+        match self.handle_mutation(&request, deadline) {
             Ok(response) => response,
             Err(_error) => LocalServiceResponse::error(
                 &request.request_id,
@@ -134,7 +199,11 @@ impl ServiceSession {
         }
     }
 
-    fn handle_mutation(&self, request: &LocalServiceRequest) -> Result<LocalServiceResponse> {
+    fn handle_mutation(
+        &self,
+        request: &LocalServiceRequest,
+        deadline: Instant,
+    ) -> Result<LocalServiceResponse> {
         let key = request
             .idempotency_key
             .as_deref()
@@ -174,12 +243,25 @@ impl ServiceSession {
                             ));
                         }
                     }
+                    RequestLedgerEntry::EffectResult { .. } => {
+                        return Ok(LocalServiceResponse::error(
+                            &request.request_id,
+                            "request_in_progress",
+                            "idempotent request is completing",
+                            true,
+                            Vec::new(),
+                        ));
+                    }
                 }
             }
         }
 
         let lock = self.change_set_lock(request.action.change_set_id().unwrap_or(&identity))?;
-        let _guard = lock.lock().map_err(lock_error)?;
+        let Some(_guard) =
+            lock_before_deadline(&lock, deadline, minimum_action_budget_ms(&request.action))?
+        else {
+            return Ok(deadline_response(&request.request_id));
+        };
         {
             let journal = self.journal.lock().map_err(lock_error)?;
             if let Some(entry) = journal.entry(&identity) {
@@ -219,11 +301,21 @@ impl ServiceSession {
                             ))
                         }
                     }
+                    RequestLedgerEntry::EffectResult { .. } => Ok(LocalServiceResponse::error(
+                        &request.request_id,
+                        "request_in_progress",
+                        "idempotent request is completing",
+                        true,
+                        Vec::new(),
+                    )),
                 };
             }
         }
         self.authorize_actor(&request.client_id, &request.action)?;
         self.authorize_event_ack(&request.client_id, &request.action)?;
+        if remaining_ms(deadline) < minimum_action_budget_ms(&request.action) {
+            return Ok(deadline_response(&request.request_id));
+        }
 
         let tick = self.next_tick.fetch_add(1, Ordering::SeqCst);
         if tick == u64::MAX {
@@ -248,39 +340,74 @@ impl ServiceSession {
             .lock()
             .map_err(lock_error)?
             .append_pending(pending.clone())?;
-        let response = self
+        self.trip_failpoint(ServiceFailpoint::AfterPending);
+        let effect = self
             .execute_pending(&pending, &request.request_id)
             .unwrap_or_else(|_error| {
-                LocalServiceResponse::error(
+                ExecutedEffect::response(LocalServiceResponse::error(
                     &request.request_id,
                     "request_failed",
                     "request could not be completed",
                     false,
                     Vec::new(),
-                )
+                ))
             });
+        self.trip_failpoint(ServiceFailpoint::AfterEffect);
+        self.journal
+            .lock()
+            .map_err(lock_error)?
+            .append_effect_result(
+                identity.clone(),
+                body_hash.clone(),
+                effect.response.clone(),
+                effect.follow_up.clone(),
+            )?;
+        self.trip_failpoint(ServiceFailpoint::AfterPrepared);
+        self.apply_follow_up(effect.follow_up.as_ref())?;
+        self.trip_failpoint(ServiceFailpoint::AfterFollowUp);
+        let response = effect.response;
         self.journal.lock().map_err(lock_error)?.append_completed(
             identity,
             body_hash,
             response.clone(),
         )?;
+        self.trip_failpoint(ServiceFailpoint::AfterCompleted);
         self.audit_request(request, Some(tick), &response, "request_completed")?;
         Ok(response)
     }
 
     fn resolve_pending_before_bind(&self) -> Result<()> {
-        let pending = self
+        let unresolved = self
             .journal
             .lock()
             .map_err(lock_error)?
             .entries()
-            .values()
-            .filter_map(|entry| match entry {
-                RequestLedgerEntry::Pending(request) => Some(request.clone()),
+            .iter()
+            .filter_map(|(identity, entry)| match entry {
+                RequestLedgerEntry::Pending(request) => {
+                    Some((identity.clone(), entry.clone(), Some(request.clone())))
+                }
+                RequestLedgerEntry::EffectResult { .. } => {
+                    Some((identity.clone(), entry.clone(), None))
+                }
                 RequestLedgerEntry::Completed { .. } => None,
             })
             .collect::<Vec<_>>();
-        for request in pending {
+        for (identity, entry, pending) in unresolved {
+            if let RequestLedgerEntry::EffectResult {
+                body_hash,
+                response,
+                follow_up,
+            } = entry
+            {
+                self.apply_follow_up(follow_up.as_ref())?;
+                self.journal
+                    .lock()
+                    .map_err(lock_error)?
+                    .append_completed(identity, body_hash, response)?;
+                continue;
+            }
+            let request = pending.context("pending recovery entry is missing its request")?;
             let lock = self.change_set_lock(
                 request
                     .action
@@ -289,31 +416,41 @@ impl ServiceSession {
             )?;
             let _guard = lock.lock().map_err(lock_error)?;
             self.authorize_actor(&request.client_id, &request.action)?;
-            let response = if self.add_intent_was_committed(&request)? {
+            let effect = if self.add_intent_was_committed(&request)? {
                 let change_set_id = request
                     .action
                     .change_set_id()
                     .context("reconciled add intent has no change set")?;
-                LocalServiceResponse::success(
+                ExecutedEffect::response(LocalServiceResponse::success(
                     "recovered",
                     self.change_set_result(change_set_id, None, None)?,
-                )
+                ))
             } else {
                 self.execute_pending(&request, "recovered")
                     .unwrap_or_else(|_error| {
-                        LocalServiceResponse::error(
+                        ExecutedEffect::response(LocalServiceResponse::error(
                             "recovered",
                             "request_failed",
                             "request could not be completed",
                             false,
                             Vec::new(),
-                        )
+                        ))
                     })
             };
+            self.journal
+                .lock()
+                .map_err(lock_error)?
+                .append_effect_result(
+                    request.identity.clone(),
+                    request.body_hash.clone(),
+                    effect.response.clone(),
+                    effect.follow_up.clone(),
+                )?;
+            self.apply_follow_up(effect.follow_up.as_ref())?;
             self.journal.lock().map_err(lock_error)?.append_completed(
                 request.identity.clone(),
                 request.body_hash.clone(),
-                response,
+                effect.response,
             )?;
             self.append_audit(AuditEvent {
                 kind: "request_recovered".into(),
@@ -367,7 +504,7 @@ impl ServiceSession {
         &self,
         pending: &PendingRequest,
         request_id: &str,
-    ) -> Result<LocalServiceResponse> {
+    ) -> Result<ExecutedEffect> {
         let result = match &pending.action {
             RequestAction::BeginChangeSet { reasoning } => {
                 let change_set_id =
@@ -405,10 +542,14 @@ impl ServiceSession {
                 }
             }
             RequestAction::CancelChangeSet { change_set_id } => {
-                self.kernel.cancel_change_set(change_set_id, pending.tick)?;
-                ResponseResult::Cancelled {
-                    change_set_id: change_set_id.clone(),
-                    state: CancelledState::Cancelled,
+                let outcome = self.kernel.cancel_change_set(change_set_id, pending.tick)?;
+                if outcome.change_set.state == KernelChangeSetState::Cancelled {
+                    ResponseResult::Cancelled {
+                        change_set_id: change_set_id.clone(),
+                        state: CancelledState::Cancelled,
+                    }
+                } else {
+                    self.change_set_result(change_set_id, None, None)?
                 }
             }
             RequestAction::Hello { .. }
@@ -417,24 +558,21 @@ impl ServiceSession {
                 bail!("read-only action cannot be in the mutation journal")
             }
         };
-        Ok(LocalServiceResponse::success(request_id, result))
+        Ok(ExecutedEffect::response(LocalServiceResponse::success(
+            request_id, result,
+        )))
     }
 
-    fn advance(
-        &self,
-        change_set_id: &str,
-        tick: u64,
-        request_id: &str,
-    ) -> Result<LocalServiceResponse> {
+    fn advance(&self, change_set_id: &str, tick: u64, request_id: &str) -> Result<ExecutedEffect> {
         let change_set = self
             .kernel
             .change_set(change_set_id)?
             .with_context(|| format!("change set {change_set_id} does not exist"))?;
         if change_set.state != KernelChangeSetState::Ready {
-            return Ok(LocalServiceResponse::success(
+            return Ok(ExecutedEffect::response(LocalServiceResponse::success(
                 request_id,
                 self.change_set_result(change_set_id, None, None)?,
-            ));
+            )));
         }
         let offer = self
             .kernel
@@ -457,17 +595,17 @@ impl ServiceSession {
                 })?;
                 match self.kernel.execute_claimed(&claim, tick) {
                     Ok(PublishClaimOutcome::Published(report)) => {
-                        Ok(LocalServiceResponse::success(
+                        Ok(ExecutedEffect::response(LocalServiceResponse::success(
                             request_id,
                             self.change_set_result(change_set_id, Some(report.digest), None)?,
-                        ))
+                        )))
                     }
                     Ok(PublishClaimOutcome::Requeued { .. })
                     | Ok(PublishClaimOutcome::NeedsDecision { .. }) => {
-                        Ok(LocalServiceResponse::success(
+                        Ok(ExecutedEffect::response(LocalServiceResponse::success(
                             request_id,
                             self.change_set_result(change_set_id, None, None)?,
-                        ))
+                        )))
                     }
                     Err(_error) => {
                         self.append_audit(AuditEvent {
@@ -480,8 +618,7 @@ impl ServiceSession {
                             state: Some("validation_failed".into()),
                             graph_generation: self.kernel.snapshot().generation().to_string(),
                         })?;
-                        self.kernel.cancel_change_set(change_set_id, tick)?;
-                        Ok(LocalServiceResponse::success(
+                        let response = LocalServiceResponse::success(
                             request_id,
                             self.change_set_result(
                                 change_set_id,
@@ -493,15 +630,22 @@ impl ServiceSession {
                                 }),
                             )?
                             .with_state(ChangeSetState::ValidationFailed),
-                        ))
+                        );
+                        Ok(ExecutedEffect {
+                            response,
+                            follow_up: Some(FollowUp::CancelChangeSet {
+                                change_set_id: change_set_id.to_owned(),
+                                tick,
+                            }),
+                        })
                     }
                 }
             }
             ClaimOutcome::Requeued { .. } | ClaimOutcome::NeedsDecision { .. } => {
-                Ok(LocalServiceResponse::success(
+                Ok(ExecutedEffect::response(LocalServiceResponse::success(
                     request_id,
                     self.change_set_result(change_set_id, None, None)?,
-                ))
+                )))
             }
         }
     }
@@ -539,7 +683,8 @@ impl ServiceSession {
     fn inspect_nodes(&self, node_ids: &[String]) -> Result<ResponseResult> {
         let graph = self.kernel.snapshot();
         let mut nodes = Vec::with_capacity(node_ids.len());
-        for node_id in node_ids {
+        let unique_ids = node_ids.iter().collect::<BTreeSet<_>>();
+        for node_id in unique_ids {
             let node = graph
                 .node(node_id)
                 .with_context(|| format!("node {node_id} does not exist"))?;
@@ -577,7 +722,11 @@ impl ServiceSession {
             nodes.push(InspectedNode {
                 node_id: node.id.clone(),
                 kind: node.kind.clone(),
-                payload: node.payload.clone(),
+                payload: if node.kind == "Module" {
+                    String::new()
+                } else {
+                    node.payload.clone()
+                },
                 relationships,
             });
         }
@@ -605,9 +754,11 @@ impl ServiceSession {
             change_set_id: event.change_set_id,
             state: event_state(&event.kind),
             operation_id: operation.as_ref().map(|record| record.operation_id.clone()),
-            affected_node_ids: operation
-                .map(|record| record.affected_node_ids)
-                .unwrap_or_default(),
+            affected_node_ids: bounded_affected_ids(
+                operation
+                    .map(|record| record.affected_node_ids)
+                    .unwrap_or_default(),
+            ),
             diagnostics: Vec::new(),
             publication_digest: digest,
         })
@@ -629,15 +780,23 @@ impl ServiceSession {
             .map(|generation| self.kernel.operation(generation))
             .transpose()?
             .flatten();
+        let publication_digest = publication_digest.or_else(|| {
+            change_set.committed_generation.and_then(|generation| {
+                let snapshot = self.kernel.snapshot();
+                (snapshot.generation() == generation).then(|| snapshot.digest().to_owned())
+            })
+        });
         Ok(ResponseResult::ChangeSet {
             change_set_id: change_set.change_set_id,
             state: kernel_state(&change_set.state),
             ticket_state: ticket.as_ref().map(|ticket| kernel_ticket(&ticket.state)),
             graph_generation: WireU64::new(self.kernel.snapshot().generation()),
             operation_id: operation.as_ref().map(|record| record.operation_id.clone()),
-            affected_node_ids: operation
-                .map(|record| record.affected_node_ids)
-                .unwrap_or_default(),
+            affected_node_ids: bounded_affected_ids(
+                operation
+                    .map(|record| record.affected_node_ids)
+                    .unwrap_or_default(),
+            ),
             diagnostics: diagnostic.into_iter().collect(),
             publication_digest,
         })
@@ -704,6 +863,42 @@ impl ServiceSession {
 
     fn append_audit(&self, event: AuditEvent) -> Result<()> {
         self.audit.lock().map_err(lock_error)?.append(event)
+    }
+
+    fn apply_follow_up(&self, follow_up: Option<&FollowUp>) -> Result<()> {
+        match follow_up {
+            Some(FollowUp::CancelChangeSet {
+                change_set_id,
+                tick,
+            }) => {
+                self.kernel.cancel_change_set(change_set_id, *tick)?;
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    fn trip_failpoint(&self, stage: ServiceFailpoint) {
+        #[cfg(feature = "coordination-test-api")]
+        if self.failpoint == stage {
+            std::process::abort();
+        }
+        #[cfg(not(feature = "coordination-test-api"))]
+        let _ = (self.failpoint, stage);
+    }
+}
+
+struct ExecutedEffect {
+    response: LocalServiceResponse,
+    follow_up: Option<FollowUp>,
+}
+
+impl ExecutedEffect {
+    fn response(response: LocalServiceResponse) -> Self {
+        Self {
+            response,
+            follow_up: None,
+        }
     }
 }
 
@@ -853,6 +1048,59 @@ fn request_id_from_untrusted_frame(bytes: &[u8]) -> String {
         .and_then(|value| value.get("requestId")?.as_str().map(str::to_owned))
         .filter(|value| !value.is_empty() && value.len() <= 512)
         .unwrap_or_else(|| "invalid".into())
+}
+
+fn minimum_action_budget_ms(action: &RequestAction) -> u64 {
+    match action {
+        RequestAction::SubmitChangeSet { .. } => MIN_BRIDGE_ANALYSIS_MS,
+        RequestAction::AdvanceChangeSet { .. } => MIN_BRIDGE_PUBLICATION_MS,
+        action if action.is_mutating() => MIN_LOCAL_MUTATION_MS,
+        _ => 1,
+    }
+}
+
+fn remaining_ms(deadline: Instant) -> u64 {
+    deadline
+        .checked_duration_since(Instant::now())
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn lock_before_deadline<'a>(
+    lock: &'a Mutex<()>,
+    deadline: Instant,
+    required_ms: u64,
+) -> Result<Option<MutexGuard<'a, ()>>> {
+    loop {
+        match lock.try_lock() {
+            Ok(guard) => return Ok(Some(guard)),
+            Err(TryLockError::Poisoned(error)) => return Err(lock_error(error)),
+            Err(TryLockError::WouldBlock) => {
+                if remaining_ms(deadline) < required_ms {
+                    return Ok(None);
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+}
+
+fn deadline_response(request_id: &str) -> LocalServiceResponse {
+    LocalServiceResponse::error(
+        request_id,
+        "deadline_exceeded",
+        "request deadline is insufficient for the requested action",
+        false,
+        Vec::new(),
+    )
+}
+
+fn bounded_affected_ids(ids: Vec<String>) -> Vec<String> {
+    ids.into_iter()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .take(MAX_RELATIONSHIPS)
+        .collect()
 }
 
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> anyhow::Error {

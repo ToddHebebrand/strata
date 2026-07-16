@@ -7,6 +7,47 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-16 — Local service journal records request bindings and prepared effect results
+
+**Context:** Independent review of the first local-service implementation found
+that `Pending`/`Completed` alone could not preserve the exact
+`validation_failed` response if the process died after candidate execution but
+before cancellation/completion. It also found that request-ID reuse was checked
+only by the protocol helper's caller-owned in-memory context, so the daemon was
+neither synchronizing that context across connection threads nor preserving the
+binding across restart. A committed publication recovered from `Pending` also
+lost its publication digest.
+
+**What was tried first:** Recovery re-ran state-aware kernel operations from a
+`Pending` record and derived a fresh safe response. That is sufficient for
+idempotent begin/submit and most terminal states, but a validation failure has a
+service-only diagnostic followed by a separate durable cancellation, and the
+published response's digest was supplied by the just-completed bridge call.
+Reconstructing either response from only `Pending` was not exact at every crash
+boundary.
+
+**Decided:** The private hash-chained journal now has four durable stages:
+hashed `RequestBound`, `Pending`, `EffectResult`, and `Completed`.
+`EffectResult` fsyncs the exact bounded response plus an optional idempotent
+follow-up before that follow-up executes. Startup applies any outstanding
+follow-up and completes the cached response before socket bind. Request IDs are
+stored only as hashes bound to hashes of their canonical requests; live parsing
+uses one synchronized protocol context. A terminal committed response derives
+the current canonical snapshot digest when recovering before `EffectResult`.
+Feature-gated daemon crash injection covers death after each stage and is
+rejected as an unknown option by default builds.
+
+**Why:** This preserves exact transport truth without moving graph or
+coordination authority out of the kernel. The journal remains recovery metadata,
+not canonical code history. Fsync-before-follow-up makes validation cancellation
+replayable; hashed request bindings survive restart without persisting raw
+request IDs; and startup still fails closed on a complete corrupt record or an
+ambiguous pending add while accepting only a torn final record.
+
+**Design-doc impact:** None. This refines the private transport journal selected
+in the decision below; it does not change the protocol, graph model, operation
+log, or single authoritative kernel/redb ownership boundary.
+
 ## 2026-07-16 — Local coordination service uses a private write-ahead request journal and cancels failed validation
 
 **Context:** The frozen Phase-6 local protocol makes every mutating request retryable by client ID plus idempotency key, including a disconnect after the service has accepted a request but before the response arrives. The kernel durably owns graph and coordination transitions, but it does not atomically store arbitrary transport responses, and `add_intent` has no caller-supplied intent ID. A crash between mutation and transport acknowledgement therefore could not be resolved exactly once from the kernel tables alone. The implementation audit also found that existing coordination failpoint types and methods remained reachable from a default library build, and the production bridge worker is an ignored build artifact absent from a clean checkout.

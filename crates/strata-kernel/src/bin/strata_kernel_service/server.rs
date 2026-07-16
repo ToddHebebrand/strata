@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::protocol::{MAX_REQUEST_FRAME_BYTES, serialize_response_frame};
+use super::protocol::{LocalServiceResponse, MAX_REQUEST_FRAME_BYTES, serialize_response_frame};
 use super::session::{ServiceConfig, ServiceSession};
 
 const SOCKET_DIRECTORY: &str = "/tmp/strata-lc";
@@ -130,7 +130,16 @@ fn handle_connection(mut stream: UnixStream, session: &ServiceSession) -> Result
         request.extend_from_slice(&chunk[..read]);
     }
     let response = session.handle_frame(&request);
-    let frame = serialize_response_frame(&response)?;
+    let response_request_id = response.request_id().to_owned();
+    let frame = serialize_response_frame(&response).or_else(|_| {
+        serialize_response_frame(&LocalServiceResponse::error(
+            response_request_id,
+            "response_too_large",
+            "response exceeds the local protocol frame bound",
+            false,
+            Vec::new(),
+        ))
+    })?;
     // A peer may disconnect after the durable effect and before receiving the response.
     let _ = stream.write_all(&frame);
     let _ = stream.flush();

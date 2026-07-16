@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use strata_kernel::IntentRecord;
 
-use super::protocol::{LocalServiceResponse, RequestAction};
+use super::protocol::{LocalServiceRequest, LocalServiceResponse, RequestAction};
 
 const ZERO_HASH: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -28,8 +28,18 @@ pub(super) struct PendingRequest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum JournalRecord {
+    RequestBound {
+        request_hash: String,
+        body_hash: String,
+    },
     Pending {
         request: PendingRequest,
+    },
+    EffectResult {
+        identity: String,
+        body_hash: String,
+        response: LocalServiceResponse,
+        follow_up: Option<FollowUp>,
     },
     Completed {
         identity: String,
@@ -38,9 +48,20 @@ enum JournalRecord {
     },
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum FollowUp {
+    CancelChangeSet { change_set_id: String, tick: u64 },
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum RequestLedgerEntry {
     Pending(PendingRequest),
+    EffectResult {
+        body_hash: String,
+        response: LocalServiceResponse,
+        follow_up: Option<FollowUp>,
+    },
     Completed {
         body_hash: String,
         response: LocalServiceResponse,
@@ -59,6 +80,7 @@ pub(super) struct RequestJournal {
     file: File,
     previous_hash: String,
     entries: BTreeMap<String, RequestLedgerEntry>,
+    request_bindings: BTreeMap<String, String>,
     max_tick: u64,
 }
 
@@ -71,14 +93,41 @@ impl RequestJournal {
             Ok((parsed.previous_hash, parsed.entry_hash, parsed.record))
         })?;
         let mut entries = BTreeMap::new();
+        let mut request_bindings = BTreeMap::new();
         let mut max_tick = 0;
         for (_, _, record) in lines {
             match record {
+                JournalRecord::RequestBound {
+                    request_hash,
+                    body_hash,
+                } => {
+                    if request_bindings
+                        .insert(request_hash, body_hash.clone())
+                        .is_some_and(|previous| previous != body_hash)
+                    {
+                        bail!("request ID hash was rebound to a different body");
+                    }
+                }
                 JournalRecord::Pending { request } => {
                     max_tick = max_tick.max(request.tick);
                     entries.insert(
                         request.identity.clone(),
                         RequestLedgerEntry::Pending(request),
+                    );
+                }
+                JournalRecord::EffectResult {
+                    identity,
+                    body_hash,
+                    response,
+                    follow_up,
+                } => {
+                    entries.insert(
+                        identity,
+                        RequestLedgerEntry::EffectResult {
+                            body_hash,
+                            response,
+                            follow_up,
+                        },
                     );
                 }
                 JournalRecord::Completed {
@@ -101,6 +150,7 @@ impl RequestJournal {
             file,
             previous_hash,
             entries,
+            request_bindings,
             max_tick,
         })
     }
@@ -115,6 +165,20 @@ impl RequestJournal {
 
     pub fn entry(&self, identity: &str) -> Option<&RequestLedgerEntry> {
         self.entries.get(identity)
+    }
+
+    pub fn bind_request(&mut self, request: &LocalServiceRequest) -> Result<bool> {
+        let request_hash = client_hash(&request.request_id);
+        let body_hash = request_body_hash(request)?;
+        if let Some(previous) = self.request_bindings.get(&request_hash) {
+            return Ok(previous == &body_hash);
+        }
+        self.append(JournalRecord::RequestBound {
+            request_hash: request_hash.clone(),
+            body_hash: body_hash.clone(),
+        })?;
+        self.request_bindings.insert(request_hash, body_hash);
+        Ok(true)
     }
 
     pub fn append_pending(&mut self, request: PendingRequest) -> Result<()> {
@@ -145,6 +209,30 @@ impl RequestJournal {
             RequestLedgerEntry::Completed {
                 body_hash,
                 response,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn append_effect_result(
+        &mut self,
+        identity: String,
+        body_hash: String,
+        response: LocalServiceResponse,
+        follow_up: Option<FollowUp>,
+    ) -> Result<()> {
+        self.append(JournalRecord::EffectResult {
+            identity: identity.clone(),
+            body_hash: body_hash.clone(),
+            response: response.clone(),
+            follow_up: follow_up.clone(),
+        })?;
+        self.entries.insert(
+            identity,
+            RequestLedgerEntry::EffectResult {
+                body_hash,
+                response,
+                follow_up,
             },
         );
         Ok(())
@@ -249,6 +337,13 @@ pub(super) fn action_body_hash(client_id: &str, action: &RequestAction) -> Resul
     hasher.update([0]);
     hasher.update(serde_json::to_vec(action)?);
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn request_body_hash(request: &LocalServiceRequest) -> Result<String> {
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(request)?)
+    ))
 }
 
 fn chained_hash(previous_hash: &str, encoded: &[u8]) -> String {

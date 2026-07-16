@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use strata_kernel::NodeBridgeConfig;
 
-use session::ServiceConfig;
+use session::{ServiceConfig, ServiceFailpoint};
 
 fn main() {
     if let Err(error) = run() {
@@ -40,6 +40,28 @@ fn run() -> Result<()> {
 
 fn serve(arguments: &[OsString]) -> Result<()> {
     let values = parse_named(arguments)?;
+    #[cfg(feature = "coordination-test-api")]
+    let allowed = [
+        "--db",
+        "--snapshot",
+        "--bridge-worker",
+        "--source-root",
+        "--corpus-root",
+        "--audit",
+        "--socket-token",
+        "--test-failpoint",
+    ];
+    #[cfg(not(feature = "coordination-test-api"))]
+    let allowed = [
+        "--db",
+        "--snapshot",
+        "--bridge-worker",
+        "--source-root",
+        "--corpus-root",
+        "--audit",
+        "--socket-token",
+    ];
+    reject_unknown(&values, &allowed)?;
     let db_path = required_path(&values, "--db")?;
     let snapshot_path = required_path(&values, "--snapshot")?;
     let worker = required_path(&values, "--bridge-worker")?;
@@ -47,6 +69,22 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     let corpus_root = required_path(&values, "--corpus-root")?;
     let audit_path = required_path(&values, "--audit")?;
     let token = required_text(&values, "--socket-token")?;
+    #[cfg(feature = "coordination-test-api")]
+    let failpoint = match values.get("--test-failpoint") {
+        None => ServiceFailpoint::None,
+        Some(value) => match value.to_str() {
+            Some("after_pending") => ServiceFailpoint::AfterPending,
+            Some("after_effect") => ServiceFailpoint::AfterEffect,
+            Some("after_prepared") => ServiceFailpoint::AfterPrepared,
+            Some("after_follow_up") => ServiceFailpoint::AfterFollowUp,
+            Some("after_completed") => ServiceFailpoint::AfterCompleted,
+            _ => bail!(
+                "invalid test failpoint; expected after_pending, after_effect, after_prepared, after_follow_up, or after_completed"
+            ),
+        },
+    };
+    #[cfg(not(feature = "coordination-test-api"))]
+    let failpoint = ServiceFailpoint::None;
     let bridge_config = NodeBridgeConfig::tsc_only(
         "node",
         vec![worker.into_os_string()],
@@ -61,6 +99,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             snapshot_path,
             bridge_config,
             audit_path,
+            failpoint,
         },
         &token,
     )
@@ -68,8 +107,19 @@ fn serve(arguments: &[OsString]) -> Result<()> {
 
 fn validate_socket(arguments: &[OsString]) -> Result<()> {
     let values = parse_named(arguments)?;
+    reject_unknown(&values, &["--socket"])?;
     let path = required_path(&values, "--socket")?;
     server::validate_socket_path(&path)
+}
+
+fn reject_unknown(
+    values: &std::collections::BTreeMap<String, OsString>,
+    allowed: &[&str],
+) -> Result<()> {
+    if let Some(name) = values.keys().find(|name| !allowed.contains(&name.as_str())) {
+        bail!("unknown option {name}");
+    }
+    Ok(())
 }
 
 fn parse_named(arguments: &[OsString]) -> Result<std::collections::BTreeMap<String, OsString>> {

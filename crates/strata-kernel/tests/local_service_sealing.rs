@@ -31,6 +31,23 @@ fn default_build_service_has_no_test_authority_surface() {
             "default service help exposed {forbidden}: {help}"
         );
     }
+
+    let rejected = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
+        .args([
+            "validate-socket",
+            "--socket",
+            "/tmp/strata-lc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sock",
+            "--test-failpoint",
+            "after_pending",
+        ])
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8_lossy(&rejected.stderr).contains("unknown option"),
+        "{}",
+        String::from_utf8_lossy(&rejected.stderr)
+    );
 }
 
 #[test]
@@ -93,7 +110,7 @@ fn actor_containment_malformed_and_bridge_failures_publish_nothing() {
         serde_json::from_slice(&response[..response.len() - 1]).unwrap()
     };
     let base = |request_id: &str, client: &str, key: Option<&str>, action: Value| {
-        let mut request = json!({"protocolVersion":1,"requestId":request_id,"clientId":client,"deadlineMs":"30000","action":action});
+        let mut request = json!({"protocolVersion":1,"requestId":request_id,"clientId":client,"deadlineMs":"120000","action":action});
         if let Some(key) = key {
             request["idempotencyKey"] = json!(key);
         }

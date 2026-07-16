@@ -9,6 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
+#[cfg(feature = "coordination-test-api")]
+use strata_kernel::{IntentParameters, Kernel, NodeBridgeConfig};
+
 const USER_ID: &str = "fc98295bca9efc3e";
 
 struct Service {
@@ -104,24 +107,37 @@ fn snapshot(directory: &TempDir) -> PathBuf {
 }
 
 fn start(directory: &TempDir, token: &str, worker: &Path) -> Service {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
-        .args([
-            "serve",
-            "--db",
-            directory.path().join("kernel.redb").to_str().unwrap(),
-            "--snapshot",
-            snapshot(directory).to_str().unwrap(),
-            "--bridge-worker",
-            worker.to_str().unwrap(),
-            "--source-root",
-            repo_root().join("examples/medium/src").to_str().unwrap(),
-            "--corpus-root",
-            repo_root().join("examples/medium").to_str().unwrap(),
-            "--socket-token",
-            token,
-            "--audit",
-            directory.path().join("audit.jsonl").to_str().unwrap(),
-        ])
+    start_with_failpoint(directory, token, worker, None)
+}
+
+fn start_with_failpoint(
+    directory: &TempDir,
+    token: &str,
+    worker: &Path,
+    failpoint: Option<&str>,
+) -> Service {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"));
+    command.args([
+        "serve",
+        "--db",
+        directory.path().join("kernel.redb").to_str().unwrap(),
+        "--snapshot",
+        snapshot(directory).to_str().unwrap(),
+        "--bridge-worker",
+        worker.to_str().unwrap(),
+        "--source-root",
+        repo_root().join("examples/medium/src").to_str().unwrap(),
+        "--corpus-root",
+        repo_root().join("examples/medium").to_str().unwrap(),
+        "--socket-token",
+        token,
+        "--audit",
+        directory.path().join("audit.jsonl").to_str().unwrap(),
+    ]);
+    if let Some(failpoint) = failpoint {
+        command.args(["--test-failpoint", failpoint]);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -153,8 +169,28 @@ fn start(directory: &TempDir, token: &str, worker: &Path) -> Service {
     }
 }
 
+#[cfg(feature = "coordination-test-api")]
+fn crash_after_send(
+    service: &mut Service,
+    request_id: &str,
+    client: &str,
+    key: &str,
+    action: Value,
+) {
+    let mut stream = UnixStream::connect(&service.socket).unwrap();
+    stream
+        .write_all(&message(request_id, client, Some(key), action))
+        .unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    assert!(response.is_empty(), "crash boundary returned a response");
+    let status = service.child.wait().unwrap();
+    assert!(!status.success(), "failpoint did not terminate the daemon");
+}
+
 fn message(request_id: &str, client: &str, key: Option<&str>, action: Value) -> Vec<u8> {
-    let mut value = json!({"protocolVersion":1,"requestId":request_id,"clientId":client,"deadlineMs":"30000","action":action});
+    let mut value = json!({"protocolVersion":1,"requestId":request_id,"clientId":client,"deadlineMs":"120000","action":action});
     if let Some(key) = key {
         value["idempotencyKey"] = json!(key);
     }
@@ -393,7 +429,7 @@ fn restart_fences_a_claim_lost_during_bridge_execution_and_publishes_once() {
         let _ = stream.read_to_end(&mut response);
         response
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     let audit_path = directory.path().join("audit.jsonl");
     while Instant::now() < deadline {
         if fs::read_to_string(&audit_path)
@@ -458,4 +494,308 @@ fn restart_fences_a_claim_lost_during_bridge_execution_and_publishes_once() {
         )["result"]["graphGeneration"],
         "1"
     );
+}
+
+#[test]
+fn journal_accepts_only_a_torn_final_record_and_rejects_complete_corruption() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = bridge_worker();
+    let service = start(&directory, "journal-integrity", &worker);
+    assert_eq!(
+        send(
+            &service,
+            "begin",
+            "client:integrity",
+            Some("begin"),
+            json!({"type":"begin_change_set","reasoning":"journal integrity"}),
+        )["ok"],
+        true
+    );
+    drop(service);
+    let journal_path = directory.path().join("kernel.redb.service-journal.jsonl");
+    let clean = fs::read(&journal_path).unwrap();
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&journal_path)
+        .unwrap()
+        .write_all(b"{\"torn\"")
+        .unwrap();
+    let recovered = start(&directory, "journal-torn", &worker);
+    drop(recovered);
+    assert_eq!(fs::read(&journal_path).unwrap(), clean);
+
+    let mut corrupt = String::from_utf8(clean).unwrap();
+    let hash_start = corrupt.find("\"entryHash\":\"").unwrap() + "\"entryHash\":\"".len();
+    let replacement = if &corrupt[hash_start..hash_start + 1] == "f" {
+        "e"
+    } else {
+        "f"
+    };
+    corrupt.replace_range(hash_start..hash_start + 1, replacement);
+    fs::write(&journal_path, corrupt).unwrap();
+    let rejected = std::panic::catch_unwind(|| start(&directory, "journal-corrupt", &worker));
+    assert!(rejected.is_err(), "complete hash corruption reached bind");
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn ambiguous_pending_add_intent_fails_closed_before_socket_bind() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = bridge_worker();
+    let service = start(&directory, "ambiguous-setup", &worker);
+    let change = send(
+        &service,
+        "begin",
+        "client:ambiguous",
+        Some("begin"),
+        json!({"type":"begin_change_set","reasoning":"ambiguous recovery"}),
+    )["result"]["changeSetId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    drop(service);
+
+    let mut crashed =
+        start_with_failpoint(&directory, "ambiguous-crash", &worker, Some("after_effect"));
+    crash_after_send(
+        &mut crashed,
+        "add:crash",
+        "client:ambiguous",
+        "add",
+        json!({"type":"add_intent","changeSetId":change,"intent":{"type":"rename_symbol","declarationId":USER_ID,"newName":"Account"}}),
+    );
+    drop(crashed);
+
+    let bridge_config = NodeBridgeConfig::tsc_only(
+        "node",
+        vec![worker.clone().into_os_string()],
+        Duration::from_secs(30),
+        repo_root().join("examples/medium/src"),
+        repo_root().join("examples/medium"),
+        true,
+    );
+    let (kernel, _) =
+        Kernel::open_with_node_bridge(directory.path().join("kernel.redb"), bridge_config).unwrap();
+    kernel
+        .add_intent(
+            &change,
+            IntentParameters::RenameSymbol {
+                declaration_id: USER_ID.into(),
+                new_name: "Customer".into(),
+            },
+        )
+        .unwrap();
+    drop(kernel);
+
+    let rejected = std::panic::catch_unwind(|| start(&directory, "ambiguous-recovered", &worker));
+    assert!(
+        rejected.is_err(),
+        "ambiguous pending add reached socket bind"
+    );
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn journal_crash_boundaries_replay_one_exact_begin_effect() {
+    let worker = bridge_worker();
+    for stage in [
+        "after_pending",
+        "after_effect",
+        "after_prepared",
+        "after_completed",
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let action = json!({"type":"begin_change_set","reasoning":format!("crash at {stage}")});
+        let mut crashed = start_with_failpoint(
+            &directory,
+            &format!("journal-{stage}"),
+            &worker,
+            Some(stage),
+        );
+        crash_after_send(
+            &mut crashed,
+            "begin:crash",
+            "client:journal",
+            "begin:key",
+            action.clone(),
+        );
+        drop(crashed);
+
+        let recovered = start(&directory, &format!("journal-{stage}-recovered"), &worker);
+        let first = send(
+            &recovered,
+            "begin:retry",
+            "client:journal",
+            Some("begin:key"),
+            action.clone(),
+        );
+        let second = send(
+            &recovered,
+            "begin:replay",
+            "client:journal",
+            Some("begin:key"),
+            action,
+        );
+        assert_eq!(first["ok"], true, "{stage}: {first}");
+        assert_eq!(first["result"], second["result"], "{stage}");
+        assert_eq!(first["result"]["state"], "draft", "{stage}: {first}");
+    }
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn published_effect_recovery_preserves_the_publication_digest() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = bridge_worker();
+    let service = start(&directory, "digest-setup", &worker);
+    let change = send(
+        &service,
+        "begin",
+        "client:digest",
+        Some("begin"),
+        json!({"type":"begin_change_set","reasoning":"digest recovery"}),
+    )["result"]["changeSetId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        send(
+            &service,
+            "add",
+            "client:digest",
+            Some("add"),
+            json!({"type":"add_intent","changeSetId":change,"intent":{"type":"rename_symbol","declarationId":USER_ID,"newName":"Account"}}),
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        send(
+            &service,
+            "submit",
+            "client:digest",
+            Some("submit"),
+            json!({"type":"submit_change_set","changeSetId":change}),
+        )["ok"],
+        true
+    );
+    drop(service);
+
+    let mut crashed =
+        start_with_failpoint(&directory, "digest-crash", &worker, Some("after_effect"));
+    crash_after_send(
+        &mut crashed,
+        "advance:crash",
+        "client:digest",
+        "advance",
+        json!({"type":"advance_change_set","changeSetId":change}),
+    );
+    drop(crashed);
+
+    let recovered = start(&directory, "digest-recovered", &worker);
+    let response = send(
+        &recovered,
+        "advance:retry",
+        "client:digest",
+        Some("advance"),
+        json!({"type":"advance_change_set","changeSetId":change}),
+    );
+    assert_eq!(response["result"]["state"], "published", "{response}");
+    let digest = response["result"]["publicationDigest"].as_str().unwrap();
+    assert_eq!(digest.len(), 64, "{response}");
+}
+
+#[cfg(feature = "coordination-test-api")]
+fn assert_validation_failure_recovery(stage: &str) {
+    let directory = tempfile::tempdir().unwrap();
+    let real_worker = bridge_worker();
+    let wrapper = directory.path().join("validation-fails.mjs");
+    fs::write(
+        &wrapper,
+        format!(
+            "import {{spawnSync}} from 'node:child_process';let b='';process.stdin.setEncoding('utf8');process.stdin.on('data',x=>b+=x);process.stdin.on('end',()=>{{const r=JSON.parse(b);if(r.kind==='buildValidateCandidate'){{process.stderr.write('candidate rejected exactly');process.exit(1)}}const x=spawnSync(process.execPath,[{}],{{input:b,encoding:'utf8'}});process.stdout.write(x.stdout??'');process.stderr.write(x.stderr??'');process.exit(x.status??1)}});",
+            serde_json::to_string(real_worker.to_str().unwrap()).unwrap()
+        ),
+    )
+    .unwrap();
+    let service = start(&directory, "validation-setup", &wrapper);
+    let change = send(
+        &service,
+        "begin",
+        "client:validation",
+        Some("begin"),
+        json!({"type":"begin_change_set","reasoning":"validation recovery"}),
+    )["result"]["changeSetId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        send(
+            &service,
+            "add",
+            "client:validation",
+            Some("add"),
+            json!({"type":"add_intent","changeSetId":change,"intent":{"type":"rename_symbol","declarationId":USER_ID,"newName":"Account"}}),
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        send(
+            &service,
+            "submit",
+            "client:validation",
+            Some("submit"),
+            json!({"type":"submit_change_set","changeSetId":change}),
+        )["ok"],
+        true
+    );
+    drop(service);
+
+    let mut crashed = start_with_failpoint(
+        &directory,
+        &format!("validation-{stage}-crash"),
+        &wrapper,
+        Some(stage),
+    );
+    crash_after_send(
+        &mut crashed,
+        "advance:crash",
+        "client:validation",
+        "advance",
+        json!({"type":"advance_change_set","changeSetId":change}),
+    );
+    drop(crashed);
+
+    let recovered = start(&directory, "validation-recovered", &wrapper);
+    let first = send(
+        &recovered,
+        "advance:retry",
+        "client:validation",
+        Some("advance"),
+        json!({"type":"advance_change_set","changeSetId":change}),
+    );
+    let second = send(
+        &recovered,
+        "advance:replay",
+        "client:validation",
+        Some("advance"),
+        json!({"type":"advance_change_set","changeSetId":change}),
+    );
+    assert_eq!(first["result"], second["result"]);
+    assert_eq!(first["result"]["state"], "validation_failed", "{first}");
+    assert_eq!(
+        first["result"]["diagnostics"][0]["code"],
+        "candidate_validation_failed"
+    );
+    assert_eq!(
+        first["result"]["diagnostics"][0]["message"],
+        "candidate validation failed"
+    );
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn validation_failure_recovery_preserves_the_exact_diagnostic() {
+    assert_validation_failure_recovery("after_effect");
+    assert_validation_failure_recovery("after_prepared");
+    assert_validation_failure_recovery("after_follow_up");
 }

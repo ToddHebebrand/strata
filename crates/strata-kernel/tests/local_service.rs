@@ -373,7 +373,7 @@ fn request(
         "protocolVersion": 1,
         "requestId": request_id,
         "clientId": client_id,
-        "deadlineMs": "30000",
+        "deadlineMs": "120000",
         "action": action,
     });
     if let Some(key) = idempotency_key {

@@ -384,6 +384,10 @@ impl LocalServiceProtocolContext {
         Ok(())
     }
 
+    pub(super) fn forget_request(&mut self, request_id: &str) {
+        self.requests.remove(request_id);
+    }
+
     fn validate_request(&mut self, request: &LocalServiceRequest) -> Result<()> {
         if let Some(change_set_id) = request.action.change_set_id()
             && let Some(owner) = self.owners.get(change_set_id)
@@ -566,6 +570,13 @@ impl LocalServiceResponse {
                 ok: False,
                 error: response.error.clone(),
             }),
+        }
+    }
+
+    pub(super) fn request_id(&self) -> &str {
+        match self {
+            Self::Success(response) => &response.request_id,
+            Self::Error(response) => &response.request_id,
         }
     }
 
