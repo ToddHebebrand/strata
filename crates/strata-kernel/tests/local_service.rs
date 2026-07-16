@@ -10,6 +10,13 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 
+const RAW_REJECTED_FIXTURES: [&str; 4] = [
+    "duplicate-key",
+    "position-exponent",
+    "position-negative-zero",
+    "lone-surrogate",
+];
+
 #[derive(Deserialize)]
 struct FixtureFile {
     cases: Vec<FixtureCase>,
@@ -42,6 +49,20 @@ fn accepted_value(name: &str) -> Value {
         .find(|entry| entry.name == name)
         .unwrap()
         .value
+}
+
+fn raw_rejected_frame(name: &str) -> Vec<u8> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/live-compare/tests/fixtures/protocol-v1/raw-rejected")
+        .join(format!("{name}.json"));
+    fs::read(path).unwrap()
+}
+
+fn raw_accepted_frame(name: &str) -> Vec<u8> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/live-compare/tests/fixtures/protocol-v1/raw-accepted")
+        .join(format!("{name}.json"));
+    fs::read(path).unwrap()
 }
 
 #[test]
@@ -78,6 +99,26 @@ fn protocol_shared_invalid_messages_are_rejected() {
             case.name
         );
     }
+}
+
+#[test]
+fn protocol_shared_raw_json_representations_are_rejected() {
+    for name in RAW_REJECTED_FIXTURES {
+        assert!(
+            parse_request_frame(&raw_rejected_frame(name), None).is_err(),
+            "raw fixture unexpectedly accepted: {name}"
+        );
+    }
+}
+
+#[test]
+fn protocol_shared_reordered_whitespace_raw_json_is_accepted() {
+    parse_request_frame(&raw_accepted_frame("reordered-whitespace"), None).unwrap();
+}
+
+#[test]
+fn protocol_shared_paired_surrogate_raw_json_is_accepted() {
+    parse_request_frame(&raw_accepted_frame("surrogate-pair"), None).unwrap();
 }
 
 #[test]

@@ -1,0 +1,1 @@
+{"protocolVersion":1,"requestId":"request:position-exponent","clientId":"client:alpha","deadlineMs":"30000","idempotencyKey":"idem:position-exponent","action":{"type":"add_intent","changeSetId":"change:1","intent":{"type":"add_parameter","functionId":"node:format-user","name":"locale","typeText":"string","position":1e0,"value":"\"en-US\""}}}

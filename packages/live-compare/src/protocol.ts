@@ -21,6 +21,22 @@ function utf8Length(value: string): number {
   return utf8.encode(value).byteLength;
 }
 
+function hasUnpairedSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff) {
+        return true;
+      }
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function boundedString(maxBytes: number, allowEmpty = false) {
   return z.string().superRefine((value, context) => {
     if (!allowEmpty && value.length === 0) {
@@ -28,6 +44,9 @@ function boundedString(maxBytes: number, allowEmpty = false) {
     }
     if (utf8Length(value) > maxBytes) {
       context.addIssue({ code: "custom", message: `string exceeds ${maxBytes} UTF-8 bytes` });
+    }
+    if (hasUnpairedSurrogate(value)) {
+      context.addIssue({ code: "custom", message: "string contains an unpaired UTF-16 surrogate" });
     }
   });
 }
@@ -282,6 +301,8 @@ export class LocalServiceProtocolContext {
   }
 
   recordChangeSetOwner(changeSetIdValue: string, clientId: string): void {
+    opaqueIdSchema.parse(changeSetIdValue);
+    opaqueIdSchema.parse(clientId);
     const existing = this.#owners.get(changeSetIdValue);
     if (existing !== undefined && existing !== clientId) {
       throw new Error("change set belongs to a different client");
@@ -313,6 +334,149 @@ export class LocalServiceProtocolContext {
   }
 }
 
+function validateStrictRawJson(text: string): void {
+  let index = 0;
+
+  const fail = (message: string): never => {
+    throw new Error(`invalid strict JSON representation at offset ${index}: ${message}`);
+  };
+
+  const skipWhitespace = (): void => {
+    while (
+      text[index] === " " ||
+      text[index] === "\t" ||
+      text[index] === "\r" ||
+      text[index] === "\n"
+    ) {
+      index += 1;
+    }
+  };
+
+  const parseString = (): string => {
+    const start = index;
+    if (text[index] !== '"') {
+      return fail("expected string");
+    }
+    index += 1;
+    while (index < text.length) {
+      const character = text[index]!;
+      if (character === '"') {
+        index += 1;
+        const value = JSON.parse(text.slice(start, index)) as string;
+        if (hasUnpairedSurrogate(value)) {
+          return fail("string contains an unpaired UTF-16 surrogate");
+        }
+        return value;
+      }
+      if (character === "\\") {
+        index += 1;
+        if (index >= text.length) {
+          return fail("unterminated escape sequence");
+        }
+        if (text[index] === "u") {
+          if (!/^[0-9a-fA-F]{4}$/.test(text.slice(index + 1, index + 5))) {
+            return fail("invalid Unicode escape");
+          }
+          index += 5;
+        } else {
+          index += 1;
+        }
+        continue;
+      }
+      if (character.charCodeAt(0) < 0x20) {
+        return fail("unescaped control character in string");
+      }
+      index += 1;
+    }
+    return fail("unterminated string");
+  };
+
+  const parseValue = (): void => {
+    skipWhitespace();
+    const character = text[index];
+    if (character === "{") {
+      index += 1;
+      skipWhitespace();
+      const keys = new Set<string>();
+      if (text[index] === "}") {
+        index += 1;
+        return;
+      }
+      while (index < text.length) {
+        const key = parseString();
+        if (keys.has(key)) {
+          return fail(`duplicate object key ${JSON.stringify(key)}`);
+        }
+        keys.add(key);
+        skipWhitespace();
+        if (text[index] !== ":") {
+          return fail("expected colon after object key");
+        }
+        index += 1;
+        parseValue();
+        skipWhitespace();
+        if (text[index] === "}") {
+          index += 1;
+          return;
+        }
+        if (text[index] !== ",") {
+          return fail("expected comma or object terminator");
+        }
+        index += 1;
+        skipWhitespace();
+      }
+      return fail("unterminated object");
+    }
+    if (character === "[") {
+      index += 1;
+      skipWhitespace();
+      if (text[index] === "]") {
+        index += 1;
+        return;
+      }
+      while (index < text.length) {
+        parseValue();
+        skipWhitespace();
+        if (text[index] === "]") {
+          index += 1;
+          return;
+        }
+        if (text[index] !== ",") {
+          return fail("expected comma or array terminator");
+        }
+        index += 1;
+      }
+      return fail("unterminated array");
+    }
+    if (character === '"') {
+      parseString();
+      return;
+    }
+    for (const literal of ["true", "false", "null"]) {
+      if (text.startsWith(literal, index)) {
+        index += literal.length;
+        return;
+      }
+    }
+    const number = text
+      .slice(index)
+      .match(/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/)?.[0];
+    if (number === undefined) {
+      return fail("expected JSON value");
+    }
+    if (!/^(0|[1-9][0-9]*)$/.test(number)) {
+      return fail("numbers must use canonical unsigned decimal integer syntax");
+    }
+    index += number.length;
+  };
+
+  parseValue();
+  skipWhitespace();
+  if (index !== text.length) {
+    fail("trailing content after JSON value");
+  }
+}
+
 function decodeFrame(bytes: Uint8Array, maxBytes: number): unknown {
   if (bytes.byteLength > maxBytes) {
     throw new Error(`frame exceeds ${maxBytes} byte bound`);
@@ -327,6 +491,7 @@ function decodeFrame(bytes: Uint8Array, maxBytes: number): unknown {
   if (text.length === 0) {
     throw new Error("frame payload must not be empty");
   }
+  validateStrictRawJson(text);
   return JSON.parse(text) as unknown;
 }
 

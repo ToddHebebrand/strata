@@ -13,6 +13,12 @@ import {
 
 type Direction = "request" | "response";
 type FixtureCase = { name: string; direction: Direction; value: unknown };
+const RAW_REJECTED_FIXTURES = [
+  "duplicate-key",
+  "position-exponent",
+  "position-negative-zero",
+  "lone-surrogate"
+] as const;
 
 function fixture<T>(name: "accepted" | "rejected"): T {
   const path = fileURLToPath(new URL(`fixtures/protocol-v1/${name}.json`, import.meta.url));
@@ -21,6 +27,20 @@ function fixture<T>(name: "accepted" | "rejected"): T {
 
 function frame(value: unknown): Uint8Array {
   return new TextEncoder().encode(`${JSON.stringify(value)}\n`);
+}
+
+function rawRejectedFrame(name: (typeof RAW_REJECTED_FIXTURES)[number]): Uint8Array {
+  const path = fileURLToPath(
+    new URL(`fixtures/protocol-v1/raw-rejected/${name}.json`, import.meta.url)
+  );
+  return readFileSync(path);
+}
+
+function rawAcceptedFrame(name: "reordered-whitespace" | "surrogate-pair"): Uint8Array {
+  const path = fileURLToPath(
+    new URL(`fixtures/protocol-v1/raw-accepted/${name}.json`, import.meta.url)
+  );
+  return readFileSync(path);
 }
 
 function changedInspectRequest(): Record<string, unknown> {
@@ -55,6 +75,21 @@ describe("local service protocol v1", () => {
       const parse = testCase.direction === "request" ? parseRequestFrame : parseResponseFrame;
       expect(() => parse(frame(testCase.value)), testCase.name).toThrow();
     }
+  });
+
+  it.each(RAW_REJECTED_FIXTURES)(
+    "rejects shared byte-preserving raw JSON representation %s",
+    (name) => {
+      expect(() => parseRequestFrame(rawRejectedFrame(name))).toThrow();
+    }
+  );
+
+  it("accepts shared raw JSON with reordered properties and insignificant whitespace", () => {
+    expect(() => parseRequestFrame(rawAcceptedFrame("reordered-whitespace"))).not.toThrow();
+  });
+
+  it("accepts a shared raw JSON paired UTF-16 surrogate escape", () => {
+    expect(() => parseRequestFrame(rawAcceptedFrame("surrogate-pair"))).not.toThrow();
   });
 
   it("rejects missing, empty, extra, and multiple frames", () => {
@@ -114,5 +149,21 @@ describe("local service protocol v1", () => {
     const second = accepted.cases.find((entry) => entry.name === "inspect-nodes-request")!.value;
     parseRequestFrame(frame(first), context);
     expect(() => parseRequestFrame(frame(second), context)).toThrow(/context capacity/);
+  });
+
+  it("validates change-set and client IDs before retaining ownership", () => {
+    const context = new LocalServiceProtocolContext(1, 1);
+    const oversized = "x".repeat(513);
+    const oversizedUtf8 = "é".repeat(257);
+
+    expect(() => context.recordChangeSetOwner("", "client:alpha")).toThrow(/must not be empty/);
+    expect(() => context.recordChangeSetOwner("change:1", "")).toThrow(/must not be empty/);
+    expect(() => context.recordChangeSetOwner(oversized, "client:alpha")).toThrow(/exceeds 512/);
+    expect(() => context.recordChangeSetOwner("change:1", oversized)).toThrow(/exceeds 512/);
+    expect(() => context.recordChangeSetOwner(oversizedUtf8, "client:alpha")).toThrow(/exceeds 512/);
+    expect(() => context.recordChangeSetOwner("change:1", "client:alpha")).not.toThrow();
+    expect(() => context.recordChangeSetOwner("change:2", "client:alpha")).toThrow(
+      /context capacity/
+    );
   });
 });
