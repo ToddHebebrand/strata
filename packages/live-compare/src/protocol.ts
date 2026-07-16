@@ -205,6 +205,16 @@ const eventSchema = z
   .object({
     sequence: canonicalU64Schema,
     changeSetId: opaqueIdSchema,
+    kind: z.enum([
+      "intent_queued",
+      "intent_ready",
+      "intent_needs_decision",
+      "intent_committed",
+      "intent_cancelled",
+      "intent_failed",
+      "lease_expired",
+      "scope_expanded"
+    ]),
     state: changeSetStateSchema,
     operationId: opaqueIdSchema.nullable(),
     affectedNodeIds: z.array(opaqueIdSchema).max(MAX_ARRAY_ITEMS),

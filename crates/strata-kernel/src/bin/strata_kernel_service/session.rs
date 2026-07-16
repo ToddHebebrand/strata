@@ -19,7 +19,7 @@ use super::audit::{
 use super::protocol::{
     CancelledState, ChangeSetState, Diagnostic, InspectedNode, Intent, LocalServiceProtocolContext,
     LocalServiceRequest, LocalServiceResponse, NodeRelationship, RequestAction, ResponseResult,
-    ServiceEvent, TicketState, WireU64, parse_request_frame,
+    ServiceEvent, ServiceEventKind, TicketState, WireU64, parse_request_frame,
 };
 
 const MAX_INTENTS: usize = 256;
@@ -752,6 +752,7 @@ impl ServiceSession {
         Ok(ServiceEvent {
             sequence: WireU64::new(event.sequence),
             change_set_id: event.change_set_id,
+            kind: service_event_kind(&event.kind),
             state: event_state(&event.kind),
             operation_id: operation.as_ref().map(|record| record.operation_id.clone()),
             affected_node_ids: bounded_affected_ids(
@@ -886,6 +887,19 @@ impl ServiceSession {
         }
         #[cfg(not(feature = "coordination-test-api"))]
         let _ = (self.failpoint, stage);
+    }
+}
+
+fn service_event_kind(kind: &CoordinationEventKind) -> ServiceEventKind {
+    match kind {
+        CoordinationEventKind::IntentQueued => ServiceEventKind::IntentQueued,
+        CoordinationEventKind::IntentReady => ServiceEventKind::IntentReady,
+        CoordinationEventKind::IntentNeedsDecision => ServiceEventKind::IntentNeedsDecision,
+        CoordinationEventKind::IntentCommitted => ServiceEventKind::IntentCommitted,
+        CoordinationEventKind::IntentCancelled => ServiceEventKind::IntentCancelled,
+        CoordinationEventKind::IntentFailed => ServiceEventKind::IntentFailed,
+        CoordinationEventKind::LeaseExpired => ServiceEventKind::LeaseExpired,
+        CoordinationEventKind::ScopeExpanded => ServiceEventKind::ScopeExpanded,
     }
 }
 

@@ -279,11 +279,25 @@ pub(super) struct NodeRelationship {
 pub(super) struct ServiceEvent {
     pub(super) sequence: WireU64,
     pub(super) change_set_id: String,
+    pub(super) kind: ServiceEventKind,
     pub(super) state: ChangeSetState,
     pub(super) operation_id: Option<String>,
     pub(super) affected_node_ids: Vec<String>,
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) publication_digest: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ServiceEventKind {
+    IntentQueued,
+    IntentReady,
+    IntentNeedsDecision,
+    IntentCommitted,
+    IntentCancelled,
+    IntentFailed,
+    LeaseExpired,
+    ScopeExpanded,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

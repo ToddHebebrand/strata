@@ -69,6 +69,15 @@ describe("local service protocol v1", () => {
     }
   });
 
+  it("exposes the bounded public coordination event kind without authority data", () => {
+    const accepted = fixture<{ cases: FixtureCase[] }>("accepted");
+    const value = accepted.cases.find((entry) => entry.name === "read-events-response")!.value;
+    const parsed = parseResponseFrame(frame(value));
+    expect(parsed.ok && parsed.result.type === "events" && parsed.result.events[0]?.kind).toBe(
+      "intent_committed"
+    );
+  });
+
   it("rejects every shared invalid request or response", () => {
     const rejected = fixture<{ cases: FixtureCase[] }>("rejected");
     for (const testCase of rejected.cases) {
