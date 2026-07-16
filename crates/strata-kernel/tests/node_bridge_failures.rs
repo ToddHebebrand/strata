@@ -1,3 +1,5 @@
+#![cfg(feature = "coordination-test-api")]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -7,6 +7,20 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-15 — Two-operation bridge passes on the explicit source projection; complete-fixture candidate validation remains unproved
+
+**Context:** The approved Rust–Node bridge design required real `rename_symbol` and `add_parameter` analysis, candidate construction, TypeScript validation, Rust containment/publication, and recovery on `examples/medium`. The committed ingest fixture contains 1,282 nodes and 614 references across source, tests, and tool configuration. The existing validation profile also requires every rendered module to remain under its trusted `sourceRoot`.
+
+**What was tried first:** The real-worker acceptance first retained the existing ingest-derived `src/**` modules. Independent review then required the preferred complete-snapshot experiment. All 25 module paths were localized below the trusted corpus and `sourceRoot` was widened to the corpus root without weakening path checks or containment. The existing tsc-only candidate gate reached validation and returned `Validate/typescriptFailed`.
+
+**Decided:** The two-operation bridge is a bounded PASS on the exact ingest-derived `src/**` source projection: 1,203 nodes and 592 references across 22 modules. The untouched 1,282-node/614-reference snapshot remains the input for semantic-scope and disjointness checks, but real candidate publication does not claim full-fixture validation. The projection excludes 79 nodes, 22 references, and four pinned cross-boundary `formatTimestamp` reference sources. This boundary is fixed in deterministic tests and the spike evidence; it is not permission to relax trusted-root validation or omit arbitrary dependencies.
+
+**Why:** The source projection is the existing product compiler scope and is sufficient to prove the Rust/Node authority split and both real structural operations. Treating the failed complete-fixture experiment as a pass would overstate the evidence; treating unrelated test/tool modules as required candidate publication content would fold an existing corpus-validation limitation into the coordination protocol.
+
+**Unaffected boundaries:** Rust still owns scope versions, reservations, policy, digest, containment, fencing, canonical redb publication, and recovery. Node still owns TypeScript semantics and validation but has no canonical-write authority. G+1 remains exactly +9 nodes/+2 references with zero churn among G0 records. The existing SQLite path remains supported.
+
+**Design-doc impact:** None. `strata-design.md` already separates transient validation artifacts from canonical graph authority. The approved bridge design's full-fixture reading is narrowed by this evidence entry; the later full key-free acceptance gate and live comparison remain unapproved.
+
 ## 2026-07-15 — Coordination kernel bounded PASS restored after authority and concurrency correction
 
 **Context:** The 2026-07-14 withdrawal correctly rejected the initial scheduler result because default callers could mint semantic authority, two already-claimed disjoint changes could not both publish, candidate construction held global locks, release paths could create stale Ready authority, and leases could strand authority. The approved correction replaced those mechanisms with a sealed provider boundary, durable dependency clocks, centralized fresh readiness planning, deterministic leases, and unlocked optimistic publication.
