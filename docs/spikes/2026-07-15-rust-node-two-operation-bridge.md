@@ -129,6 +129,27 @@ measured real requests are below 1% of the request ceiling and responses below
 | Restart recovers graph and canonical operation without Node | PASS | rename recovery and redb recovery 23/23 |
 | Existing SQLite path remains supported | PASS with known baseline | store 177/177; verify retains only documented unrelated failure |
 
+### Final review containment correction
+
+The final whole-branch review found that the materialized-Identifier exception
+could derive authority for an existing node from the worker-proposed parent.
+A worker could therefore reparent an existing validation-only Identifier into
+an inferred writable statement and gain node/edge write authority.
+
+The regression failed first because containment returned `Ok(())`. The
+corrected rule derives existing-node/source authority only from the current
+graph and requires an Identifier upsert to retain its current kind, parent, and
+child index; only a genuinely absent ID may derive authority from a proposed
+new Identifier. Deletes also use current identity. The clean analyzer group
+passed 3/3, including the existing direct-child and fresh-child cases.
+
+Fresh post-correction gates passed: the 21-row failure matrix 1/1; bridge
+71/71 plus default real-worker 3/3; feature real-worker acceptance 11/11;
+default Rust (library 16 passed/1 ignored); coordination-feature Rust (library
+16 passed/1 ignored); redb-feature Rust (library 19 passed/1 ignored); format;
+strict all-target/all-feature Clippy; and no-default compile. The new unit test
+is the only gate-count change. No EPIPE or timeout flake occurred.
+
 ## Divergence and stop-condition audit
 
 The preferred complete-snapshot candidate experiment was attempted first. With

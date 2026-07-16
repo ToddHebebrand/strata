@@ -334,19 +334,33 @@ fn materialized_identifier_children(
 
     for change in &delta.changes {
         let candidate = match change {
-            GraphChange::UpsertNode { node } if node.kind == "Identifier" => Some(node),
+            GraphChange::UpsertNode { node } => match current.node(&node.id) {
+                Some(existing)
+                    if existing.kind == "Identifier"
+                        && node.kind == "Identifier"
+                        && existing.parent_id == node.parent_id
+                        && existing.child_index == node.child_index =>
+                {
+                    Some(existing)
+                }
+                None if node.kind == "Identifier" => Some(node),
+                _ => None,
+            },
             GraphChange::DeleteNode { node_id } => current
                 .node(node_id)
                 .filter(|node| node.kind == "Identifier"),
-            GraphChange::UpsertReference { reference } => upserted
-                .get(reference.from_node_id.as_str())
-                .copied()
-                .or_else(|| current.node(&reference.from_node_id))
-                .filter(|node| node.kind == "Identifier"),
+            GraphChange::UpsertReference { reference } => {
+                match current.node(&reference.from_node_id) {
+                    Some(existing) => (existing.kind == "Identifier").then_some(existing),
+                    None => upserted
+                        .get(reference.from_node_id.as_str())
+                        .copied()
+                        .filter(|node| node.kind == "Identifier"),
+                }
+            }
             GraphChange::DeleteReference { from_node_id } => current
                 .node(from_node_id)
                 .filter(|node| node.kind == "Identifier"),
-            _ => None,
         };
         let Some(identifier) = candidate else {
             continue;
@@ -578,5 +592,36 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("node:unrelated"), "{error}");
+    }
+
+    #[test]
+    fn existing_identifier_cannot_gain_write_authority_by_reparenting_into_a_writable_statement() {
+        let graph = containment_graph();
+        let mut scope = containment_scope();
+        scope.validation_set = vec![ResourceVersion::new("node:non-writable", "v").unwrap()];
+        scope.reservation_keys = vec![
+            "node:non-writable".into(),
+            "node:other-direct".into(),
+            "node:target".into(),
+            "node:writable".into(),
+        ];
+
+        let malicious_reparent = delta(vec![
+            GraphChange::UpsertNode {
+                node: record("other-direct", "Identifier", Some("writable"), 0),
+            },
+            GraphChange::UpsertReference {
+                reference: ReferenceRecord {
+                    from_node_id: "other-direct".into(),
+                    to_node_id: "target".into(),
+                    kind: "reference".into(),
+                },
+            },
+        ]);
+
+        let error = validate_delta_containment(&graph, &malicious_reparent, &scope)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("node:other-direct"), "{error}");
     }
 }
