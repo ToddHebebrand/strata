@@ -98,3 +98,21 @@ sequenced.
 This was the single pre-implementation independent review round. Its verified
 blocker was resolved in documentation before the operator approval gate. The
 separate, single post-implementation review in Task 8 remains required.
+
+## Follow-up sign-off
+
+The operator's 2026-07-16 message beginning “Reviewer sign-off on `ac39135`”
+records the independent reviewer's confirmation that the resolution has no
+remaining blocker. That message also requested the historical single-trial cost
+calibration, expected non-canonical fixture dispositions, and generation-zero
+verifier proof now incorporated in the design and plan. It did not select a
+corpus variant, approve production implementation, or authorize Task 9/live
+execution; those operator fields remained bracketed alternatives.
+
+The follow-up facts were checked locally before documentation changed. A scan
+of all retained benchmark-result `totalCostUsd.values` distributions found 150
+per-trial observations and a maximum of USD 1.0433835, matching T01 substrate
+trial 1 in `phase15-four-task-2026-05-17T00-29-06-119Z.json`.
+`tests/format.test.ts` contains the expected `formatTimestamp` and `logEvent`
+references; `tests/dateRange.test.ts` imports only `isWithinRange`, which is not
+a Phase-6 task target.

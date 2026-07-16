@@ -113,6 +113,8 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 **Files:**
 
 - Create: `docs/spikes/2026-07-16-phase-6-live-comparison-design-review.md`
+- Create after explicit approval:
+  `docs/spikes/2026-07-16-phase-6-live-comparison-implementation.md`
 - Modify: `docs/superpowers/specs/2026-07-16-phase-6-live-comparison-design.md`
   only for verified review findings.
 - Modify: `docs/superpowers/plans/2026-07-16-phase-6-live-comparison.md` only for
@@ -465,6 +467,15 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   registered callsite. A different default, duplicate insertion, or insertion
   outside those stable IDs must fail as unexpected scope.
 
+  Add a generation-zero row for every registered packet configuration. The
+  untouched corpus must pass the exact source-only TypeScript roots/options,
+  that packet's behavioral fixture allowlist, excluded-fixture digest checks,
+  and canonical-boundary classification before any mutation. Fixtures must
+  express behavior invariant under the registered rename/add-parameter result;
+  final-state AST/text predicates are hashed at generation zero but evaluated
+  only after mutation. Prove one failing generation-zero configuration stops
+  qualification rather than becoming an arm failure.
+
 - [ ] **Step 3: Add the failing canonical-boundary preflight.**
 
   Enumerate every textual occurrence and resolved reference to each D/M/R/S/X/G
@@ -475,6 +486,13 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   either arm can use a worktree test edit to satisfy the common verifier. In the
   caller-enriched variant, its test must import only a stable wrapper from the
   appended source module and must not name a rename target.
+
+  For the current corpus, assert the expected discovered dispositions:
+  `tests/format.test.ts` is a frozen, excluded historical fixture for D2/G2 via
+  `formatTimestamp` and M1/X1 via `logEvent`; `tests/dateRange.test.ts` is a
+  frozen, excluded historical fixture with no Phase-6 task-target reference.
+  Do not hard-code these as the search result: change either file or add a new
+  non-canonical target occurrence and prove the preflight detects the mismatch.
 
 - [ ] **Step 4: Add failing D/M/R/S/G deterministic tests through the service.**
 

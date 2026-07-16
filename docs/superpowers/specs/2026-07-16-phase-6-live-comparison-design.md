@@ -398,16 +398,39 @@ classified without weakening an acceptance predicate, implementation stops for
 operator review. It may not silently expand publication authority or narrow a
 task.
 
+The expected current-corpus inventory is not itself a new finding:
+`tests/format.test.ts` is classified once for each applicable packet as a
+historical fixture, frozen and excluded from the Phase-6 green gate. Its
+`formatTimestamp` reference belongs to D2/G2 and its `logEvent` reference to
+M1/X1. `tests/dateRange.test.ts` is also frozen and excluded but has no
+Phase-6 task-target reference. The preflight must still discover these facts
+from the registered corpus rather than hard-code them, and any different or
+additional non-canonical target occurrence fails manifest freezing pending
+operator review.
+
 The final verifier is outside all model sessions and has no repair capability.
 Its configuration is immutable manifest data: exact TypeScript version and
 options, exact `src/**/*.ts` root-name set, exact per-packet Phase-6 Vitest
 fixture allowlist and fixture digests, and exact AST/text predicates. Phase-6
 fixtures are harness-owned, mounted into the fresh verification directory, and
-unavailable for model modification. Packet-level fixtures may assert the
-combined final result; they are not publication gates for either agent's
-intermediate state. Strata candidate publication retains the approved
-`src/**`, source-only TypeScript validation boundary, and the existing
-deterministic acceptance gate remains unchanged.
+unavailable for model modification. They assert behavioral invariants without
+depending on pre- versus post-task symbol spellings, so every registered
+allowlist must pass both at generation zero and after its valid packet. Exact
+combined task end states are enforced by the frozen AST/text predicates, not by
+making a behavioral fixture fail on the untouched corpus. Packet-level fixtures
+are not publication gates for either agent's intermediate state. Strata
+candidate publication retains the approved `src/**`, source-only TypeScript
+validation boundary, and the existing deterministic acceptance gate remains
+unchanged.
+
+Before any mutation is admitted, the untouched registered corpus must pass a
+generation-zero verifier proof for every packet configuration: exact
+source-only TypeScript options/root names, that packet's exact Phase-6 fixture
+allowlist, frozen historical-fixture digests, and the complete
+canonical-boundary classification. Final-state AST/text predicates are
+registered and hashed in this proof but evaluated only after the packet's
+mutations. A generation-zero failure is a deterministic stop condition because
+neither arm would then have an interpretable starting point.
 
 For each arm the final verifier:
 
@@ -520,13 +543,18 @@ The integration role is not T03-class. It may need to merge both branches,
 resolve conflicts, complete unfinished work, and run tsc/tests. Historical
 rounds summarized in `decisions.md` exceeded USD 0.75, including a USD 3.82
 24-run hardening round, while the recorded T03 N=1 and N=3 rounds cost USD 0.26
-and USD 0.67. Those aggregates do not predict one integration session exactly,
-but they make USD 0.75 an unjustified ceiling for a strictly broader role. The
-separately disclosed 40-turn/420-second/USD 4.00 integration bound reduces a
-predictable, non-rerunnable budget failure without pretending that Strata has a
-comparable integration role. Fairness means identical bounds for comparable
-task roles, one fixed integration-role bound across every baseline trial, one
-symmetric team deadline, and full accounting of all integration time and cost.
+and USD 0.67. Across the 150 per-trial cost observations retained in the local
+benchmark-result JSON, the maximum is USD 1.0433835 for T01 substrate trial 1 in
+`phase15-four-task-2026-05-17T00-29-06-119Z.json`. The round aggregates and that
+single-trial maximum do not predict one integration session exactly, but they
+make USD 0.75 an unjustified ceiling for a strictly broader role and show the
+USD 4.00 ceiling is deliberate headroom rather than an observed historical
+requirement. The separately disclosed 40-turn/420-second/USD 4.00 integration
+bound reduces a predictable, non-rerunnable budget failure without pretending
+that Strata has a comparable integration role. Fairness means identical bounds
+for comparable task roles, one fixed integration-role bound across every
+baseline trial, one symmetric team deadline, and full accounting of all
+integration time and cost.
 
 The harness stops before launching another session when accumulated reported
 cost reaches the approved round maximum. Because the two task sessions in an
@@ -609,6 +637,8 @@ Stop deterministic implementation and return for operator review if:
 - a registered success predicate requires mutation outside the canonical
   `src/**` projection, or a task-symbol occurrence outside that projection
   cannot be classified and frozen;
+- the untouched registered corpus fails any generation-zero Phase-6 verifier
+  configuration before mutation;
 - baseline integration cannot be captured without human action;
 - the existing SQLite product path or deterministic full key-free gate would
   need weakening; or
