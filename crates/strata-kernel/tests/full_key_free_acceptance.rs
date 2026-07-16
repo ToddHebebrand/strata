@@ -136,6 +136,17 @@ fn published(outcome: PublishClaimOutcome) -> strata_kernel::PublicationReport {
     report
 }
 
+fn canonical_reverse_reference_index_bytes(graph: &strata_kernel::GraphGeneration) -> Vec<u8> {
+    let mut index = std::collections::BTreeMap::new();
+    for node in graph.snapshot().nodes {
+        let references = graph.references_to(&node.id).cloned().collect::<Vec<_>>();
+        if !references.is_empty() {
+            index.insert(node.id, references);
+        }
+    }
+    serde_json::to_vec(&index).unwrap()
+}
+
 fn run_disjoint_rename_order(format_first: bool) {
     let directory = tempdir().unwrap();
     let database_path = directory.path().join("kernel.redb");
@@ -916,4 +927,138 @@ fn rows_6_7_11_restart_fences_old_claim_and_preserves_queue_events_and_exactly_o
         .count();
     assert_eq!(committed_events, 1);
     assert_projected_typescript_green(&reopened.snapshot().snapshot());
+}
+
+#[test]
+#[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
+fn row_9_real_publications_replay_exactly_across_a_generation_two_snapshot() {
+    let directory = tempdir().unwrap();
+    let database_path = directory.path().join("kernel.redb");
+    let (kernel, created) = create_projected_kernel(&database_path).unwrap();
+    assert_eq!(created.generation, 0);
+
+    let user = ClientActor::new("agent:row-9-user", "events:row-9-user");
+    let timestamp = ClientActor::new("agent:row-9-timestamp", "events:row-9-timestamp");
+    let greet = ClientActor::new("agent:row-9-greet", "events:row-9-greet");
+    assert_eq!(
+        std::collections::BTreeSet::from(
+            [user.actor_id(), timestamp.actor_id(), greet.actor_id(),]
+        )
+        .len(),
+        3,
+        "each real publication must come from an independent client"
+    );
+
+    for (actor, change_set_id, declaration_id, new_name, now_tick) in [
+        (&user, "row-9-user", USER_DECLARATION_ID, "ReplayAccount", 0),
+        (
+            &timestamp,
+            "row-9-timestamp",
+            FORMAT_TIMESTAMP_DECLARATION_ID,
+            "replayTimestamp",
+            4,
+        ),
+    ] {
+        let offer = ready(submit_rename(
+            actor,
+            &kernel,
+            change_set_id,
+            declaration_id,
+            new_name,
+            now_tick,
+        ));
+        let claimed = claim(actor, &kernel, &offer, now_tick + 2);
+        let report = published(
+            actor
+                .execute_claimed(&kernel, &claimed, now_tick + 3)
+                .unwrap(),
+        );
+        assert_eq!(report.generation, now_tick / 4 + 1);
+    }
+
+    let generation_two = kernel.snapshot().snapshot();
+    assert_eq!(generation_two.generation, 2);
+    kernel.write_snapshot(&generation_two).unwrap();
+
+    let greet_offer = ready(submit_rename(
+        &greet,
+        &kernel,
+        "row-9-greet",
+        GREET_DECLARATION_ID,
+        "welcomeUser",
+        8,
+    ));
+    let greet_claim = claim(&greet, &kernel, &greet_offer, 10);
+    let third_report = published(greet.execute_claimed(&kernel, &greet_claim, 11).unwrap());
+    assert_eq!(third_report.generation, 3);
+
+    let expected_graph = kernel.snapshot();
+    let expected_snapshot = expected_graph.snapshot();
+    let expected_node_bytes = serde_json::to_vec(&expected_snapshot.nodes).unwrap();
+    let expected_reference_bytes = serde_json::to_vec(&expected_snapshot.references).unwrap();
+    let expected_index_bytes = canonical_reverse_reference_index_bytes(&expected_graph);
+    let expected_operations = (1..=expected_graph.generation())
+        .map(|generation| {
+            kernel
+                .operation(generation)
+                .unwrap()
+                .expect("every published generation has one operation")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        expected_operations
+            .iter()
+            .map(|operation| operation.change_set_id.as_str())
+            .collect::<Vec<_>>(),
+        ["row-9-user", "row-9-timestamp", "row-9-greet"]
+    );
+    assert_eq!(
+        expected_operations
+            .iter()
+            .map(|operation| operation.actor.as_str())
+            .collect::<Vec<_>>(),
+        [user.actor_id(), timestamp.actor_id(), greet.actor_id()]
+    );
+    let expected_generation = expected_graph.generation();
+    let expected_digest = expected_graph.digest().to_owned();
+    assert_projected_typescript_green(&expected_snapshot);
+    drop(expected_graph);
+    drop(kernel);
+
+    let (reopened, recovered) = Kernel::open(&database_path).unwrap();
+    assert_eq!(recovered.snapshot_generation, 2);
+    assert_eq!(recovered.replayed_operations, 1);
+    assert_eq!(recovered.generation, expected_generation);
+    assert_eq!(recovered.digest, expected_digest);
+
+    let actual_graph = reopened.snapshot();
+    let actual_snapshot = actual_graph.snapshot();
+    assert_eq!(
+        serde_json::to_vec(&actual_snapshot.nodes).unwrap(),
+        expected_node_bytes,
+        "canonical node bytes must survive snapshot-plus-operation replay"
+    );
+    assert_eq!(
+        serde_json::to_vec(&actual_snapshot.references).unwrap(),
+        expected_reference_bytes,
+        "canonical reference bytes must survive snapshot-plus-operation replay"
+    );
+    assert_eq!(
+        canonical_reverse_reference_index_bytes(&actual_graph),
+        expected_index_bytes,
+        "the public reverse-reference index view must survive replay byte-for-byte"
+    );
+    let actual_operations = (1..=actual_graph.generation())
+        .map(|generation| {
+            reopened
+                .operation(generation)
+                .unwrap()
+                .expect("replayed generation retains its operation")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actual_operations, expected_operations);
+    assert_eq!(actual_graph.generation(), expected_generation);
+    assert_eq!(actual_graph.digest(), expected_digest);
+    assert_eq!(actual_snapshot, expected_snapshot);
+    assert_projected_typescript_green(&actual_snapshot);
 }
