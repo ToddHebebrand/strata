@@ -41,6 +41,9 @@ approval gate after deterministic implementation.
   `labSeam.test.ts` and `replay.test.ts`.
 - Task 1 Agent SDK extraction and query-budget enforcement: code complete at
   `dc7fc3d`, process gate BLOCKED pending operator disposition.
+- Task 5 task/verification qualification: deterministic implementation BLOCKED
+  at the real X dynamic-expansion stop gate; no Task-5 production/test commit
+  was made.
 
 The Task-1 package verification preserves the already-documented two stale
 agent replay-fixture failures as the baseline; focused Task-1 tests and the
@@ -89,3 +92,57 @@ does not authorize another SDK process or any Task-9/live call.
 This is an execution-procedure divergence, not a change to Strata's approved
 architecture or production behavior, so it is recorded here rather than in
 `decisions.md`.
+
+## Task 5 deterministic stop gate
+
+Task 5 first exposed a harness identity defect rather than an operation-semantics
+result. The helper ingested virtual `/project/...` paths, then rewrote Module
+payload paths to physical absolute paths without rekeying the ingest-derived
+stable IDs. The corrected helper ingests physical absolute paths from the outset
+and performs no post-ingest Module rewrite. A regression row proves that every
+top-level statement ID derives from its unchanged physical Module path. The
+correct physical-path `eventLine` ID is `13debac05f973311`, not the invalid
+virtual-path ID `55fffd2a919faf4c`.
+
+After that correction, the registered task tests prove the exact X2 complex
+default constructs and exports a validated graph delta:
+
+```bash
+cd packages/live-compare
+env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
+  pnpm exec vitest run tests/tasks.test.ts
+```
+
+Result: **PASS**, 1 file and 6 tests passed. The corrected registration digest
+is `58b47f4d6da22e39c8b1cec223bae1b9ca335bcce2b45ccbaf1f0cef0d0e5329`.
+
+The real-daemon X2-first stop-gate command was:
+
+```bash
+cd packages/live-compare
+env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
+  pnpm exec vitest run tests/dynamicPreflight.test.ts -t 'qualifies X'
+```
+
+Result: **EXPECTED STOP-GATE FAILURE**, 1 failed and 3 skipped. X2 publishes
+generation 1. Advancing the already-analyzed X1 returns `state:
+needs_decision`, `ticketState: needs_decision`, `graphGeneration: "1"`,
+`operationId: null`, and `publicationDigest: null`; no `ScopeExpanded` event or
+requeue occurs. The response's coherent run used change set
+`change:8eda320e5185f92e1a1f4f1f8eb7a4d6e8cd1fc896c77bf8952af397d15c9be9`.
+
+The controller independently reproduced the physical-path ingest result,
+confirmed that the exact complex default is valid, and verified the scope
+internals. Fresh X1 analysis discovers the new c5a reference and `eventLine`
+write expansion, but the existing `eventLine` validation-node version drift and
+positional Identifier semantic reuse prevent classification as a pure superset.
+`ScopeChange::MateriallyChanged` therefore drives the planner's terminal
+`NeedsDecision` result. Broad node-version drift tolerance would weaken
+containment and was not implemented.
+
+No credential was available to either command, no Agent SDK or live-model call
+was made, and no spend was incurred. Partial Task-5 production and test changes
+remain uncommitted. Per the approved design's Step-7 stop rule, execution stops
+before Task 6 pending explicit operator selection among: a semantic redesign
+with a new deterministic proof; a fully requalified X task/corpus redesign; or
+a design amendment that drops X and the dynamic-live-coordination claim.

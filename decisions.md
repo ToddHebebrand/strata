@@ -7,6 +7,59 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-16 — Phase-6 live comparison blocks at the real X dynamic-expansion gate
+
+**Context:** The approved Phase-6 design required packet X to prove dynamic
+scope expansion through the real local service before any live comparison. The
+integrated full key-free acceptance gate used a fixture publisher for its
+dynamic-expansion row, so it did not establish this behavior through the
+production Rust/Node operation path. The first Task-5 harness also ingested
+virtual `/project/...` module paths and then rewrote only Module payloads to
+physical absolute paths, breaking the relationship between stable IDs and the
+module paths from which they were derived.
+
+**What was tried first:** The harness was corrected to ingest the physical
+absolute paths from the outset, without rewriting Module payloads after ingest.
+Regression tests now prove every top-level statement ID derives from the
+unchanged physical Module path. The corrected `eventLine` ID is
+`13debac05f973311` rather than the invalid virtual-path ID
+`55fffd2a919faf4c`, and the exact X2 complex default produces a real validated
+graph delta. This removed the harness artifact but did not make the X stop gate
+pass.
+
+**Evidence:** Through the real daemon, X2 publishes generation 1. Advancing the
+already-analyzed X1 then returns `NeedsDecision` at graph generation 1, with no
+operation ID, publication digest, `ScopeExpanded` event, or requeue. Independent
+inspection confirmed that fresh X1 analysis discovers the new c5a reference and
+the `eventLine` write expansion. However, the existing `eventLine` validation
+node has also changed version and positional Identifier semantic reuse is not a
+pure scope superset, so the analyzer correctly classifies the transition as
+`MateriallyChanged`; the planner therefore takes its terminal `NeedsDecision`
+path.
+
+**Rejected shortcuts:** Broadly tolerating validation-node version drift would
+weaken malicious-delta containment. A task-specific production hook,
+feature-gated publisher, or fixture substitution would evade the required real
+service proof. Silently replacing X would violate the frozen design's explicit
+stop rule.
+
+**Decided:** Task 5 and the Phase-6 live-comparison implementation are blocked
+pending explicit operator direction. No live-model call is authorized. The
+supported next choices, none selected by this entry, are: (1) redesign the
+operation semantics and add a new deterministic containment proof; (2) approve
+an X task or corpus redesign and fully requalify all affected digests and
+predicates; or (3) amend the experiment design to remove X and any dynamic-live-
+coordination claim.
+
+**Design-doc impact:** The Phase-6 live-comparison design now records the failed
+X admission gate and blocked status. Its implementation spike records the exact
+credential-free evidence, and its implementation plan stops at Task 5 before
+the baseline or live-execution tasks.
+
+**Revisit when:** The operator explicitly selects one of the supported semantic,
+task/corpus, or claim-scope directions and approves the resulting requalification
+work.
+
 ## 2026-07-16 — Local service journal records request bindings and prepared effect results
 
 **Context:** Independent review of the first local-service implementation found

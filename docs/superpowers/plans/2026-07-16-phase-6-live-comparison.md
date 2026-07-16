@@ -427,6 +427,15 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 
 ## Task 5: Freeze task packets, common verification, and dynamic qualification
 
+> **Status 2026-07-16: BLOCKED at Step 7's X stop gate.** After correction of a
+> physical-path ingest bug in the test harness, the exact X2 candidate validates
+> and exports a delta, but the real daemon advances the already-analyzed X1 to
+> `NeedsDecision`, not `ScopeExpanded`. Task 6 and later tasks must not begin
+> until the operator selects and approves a semantic redesign, a fully
+> requalified X task/corpus redesign, or a design amendment removing X and the
+> dynamic-live-coordination claim. Partial Task-5 production/test work remains
+> uncommitted; no live-model call occurred.
+
 **Files:**
 
 - Create: `packages/live-compare/src/{tasks,verify}.ts`

@@ -1,7 +1,7 @@
 # Phase-6 Live Multi-Agent Comparison Design
 
-**Status:** Proposed; no production implementation or live-model execution is
-authorized by this document
+**Status:** Deterministic implementation BLOCKED at the Task-5 X admission
+gate; no live-model execution is authorized by this document
 
 **Date:** 2026-07-16
 
@@ -317,6 +317,24 @@ candidate construction. If the current operation semantics cannot satisfy that
 gate without a feature-gated publisher or task-specific production hook, X is
 excluded and the live design returns for operator review. It is not replaced
 silently, and the experiment may not claim dynamic live coordination.
+
+**Verified Task-5 result (2026-07-16): BLOCKED.** After correcting the test
+harness to ingest physical paths from the outset, stable IDs are coherent and
+the exact X2 complex default exports a real candidate delta. Through the real
+daemon, X2 publishes generation 1, but advancing the already-analyzed X1 returns
+`NeedsDecision` at generation 1 without an operation ID, publication digest,
+`ScopeExpanded` event, or requeue. Fresh analysis does discover the new c5a
+reference and `eventLine` write expansion; the existing validation-node version
+drift and positional Identifier semantic reuse make the change materially
+changed rather than a pure scope superset. Broadly ignoring that drift would
+weaken containment, and no fixture publisher or task-specific hook is permitted.
+
+The experiment therefore remains blocked before live qualification. Operator
+direction is required to select one of three supported paths: redesign the
+operation semantics with a new deterministic containment proof; approve an X
+task/corpus redesign followed by full digest and predicate requalification; or
+amend the design to remove X and the dynamic-live-coordination claim. This
+document does not select among them.
 
 Whether an organic live trial actually takes the expanding ordering is recorded
 as `dynamic_scope_observed`. Absence of that event is not relabeled as proof of
