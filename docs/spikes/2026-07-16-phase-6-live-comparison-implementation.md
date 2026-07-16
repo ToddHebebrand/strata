@@ -80,6 +80,12 @@ as a recorded exception and retain `dc7fc3d`, or terminate/restart the approved
 implementation effort. No further SDK process or Task-2 production change is
 authorized by the earlier implementation approval.
 
+**Operator disposition:** accepted by the operator's next message dated
+2026-07-16, with exact text `Disposition: accept recorded Task-1 process
+exception and proceed`. Task 1 is therefore complete with this exception
+permanently attached to its evidence, and Task 2 is authorized. The disposition
+does not authorize another SDK process or any Task-9/live call.
+
 This is an execution-procedure divergence, not a change to Strata's approved
 architecture or production behavior, so it is recorded here rather than in
 `decisions.md`.
