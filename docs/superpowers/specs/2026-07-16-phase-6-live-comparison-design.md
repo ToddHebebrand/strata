@@ -35,8 +35,11 @@ key-free acceptance gate, and the following decision rules:
 1. The outcome is one shared, externally verified green codebase, not two
    locally completed tasks.
 2. Both arms use the same source commit, corpus, task semantics, model,
-   provider, per-role prompt body, per-session bounds, external verifier, and
-   semantic acceptance criteria.
+   provider, task-agent prompt body, task-agent bounds, external verifier, and
+   semantic acceptance criteria. Bounds are symmetric by comparable role: the
+   two task-agent roles match across arms, while the baseline-only integration
+   role has separately pre-registered bounds because Strata has no counterpart
+   integration session.
 3. The baseline consists of two independent task worktrees and a third
    integration-agent session. Integration-agent time, tokens, and dollars are
    part of the baseline result.
@@ -143,7 +146,10 @@ artifact follow the infrastructure rerun rule below.
 Use one single-host Rust daemon and a versioned request/response protocol over a
 Unix domain socket. The socket is an experimental local boundary, not a public
 network API. It deliberately excludes TCP, remote authentication, discovery,
-multi-host operation, and consensus.
+multi-host operation, and consensus. The harness binds sockets below a short
+fixed root such as `/tmp/strata-lc/` using a hashed run token and rejects any
+UTF-8 socket path longer than 96 bytes, leaving margin below macOS's roughly
+104-byte `sun_path` limit even when the repository worktree path is deep.
 
 The daemon process is the only process that:
 
@@ -219,6 +225,15 @@ Only `rename_symbol` and uniform-value `add_parameter` are allowed. No task
 inserts, deletes, or moves a structural node. The unchanged declaration or
 statement keeps its stable logical ID.
 
+The unmodified `examples/medium` corpus contains the `greet` declaration but no
+importer, caller, or test reference to `greet`. Consequently R, S, and G are
+single-site-class tasks in the current corpus. Their coordination conflicts are
+real, but their propagation predicates are not: there are no existing `greet`
+calls to update. Per the 2026-05-29 decision, single-site synthesis is expected
+to be cost-unfavorable for the substrate independent of whether coordination
+works correctly. These scenarios test conflict handling and atomicity, not a
+rename-class propagation cost advantage.
+
 ### D: disjoint propagation
 
 - Agent D1: rename exported interface `User` to `Account` everywhere.
@@ -251,8 +266,10 @@ than relabeling the scenario.
 
 The `greet` signature already references `User`, so Rust must infer overlap
 before mutation. Acceptance requires `greet(user: Account, excited: boolean =
-false)`, all direct callsites (if any) to receive the uniform argument exactly
-once, all User references to become Account, and the shared tree to be green.
+false)`, all User references to become Account, confirmation that the registered
+corpus has zero `greet` callsites, and the shared tree to be green. If the
+caller-enriched corpus option below is selected, every registered callsite must
+instead receive the uniform argument exactly once.
 
 ### S: compatible same-node overlap
 
@@ -263,8 +280,10 @@ once, all User references to become Account, and the shared tree to be green.
 Both operations mutate the same declaration node but have compatible final
 intent. Acceptance requires the stable declaration ID to survive both orders,
 the final signature to be `welcomeUser(user: User, excited: boolean = false)`,
-all references/calls to use the new name and argument exactly once, explicit
-ordering or fresh-state reanalysis, and a green shared tree.
+confirmation that the unmodified corpus has zero `greet` references/calls,
+explicit ordering or fresh-state reanalysis, and a green shared tree. If the
+caller-enriched option is selected, all registered references/calls must use the
+new name and argument exactly once.
 
 ### X: dynamically expanding reference
 
@@ -305,6 +324,26 @@ publish exactly once, the standalone negative control to publish nothing, the
 timestamp rename to remain present, all stable IDs to survive, and the final
 shared tree to be green.
 
+### Operator corpus-freeze choice for R, S, and G
+
+This choice must be made during design approval, before any task manifest,
+source digest, stable-ID mapping, verifier digest, or schedule is frozen:
+
+- **Keep the current corpus:** preserve the existing `examples/medium` source
+  and deterministic comparability. R, S, and G remain explicitly single-site,
+  cost-unfavorable coordination/atomicity probes and cannot support a
+  propagation claim.
+- **Create a caller-enriched corpus variant:** before manifest freezing, add a
+  final source module plus test containing real imported `greet` calls, then
+  regenerate every corpus/graph/task/verifier digest and requalify D, M, R, S,
+  X, and G. The new module must be appended without reordering existing sibling
+  structure so existing logical IDs remain stable. R, S, and G would then test
+  conflict plus propagation, but results apply to that modified corpus rather
+  than the historical fixture.
+
+The implementation may not choose or switch variants after seeing a model
+result. Adding callers after manifest freezing invalidates the experiment.
+
 ## Prompt equivalence
 
 Each task prompt is generated from:
@@ -333,7 +372,11 @@ For each arm it:
 3. runs the same `tsc --noEmit` configuration and the same Vitest suite;
 4. evaluates task-specific AST/text predicates for both assigned tasks;
 5. detects duplicate arguments, residual old references, missing new
-   references, and unexpected out-of-scope semantic changes;
+   references, and unexpected out-of-scope semantic changes. G's registered
+   allowed-delta predicate explicitly whitelists the exact
+   `account: Account = undefined as never` parameter at the stable `greet`
+   declaration and, only in the caller-enriched variant, the exact uniform
+   `undefined as never` argument inserted once at each registered callsite;
 6. records stdout/stderr, exit codes, durations, and content digests; and
 7. performs a Strata-only authority audit against the canonical operation log,
    graph generation sequence, event history, and final digest without giving
@@ -401,15 +444,38 @@ The first keyed stage is a falsification pilot, not a performance claim:
 - model: `claude-sonnet-4-6`, the repository's current live-agent and benchmark
   default;
 - trials: one matched trial for each of D, M, R, S, qualified X, and G;
-- task and integration sessions: `maxTurns=25`, `wallTimeMs=240000`, and
-  `maxBudgetUsd=0.75` each;
-- team wall deadline: 480,000 ms in both arms, including final verification;
+- task-agent sessions in both arms: `maxTurns=25`,
+  `wallTimeMs=240000`, and `maxBudgetUsd=0.75` each;
+- baseline-only integration-agent sessions: `maxTurns=40`,
+  `wallTimeMs=420000`, and `maxBudgetUsd=4.00` each;
+- team wall deadline: 900,000 ms in both arms, including branch capture,
+  canonical render/materialization, and final verification;
 - maximum model sessions: 30 (twelve Strata task sessions, twelve baseline task
   sessions, and six baseline integration sessions);
-- sum of configured per-query budgets: USD 22.50; and
-- proposed operator-approved projected round maximum: USD 30.00, retaining a
-  USD 7.50 reserve because a provider call can cross a query budget before the
+- sum of configured per-query budgets: USD 42.00; and
+- proposed operator-approved projected round maximum: USD 55.00, retaining a
+  USD 13.00 reserve because a provider call can cross a query budget before the
   SDK returns its budget terminal result.
+
+The 900-second symmetric team deadline is deliberately larger than the
+baseline's sequential worst-case session walls: 240 seconds for the concurrent
+task phase plus 420 seconds for integration leaves 240 seconds for deterministic
+branch capture, rendering/materialization, and the shared verifier. A
+480-second deadline would classify a baseline that legitimately uses both role
+walls as `team_timeout` by construction while leaving substantial headroom for
+Strata.
+
+The integration role is not T03-class. It may need to merge both branches,
+resolve conflicts, complete unfinished work, and run tsc/tests. Historical
+rounds summarized in `decisions.md` exceeded USD 0.75, including a USD 3.82
+24-run hardening round, while the recorded T03 N=1 and N=3 rounds cost USD 0.26
+and USD 0.67. Those aggregates do not predict one integration session exactly,
+but they make USD 0.75 an unjustified ceiling for a strictly broader role. The
+separately disclosed 40-turn/420-second/USD 4.00 integration bound reduces a
+predictable, non-rerunnable budget failure without pretending that Strata has a
+comparable integration role. Fairness means identical bounds for comparable
+task roles, one fixed integration-role bound across every baseline trial, one
+symmetric team deadline, and full accounting of all integration time and cost.
 
 The harness stops before launching another session when accumulated reported
 cost reaches the approved round maximum. Because the two task sessions in an
@@ -422,9 +488,9 @@ of its exact remaining session count and spend. The pilot cannot support a
 claim that one arm is faster or cheaper in general.
 
 These are recommendations, not authorization. The operator may select another
-available model or bounds, but the exact same selection must be used for all
-task and integration sessions in both arms. Changing a parameter after a model
-call starts invalidates the round.
+available model or bounds, but task-role bounds must remain identical across
+arms and integration-role bounds must remain identical across every baseline
+trial. Changing a parameter after a model call starts invalidates the round.
 
 ## Failure taxonomy
 
@@ -492,8 +558,9 @@ Stop deterministic implementation and return for operator review if:
 - baseline integration cannot be captured without human action;
 - the existing SQLite product path or deterministic full key-free gate would
   need weakening; or
-- SDK/provider settings cannot apply the same model and per-session bounds to
-  all three baseline roles and both Strata clients.
+- SDK/provider settings cannot apply one model to every session, identical
+  task-role bounds across arms, and one fixed integration-role bound across all
+  baseline trials.
 
 Stop a live round immediately after artifact flush if:
 
@@ -510,9 +577,10 @@ Stop a live round immediately after artifact flush if:
 
 Every run directory is immutable after finalization and contains:
 
-- `experiment-manifest.json`: schema version, repository/source/task/verifier
-  digests, model/provider, all bounds, projected spend, seed, precomputed
-  schedule, package versions, machine metadata, and approval record;
+- `experiment-manifest.json`: schema version, approved corpus variant,
+  repository/source/task/verifier digests, model/provider, task-role bounds,
+  integration-role bounds, symmetric team deadline, projected spend, seed,
+  precomputed schedule, package versions, machine metadata, and approval record;
 - `tasks/*.json`: stable IDs, baseline locators, prompt bodies/appendices and
   hashes, intent parameters, and acceptance predicates;
 - `trials/<trial-id>/<arm>/team.json`: timestamps, status, costs, tokens,
@@ -558,6 +626,11 @@ It cannot establish:
 - structural insert/delete/move concurrency;
 - multi-language, human-agent, or long-lived product compatibility;
 - that single-site synthesis is a token or cost win;
+- any propagation or bulk-reference cost claim from R, S, or G when the current
+  zero-caller corpus is selected; those are single-site coordination/atomicity
+  probes expected to be cost-unfavorable under the 2026-05-29 finding;
+- direct comparability between current-corpus and caller-enriched-corpus runs,
+  because their source, graph, task, prompt, and verifier digests differ;
 - causal attribution to redb rather than the complete Strata interface; or
 - a claim of dynamic live coordination unless `ScopeExpanded` is observed in a
   qualified live X trial.
@@ -573,20 +646,23 @@ It cannot establish:
   multi-host consensus, human-compatibility layer, or production distributed
   deployment;
 - no benchmark tuning based on unblinded live results; and
-- no live call during design, implementation, deterministic testing, or dry
-  run.
+- no experimental Agent SDK live call during design, implementation,
+  deterministic testing, or dry run. The required read-only Codex design and
+  final implementation reviews are review inputs, not experiment trials.
 
 ## Approval gates
 
-1. **Design/production-code approval:** approve this service boundary, task
-   packets, fairness rules, metrics, and stop conditions before production code
-   changes.
+1. **Reviewed design/production-code approval:** attach the required read-only,
+   repo-grounded Codex design review, then approve this service boundary, task
+   packets, `current` or `caller-enriched` corpus variant, role-specific bounds,
+   fairness rules, metrics, and stop conditions before production code changes.
 2. **Deterministic implementation gate:** all new behaviors begin with failing
    tests; the service/client/harness/task/verifier suites, existing repository
    tests, unchanged full key-free gate, and default-build sealing pass; evidence
    and one independent repo-grounded review are complete; worktree is clean.
-3. **Live budget approval:** approve the exact provider/model, qualified task
-   set, trial count, seed, `maxTurns`, wall times, `maxBudgetUsd`, team deadline,
-   projected maximum spend, and credential source. Approval is recorded in the
-   manifest before any keyed process starts.
+3. **Live budget approval:** approve the exact provider/model, corpus variant,
+   qualified task set, trial count, seed, task-role and integration-role
+   `maxTurns`, wall times, and `maxBudgetUsd`, symmetric team deadline, projected
+   maximum spend, and credential source. Approval is recorded in the manifest
+   before any keyed experiment process starts.
 4. **Execution:** only then may the pre-registered live command run.

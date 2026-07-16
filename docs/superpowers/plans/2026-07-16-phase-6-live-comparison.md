@@ -1,8 +1,10 @@
 # Phase-6 Live Multi-Agent Comparison Implementation and Execution Plan
 
 > **Approval gate:** This plan is documentation only. Do not execute Task 1 or
-> change production code until the operator approves
-> `docs/superpowers/specs/2026-07-16-phase-6-live-comparison-design.md`. Use
+> change production code until Task 0's read-only, repo-grounded Codex design
+> review is attached and the operator approves the reviewed
+> `docs/superpowers/specs/2026-07-16-phase-6-live-comparison-design.md`, including
+> one corpus variant. Use
 > `executing-plans`, strict `test-driven-development`,
 > `subagent-driven-development` where tasks are independent, and
 > `verification-before-completion`. Run one `requesting-code-review` round with
@@ -32,8 +34,10 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 
 ## Non-negotiable constraints
 
-- No keyed model process may start in Tasks 1-8. All session tests use scripted
-  fakes or replay fixtures with API credentials removed from the environment.
+- No experimental Agent SDK model process may start in Tasks 1-8. All session
+  tests use scripted fakes or replay fixtures with API credentials removed from
+  the environment. The only model calls permitted before Task 9 are the
+  explicitly required read-only Codex reviews in Tasks 0 and 8.
 - Model clients never receive or open a redb/canonical path, bridge worker
   configuration, filesystem path to canonical Strata state, scope, resource
   key, clock, reservation, claim, fence, attempt, candidate delta, or raw
@@ -50,6 +54,13 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   RED command before implementation.
 - X is a stop gate: no live dynamic packet without exact deterministic
   two-order proof and a real `ScopeExpanded` event before candidate build.
+- The operator-selected `current` or `caller-enriched` corpus variant is frozen
+  before task-manifest generation and cannot change after any digest is
+  registered.
+- Recommended pilot task-role bounds are 25 turns, 240,000 ms, and USD 0.75 in
+  both arms; the baseline-only integration role uses 40 turns, 420,000 ms, and
+  USD 4.00; both arms use one 900,000 ms team deadline. Any approved change is
+  frozen per role in the manifest before a live call.
 - Append `decisions.md` only if implementation reality diverges from the
   approved design or reaches a stop condition.
 
@@ -88,6 +99,8 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 
 ### Evidence and documentation
 
+- Create `docs/spikes/2026-07-16-phase-6-live-comparison-design-review.md`
+  before design approval.
 - Create `docs/spikes/2026-07-16-phase-6-live-comparison-harness.md` after the
   deterministic gate passes.
 - Modify `docs/product-roadmap.md` only after deterministic completion.
@@ -95,14 +108,36 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 - Live artifacts, if separately approved, go under a new ignored or explicitly
   operator-selected results directory and are never rewritten.
 
-## Task 0: Record design approval before implementation
+## Task 0: Complete independent design review and record approval
 
-**Files:** None
+**Files:**
 
-- [ ] Obtain an explicit operator message approving the experiment design and
-  production-code implementation. Do not infer this from the request to write
-  the design.
-- [ ] Record the approval date/message reference in the implementation spike.
+- Create: `docs/spikes/2026-07-16-phase-6-live-comparison-design-review.md`
+- Modify: `docs/superpowers/specs/2026-07-16-phase-6-live-comparison-design.md`
+  only for verified review findings.
+- Modify: `docs/superpowers/plans/2026-07-16-phase-6-live-comparison.md` only for
+  verified review findings.
+
+- [ ] Run the `delegating-to-codex` review with `gpt-5.5`, reasoning `xhigh`,
+  read-only sandbox, and no web search. Give it a self-contained brief covering
+  the revised design, authority boundary, six task packets, current versus
+  caller-enriched corpus choice, role-specific bounds, symmetric 900-second
+  team deadline, failure/stop rules, falsified alternatives, and governing
+  repository documents. Ask specifically about authority escape, baseline
+  fairness, accounting arithmetic, task equivalence, service minimality,
+  claim strength, and implementation-plan coverage.
+- [ ] Verify every pivotal empirical claim from the review against the indexed
+  repository, code/tests, or governing documents before accepting it. Record
+  accepted findings, rejected findings with evidence, model/effort/sandbox,
+  reviewed commit, and command in the design-review spike.
+- [ ] Commit any verified documentation-only corrections and the review spike.
+  Do not change production code or `decisions.md`.
+- [ ] Present the reviewed design and review attachment to the operator. Obtain
+  an explicit choice of `current` or `caller-enriched` corpus plus approval of
+  the experiment design and production-code implementation. Do not infer this
+  from the request to revise or review the documents.
+- [ ] Record the approval date/message reference and selected corpus variant in
+  the implementation spike before Task 1.
 - [ ] Confirm the implementation worktree still starts from
   `9aed98c1ceeaaf5d175aeea7993c4abb26b4ba88` plus only approved documentation
   commits and is clean.
@@ -264,6 +299,10 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   queue/event/ack behavior, one final canonical graph, and idempotent duplicate
   requests. Assert responses contain no forbidden authority fields.
 
+  Bind the socket below `/tmp/strata-lc/` with a hashed run token. Assert the
+  daemon rejects a UTF-8 socket path longer than 96 bytes before bind and never
+  derives a socket path from the deep repository/worktree path.
+
 - [ ] **Step 2: Add failing disconnect/restart tests.**
 
   Disconnect after every mutating request boundary, resend the same idempotency
@@ -387,6 +426,9 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 - Create: `packages/live-compare/src/{tasks,verify}.ts`
 - Create: `packages/live-compare/tests/{tasks,verify,dynamicPreflight}.test.ts`
 - Create task fixtures under `packages/live-compare/tests/fixtures/tasks/`.
+- If and only if Task 0 selected `caller-enriched`, create an appended
+  `examples/medium/src/users/greetCallers.ts` module and a matching test without
+  reordering existing source structure.
 - Modify root `package.json` only for a deterministic preflight command if
   useful.
 
@@ -397,12 +439,25 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   byte-identical task bodies, arm appendices, prompt hashes, and semantic
   predicates. Reject any structural operation or unresolved target.
 
+  Read the approved `corpusVariant`. For `current`, assert `greet` has zero
+  importers, callers, and test references and mark R/S/G as single-site. For
+  `caller-enriched`, first add failing corpus tests for real imported `greet`
+  calls, then add the final source module/test, regenerate all source/graph/task
+  digests, assert existing logical IDs remain stable, and mark the registered
+  callsites as required propagation targets. Reject a manifest whose variant or
+  digest differs from Task 0's approval record.
+
 - [ ] **Step 2: Add failing common-verifier tests.**
 
   Feed equivalent rendered Strata and filesystem baseline trees. Assert the
   same tsc, Vitest, task predicates, duplicate-argument checks, residual-name
   checks, unexpected-change policy, output bounds, and digest calculation.
-  Mutate each required fact and prove the verifier fails closed.
+  Mutate each required fact and prove the verifier fails closed. G's allowed
+  delta must explicitly accept only the exact
+  `account: Account = undefined as never` declaration parameter and, in the
+  caller-enriched variant only, one exact `undefined as never` argument at each
+  registered callsite. A different default, duplicate insertion, or insertion
+  outside those stable IDs must fail as unexpected scope.
 
 - [ ] **Step 3: Add failing D/M/R/S/G deterministic tests through the service.**
 
@@ -471,6 +526,10 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   and invalid branch results. Assert its full wall time, tokens, cost, tool
   events, repair edits, and failures are included in team totals. Assert it
   receives both registered tasks but no Strata artifacts or scorer internals.
+  Assert every task role in both arms receives 25 turns, 240,000 ms, and USD
+  0.75, while every baseline integration role receives the separately
+  registered 40 turns, 420,000 ms, and USD 4.00. Any per-trial bound drift must
+  invalidate the manifest.
 
 - [ ] **Step 3: Add failing no-human and cleanup tests.**
 
@@ -488,9 +547,11 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 
 - [ ] **Step 5: Implement using injected session runners.**
 
-  Production live execution uses the same generic Agent SDK runner and exact
-  model bounds as Strata. Tests inject deterministic task/integration sessions.
-  The harness, not a model, creates worktrees and captures branch commits.
+  Production live execution uses the same generic Agent SDK runner and model as
+  Strata. Comparable task roles use identical bounds across arms; the
+  baseline-only integration role uses its fixed pre-registered bounds. Tests
+  inject deterministic task/integration sessions. The harness, not a model,
+  creates worktrees and captures branch commits.
 
 - [ ] **Step 6: Run GREEN.**
 
@@ -535,16 +596,21 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   Exercise every taxonomy value, team makespan, summed model cost including
   integration, per-query budget terminal, team timeout, dynamic-observed flag,
   dispositive stop, one narrowly permitted zero-output provider rerun, and
-  preservation of all failed attempts.
+  preservation of all failed attempts. Prove a baseline may use the full
+  240-second task phase plus full 420-second integration phase and still retain
+  240 seconds of the symmetric 900-second team deadline for capture and common
+  verification. Reject the old 480-second team deadline as structurally
+  insufficient.
 
 - [ ] **Step 4: Add failing live-guard tests.**
 
   The live command must refuse to start unless a strict approval file matches
-  the manifest's provider, model, task set, trial count, seed, max turns,
-  per-session wall time, team wall time, `maxBudgetUsd`, projected maximum spend,
-  source commit, and verifier/task digests. It must also require an explicit
-  `--execute-live` flag and a supported credential variable. Dry-run must never
-  read credentials or call the SDK.
+  the manifest's provider, model, task set, corpus variant, trial count, seed,
+  task-role max turns/wall/budget, integration-role max turns/wall/budget,
+  900-second team wall time, projected maximum spend, source commit, and
+  verifier/task digests. It must also require an explicit `--execute-live` flag
+  and a supported credential variable. Dry-run must never read credentials or
+  call the SDK.
 
 - [ ] **Step 5: Run RED.**
 
@@ -574,16 +640,20 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
     pnpm live-compare:dry-run -- \
       --model=claude-sonnet-4-6 \
       --trials=1 \
-      --max-turns=25 \
-      --wall-ms=240000 \
-      --team-wall-ms=480000 \
-      --max-budget-usd=0.75 \
-      --projected-max-usd=30.00 \
+      --corpus-variant=<approved-current-or-caller-enriched> \
+      --task-max-turns=25 \
+      --task-wall-ms=240000 \
+      --task-max-budget-usd=0.75 \
+      --integration-max-turns=40 \
+      --integration-wall-ms=420000 \
+      --integration-max-budget-usd=4.00 \
+      --team-wall-ms=900000 \
+      --projected-max-usd=55.00 \
       --seed=<recorded-test-seed>
   ```
 
-  Expected: PASS, print exactly 30 planned sessions and USD 22.50 summed query
-  budgets, report USD 30.00 projected round maximum, write no live result, and
+  Expected: PASS, print exactly 30 planned sessions and USD 42.00 summed query
+  budgets, report USD 55.00 projected round maximum, write no live result, and
   make no keyed call.
 
 - [ ] **Step 8: Commit.**
@@ -636,13 +706,14 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 
 - [ ] **Step 4: Obtain one independent repo-grounded review.**
 
-  Use the `delegating-to-codex` skill with the strongest supported Codex model
-  (`gpt-5.5` preferred, `gpt-5.4` acceptable), reasoning `xhigh`, read-only. Give
-  it the approved design, hard boundaries, falsified alternatives, changed
-  files, test evidence, and explicit questions about authority escape, baseline
-  fairness, accounting, task equivalence, stopping rules, and claim strength.
-  Verify every pivotal empirical claim against code/tests before accepting it.
-  Run at most this one review round unless its fix touches a high-blast surface.
+  Use the `delegating-to-codex` skill with `gpt-5.5`, reasoning `xhigh`,
+  read-only. Give it the approved design, hard boundaries, falsified
+  alternatives, changed files, test evidence, and explicit questions about
+  authority escape, baseline fairness, accounting, task equivalence, stopping
+  rules, and claim strength. Verify every pivotal empirical claim against
+  code/tests before accepting it. This is the single post-implementation review
+  round and is distinct from Task 0's pre-implementation design review; do not
+  recurse unless its fix touches a new high-blast surface.
 
 - [ ] **Step 5: Address valid findings with RED/GREEN.**
 
@@ -682,11 +753,14 @@ frozen before this task.
 
 - [ ] **Step 1: Present the final dry-run manifest.**
 
-  It must state exact provider, model, D/M/R/S/qualified-X/G task hashes, one
-  matched trial per scenario, seed/schedule, `maxTurns=25`, per-session
-  `wallTimeMs=240000`, `teamWallTimeMs=480000`, `maxBudgetUsd=0.75`, 30 maximum
-  sessions, USD 22.50 summed query budgets, USD 30.00 projected round maximum,
-  credential source, source commit, verifier digest, and stopping rules.
+  It must state exact provider, model, approved corpus variant,
+  D/M/R/S/qualified-X/G task hashes, one matched trial per scenario,
+  seed/schedule, task-role `maxTurns=25`, `wallTimeMs=240000`, and
+  `maxBudgetUsd=0.75`, integration-role `maxTurns=40`,
+  `wallTimeMs=420000`, and `maxBudgetUsd=4.00`,
+  `teamWallTimeMs=900000`, 30 maximum sessions, USD 42.00 summed query budgets,
+  USD 55.00 projected round maximum, credential source, source commit,
+  verifier digest, and stopping rules.
 
 - [ ] **Step 2: Obtain an explicit operator approval matching every field.**
 
