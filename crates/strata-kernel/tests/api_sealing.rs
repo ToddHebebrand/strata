@@ -13,4 +13,6 @@ fn semantic_authority_is_not_exported_by_default() {
     cases.compile_fail("tests/ui/semantic_authority_is_sealed.rs");
     cases.compile_fail("tests/ui/production_execution_authority_is_sealed.rs");
     cases.compile_fail("tests/ui/coordinated_crash_execution_is_sealed.rs");
+    cases.compile_fail("tests/ui/coordination_durable_test_authority_is_sealed.rs");
+    cases.compile_fail("tests/ui/local_service_test_authority_is_sealed.rs");
 }

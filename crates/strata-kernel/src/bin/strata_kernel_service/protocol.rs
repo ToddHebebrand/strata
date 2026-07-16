@@ -23,6 +23,10 @@ const MAX_EVENT_LIMIT: u32 = 256;
 pub struct WireU64(u64);
 
 impl WireU64 {
+    pub(super) const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -77,13 +81,13 @@ impl<'de> Deserialize<'de> for WireU64 {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LocalServiceRequest {
-    protocol_version: u8,
-    request_id: String,
-    client_id: String,
-    deadline_ms: WireU64,
+    pub(super) protocol_version: u8,
+    pub(super) request_id: String,
+    pub(super) client_id: String,
+    pub(super) deadline_ms: WireU64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    idempotency_key: Option<String>,
-    action: RequestAction,
+    pub(super) idempotency_key: Option<String>,
+    pub(super) action: RequestAction,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -93,7 +97,7 @@ pub struct LocalServiceRequest {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-enum RequestAction {
+pub(super) enum RequestAction {
     Hello {},
     InspectNodes {
         node_ids: Vec<String>,
@@ -130,7 +134,7 @@ enum RequestAction {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-enum Intent {
+pub(super) enum Intent {
     RenameSymbol {
         declaration_id: String,
         new_name: String,
@@ -154,23 +158,23 @@ pub enum LocalServiceResponse {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SuccessResponse {
-    protocol_version: u8,
-    request_id: String,
-    ok: True,
-    result: ResponseResult,
+    pub(super) protocol_version: u8,
+    pub(super) request_id: String,
+    pub(super) ok: True,
+    pub(super) result: ResponseResult,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ErrorResponse {
-    protocol_version: u8,
-    request_id: String,
-    ok: False,
-    error: ErrorPayload,
+    pub(super) protocol_version: u8,
+    pub(super) request_id: String,
+    pub(super) ok: False,
+    pub(super) error: ErrorPayload,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct True;
+pub(super) struct True;
 
 impl Serialize for True {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -195,7 +199,7 @@ impl<'de> Deserialize<'de> for True {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct False;
+pub(super) struct False;
 
 impl Serialize for False {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
@@ -226,7 +230,7 @@ impl<'de> Deserialize<'de> for False {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-enum ResponseResult {
+pub(super) enum ResponseResult {
     Ready {},
     Nodes {
         graph_generation: WireU64,
@@ -256,52 +260,52 @@ enum ResponseResult {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct InspectedNode {
-    node_id: String,
-    kind: String,
-    payload: String,
-    relationships: Vec<NodeRelationship>,
+pub(super) struct InspectedNode {
+    pub(super) node_id: String,
+    pub(super) kind: String,
+    pub(super) payload: String,
+    pub(super) relationships: Vec<NodeRelationship>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct NodeRelationship {
-    kind: String,
-    node_id: String,
+pub(super) struct NodeRelationship {
+    pub(super) kind: String,
+    pub(super) node_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ServiceEvent {
-    sequence: WireU64,
-    change_set_id: String,
-    state: ChangeSetState,
-    operation_id: Option<String>,
-    affected_node_ids: Vec<String>,
-    diagnostics: Vec<Diagnostic>,
-    publication_digest: Option<String>,
+pub(super) struct ServiceEvent {
+    pub(super) sequence: WireU64,
+    pub(super) change_set_id: String,
+    pub(super) state: ChangeSetState,
+    pub(super) operation_id: Option<String>,
+    pub(super) affected_node_ids: Vec<String>,
+    pub(super) diagnostics: Vec<Diagnostic>,
+    pub(super) publication_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Diagnostic {
-    code: String,
-    message: String,
-    node_id: Option<String>,
+pub(super) struct Diagnostic {
+    pub(super) code: String,
+    pub(super) message: String,
+    pub(super) node_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ErrorPayload {
-    code: String,
-    message: String,
-    retryable: bool,
-    diagnostics: Vec<Diagnostic>,
+pub(super) struct ErrorPayload {
+    pub(super) code: String,
+    pub(super) message: String,
+    pub(super) retryable: bool,
+    pub(super) diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ChangeSetState {
+pub(super) enum ChangeSetState {
     Draft,
     Analyzing,
     Queued,
@@ -316,7 +320,7 @@ enum ChangeSetState {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum TicketState {
+pub(super) enum TicketState {
     Queued,
     Ready,
     Claimed,
@@ -328,7 +332,7 @@ enum TicketState {
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum CancelledState {
+pub(super) enum CancelledState {
     Cancelled,
 }
 
@@ -404,7 +408,7 @@ impl LocalServiceProtocolContext {
 }
 
 impl RequestAction {
-    fn is_mutating(&self) -> bool {
+    pub(super) fn is_mutating(&self) -> bool {
         matches!(
             self,
             Self::BeginChangeSet { .. }
@@ -416,13 +420,27 @@ impl RequestAction {
         )
     }
 
-    fn change_set_id(&self) -> Option<&str> {
+    pub(super) fn change_set_id(&self) -> Option<&str> {
         match self {
             Self::AddIntent { change_set_id, .. }
             | Self::SubmitChangeSet { change_set_id }
             | Self::AdvanceChangeSet { change_set_id }
             | Self::CancelChangeSet { change_set_id } => Some(change_set_id),
             _ => None,
+        }
+    }
+
+    pub(super) const fn name(&self) -> &'static str {
+        match self {
+            Self::Hello { .. } => "hello",
+            Self::InspectNodes { .. } => "inspect_nodes",
+            Self::BeginChangeSet { .. } => "begin_change_set",
+            Self::AddIntent { .. } => "add_intent",
+            Self::SubmitChangeSet { .. } => "submit_change_set",
+            Self::AdvanceChangeSet { .. } => "advance_change_set",
+            Self::ReadEvents { .. } => "read_events",
+            Self::AckEvents { .. } => "ack_events",
+            Self::CancelChangeSet { .. } => "cancel_change_set",
         }
     }
 
@@ -509,6 +527,48 @@ impl LocalServiceRequest {
 }
 
 impl LocalServiceResponse {
+    pub(super) fn success(request_id: impl Into<String>, result: ResponseResult) -> Self {
+        Self::Success(SuccessResponse {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: request_id.into(),
+            ok: True,
+            result,
+        })
+    }
+
+    pub(super) fn error(
+        request_id: impl Into<String>,
+        code: impl Into<String>,
+        message: impl Into<String>,
+        retryable: bool,
+        diagnostics: Vec<Diagnostic>,
+    ) -> Self {
+        Self::Error(ErrorResponse {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: request_id.into(),
+            ok: False,
+            error: ErrorPayload {
+                code: code.into(),
+                message: message.into(),
+                retryable,
+                diagnostics,
+            },
+        })
+    }
+
+    pub(super) fn with_request_id(&self, request_id: impl Into<String>) -> Self {
+        let request_id = request_id.into();
+        match self {
+            Self::Success(response) => Self::success(request_id, response.result.clone()),
+            Self::Error(response) => Self::Error(ErrorResponse {
+                protocol_version: PROTOCOL_VERSION,
+                request_id,
+                ok: False,
+                error: response.error.clone(),
+            }),
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         match self {
             Self::Success(response) => response.validate(),

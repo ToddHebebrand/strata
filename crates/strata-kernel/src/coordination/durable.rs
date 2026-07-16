@@ -761,6 +761,7 @@ impl<'a> CoordinationDurable<'a> {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
     pub fn begin_service_epoch_and_recover_coordination_with_failpoint(
         &self,
         failpoint: CoordinationFailpoint,
@@ -769,6 +770,7 @@ impl<'a> CoordinationDurable<'a> {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
     pub fn begin_service_epoch_and_recover_coordination_with_migration_and_failpoint(
         &self,
         migration: RecoveryValidationMigration,
@@ -1078,6 +1080,7 @@ impl<'a> CoordinationDurable<'a> {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
     pub fn create_draft_with_failpoint(
         &self,
         record: &ChangeSetRecord,
@@ -1233,6 +1236,7 @@ impl<'a> CoordinationDurable<'a> {
         Ok(())
     }
 
+    #[cfg(feature = "coordination-test-api")]
     pub fn submit(
         &self,
         change_set: &ChangeSetRecord,
@@ -1243,6 +1247,7 @@ impl<'a> CoordinationDurable<'a> {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
     pub fn submit_with_failpoint(
         &self,
         change_set: &ChangeSetRecord,
@@ -1253,6 +1258,7 @@ impl<'a> CoordinationDurable<'a> {
         self.submit_inner(change_set, ticket, event, failpoint)
     }
 
+    #[cfg(feature = "coordination-test-api")]
     fn submit_inner(
         &self,
         change_set: &ChangeSetRecord,
@@ -1899,6 +1905,7 @@ impl<'a> CoordinationDurable<'a> {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
     pub fn ticket(&self, id: &str) -> Result<Option<CoordinationTicket>> {
         let read = self.database.begin_read().context("begin ticket read")?;
         let table = read.open_table(TICKETS).context("open tickets table")?;
@@ -1926,6 +1933,7 @@ impl<'a> CoordinationDurable<'a> {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
     pub fn event(&self, sequence: u64) -> Result<Option<CoordinationEvent>> {
         let read = self.database.begin_read().context("begin event read")?;
         let table = read.open_table(EVENTS).context("open events table")?;
@@ -1936,6 +1944,7 @@ impl<'a> CoordinationDurable<'a> {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
     pub fn submission_change_set_id(&self, key: &str) -> Result<Option<String>> {
         let read = self
             .database
@@ -1996,6 +2005,7 @@ impl<'a> CoordinationDurable<'a> {
     }
 
     #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
     pub fn table_counts(&self) -> Result<CoordinationTableCounts> {
         let read = self
             .database

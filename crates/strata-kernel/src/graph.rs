@@ -116,6 +116,26 @@ impl GraphGeneration {
         self.references_to.get(node_id).into_iter().flatten()
     }
 
+    /// Returns an explicitly bounded projection of a node's immediate children.
+    ///
+    /// This intentionally does not expose or materialize the full graph snapshot.
+    pub fn children_bounded(&self, parent_id: &str, limit: usize) -> Result<Vec<&NodeRecord>> {
+        if limit == 0 {
+            bail!("child projection limit must be positive");
+        }
+        let mut children = self
+            .nodes
+            .values()
+            .filter(|node| node.parent_id.as_deref() == Some(parent_id))
+            .take(limit + 1)
+            .collect::<Vec<_>>();
+        if children.len() > limit {
+            bail!("immediate child projection exceeds {limit} item bound");
+        }
+        children.sort_by_key(|node| node.child_index);
+        Ok(children)
+    }
+
     fn build(
         generation: u64,
         nodes: BTreeMap<String, NodeRecord>,

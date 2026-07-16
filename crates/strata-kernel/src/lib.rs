@@ -11,11 +11,10 @@ pub use bridge::NodeBridgeConfig;
 pub use coordination::affected_resource_keys;
 pub use coordination::{
     BeginChangeSet, CLAIM_TTL_TICKS, CancellationOutcome, ChangeSetRecord, ChangeSetState,
-    ClaimHandle, ClaimOutcome, CoordinationDurable, CoordinationError, CoordinationEvent,
-    CoordinationEventKind, CoordinationFailpoint, CoordinationMetadataState,
-    CoordinationTableCounts, CoordinationTicket, CreateDraftOutcome, DRAFT_TTL_TICKS,
-    DependencyVersion, DynamicExpansionPolicy, EventCursor, IdempotencyClass, InferredScope,
-    IntentParameters, IntentRecord, LeaseExpiryOutcome, MAX_WAKE_AFFECTED_NODE_IDS,
+    ClaimHandle, ClaimOutcome, CoordinationError, CoordinationEvent, CoordinationEventKind,
+    CoordinationMetadataState, CoordinationTableCounts, CoordinationTicket, CreateDraftOutcome,
+    DRAFT_TTL_TICKS, DependencyVersion, DynamicExpansionPolicy, EventCursor, IdempotencyClass,
+    InferredScope, IntentParameters, IntentRecord, LeaseExpiryOutcome, MAX_WAKE_AFFECTED_NODE_IDS,
     PublishClaimOutcome, READY_OFFER_TTL_TICKS, ReadyOffer, ResourceVersion, SchedulerState,
     ScopeChange, SubmissionOutcome, TicketState, canonical_scope_fingerprint,
     classify_scope_change, validate_delta_containment,
@@ -25,6 +24,8 @@ pub use coordination::{
     CandidateBuilder, CandidateEnvelope, PreparedCandidate, PublicationAttemptRecord,
     RecoveryMetadataState, RecoveryValidationMigration,
 };
+#[cfg(feature = "coordination-test-api")]
+pub use coordination::{CoordinationDurable, CoordinationFailpoint};
 #[cfg(feature = "coordination-test-api")]
 pub use coordination::{
     DeltaAuthority, IntentAnalysis, TestSemanticProvider, analyze_change_set,

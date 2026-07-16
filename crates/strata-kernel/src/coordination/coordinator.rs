@@ -45,6 +45,24 @@ impl Kernel {
         self.store.coordination().change_set(id)
     }
 
+    /// Reads only the bounded intent records needed by the local service to
+    /// reconcile a write-ahead request after restart. These records are never
+    /// part of the client protocol.
+    pub fn intents_for_change_set_bounded(
+        &self,
+        id: &str,
+        limit: usize,
+    ) -> Result<Vec<IntentRecord>> {
+        if limit == 0 || limit > 256 {
+            bail!("intent projection limit must be in 1..=256");
+        }
+        let intents = self.store.coordination().intents_for(id)?;
+        if intents.len() > limit {
+            bail!("change set {id} exceeds {limit} intent projection bound");
+        }
+        Ok(intents)
+    }
+
     pub fn ticket_for_change_set(&self, id: &str) -> Result<Option<CoordinationTicket>> {
         Ok(self
             .store
