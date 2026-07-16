@@ -2,6 +2,8 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
+#[cfg(feature = "coordination-test-api")]
+use sha2::{Digest, Sha256};
 
 use super::{ClaimHandle, CoordinationTicket, ReadyOffer, TicketState};
 
@@ -14,6 +16,12 @@ pub struct SchedulerState {
 }
 
 impl SchedulerState {
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn test_canonical_digest(&self) -> String {
+        let digest = Sha256::digest(format!("{self:?}").as_bytes());
+        format!("{digest:x}")
+    }
+
     pub fn recover(
         tickets: Vec<CoordinationTicket>,
         offers: Vec<ReadyOffer>,

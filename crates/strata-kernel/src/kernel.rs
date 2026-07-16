@@ -334,6 +334,30 @@ impl Kernel {
         ))
     }
 
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_canonical_digests(&self) -> Result<(String, String, String)> {
+        let scheduler = self
+            .scheduler
+            .lock()
+            .map_err(|_| anyhow::anyhow!("scheduler lock is poisoned"))?;
+        Ok((
+            self.store.test_canonical_graph_digest()?,
+            self.store.coordination().test_canonical_digest()?,
+            scheduler.test_canonical_digest(),
+        ))
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_replace_node_candidate_executor(&mut self, config: NodeBridgeConfig) {
+        let client = Arc::new(NodeBridgeClient::new(config));
+        self.candidate_executor = Some(Arc::new(NodeCandidateExecutor::new(
+            client,
+            self.service_epoch,
+        )));
+    }
+
     /// Injects one monotonic in-memory dependency-clock advance without durable or graph writes.
     /// This is a research-only fault seam for proving stale candidate invalidation.
     #[doc(hidden)]

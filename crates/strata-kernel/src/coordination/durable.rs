@@ -7,6 +7,8 @@ use redb::{
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+#[cfg(feature = "coordination-test-api")]
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::PublicationAttemptRecord;
@@ -142,6 +144,68 @@ impl<'a> CoordinationDurable<'a> {
             clocks.insert(key.value().to_owned(), clock.value());
         }
         Ok(clocks)
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn test_canonical_digest(&self) -> Result<String> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin canonical coordination read")?;
+        let mut digest = Sha256::new();
+        macro_rules! hash_str_bytes {
+            ($definition:expr) => {{
+                digest.update(stringify!($definition).as_bytes());
+                let table = read.open_table($definition)?;
+                for entry in table.iter()? {
+                    let (key, value) = entry?;
+                    digest.update(key.value().as_bytes());
+                    digest.update([0]);
+                    digest.update(value.value());
+                    digest.update([0]);
+                }
+            }};
+        }
+        macro_rules! hash_str_u64 {
+            ($definition:expr) => {{
+                digest.update(stringify!($definition).as_bytes());
+                let table = read.open_table($definition)?;
+                for entry in table.iter()? {
+                    let (key, value) = entry?;
+                    digest.update(key.value().as_bytes());
+                    digest.update([0]);
+                    digest.update(value.value().to_le_bytes());
+                }
+            }};
+        }
+        hash_str_bytes!(CHANGE_SETS);
+        hash_str_bytes!(INTENTS);
+        hash_str_bytes!(TICKETS);
+        hash_str_bytes!(READY_OFFERS);
+        hash_str_bytes!(ACTIVE_CLAIMS);
+        digest.update(stringify!(EVENTS).as_bytes());
+        let events = read.open_table(EVENTS)?;
+        for entry in events.iter()? {
+            let (key, value) = entry?;
+            digest.update(key.value().to_le_bytes());
+            digest.update(value.value());
+            digest.update([0]);
+        }
+        hash_str_u64!(EVENT_IDS);
+        hash_str_u64!(EVENT_CURSORS);
+        digest.update(stringify!(SUBMISSION_IDEMPOTENCY).as_bytes());
+        let submissions = read.open_table(SUBMISSION_IDEMPOTENCY)?;
+        for entry in submissions.iter()? {
+            let (key, value) = entry?;
+            digest.update(key.value().as_bytes());
+            digest.update([0]);
+            digest.update(value.value().as_bytes());
+            digest.update([0]);
+        }
+        hash_str_u64!(RESOURCE_CLOCKS);
+        hash_str_bytes!(PUBLICATION_ATTEMPTS);
+        hash_str_bytes!(META);
+        Ok(format!("{:x}", digest.finalize()))
     }
 
     pub(crate) fn publication_attempt(

@@ -5,6 +5,8 @@ use anyhow::{Context, Result, bail};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+#[cfg(feature = "coordination-test-api")]
+use sha2::{Digest, Sha256};
 
 #[cfg(any(feature = "coordination-test-api", feature = "redb-spike-api"))]
 use crate::TicketRecord;
@@ -807,6 +809,70 @@ impl DurableStore {
 
     pub fn operation(&self, generation: u64) -> Result<Option<OperationRecord>> {
         self.read_structured(OPERATIONS, generation, "operation")
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub(crate) fn test_canonical_graph_digest(&self) -> Result<String> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin canonical graph read")?;
+        let mut digest = Sha256::new();
+        macro_rules! hash_str_bytes {
+            ($definition:expr) => {{
+                digest.update(stringify!($definition).as_bytes());
+                let table = read.open_table($definition)?;
+                for entry in table.iter()? {
+                    let (key, value) = entry?;
+                    digest.update(key.value().as_bytes());
+                    digest.update([0]);
+                    digest.update(value.value());
+                    digest.update([0]);
+                }
+            }};
+        }
+        macro_rules! hash_u64_bytes {
+            ($definition:expr) => {{
+                digest.update(stringify!($definition).as_bytes());
+                let table = read.open_table($definition)?;
+                for entry in table.iter()? {
+                    let (key, value) = entry?;
+                    digest.update(key.value().to_le_bytes());
+                    digest.update(value.value());
+                    digest.update([0]);
+                }
+            }};
+        }
+        macro_rules! hash_str_u64 {
+            ($definition:expr) => {{
+                digest.update(stringify!($definition).as_bytes());
+                let table = read.open_table($definition)?;
+                for entry in table.iter()? {
+                    let (key, value) = entry?;
+                    digest.update(key.value().as_bytes());
+                    digest.update([0]);
+                    digest.update(value.value().to_le_bytes());
+                }
+            }};
+        }
+        hash_str_bytes!(META);
+        hash_u64_bytes!(SNAPSHOTS);
+        hash_u64_bytes!(OPERATIONS);
+        hash_u64_bytes!(DELTAS);
+        hash_u64_bytes!(EVENTS);
+        hash_str_bytes!(TICKETS);
+        hash_str_u64!(IDEMPOTENCY);
+        hash_str_u64!(FENCES);
+        hash_str_u64!(CONSUMED_FENCES);
+        digest.update(stringify!(GENERATION_DIGESTS).as_bytes());
+        let table = read.open_table(GENERATION_DIGESTS)?;
+        for entry in table.iter()? {
+            let (key, value) = entry?;
+            digest.update(key.value().to_le_bytes());
+            digest.update(value.value().as_bytes());
+            digest.update([0]);
+        }
+        Ok(format!("{:x}", digest.finalize()))
     }
 
     #[cfg(feature = "coordination-test-api")]

@@ -54,6 +54,34 @@ impl NodeBridgeConfig {
             ),
         }
     }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_with_limits(
+        mut self,
+        max_request_bytes: usize,
+        max_response_bytes: usize,
+        max_stderr_bytes: usize,
+    ) -> Self {
+        self.max_request_bytes = max_request_bytes;
+        self.max_response_bytes = max_response_bytes;
+        self.max_stderr_bytes = max_stderr_bytes;
+        self
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_with_executable(mut self, executable: impl Into<PathBuf>) -> Self {
+        self.executable = executable.into();
+        self
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = deadline;
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -134,8 +162,29 @@ impl NodeBridgeClient {
                     {
                         Ok(Some(exit_status)) => status = Some(exit_status),
                         Ok(None) => {
-                            if let Err(cleanup_error) = kill_and_reap(&mut child) {
-                                lifecycle_error = Some(cleanup_error);
+                            // An immediately exiting child can close stdin just before its
+                            // nonzero status becomes observable. Give that status a short,
+                            // deadline-bounded grace period; otherwise clean up the still-live
+                            // child and preserve the primary write error.
+                            let grace = Duration::from_millis(50)
+                                .min(deadline.saturating_duration_since(Instant::now()));
+                            match child.wait_timeout(grace) {
+                                Ok(Some(exit_status)) => status = Some(exit_status),
+                                Ok(None) => {
+                                    if let Err(cleanup_error) = kill_and_reap(&mut child) {
+                                        lifecycle_error = Some(cleanup_error);
+                                    }
+                                }
+                                Err(error) => {
+                                    lifecycle_error =
+                                        Some(anyhow!(error).context("wait after write failure"));
+                                    if let Err(cleanup_error) = kill_and_reap(&mut child) {
+                                        lifecycle_error = Some(with_cleanup_error(
+                                            lifecycle_error.take().unwrap(),
+                                            cleanup_error,
+                                        ));
+                                    }
+                                }
                             }
                         }
                         Err(error) => {

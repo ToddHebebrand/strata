@@ -60,10 +60,12 @@ fn trusted_medium_snapshot() -> GraphSnapshot {
     snapshot
 }
 
-fn mutating_worker_config(directory: &Path) -> (NodeBridgeConfig, PathBuf) {
+fn mutating_worker_config(directory: &Path) -> (NodeBridgeConfig, PathBuf, PathBuf) {
     let wrapper = directory.join("mutate-candidate-response.mjs");
     let mode = directory.join("response-mode");
+    let counter = directory.join("candidate-count");
     fs::write(&mode, "pass").unwrap();
+    fs::write(&counter, "0").unwrap();
     fs::write(
         &wrapper,
         r#"import fs from "node:fs";
@@ -71,6 +73,7 @@ import { spawnSync } from "node:child_process";
 
 const modePath = process.argv[2];
 const realWorker = process.argv[3];
+const counterPath = process.argv[4];
 const input = fs.readFileSync(0);
 const request = JSON.parse(input.toString("utf8"));
 const mode = fs.readFileSync(modePath, "utf8").trim();
@@ -81,6 +84,7 @@ if (request.kind === "analyzeIntent" || mode === "pass") {
   process.stderr.write(child.stderr);
   process.exit(child.status ?? 1);
 }
+fs.writeFileSync(counterPath, String(Number(fs.readFileSync(counterPath, "utf8")) + 1));
 if (mode === "nonzero") {
   process.stderr.write("intentional candidate crash\n");
   process.exit(17);
@@ -155,6 +159,11 @@ if (mode === "timeout") {
       node: { ...node, payload: node.payload + ".rogue" }
     }];
     process.stdout.write(JSON.stringify(response) + "\n");
+  } else if (mode === "empty") {
+    process.stdout.write(JSON.stringify(response) + "\n");
+  } else if (mode === "stderr") {
+    process.stderr.write("x".repeat(70_000));
+    process.exit(17);
   } else {
     throw new Error(`unknown response mode ${mode}`);
   }
@@ -172,13 +181,15 @@ if (mode === "timeout") {
                 mode.clone().into_os_string(),
                 root.join("packages/kernel-bridge/dist/worker.js")
                     .into_os_string(),
+                counter.clone().into_os_string(),
             ],
-            Duration::from_secs(2),
+            Duration::from_secs(10),
             corpus.join("src"),
             corpus,
             true,
         ),
         mode,
+        counter,
     )
 }
 
@@ -219,6 +230,8 @@ fn claim_user_rename(kernel: &Kernel, change_set_id: &str) -> ClaimHandle {
 
 #[derive(Debug, PartialEq, Eq)]
 struct CanonicalState {
+    live_graph: GraphSnapshot,
+    canonical_digests: (String, String, String),
     graph: (u64, String, u64, u64),
     latest_operation: Option<OperationRecord>,
     latest_graph_event: Option<EventRecord>,
@@ -245,6 +258,8 @@ impl CanonicalState {
             .events_after("bridge-failure-audit", 0, 1_024)
             .unwrap();
         Self {
+            live_graph: kernel.snapshot().snapshot(),
+            canonical_digests: kernel.test_canonical_digests().unwrap(),
             graph,
             latest_operation,
             latest_graph_event,
@@ -280,39 +295,119 @@ impl CanonicalState {
 #[test]
 fn candidate_process_protocol_binding_and_containment_failures_are_side_effect_free() {
     let directory = tempdir().unwrap();
-    let (config, mode_path) = mutating_worker_config(directory.path());
-    let (kernel, _) = Kernel::create_with_node_bridge(
+    let (config, mode_path, counter_path) = mutating_worker_config(directory.path());
+    let (mut kernel, _) = Kernel::create_with_node_bridge(
         directory.path().join("kernel.redb"),
         trusted_medium_snapshot(),
-        config,
+        config.clone(),
     )
     .unwrap();
     let claim = claim_user_rename(&kernel, "bridge-failure-matrix");
     let before = CanonicalState::capture(&kernel, &claim);
 
     let cases = [
-        "nonzero",
-        "timeout",
-        "truncated",
-        "extra",
-        "unknown-field",
-        "unknown-version",
-        "request-id",
-        "kind",
-        "epoch",
-        "generation",
-        "digest",
-        "attempt",
-        "scope",
-        "hydrate",
-        "validate",
-        "diagnostics",
-        "out-of-scope",
+        ("nonzero", "nonzero status"),
+        ("timeout", "deadline exceeded"),
+        ("truncated", "invalid bridge response JSON or extra frame"),
+        ("extra", "invalid bridge response JSON or extra frame"),
+        (
+            "unknown-field",
+            "invalid bridge response JSON or extra frame",
+        ),
+        ("unknown-version", "unsupported response protocol version 2"),
+        ("request-id", "response requestId mismatch"),
+        ("kind", "response kind mismatch"),
+        ("epoch", "candidate response binding mismatch"),
+        ("generation", "candidate response binding mismatch"),
+        ("digest", "candidate response binding mismatch"),
+        ("attempt", "candidate response binding mismatch"),
+        ("scope", "candidate response binding mismatch"),
+        ("hydrate", "snapshotMismatch"),
+        ("validate", "typescriptFailed"),
+        ("diagnostics", "diagnostics exceed configured byte limit"),
+        ("out-of-scope", "node:"),
     ];
-    for case in cases {
+    let mut executed = Vec::new();
+    for (index, (case, expected_error)) in cases.iter().enumerate() {
         fs::write(&mode_path, case).unwrap();
+        kernel.test_replace_node_candidate_executor(if *case == "timeout" {
+            config
+                .clone()
+                .test_with_deadline(Duration::from_millis(250))
+        } else {
+            config.clone()
+        });
         let error = kernel.execute_claimed(&claim, 3).unwrap_err();
-        assert!(!error.to_string().is_empty(), "{case}");
+        let error_chain = format!("{error:#}");
+        assert!(error_chain.contains(expected_error), "{case}: {error:#}");
+        assert_eq!(
+            fs::read_to_string(&counter_path).unwrap().trim(),
+            (index + 1).to_string(),
+            "{case}: exactly one candidate process must run"
+        );
         before.assert_unchanged(&kernel, &claim, case);
+        executed.push(*case);
     }
+
+    let process_cases = [
+        ("spawn", "spawn Node bridge executable", 17_usize),
+        (
+            "request-limit",
+            "bridge request exceeds configured byte limit",
+            17,
+        ),
+        (
+            "response-limit",
+            "stdout response exceeded configured byte limit",
+            18,
+        ),
+        ("stderr-limit", "stderr exceeded configured byte limit", 19),
+    ];
+    for (case, expected_error, expected_count) in process_cases {
+        let candidate_config = match case {
+            "spawn" => config
+                .clone()
+                .test_with_executable(directory.path().join("missing-node-bridge")),
+            "request-limit" => config
+                .clone()
+                .test_with_limits(1, 16 * 1024 * 1024, 64 * 1024),
+            "response-limit" => config
+                .clone()
+                .test_with_limits(32 * 1024 * 1024, 128, 64 * 1024),
+            "stderr-limit" => {
+                config
+                    .clone()
+                    .test_with_limits(32 * 1024 * 1024, 16 * 1024 * 1024, 64)
+            }
+            _ => unreachable!(),
+        };
+        fs::write(
+            &mode_path,
+            if case == "stderr-limit" {
+                "stderr"
+            } else {
+                "empty"
+            },
+        )
+        .unwrap();
+        kernel.test_replace_node_candidate_executor(candidate_config);
+        let error = kernel.execute_claimed(&claim, 3).unwrap_err();
+        assert!(
+            error.to_string().contains(expected_error),
+            "{case}: {error:#}"
+        );
+        assert_eq!(
+            fs::read_to_string(&counter_path).unwrap().trim(),
+            expected_count.to_string(),
+            "{case}: candidate invocation count"
+        );
+        before.assert_unchanged(&kernel, &claim, case);
+        executed.push(case);
+    }
+    let expected_labels = cases
+        .map(|(case, _)| case)
+        .into_iter()
+        .chain(process_cases.map(|(case, _, _)| case))
+        .collect::<Vec<_>>();
+    assert_eq!(executed, expected_labels);
 }
