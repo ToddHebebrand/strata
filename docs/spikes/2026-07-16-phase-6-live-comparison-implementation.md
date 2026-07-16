@@ -39,9 +39,47 @@ approval gate after deterministic implementation.
 - Credential-free agent package baseline: 53 passed, 2 failed, 2 skipped. The
   only failures are the documented stale declaration `5073ecfb56151b41` in
   `labSeam.test.ts` and `replay.test.ts`.
-- Task 1 Agent SDK extraction and query-budget enforcement: pending.
+- Task 1 Agent SDK extraction and query-budget enforcement: code complete at
+  `dc7fc3d`, process gate BLOCKED pending operator disposition.
 
 The Task-1 package verification preserves the already-documented two stale
 agent replay-fixture failures as the baseline; focused Task-1 tests and the
 package build must pass, and no additional full-package failure is accepted.
 Those fixtures are outside Task 1 and are not regenerated.
+
+## Task 1 process-gate incident
+
+During the credential-free RED run for Task 1, the new compatibility test
+passed a scripted `queryFn` property to the pre-extraction `runLiveSession`.
+That old implementation did not accept the property, entered the real Agent SDK
+`query()` path, and returned `error_wall_time` after the test's two-second abort.
+Both `ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` were removed. No model
+result, reported cost, tool call, or canonical/source mutation occurred. The
+SDK CLI process nevertheless likely started, contrary to the plan's stricter
+rule that no experimental Agent SDK model process may start in Tasks 1–8.
+
+The committed GREEN implementation uses only injected scripted SDK streams.
+Evidence at `dc7fc3d` is:
+
+- focused Task-1 tests: 12 passed, 1 credential-gated skip;
+- package build: PASS; and
+- full agent suite: 59 passed, the same 2 documented stale-fixture failures,
+  and 2 skipped.
+
+The independent task review found no Critical, Important, or Minor code issue.
+It confirmed the generic runner is storage-agnostic, the hermetic options and
+exact init-tool guard are present, `error_max_budget_usd` maps to the distinct
+`max_budget` terminal while retaining cost/usage, no retry loop was added, and
+SQLite/T03 observations remain in wrapper callbacks. It still returned
+`Task quality: Needs fixes` because the historical no-process violation cannot
+be represented as compliant RED evidence or repaired after the fact.
+
+Execution stops before Task 2. The operator must explicitly choose whether to
+accept this one uncredentialed, zero-result, zero-reported-cost process incident
+as a recorded exception and retain `dc7fc3d`, or terminate/restart the approved
+implementation effort. No further SDK process or Task-2 production change is
+authorized by the earlier implementation approval.
+
+This is an execution-procedure divergence, not a change to Strata's approved
+architecture or production behavior, so it is recorded here rather than in
+`decisions.md`.
