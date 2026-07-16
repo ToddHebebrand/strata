@@ -103,6 +103,18 @@ pub fn create_projected_kernel(path: impl AsRef<Path>) -> Result<(Kernel, Recove
     Kernel::create_with_node_bridge(path, trusted_medium_snapshot(), worker_config())
 }
 
+#[cfg(all(feature = "coordination-test-api", feature = "redb-spike-api"))]
+pub fn create_classified_projected_kernel(
+    path: impl AsRef<Path>,
+    directory: &Path,
+) -> Result<(Kernel, RecoveryReport, PathBuf)> {
+    let corpus_root = repo_root().join("examples/medium");
+    let (config, request_counts) = classified_worker_config(directory, &corpus_root);
+    let (kernel, report) =
+        Kernel::create_with_node_bridge(path, trusted_medium_snapshot(), config)?;
+    Ok((kernel, report, request_counts))
+}
+
 pub fn reopen_projected_kernel(path: impl AsRef<Path>) -> Result<(Kernel, RecoveryReport)> {
     Kernel::open_with_node_bridge(path, worker_config())
 }

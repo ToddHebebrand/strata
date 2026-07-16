@@ -33,14 +33,9 @@ fn run_json(args: &[&str]) -> Value {
 
 #[test]
 fn process_crashes_recover_only_durably_committed_generations() {
-    let cases = [
-        ("beforeRedbTransaction", 0_u64),
-        ("insideRedbTransaction", 0_u64),
-        ("afterRedbCommitBeforeMemoryPublish", 1_u64),
-        ("afterMemoryPublish", 1_u64),
-    ];
-
-    for (failpoint, expected_generation) in cases {
+    for failpoint in strata_kernel::PublishFailpoint::crash_boundaries() {
+        let failpoint_name = failpoint.boundary_name();
+        let expected_generation = u64::from(failpoint.expects_committed_state());
         let directory = tempdir().unwrap();
         let database = directory.path().join("kernel.redb");
         let publication = directory.path().join("rename-publication.json");
@@ -67,26 +62,26 @@ fn process_crashes_recover_only_durably_committed_generations() {
             "--publication",
             publication_arg,
             "--failpoint",
-            failpoint,
+            failpoint_name,
         ]);
         assert!(
             !crashed.status.success(),
-            "failpoint {failpoint} unexpectedly exited successfully"
+            "failpoint {failpoint_name} unexpectedly exited successfully"
         );
 
         let inspected = run_json(&["inspect", "--db", database_arg]);
         let (independently_replayed, report) = Kernel::open(&database).unwrap();
         let recovered_digest = independently_replayed.snapshot().digest().to_owned();
-        assert_eq!(report.generation, expected_generation, "{failpoint}");
+        assert_eq!(report.generation, expected_generation, "{failpoint_name}");
         assert_eq!(
             inspected["generation"].as_u64(),
             Some(expected_generation),
-            "{failpoint}"
+            "{failpoint_name}"
         );
         assert_eq!(
             inspected["digest"].as_str(),
             Some(recovered_digest.as_str()),
-            "{failpoint}"
+            "{failpoint_name}"
         );
         drop(independently_replayed);
 
@@ -107,46 +102,55 @@ fn process_crashes_recover_only_durably_committed_generations() {
         let (current_fence, consumed_fence) = store.fence_state("symbol:User").unwrap();
 
         if expected_generation == 0 {
-            assert!(operation.is_none(), "{failpoint}");
-            assert!(delta.is_none(), "{failpoint}");
-            assert!(event.is_none(), "{failpoint}");
-            assert!(ticket.is_none(), "{failpoint}");
-            assert!(idempotency_generation.is_none(), "{failpoint}");
-            assert!(!was_published, "{failpoint}");
-            assert!(generation_one_digest.is_err(), "{failpoint}");
-            assert!(current_fence.is_some_and(|token| token > 0), "{failpoint}");
-            assert_eq!(consumed_fence, None, "{failpoint}");
+            assert!(operation.is_none(), "{failpoint_name}");
+            assert!(delta.is_none(), "{failpoint_name}");
+            assert!(event.is_none(), "{failpoint_name}");
+            assert!(ticket.is_none(), "{failpoint_name}");
+            assert!(idempotency_generation.is_none(), "{failpoint_name}");
+            assert!(!was_published, "{failpoint_name}");
+            assert!(generation_one_digest.is_err(), "{failpoint_name}");
+            assert!(
+                current_fence.is_some_and(|token| token > 0),
+                "{failpoint_name}"
+            );
+            assert_eq!(consumed_fence, None, "{failpoint_name}");
         } else {
             assert_eq!(
                 operation,
                 Some(expected_publication.operation.clone()),
-                "{failpoint}"
+                "{failpoint_name}"
             );
             assert_eq!(
                 delta,
                 Some(expected_publication.delta.clone()),
-                "{failpoint}"
+                "{failpoint_name}"
             );
             assert_eq!(
                 event,
                 Some(expected_publication.event.clone()),
-                "{failpoint}"
+                "{failpoint_name}"
             );
             assert_eq!(
                 ticket,
                 Some(expected_publication.ticket.clone()),
-                "{failpoint}"
+                "{failpoint_name}"
             );
-            assert_eq!(idempotency_generation, Some(1), "{failpoint}");
-            assert!(was_published, "{failpoint}");
+            assert_eq!(idempotency_generation, Some(1), "{failpoint_name}");
+            assert!(was_published, "{failpoint_name}");
             assert_eq!(
                 generation_one_digest.unwrap(),
                 recovered_digest,
-                "{failpoint}"
+                "{failpoint_name}"
             );
-            assert!(current_fence.is_some_and(|token| token > 0), "{failpoint}");
-            assert!(consumed_fence.is_some_and(|token| token > 0), "{failpoint}");
-            assert_eq!(consumed_fence, current_fence, "{failpoint}");
+            assert!(
+                current_fence.is_some_and(|token| token > 0),
+                "{failpoint_name}"
+            );
+            assert!(
+                consumed_fence.is_some_and(|token| token > 0),
+                "{failpoint_name}"
+            );
+            assert_eq!(consumed_fence, current_fence, "{failpoint_name}");
         }
     }
 }

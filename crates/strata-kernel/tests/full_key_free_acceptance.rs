@@ -3,21 +3,29 @@
 #[path = "support/full_key_free.rs"]
 mod full_key_free_support;
 
+use std::collections::BTreeMap;
+use std::fs;
+use std::process::Command;
+
 use full_key_free_support::{
     CanonicalFinalState, ClientActor, assert_canonical_final_state,
     assert_projected_typescript_green, assert_typescript_green, classified_request_count,
-    create_projected_kernel, inject_validated_add_parameter_g1, localized_add_parameter_fixture,
-    reopen_projected_kernel,
+    create_classified_projected_kernel, create_projected_kernel, inject_validated_add_parameter_g1,
+    localized_add_parameter_fixture, reopen_projected_kernel,
 };
 use strata_kernel::{
     ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEventKind, IntentParameters, Kernel,
-    PublishClaimOutcome, ReadyOffer, SubmissionOutcome, TicketState,
+    PublishClaimOutcome, PublishFailpoint, ReadyOffer, SubmissionOutcome, TicketState,
 };
 use tempfile::tempdir;
 
 const USER_DECLARATION_ID: &str = "fc98295bca9efc3e";
 const FORMAT_TIMESTAMP_DECLARATION_ID: &str = "9a25d67ed4b74807";
 const GREET_DECLARATION_ID: &str = "603b2ae524ee3c70";
+const ROW_8_CHANGE_SET_ID: &str = "row-8-user-rename";
+const ROW_8_CHILD_DATABASE: &str = "STRATA_ROW_8_CHILD_DATABASE";
+const ROW_8_CHILD_CLAIM: &str = "STRATA_ROW_8_CHILD_CLAIM";
+const ROW_8_CHILD_FAILPOINT: &str = "STRATA_ROW_8_CHILD_FAILPOINT";
 
 fn submit_wide_rename(
     actor: &ClientActor,
@@ -134,6 +142,220 @@ fn published(outcome: PublishClaimOutcome) -> strata_kernel::PublicationReport {
         panic!("real Node-backed claim must publish")
     };
     report
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct CrashAtomicState {
+    normalized: serde_json::Value,
+}
+
+impl CrashAtomicState {
+    fn read(kernel: &Kernel, original_claim: &ClaimHandle) -> anyhow::Result<Self> {
+        let graph = kernel.snapshot();
+        let snapshot = graph.snapshot();
+        let change_set = kernel
+            .change_set(ROW_8_CHANGE_SET_ID)?
+            .expect("row-8 change set after recovery");
+        let ticket = kernel
+            .ticket_for_change_set(ROW_8_CHANGE_SET_ID)?
+            .expect("row-8 ticket after recovery");
+        let offer = kernel.ready_offer_for_change_set(ROW_8_CHANGE_SET_ID)?;
+        let claims = kernel.test_active_claims()?;
+        let coordination_events = kernel.events_after("events:row-8-audit", 0, 1_000)?;
+        let publication_attempt = kernel.publication_attempt(&original_claim.attempt_id)?;
+        let operations = (1..=graph.generation())
+            .filter_map(|generation| kernel.operation(generation).transpose())
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let deltas = (1..=graph.generation())
+            .filter_map(|generation| kernel.test_graph_delta(generation).transpose())
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let graph_events = (1..=graph.generation())
+            .filter_map(|generation| kernel.test_graph_event(generation).transpose())
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let graph_ticket = kernel.test_graph_ticket(&ticket.ticket_id)?;
+        let graph_idempotency = kernel.test_graph_idempotency_generation(&format!(
+            "coordination-commit:{ROW_8_CHANGE_SET_ID}"
+        ))?;
+        let mut fence_states = BTreeMap::new();
+        for resource_key in change_set
+            .inferred_scope
+            .as_ref()
+            .expect("row-8 inferred scope after recovery")
+            .reservation_keys
+            .iter()
+        {
+            fence_states.insert(resource_key.clone(), kernel.test_fence_state(resource_key)?);
+        }
+        let (live_resource_clocks, durable_resource_clocks) = kernel.test_all_resource_clocks()?;
+        let graph_counts = kernel.test_graph_table_counts()?;
+        let coordination_counts = kernel.test_coordination_table_counts()?;
+        let metadata = kernel.test_recovery_metadata()?;
+        let scheduler_revisions = kernel.test_scheduler_revisions()?;
+
+        let mut replacements = BTreeMap::from([
+            (ticket.ticket_id.clone(), "<ticket-id>".to_owned()),
+            (original_claim.claim_id.clone(), "<claim-id>".to_owned()),
+            (original_claim.offer_id.clone(), "<offer-id>".to_owned()),
+            (original_claim.attempt_id.clone(), "<attempt-id>".to_owned()),
+        ]);
+        for (index, intent_id) in change_set.intent_ids.iter().enumerate() {
+            replacements.insert(intent_id.clone(), format!("<intent-id:{index}>"));
+        }
+        if let Some(offer) = &offer {
+            replacements.insert(offer.offer_id.clone(), "<offer-id:recovered>".to_owned());
+            replacements.insert(
+                offer.claim_token.clone(),
+                "<claim-token:recovered>".to_owned(),
+            );
+        }
+        for (index, claim) in claims.iter().enumerate() {
+            replacements.insert(claim.claim_id.clone(), format!("<claim-id:{index}>"));
+            replacements.insert(claim.offer_id.clone(), format!("<offer-id:{index}>"));
+            replacements.insert(claim.attempt_id.clone(), format!("<attempt-id:{index}>"));
+        }
+        for (index, operation) in operations.iter().enumerate() {
+            replacements.insert(
+                operation.operation_id.clone(),
+                format!("<operation-id:{index}>"),
+            );
+        }
+        for (index, event) in graph_events.iter().enumerate() {
+            replacements.insert(event.event_id.clone(), format!("<graph-event-id:{index}>"));
+        }
+        for event in &coordination_events {
+            replacements.insert(
+                event.event_id.clone(),
+                format!("<coordination-event-id:{}>", event.sequence),
+            );
+        }
+
+        let state = serde_json::json!({
+            "graph": snapshot,
+            "graphDigest": graph.digest(),
+            "graphCounts": {
+                "generation": graph_counts.0,
+                "digest": graph_counts.1,
+                "operations": graph_counts.2,
+                "events": graph_counts.3,
+            },
+            "operations": operations,
+            "deltas": deltas,
+            "graphEvents": graph_events,
+            "graphTicket": graph_ticket,
+            "graphIdempotency": graph_idempotency,
+            "changeSet": change_set,
+            "ticket": ticket,
+            "offer": offer,
+            "claims": claims,
+            "coordinationEvents": coordination_events,
+            "publicationAttempt": publication_attempt,
+            "fenceStates": fence_states,
+            "liveResourceClocks": live_resource_clocks,
+            "durableResourceClocks": durable_resource_clocks,
+            "schedulerRevisions": scheduler_revisions,
+            "coordinationCounts": {
+                "changeSets": coordination_counts.change_sets,
+                "intents": coordination_counts.intents,
+                "tickets": coordination_counts.tickets,
+                "readyOffers": coordination_counts.ready_offers,
+                "activeClaims": coordination_counts.active_claims,
+                "events": coordination_counts.events,
+                "eventIds": coordination_counts.event_ids,
+                "eventCursors": coordination_counts.event_cursors,
+                "submissionIdempotency": coordination_counts.submission_idempotency,
+                "publicationAttempts": coordination_counts.publication_attempts,
+                "metadata": coordination_counts.metadata,
+            },
+            "recoveryMetadata": {
+                "nextQueueSequence": metadata.next_queue_sequence,
+                "currentEventSequence": metadata.current_event_sequence,
+                "schedulerRevision": metadata.scheduler_revision,
+                "latestLifecycleRevision": metadata.latest_lifecycle_revision,
+                "clockedPublicationGeneration": metadata.clocked_publication_generation,
+                "recoveryValidationVersion": metadata.recovery_validation_version,
+            },
+            "serviceEpoch": kernel.service_epoch(),
+        });
+        Ok(Self {
+            normalized: normalize_crash_state(state, &replacements),
+        })
+    }
+}
+
+fn normalize_crash_state(
+    mut value: serde_json::Value,
+    replacements: &BTreeMap<String, String>,
+) -> serde_json::Value {
+    fn visit(value: &mut serde_json::Value, replacements: &BTreeMap<String, String>) {
+        match value {
+            serde_json::Value::String(text) => {
+                if let Some(replacement) = replacements.get(text) {
+                    *text = replacement.clone();
+                } else if let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(text) {
+                    visit(&mut payload, replacements);
+                    *value = payload;
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    visit(value, replacements);
+                }
+            }
+            serde_json::Value::Object(fields) => {
+                for value in fields.values_mut() {
+                    visit(value, replacements);
+                }
+            }
+            _ => {}
+        }
+    }
+    visit(&mut value, replacements);
+    value
+}
+
+fn prepare_row_8_claim(kernel: &Kernel) -> ClaimHandle {
+    let actor = ClientActor::new("agent:row-8-crash", "events:row-8-crash");
+    let offer = ready(submit_rename(
+        &actor,
+        kernel,
+        ROW_8_CHANGE_SET_ID,
+        USER_DECLARATION_ID,
+        "Account",
+        0,
+    ));
+    claim(&actor, kernel, &offer, 2)
+}
+
+fn row_8_control(path: &std::path::Path, publish: bool) -> CrashAtomicState {
+    let (kernel, _) = create_projected_kernel(path).unwrap();
+    let claim = prepare_row_8_claim(&kernel);
+    if publish {
+        published(kernel.execute_claimed(&claim, 3).unwrap());
+    }
+    drop(kernel);
+    let (reopened, _) = Kernel::open(path).unwrap();
+    CrashAtomicState::read(&reopened, &claim).unwrap()
+}
+
+fn run_row_8_crash_child() {
+    let database_path = std::env::var_os(ROW_8_CHILD_DATABASE).unwrap();
+    let claim_path = std::env::var_os(ROW_8_CHILD_CLAIM).unwrap();
+    let boundary_name = std::env::var(ROW_8_CHILD_FAILPOINT).unwrap();
+    let failpoint = PublishFailpoint::from_boundary_name(&boundary_name)
+        .unwrap_or_else(|| panic!("unknown row-8 crash boundary {boundary_name}"));
+    let directory = std::path::Path::new(&database_path)
+        .parent()
+        .expect("row-8 child database directory");
+    let (kernel, _, _) = create_classified_projected_kernel(&database_path, directory).unwrap();
+    let claim = prepare_row_8_claim(&kernel);
+    let claim_bytes = serde_json::to_vec(&claim).unwrap();
+    let claim_file = fs::File::create(claim_path).unwrap();
+    std::io::Write::write_all(&mut &claim_file, &claim_bytes).unwrap();
+    claim_file.sync_all().unwrap();
+    let _ = kernel
+        .execute_claimed_with_failpoint(&claim, 3, failpoint)
+        .unwrap();
+    panic!("row-8 crash failpoint {boundary_name} returned without terminating the child");
 }
 
 fn canonical_reverse_reference_index_bytes(graph: &strata_kernel::GraphGeneration) -> Vec<u8> {
@@ -927,6 +1149,101 @@ fn rows_6_7_11_restart_fences_old_claim_and_preserves_queue_events_and_exactly_o
         .count();
     assert_eq!(committed_events, 1);
     assert_projected_typescript_green(&reopened.snapshot().snapshot());
+}
+
+#[test]
+#[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
+fn row_8_real_claimed_node_publication_crashes_complete_old_or_new() {
+    if std::env::var_os(ROW_8_CHILD_DATABASE).is_some() {
+        run_row_8_crash_child();
+        return;
+    }
+
+    let controls = tempdir().unwrap();
+    let complete_old = row_8_control(&controls.path().join("complete-old.redb"), false);
+    let complete_new = row_8_control(&controls.path().join("complete-new.redb"), true);
+    assert_ne!(complete_old, complete_new);
+
+    let boundaries = PublishFailpoint::crash_boundaries().collect::<Vec<_>>();
+    assert_eq!(boundaries.len(), 4, "every authorized crash boundary once");
+    assert_eq!(
+        boundaries
+            .iter()
+            .map(|failpoint| failpoint.boundary_name())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        boundaries.len(),
+        "authorized crash boundary names must be unique"
+    );
+
+    for failpoint in boundaries {
+        let directory = tempdir().unwrap();
+        let database_path = directory.path().join("kernel.redb");
+        let claim_path = directory.path().join("claim.json");
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "row_8_real_claimed_node_publication_crashes_complete_old_or_new",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(ROW_8_CHILD_DATABASE, &database_path)
+            .env(ROW_8_CHILD_CLAIM, &claim_path)
+            .env(ROW_8_CHILD_FAILPOINT, failpoint.boundary_name())
+            .output()
+            .unwrap();
+        assert!(
+            !child.status.success(),
+            "crash boundary {} returned successfully\nstdout:\n{}\nstderr:\n{}",
+            failpoint.boundary_name(),
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr),
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(
+                child.status.signal(),
+                Some(6),
+                "{} must terminate through the authorized abort boundary",
+                failpoint.boundary_name()
+            );
+        }
+        assert_eq!(
+            classified_request_count(
+                &directory.path().join("node-request-count"),
+                "buildValidateCandidate"
+            ),
+            1,
+            "{} must build and validate one real Node candidate before crashing",
+            failpoint.boundary_name()
+        );
+        let claim: ClaimHandle = serde_json::from_slice(&fs::read(&claim_path).unwrap()).unwrap();
+        let (reopened, report) = Kernel::open(&database_path).unwrap();
+        let actual = CrashAtomicState::read(&reopened, &claim).unwrap();
+        let expected = if failpoint.expects_committed_state() {
+            &complete_new
+        } else {
+            &complete_old
+        };
+        assert_eq!(
+            actual,
+            *expected,
+            "{} must recover as complete-{}",
+            failpoint.boundary_name(),
+            if failpoint.expects_committed_state() {
+                "new"
+            } else {
+                "old"
+            }
+        );
+        assert_eq!(
+            report.generation,
+            u64::from(failpoint.expects_committed_state()),
+            "{} durable generation",
+            failpoint.boundary_name()
+        );
+    }
 }
 
 #[test]

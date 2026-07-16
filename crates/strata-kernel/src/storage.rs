@@ -233,7 +233,12 @@ impl DurableStore {
         commit: &CoordinatedCommit,
         expected_digest: &str,
         failpoint: CoordinatedPublishFailpoint,
+        #[cfg(feature = "redb-spike-api")] crash_failpoint: PublishFailpoint,
     ) -> Result<PublishOutcome> {
+        #[cfg(feature = "redb-spike-api")]
+        if crash_failpoint == PublishFailpoint::BeforeRedbTransaction {
+            std::process::abort();
+        }
         let write = self
             .database
             .begin_write()
@@ -321,9 +326,17 @@ impl DurableStore {
         if failpoint == CoordinatedPublishFailpoint::BeforeCommit {
             bail!("coordinated publication failpoint before commit");
         }
+        #[cfg(feature = "redb-spike-api")]
+        if crash_failpoint == PublishFailpoint::InsideRedbTransaction {
+            std::process::abort();
+        }
         write
             .commit()
             .context("commit coordinated publication transaction")?;
+        #[cfg(feature = "redb-spike-api")]
+        if crash_failpoint == PublishFailpoint::AfterRedbCommitBeforeMemoryPublish {
+            std::process::abort();
+        }
         Ok(PublishOutcome::Published { generation })
     }
 

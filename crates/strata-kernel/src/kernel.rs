@@ -53,6 +53,41 @@ pub enum PublishFailpoint {
     AfterMemoryPublish,
 }
 
+#[cfg(feature = "redb-spike-api")]
+impl PublishFailpoint {
+    const CRASH_BOUNDARIES: [Self; 4] = [
+        Self::BeforeRedbTransaction,
+        Self::InsideRedbTransaction,
+        Self::AfterRedbCommitBeforeMemoryPublish,
+        Self::AfterMemoryPublish,
+    ];
+
+    pub fn crash_boundaries() -> std::array::IntoIter<Self, 4> {
+        Self::CRASH_BOUNDARIES.into_iter()
+    }
+
+    pub const fn boundary_name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::BeforeRedbTransaction => "beforeRedbTransaction",
+            Self::InsideRedbTransaction => "insideRedbTransaction",
+            Self::AfterRedbCommitBeforeMemoryPublish => "afterRedbCommitBeforeMemoryPublish",
+            Self::AfterMemoryPublish => "afterMemoryPublish",
+        }
+    }
+
+    pub fn from_boundary_name(value: &str) -> Option<Self> {
+        Self::crash_boundaries().find(|failpoint| failpoint.boundary_name() == value)
+    }
+
+    pub const fn expects_committed_state(self) -> bool {
+        matches!(
+            self,
+            Self::AfterRedbCommitBeforeMemoryPublish | Self::AfterMemoryPublish
+        )
+    }
+}
+
 pub struct Kernel {
     pub(crate) store: DurableStore,
     pub(crate) live: RwLock<Arc<GraphGeneration>>,
@@ -403,6 +438,12 @@ impl Kernel {
     #[cfg(feature = "coordination-test-api")]
     pub fn test_graph_event(&self, sequence: u64) -> Result<Option<crate::EventRecord>> {
         self.store.event(sequence)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_graph_delta(&self, generation: u64) -> Result<Option<crate::GraphDelta>> {
+        self.store.delta(generation)
     }
 
     #[doc(hidden)]

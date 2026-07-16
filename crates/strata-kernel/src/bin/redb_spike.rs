@@ -273,15 +273,8 @@ fn replace_with_authoritative_fence(kernel: &Kernel, publication: &mut Publicati
 }
 
 fn parse_failpoint(value: &str) -> Result<PublishFailpoint> {
-    match value {
-        "beforeRedbTransaction" => Ok(PublishFailpoint::BeforeRedbTransaction),
-        "insideRedbTransaction" => Ok(PublishFailpoint::InsideRedbTransaction),
-        "afterRedbCommitBeforeMemoryPublish" => {
-            Ok(PublishFailpoint::AfterRedbCommitBeforeMemoryPublish)
-        }
-        "afterMemoryPublish" => Ok(PublishFailpoint::AfterMemoryPublish),
-        other => bail!("unknown publish failpoint {other}"),
-    }
+    PublishFailpoint::from_boundary_name(value)
+        .with_context(|| format!("unknown publish failpoint {value}"))
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &str, label: &str) -> Result<T> {

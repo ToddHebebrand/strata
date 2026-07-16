@@ -21,6 +21,8 @@ use super::{
     PublishClaimOutcome, SchedulerState, ScopeChange, TicketState, classify_scope_change,
 };
 use crate::bridge::CandidateExecutor;
+#[cfg(feature = "redb-spike-api")]
+use crate::kernel::PublishFailpoint;
 use crate::model::{FenceClaim, Publication};
 use crate::storage::{CoordinatedCommit, CoordinatedPublishFailpoint, PublishOutcome};
 use crate::{
@@ -62,6 +64,8 @@ struct PublicationTestHooks<'a> {
 #[derive(Clone, Copy)]
 struct PublicationExecution<'a> {
     failpoint: CoordinatedPublishFailpoint,
+    #[cfg(feature = "redb-spike-api")]
+    crash_failpoint: PublishFailpoint,
     after_outer_idempotency_lookup: Option<&'a dyn Fn()>,
     optimistic_attempt: u32,
     test_hooks: PublicationTestHooks<'a>,
@@ -71,6 +75,8 @@ impl Default for PublicationExecution<'_> {
     fn default() -> Self {
         Self {
             failpoint: CoordinatedPublishFailpoint::None,
+            #[cfg(feature = "redb-spike-api")]
+            crash_failpoint: PublishFailpoint::None,
             after_outer_idempotency_lookup: None,
             optimistic_attempt: 0,
             test_hooks: PublicationTestHooks::default(),
@@ -106,6 +112,26 @@ impl Kernel {
             CandidateSource::Executor(executor),
             now_tick,
             PublicationExecution::default(),
+        )
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "redb-spike-api")]
+    pub fn execute_claimed_with_failpoint(
+        &self,
+        claim: &ClaimHandle,
+        now_tick: u64,
+        failpoint: PublishFailpoint,
+    ) -> Result<PublishClaimOutcome> {
+        let executor = self.candidate_executor()?;
+        self.publish_claimed_inner(
+            claim,
+            CandidateSource::Executor(executor),
+            now_tick,
+            PublicationExecution {
+                crash_failpoint: failpoint,
+                ..PublicationExecution::default()
+            },
         )
     }
 
@@ -303,6 +329,8 @@ impl Kernel {
     ) -> Result<PublishClaimOutcome> {
         let PublicationExecution {
             failpoint,
+            #[cfg(feature = "redb-spike-api")]
+            crash_failpoint,
             after_outer_idempotency_lookup,
             optimistic_attempt,
             test_hooks,
@@ -672,6 +700,8 @@ impl Kernel {
                     now_tick,
                     PublicationExecution {
                         failpoint,
+                        #[cfg(feature = "redb-spike-api")]
+                        crash_failpoint,
                         after_outer_idempotency_lookup: None,
                         optimistic_attempt: next_attempt,
                         test_hooks,
@@ -688,9 +718,13 @@ impl Kernel {
             hook();
         }
         let persistence_started = Instant::now();
-        let outcome = self
-            .store
-            .publish_coordinated(&commit, next.digest(), failpoint)?;
+        let outcome = self.store.publish_coordinated(
+            &commit,
+            next.digest(),
+            failpoint,
+            #[cfg(feature = "redb-spike-api")]
+            crash_failpoint,
+        )?;
         let persistence_ns = persistence_started.elapsed().as_nanos();
         match outcome {
             PublishOutcome::AlreadyPublished { generation } => {
@@ -719,6 +753,10 @@ impl Kernel {
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = next_resource_clocks;
                 let memory_publish_ns = memory_started.elapsed().as_nanos();
                 *scheduler = prepared_publication.next_scheduler;
+                #[cfg(feature = "redb-spike-api")]
+                if crash_failpoint == PublishFailpoint::AfterMemoryPublish {
+                    std::process::abort();
+                }
                 Ok(PublishClaimOutcome::Published(PublicationReport {
                     generation,
                     digest: prepared_publication.next_graph.digest().to_owned(),
