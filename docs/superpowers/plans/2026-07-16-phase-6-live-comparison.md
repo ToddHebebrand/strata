@@ -427,8 +427,9 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 - Create: `packages/live-compare/tests/{tasks,verify,dynamicPreflight}.test.ts`
 - Create task fixtures under `packages/live-compare/tests/fixtures/tasks/`.
 - If and only if Task 0 selected `caller-enriched`, create an appended
-  `examples/medium/src/users/greetCallers.ts` module and a matching test without
-  reordering existing source structure.
+  `examples/medium/src/users/greetCallers.ts` module and a matching test of a
+  stable wrapper without reordering existing source structure or naming a task
+  target from the non-canonical test.
 - Modify root `package.json` only for a deterministic preflight command if
   useful.
 
@@ -450,16 +451,32 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 - [ ] **Step 2: Add failing common-verifier tests.**
 
   Feed equivalent rendered Strata and filesystem baseline trees. Assert the
-  same tsc, Vitest, task predicates, duplicate-argument checks, residual-name
-  checks, unexpected-change policy, output bounds, and digest calculation.
-  Mutate each required fact and prove the verifier fails closed. G's allowed
-  delta must explicitly accept only the exact
+  same strict `src/**` TypeScript root-name set/options, registered per-packet
+  Phase-6 Vitest fixture allowlist/digests, task predicates,
+  duplicate-argument checks, residual-name checks, unexpected-change policy,
+  output bounds, and digest calculation. Prove `tests/format.test.ts` and
+  `tests/dateRange.test.ts` are not run as Phase-6 fixtures, are hashed as
+  excluded historical inputs, and cannot be edited by the baseline. Prove
+  harness-owned Phase-6 fixtures cannot be modified by either arm. Mutate each
+  required fact and prove the verifier fails closed. G's allowed delta must
+  explicitly accept only the exact
   `account: Account = undefined as never` declaration parameter and, in the
   caller-enriched variant only, one exact `undefined as never` argument at each
   registered callsite. A different default, duplicate insertion, or insertion
   outside those stable IDs must fail as unexpected scope.
 
-- [ ] **Step 3: Add failing D/M/R/S/G deterministic tests through the service.**
+- [ ] **Step 3: Add the failing canonical-boundary preflight.**
+
+  Enumerate every textual occurrence and resolved reference to each D/M/R/S/X/G
+  target outside the publishable `src/**` graph. Freeze path, target,
+  classification, content digest, and disposition in the manifest. Fail if an
+  accepted task predicate requires rewriting non-canonical content, if an
+  occurrence is unclassified, if an excluded historical fixture changes, or if
+  either arm can use a worktree test edit to satisfy the common verifier. In the
+  caller-enriched variant, its test must import only a stable wrapper from the
+  appended source module and must not name a rename target.
+
+- [ ] **Step 4: Add failing D/M/R/S/G deterministic tests through the service.**
 
   Use two scripted clients and both publication orders. Require one shared green
   final graph, correct operation-log actor/reasoning/generations, no lost
@@ -469,7 +486,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   publishes nothing while the ordered pair publishes once as one aggregate
   generation alongside the second client's disjoint rename.
 
-- [ ] **Step 4: Add the failing X stop-gate tests.**
+- [ ] **Step 5: Add the failing X stop-gate tests.**
 
   On the exact ingest-derived `logEvent` and `eventLine` IDs, run X2-first and
   X1-first. X2-first must emit `ScopeExpanded` before X1 candidate construction;
@@ -477,27 +494,27 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   reference, preserve stable IDs, and pass the common verifier. No fixture
   publisher or feature-gated hook is allowed.
 
-- [ ] **Step 5: Run RED.**
+- [ ] **Step 6: Run RED.**
 
   ```bash
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
     pnpm --filter @strata/live-compare test -- tasks verify dynamicPreflight
   ```
 
-- [ ] **Step 6: Implement manifests and verifier; then evaluate X.**
+- [ ] **Step 7: Implement manifests and verifier; then evaluate X.**
 
   If X cannot pass without changing operation semantics or adding a
   task-specific hook, stop. Append the actual finding to `decisions.md`, update
   the design status, and request operator direction. Do not substitute a task.
 
-- [ ] **Step 7: Run GREEN.**
+- [ ] **Step 8: Run GREEN.**
 
   ```bash
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
     pnpm --filter @strata/live-compare test -- tasks verify dynamicPreflight
   ```
 
-- [ ] **Step 8: Commit.**
+- [ ] **Step 9: Commit.**
 
   ```bash
   git add packages/live-compare package.json
@@ -589,7 +606,10 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   Cover manifest/tasks/team/sessions/service/kernel-events/canonical-audit/
   git-events/verification/summary schemas, wall plus monotonic timestamps,
   content hashes, redaction, append/finalize semantics, crash-safe partial
-  records, and refusal to overwrite a finalized run.
+  records, and refusal to overwrite a finalized run. The verifier schema must
+  bind exact TypeScript options/root names, Phase-6 fixture allowlists/digests,
+  excluded historical-fixture digests, and every non-canonical-reference
+  disposition.
 
 - [ ] **Step 3: Add failing accounting/failure tests.**
 

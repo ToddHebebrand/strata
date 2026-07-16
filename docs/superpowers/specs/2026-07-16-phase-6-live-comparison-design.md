@@ -225,6 +225,12 @@ Only `rename_symbol` and uniform-value `add_parameter` are allowed. No task
 inserts, deletes, or moves a structural node. The unchanged declaration or
 statement keeps its stable logical ID.
 
+Every byte-identical task body defines “all references” as references inside
+the registered canonical `src/**` source projection and expressly forbids
+changes to tests, configuration, or other non-canonical files. This is the same
+scope Strata can publish and the baseline must obey; the external verifier
+rejects a baseline worktree that changes anything outside it.
+
 The unmodified `examples/medium` corpus contains the `greet` declaration but no
 importer, caller, or test reference to `greet`. Consequently R, S, and G are
 single-site-class tasks in the current corpus. Their coordination conflicts are
@@ -236,19 +242,22 @@ rename-class propagation cost advantage.
 
 ### D: disjoint propagation
 
-- Agent D1: rename exported interface `User` to `Account` everywhere.
+- Agent D1: rename exported interface `User` to `Account` throughout the
+  registered canonical `src/**` source projection.
 - Agent D2: rename exported function `formatTimestamp` to `renderTimestamp`
-  everywhere.
+  throughout that projection.
 
-Acceptance requires both declarations and all references to use the new names,
-no old symbol reference to remain, exact task-specific tests to pass, and the
-shared tree to be green. The deterministic gate already proves these scopes can
-publish in both orders.
+Acceptance requires both declarations and all registered canonical `src/**`
+references to use the new names, no old symbol reference to remain in that
+projection, the exact registered Phase-6 fixture to pass, and the shared tree
+to be green under the projection-compatible contract below. The deterministic
+gate already proves these scopes can publish in both orders.
 
 ### M: same-module, disjoint nodes
 
-- Agent M1: rename `logEvent` to `recordEvent` everywhere.
-- Agent M2: rename `eventLine` to `formatEventLine` everywhere.
+- Agent M1: rename `logEvent` to `recordEvent` throughout the registered
+  canonical `src/**` source projection.
+- Agent M2: rename `eventLine` to `formatEventLine` throughout that projection.
 
 Both declarations start in `src/server/events.ts` but neither refers to the
 other. Acceptance requires both declarations/references to use the new names,
@@ -260,7 +269,8 @@ than relabeling the scenario.
 
 ### R: reference-mediated shared symbol
 
-- Agent R1: rename exported interface `User` to `Account` everywhere.
+- Agent R1: rename exported interface `User` to `Account` throughout the
+  registered canonical `src/**` source projection.
 - Agent R2: add parameter `excited: boolean = false` at position 1 of `greet`
   using the uniform-value `add_parameter` operation.
 
@@ -273,7 +283,8 @@ instead receive the uniform argument exactly once.
 
 ### S: compatible same-node overlap
 
-- Agent S1: rename `greet` to `welcomeUser` everywhere.
+- Agent S1: rename `greet` to `welcomeUser` throughout the registered canonical
+  `src/**` source projection.
 - Agent S2: add parameter `excited: boolean = false` at position 1 of the same
   stable `greet` function node.
 
@@ -287,7 +298,8 @@ new name and argument exactly once.
 
 ### X: dynamically expanding reference
 
-- Agent X1: rename `logEvent` to `recordEvent` everywhere.
+- Agent X1: rename `logEvent` to `recordEvent` throughout the registered
+  canonical `src/**` source projection.
 - Agent X2: add parameter `fallbackLine: string = logEvent(0, "idle")` at
   position 1 of `eventLine` using uniform-value `add_parameter`.
 
@@ -314,7 +326,8 @@ dynamic behavior.
 
 - Agent G1: in one ordered change set, rename `User` to `Account` and add
   parameter `account: Account = undefined as never` at position 1 of `greet`.
-- Agent G2: rename `formatTimestamp` to `renderTimestamp` everywhere.
+- Agent G2: rename `formatTimestamp` to `renderTimestamp` throughout the
+  registered canonical `src/**` source projection.
 
 The G1 `add_parameter` intent alone is invalid because `Account` is unresolved;
 the ordered rename plus parameter addition must validate and publish as one
@@ -334,12 +347,14 @@ source digest, stable-ID mapping, verifier digest, or schedule is frozen:
   cost-unfavorable coordination/atomicity probes and cannot support a
   propagation claim.
 - **Create a caller-enriched corpus variant:** before manifest freezing, add a
-  final source module plus test containing real imported `greet` calls, then
-  regenerate every corpus/graph/task/verifier digest and requalify D, M, R, S,
-  X, and G. The new module must be appended without reordering existing sibling
-  structure so existing logical IDs remain stable. R, S, and G would then test
-  conflict plus propagation, but results apply to that modified corpus rather
-  than the historical fixture.
+  final source module containing real imported `greet` calls plus a test of a
+  stable wrapper exported by that module, then regenerate every
+  corpus/graph/task/verifier digest and requalify D, M, R, S, X, and G. The test
+  must not import or spell a task-target symbol that a canonical operation
+  would need to rewrite outside `src/**`. The new module must be appended
+  without reordering existing sibling structure so existing logical IDs remain
+  stable. R, S, and G would then test conflict plus propagation, but results
+  apply to that modified corpus rather than the historical fixture.
 
 The implementation may not choose or switch variants after seeing a model
 result. Adding callers after manifest freezing invalidates the experiment.
@@ -362,23 +377,59 @@ both task bodies or the packet is invalid.
 
 ## Verification
 
+“Green” in this experiment means the same preregistered,
+projection-compatible contract for both arms. It does not mean the historical
+whole `examples/medium/tests` suite. That shared corpus contains task-specific
+fixtures for earlier benchmarks, including `tests/format.test.ts`, whose T01
+signature expectation is false at the Phase-6 starting commit and whose imports
+name symbols changed by D, M, G, and X. The repository already treats that
+whole-suite behavioral scope as unsatisfiable per task and uses explicit
+fixture allowlists. Requiring it here would either fail unrelated packets or
+require Strata to publish outside the approved canonical `src/**` projection.
+
+Before task-manifest freezing, a deterministic reference-boundary preflight
+enumerates every occurrence and resolved reference to every task target outside
+the canonical `src/**` projection. The manifest records the path, target,
+classification, content digest, and disposition for each occurrence. Existing
+historical benchmark fixtures are explicitly excluded from the Phase-6 green
+gate and remain byte-unchanged in both arms. If any accepted Phase-6 predicate
+would require rewriting non-canonical content, or any occurrence cannot be
+classified without weakening an acceptance predicate, implementation stops for
+operator review. It may not silently expand publication authority or narrow a
+task.
+
 The final verifier is outside all model sessions and has no repair capability.
-For each arm it:
+Its configuration is immutable manifest data: exact TypeScript version and
+options, exact `src/**/*.ts` root-name set, exact per-packet Phase-6 Vitest
+fixture allowlist and fixture digests, and exact AST/text predicates. Phase-6
+fixtures are harness-owned, mounted into the fresh verification directory, and
+unavailable for model modification. Packet-level fixtures may assert the
+combined final result; they are not publication gates for either agent's
+intermediate state. Strata candidate publication retains the approved
+`src/**`, source-only TypeScript validation boundary, and the existing
+deterministic acceptance gate remains unchanged.
+
+For each arm the final verifier:
 
 1. materializes the final shared TypeScript tree in a fresh verification
    directory (canonical render for Strata; integration worktree copy for the
    baseline);
 2. confirms the source digest started from the registered corpus;
-3. runs the same `tsc --noEmit` configuration and the same Vitest suite;
-4. evaluates task-specific AST/text predicates for both assigned tasks;
-5. detects duplicate arguments, residual old references, missing new
+3. rejects any baseline modification outside the registered canonical
+   `src/**` projection and confirms excluded historical fixtures retain their
+   frozen digests;
+4. runs the identical strict source-only `tsc --noEmit` root set and the
+   identical registered per-packet Phase-6 Vitest fixture allowlist;
+5. evaluates task-specific AST/text predicates for both assigned tasks;
+6. detects duplicate arguments, residual old canonical references, missing new
    references, and unexpected out-of-scope semantic changes. G's registered
    allowed-delta predicate explicitly whitelists the exact
    `account: Account = undefined as never` parameter at the stable `greet`
    declaration and, only in the caller-enriched variant, the exact uniform
    `undefined as never` argument inserted once at each registered callsite;
-6. records stdout/stderr, exit codes, durations, and content digests; and
-7. performs a Strata-only authority audit against the canonical operation log,
+7. records stdout/stderr, exit codes, durations, root names, fixture names, and
+   all configuration/content digests; and
+8. performs a Strata-only authority audit against the canonical operation log,
    graph generation sequence, event history, and final digest without giving
    those details to the model clients.
 
@@ -555,6 +606,9 @@ Stop deterministic implementation and return for operator review if:
 - X cannot pass its exact deterministic two-order preflight with stable IDs;
 - final verification cannot be made byte-for-byte equivalent in semantics
   across arms;
+- a registered success predicate requires mutation outside the canonical
+  `src/**` projection, or a task-symbol occurrence outside that projection
+  cannot be classified and frozen;
 - baseline integration cannot be captured without human action;
 - the existing SQLite product path or deterministic full key-free gate would
   need weakening; or
@@ -580,7 +634,9 @@ Every run directory is immutable after finalization and contains:
 - `experiment-manifest.json`: schema version, approved corpus variant,
   repository/source/task/verifier digests, model/provider, task-role bounds,
   integration-role bounds, symmetric team deadline, projected spend, seed,
-  precomputed schedule, package versions, machine metadata, and approval record;
+  precomputed schedule, exact TypeScript root names/options, Phase-6 fixture
+  allowlists/digests, non-canonical-reference dispositions, package versions,
+  machine metadata, and approval record;
 - `tasks/*.json`: stable IDs, baseline locators, prompt bodies/appendices and
   hashes, intent parameters, and acceptance predicates;
 - `trials/<trial-id>/<arm>/team.json`: timestamps, status, costs, tokens,
@@ -629,6 +685,10 @@ It cannot establish:
 - any propagation or bulk-reference cost claim from R, S, or G when the current
   zero-caller corpus is selected; those are single-site coordination/atomicity
   probes expected to be cost-unfavorable under the 2026-05-29 finding;
+- whole-corpus or historical-test-suite greenness: success is limited to the
+  frozen `src/**` TypeScript scope, registered Phase-6 behavioral fixtures, and
+  exact task predicates because the shared historical fixtures encode other
+  benchmark end states;
 - direct comparability between current-corpus and caller-enriched-corpus runs,
   because their source, graph, task, prompt, and verifier digests differ;
 - causal attribution to redb rather than the complete Strata interface; or
