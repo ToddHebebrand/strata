@@ -1,6 +1,6 @@
 # Deterministic Full Key-Free Acceptance Design
 
-**Status:** Proposed for operator approval
+**Status:** Approved and implemented (projection-bounded PASS 2026-07-15)
 
 **Date:** 2026-07-15
 
