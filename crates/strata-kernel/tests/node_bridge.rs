@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "redb-spike-api")]
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
@@ -21,6 +22,13 @@ use strata_kernel::{
     SCHEMA_VERSION, TicketRecord,
 };
 use tempfile::tempdir;
+
+#[allow(dead_code)]
+#[path = "support/full_key_free.rs"]
+mod full_key_free_support;
+#[cfg(feature = "coordination-test-api")]
+use full_key_free_support::portable_medium_snapshot;
+use full_key_free_support::{repo_root, trusted_medium_snapshot, worker_config};
 
 const SNAPSHOT_JSON: &str = include_str!("fixtures/examples-medium.snapshot.json");
 #[cfg(feature = "redb-spike-api")]
@@ -83,24 +91,6 @@ const EXPECTED_USER_RENAME_OPERATION_IDS: &[&str] = &[
     "fc6d488f4091643c",
     "fc98295bca9efc3e",
 ];
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn worker_config() -> NodeBridgeConfig {
-    let root = repo_root();
-    NodeBridgeConfig::tsc_only(
-        "node",
-        vec![OsString::from(
-            root.join("packages/kernel-bridge/dist/worker.js"),
-        )],
-        Duration::from_secs(30),
-        root.join("examples/medium/src"),
-        root.join("examples/medium"),
-        true,
-    )
-}
 
 fn counted_worker_config(directory: &Path) -> (NodeBridgeConfig, PathBuf) {
     let root = repo_root();
@@ -178,63 +168,9 @@ fn classified_request_count(prefix: &Path, kind: &str) -> usize {
     launch_count(Path::new(&format!("{}.{}", prefix.display(), kind)))
 }
 
-fn portable_medium_snapshot() -> GraphSnapshot {
-    serde_json::from_str(SNAPSHOT_JSON).unwrap()
-}
-
-fn trusted_medium_snapshot() -> GraphSnapshot {
-    trusted_source_projection(portable_medium_snapshot())
-}
-
 #[cfg(feature = "redb-spike-api")]
 fn portable_add_parameter_g1_snapshot() -> GraphSnapshot {
     serde_json::from_str(ADD_PARAMETER_G1_SNAPSHOT_JSON).unwrap()
-}
-
-fn trusted_source_projection(mut snapshot: GraphSnapshot) -> GraphSnapshot {
-    let corpus_root = repo_root().join("examples/medium");
-    let mut retained_ids = snapshot
-        .nodes
-        .iter()
-        .filter(|node| node.kind == "Module" && node.payload.starts_with("/project/src/"))
-        .map(|node| node.id.clone())
-        .collect::<BTreeSet<_>>();
-    loop {
-        let before = retained_ids.len();
-        let descendants = snapshot
-            .nodes
-            .iter()
-            .filter(|node| {
-                node.parent_id
-                    .as_ref()
-                    .is_some_and(|parent_id| retained_ids.contains(parent_id))
-            })
-            .map(|node| node.id.clone())
-            .collect::<Vec<_>>();
-        retained_ids.extend(descendants);
-        if retained_ids.len() == before {
-            break;
-        }
-    }
-    snapshot
-        .nodes
-        .retain(|node| retained_ids.contains(&node.id));
-    snapshot.references.retain(|reference| {
-        retained_ids.contains(&reference.from_node_id)
-            && retained_ids.contains(&reference.to_node_id)
-    });
-    for module in snapshot
-        .nodes
-        .iter_mut()
-        .filter(|node| node.kind == "Module")
-    {
-        let relative = module
-            .payload
-            .strip_prefix("/project/")
-            .unwrap_or_else(|| panic!("unexpected portable module path {}", module.payload));
-        module.payload = corpus_root.join(relative).to_string_lossy().into_owned();
-    }
-    snapshot
 }
 
 #[cfg(feature = "redb-spike-api")]
