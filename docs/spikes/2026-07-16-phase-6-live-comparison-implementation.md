@@ -220,6 +220,16 @@ Probe-only abbreviated digests were source `41c9059a…3c6eb8` and graph
 regenerate complete source, graph, registration, target, prompt, predicate,
 verifier, and final-state digests at the committed physical root.
 
+Observing `ScopeExpanded` through `read_events` required one additive service
+protocol extension: `ServiceEvent` frames gained a `kind` field that maps the
+kernel's existing internal `CoordinationEventKind` (including `scope_expanded`)
+onto the wire verbatim. This changes no scope classification or coordination
+semantics — the kernel already recorded these event kinds internally — but it
+does amend the protocol-v1 conformance fixture frozen at `9b9c79f`. The
+extension is part of the uncommitted Task-5 working set; it must be covered by
+its own Rust and TypeScript protocol tests, the updated frozen fixture, and
+committed explicitly rather than riding along silently.
+
 This is a disclosed post-falsification existence probe selected before any live
 result. It supports only the narrow claim that this namespace-member reference
 can trigger safe dynamic expansion. It does not establish prevalence or broad
@@ -232,7 +242,9 @@ current-corpus measurements.
 The operator's approval unblocks Task 5 only. Before Task 6, deterministic TDD
 must freeze `x-namespace-enriched-v1`, prove existing logical IDs remain stable,
 rerun generation-zero verification and D/M/R/S/X/G in both orders, reclassify
-the historical boundary inventory, and assert that `ScopeExpanded` is
+the historical boundary inventory, requalify the extended event-frame protocol
+shape (the `kind` field and its frozen conformance fixture), and assert that
+`ScopeExpanded` is
 externally visible after X2 publication and before X1 candidate advance. No
 kernel semantic change or test hook is authorized. No live-model call or spend
 is authorized.

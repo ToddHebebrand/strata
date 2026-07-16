@@ -535,7 +535,10 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   `UserTypes.formatUser(user)`. Both orders must converge to the identical
   publication digest, preserve every pre-existing registered stable ID, and
   pass the common verifier. No fixture publisher, feature-gated hook, or kernel
-  scope-classification change is allowed.
+  scope-classification change is allowed. The only permitted kernel-side change
+  is the additive `ServiceEvent.kind` protocol extension that makes
+  `ScopeExpanded` externally observable; it must carry its own Rust/TypeScript
+  protocol tests and the updated frozen protocol-v1 conformance fixture.
 
 - [ ] **Step 6: Run RED.**
 
@@ -562,7 +565,8 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 - [ ] **Step 9: Commit.**
 
   ```bash
-  git add packages/live-compare examples/medium/src package.json
+  git add packages/live-compare examples/medium/src package.json \
+    crates/strata-kernel/src/bin/strata_kernel_service
   git commit -m "test(live-compare): qualify stable-id coordination tasks"
   ```
 
