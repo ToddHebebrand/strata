@@ -16,7 +16,13 @@
 - Approval message reference: operator message dated 2026-07-16 immediately
   following `dbfcf0c`, with exact fields `Corpus: current` and
   `Implementation: approved`.
-- Approved corpus variant: `current`.
+- Initially approved corpus variant: `current`.
+- Post-stop-gate direction: the operator selected option 2, task/corpus
+  redesign, in the message `ok. proceed with 2`, then approved the exact
+  `displayUser`/`serialize` proposal by replying `ok. can you write up the
+  results pls` to the approval request.
+- Revised approved corpus variant: `x-namespace-enriched-v1`. This adds no
+  `greet` callers; R/S/G retain their approved single-site classification.
 - Approved scope: deterministic production-code implementation of
   `docs/superpowers/plans/2026-07-16-phase-6-live-comparison.md` under the
   reviewed authority boundary and stop conditions.
@@ -41,9 +47,10 @@ approval gate after deterministic implementation.
   `labSeam.test.ts` and `replay.test.ts`.
 - Task 1 Agent SDK extraction and query-budget enforcement: code complete at
   `dc7fc3d`, process gate BLOCKED pending operator disposition.
-- Task 5 task/verification qualification: deterministic implementation BLOCKED
-  at the real X dynamic-expansion stop gate; no Task-5 production/test commit
-  was made.
+- Task 5 task/verification qualification: the original X pair reached its real
+  dynamic-expansion stop gate. A credential-free replacement feasibility probe
+  subsequently passed through the production daemon; formal full-variant
+  requalification and the Task-5 production/test commit remain pending.
 
 The Task-1 package verification preserves the already-documented two stale
 agent replay-fixture failures as the baseline; focused Task-1 tests and the
@@ -142,7 +149,90 @@ containment and was not implemented.
 
 No credential was available to either command, no Agent SDK or live-model call
 was made, and no spend was incurred. Partial Task-5 production and test changes
-remain uncommitted. Per the approved design's Step-7 stop rule, execution stops
-before Task 6 pending explicit operator selection among: a semantic redesign
+remain uncommitted. Per the approved design's Step-7 stop rule, execution
+stopped before Task 6 and the operator was presented with: a semantic redesign
 with a new deterministic proof; a fully requalified X task/corpus redesign; or
-a design amendment that drops X and the dynamic-live-coordination claim.
+a design amendment that drops X and the dynamic-live-coordination claim. The
+next section records the selected direction and its feasibility evidence.
+
+## Task 5 X redesign feasibility result and disposition
+
+The operator selected the fully requalified X task/corpus redesign. A
+credential-free search first exhausted the current corpus under the approved
+`rename_symbol` and uniform-value `add_parameter` classes. Same-module and
+named-import candidates necessarily changed an old rename-scope node version.
+The only namespace import was `UserTypes`, whose only export (`User`) was
+already referenced. The two remaining syntactic candidates did not create a
+persisted target reference:
+
+- `User -> Account` plus
+  `actor: import("../types/user.ts").User = undefined as never` on `userAudit`
+  built an 11-change candidate, but fresh rename analysis remained at 15
+  references and 1,065 validation nodes, with zero added target references and
+  zero added validation nodes. Through the real daemon X2 published generation
+  1 and X1 ended `validation_failed`; no `ScopeExpanded` occurred.
+- A dynamic-import property access targeting `formatTimestamp` also built, but
+  added zero persisted target references and zero validation resources.
+
+The approved `x-namespace-enriched-v1` feasibility corpus instead makes two
+bounded source changes:
+
+```ts
+// src/types/user.ts — appended without reordering existing declarations
+export function displayUser(user: User): string {
+  return user.email;
+}
+```
+
+```ts
+// src/users/serializer.ts — replaces the existing type-only namespace import
+import * as UserTypes from "../types/user.ts";
+```
+
+The replacement X tasks are:
+
+- X1: rename exported function `displayUser` to `formatUser` throughout the
+  registered canonical projection;
+- X2: add
+  `displayLabel: string = UserTypes.displayUser(user)` at position 1 of
+  `serialize` using one uniform value.
+
+The production-daemon feasibility probe passed both publication orders:
+
+- **X2 first:** X2 submitted `ready`, X1 submitted `queued`, and X2 published
+  generation 1. Before any X1 `advance_change_set` request, `read_events`
+  returned `ScopeExpanded` followed by `intent_ready`. The next X1 advance
+  published generation 2 with
+  `displayLabel: string = UserTypes.formatUser(user)`.
+- **X1 first:** X1 published generation 1. Stale X2 returned `NeedsDecision`.
+  A fresh X2 using `UserTypes.formatUser(user)` submitted `ready` and published
+  generation 2.
+- Both orders produced the same final publication digest. Generation-zero
+  source-only TypeScript validation and every bridge-built candidate were
+  green.
+
+At the probe's unchanged physical corpus root, the projection moved from 1,203
+nodes/592 references to 1,209 nodes/595 references. The existing `User` and
+`serialize` declaration IDs and serializer import-statement ID were preserved;
+the import payload changed and the appended helper received a new derived ID.
+Probe-only abbreviated digests were source `41c9059a…3c6eb8` and graph
+`733f260a…48446b`; they are evidence, not frozen manifest values. Task 5 must
+regenerate complete source, graph, registration, target, prompt, predicate,
+verifier, and final-state digests at the committed physical root.
+
+This is a disclosed post-falsification existence probe selected before any live
+result. It supports only the narrow claim that this namespace-member reference
+can trigger safe dynamic expansion. It does not establish prevalence or broad
+propagation performance: both X tasks are single-site-class at generation zero,
+X1 gains one reference after X2, and the added `displayLabel` parameter is not
+otherwise consumed. The new `User` reference slightly changes D/R/G, so results
+remain fair within the frozen variant but cannot be pooled with historical
+current-corpus measurements.
+
+The operator's approval unblocks Task 5 only. Before Task 6, deterministic TDD
+must freeze `x-namespace-enriched-v1`, prove existing logical IDs remain stable,
+rerun generation-zero verification and D/M/R/S/X/G in both orders, reclassify
+the historical boundary inventory, and assert that `ScopeExpanded` is
+externally visible after X2 publication and before X1 candidate advance. No
+kernel semantic change or test hook is authorized. No live-model call or spend
+is authorized.

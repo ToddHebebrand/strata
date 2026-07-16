@@ -1,7 +1,8 @@
 # Phase-6 Live Multi-Agent Comparison Design
 
-**Status:** Deterministic implementation BLOCKED at the Task-5 X admission
-gate; no live-model execution is authorized by this document
+**Status:** X redesign approved after a credential-free production-daemon
+feasibility pass; deterministic Task-5 requalification is pending and no
+live-model execution is authorized by this document
 
 **Date:** 2026-07-16
 
@@ -78,7 +79,9 @@ would not create one shared authority.
 
 A **matched trial** is one task packet run once in each arm. It contains:
 
-- one immutable source commit and `examples/medium` content digest;
+- one immutable source commit and the approved
+  `x-namespace-enriched-v1` derivative of `examples/medium`, identified by its
+  frozen content digest;
 - two task definitions and task-specific acceptance checks;
 - one model/provider/configuration tuple;
 - one pre-registered arm order and launch seed;
@@ -231,14 +234,29 @@ changes to tests, configuration, or other non-canonical files. This is the same
 scope Strata can publish and the baseline must obey; the external verifier
 rejects a baseline worktree that changes anything outside it.
 
-The unmodified `examples/medium` corpus contains the `greet` declaration but no
-importer, caller, or test reference to `greet`. Consequently R, S, and G are
-single-site-class tasks in the current corpus. Their coordination conflicts are
-real, but their propagation predicates are not: there are no existing `greet`
-calls to update. Per the 2026-05-29 decision, single-site synthesis is expected
-to be cost-unfavorable for the substrate independent of whether coordination
-works correctly. These scenarios test conflict handling and atomicity, not a
-rename-class propagation cost advantage.
+The approved corpus is `x-namespace-enriched-v1`, a preregistered derivative of
+the previously approved current corpus. It makes exactly two source changes for
+the replacement X packet: append `displayUser(user: User): string` to
+`src/types/user.ts`, and change the existing namespace import in
+`src/users/serializer.ts` from `import type * as UserTypes` to
+`import * as UserTypes`. The appended declaration creates a normal application
+helper; the value-capable namespace import provides a latent, resolvable member
+path that X2 can turn into the helper's first reference. Existing registered
+declaration and top-level statement IDs must remain stable. Every source,
+graph, task, prompt, predicate, verifier, and final-state digest is regenerated
+before live execution, and results from this variant are not pooled with the
+historical current corpus.
+
+This enrichment does not add a `greet` importer, caller, or test reference.
+Consequently R, S, and G remain single-site-class tasks. Their coordination
+conflicts are real, but their propagation predicates are not: there are no
+existing `greet` calls to update. Per the 2026-05-29 decision, single-site
+synthesis is expected to be cost-unfavorable for the substrate independent of
+whether coordination works correctly. These scenarios test conflict handling
+and atomicity, not a rename-class propagation cost advantage. The new helper's
+`User` parameter also slightly changes the D/R/G reference inventory; this is
+part of the new frozen within-variant workload, not evidence comparable to an
+older current-corpus run.
 
 ### D: disjoint propagation
 
@@ -277,9 +295,7 @@ than relabeling the scenario.
 The `greet` signature already references `User`, so Rust must infer overlap
 before mutation. Acceptance requires `greet(user: Account, excited: boolean =
 false)`, all User references to become Account, confirmation that the registered
-corpus has zero `greet` callsites, and the shared tree to be green. If the
-caller-enriched corpus option below is selected, every registered callsite must
-instead receive the uniform argument exactly once.
+corpus has zero `greet` callsites, and the shared tree to be green.
 
 ### S: compatible same-node overlap
 
@@ -291,24 +307,30 @@ instead receive the uniform argument exactly once.
 Both operations mutate the same declaration node but have compatible final
 intent. Acceptance requires the stable declaration ID to survive both orders,
 the final signature to be `welcomeUser(user: User, excited: boolean = false)`,
-confirmation that the unmodified corpus has zero `greet` references/calls,
-explicit ordering or fresh-state reanalysis, and a green shared tree. If the
-caller-enriched option is selected, all registered references/calls must use the
-new name and argument exactly once.
+confirmation that the registered corpus has zero `greet` references/calls,
+explicit ordering or fresh-state reanalysis, and a green shared tree.
 
 ### X: dynamically expanding reference
 
-- Agent X1: rename `logEvent` to `recordEvent` throughout the registered
-  canonical `src/**` source projection.
-- Agent X2: add parameter `fallbackLine: string = logEvent(0, "idle")` at
-  position 1 of `eventLine` using uniform-value `add_parameter`.
+- Agent X1: rename exported function `displayUser` to `formatUser` throughout
+  the registered canonical `src/**` source projection.
+- Agent X2: add parameter
+  `displayLabel: string = UserTypes.displayUser(user)` at position 1 of
+  `serialize` using uniform-value `add_parameter`.
 
-At generation zero, `eventLine` does not reference `logEvent`. If X2 publishes
-first after X1's analysis, X1's fresh analysis must discover the new reference,
-expand scope, requeue before candidate construction, and ultimately produce
-`fallbackLine: string = recordEvent(0, "idle")`. If X1 publishes first, X2 must
-observe current state and replace its obsolete typed intent rather than publish
-an unresolved stale name.
+At generation zero, `displayUser` has no references and `serialize` has a
+value-capable `UserTypes` namespace import but does not reference that member.
+The `displayUser` declaration module is in X1's original validation scope;
+`serialize` is not. If X2 publishes first after X1's analysis, X1's fresh
+analysis must discover the new namespace-member reference, expand to the
+serializer module without changing any old scoped node version, requeue before
+candidate construction, and ultimately produce
+`displayLabel: string = UserTypes.formatUser(user)`. If X1 publishes first, X2
+must receive `NeedsDecision`, observe current state, and replace its obsolete
+typed intent with `UserTypes.formatUser(user)` rather than publish an unresolved
+stale name. The fresh-decision work is charged to the Strata task session; the
+matched baseline charges its integration session for the equivalent stale-name
+adaptation.
 
 This packet is admitted to live execution only if a deterministic preflight on
 the exact ingest-derived IDs proves both publication orders reach the same
@@ -318,23 +340,37 @@ gate without a feature-gated publisher or task-specific production hook, X is
 excluded and the live design returns for operator review. It is not replaced
 silently, and the experiment may not claim dynamic live coordination.
 
-**Verified Task-5 result (2026-07-16): BLOCKED.** After correcting the test
-harness to ingest physical paths from the outset, stable IDs are coherent and
-the exact X2 complex default exports a real candidate delta. Through the real
-daemon, X2 publishes generation 1, but advancing the already-analyzed X1 returns
-`NeedsDecision` at generation 1 without an operation ID, publication digest,
-`ScopeExpanded` event, or requeue. Fresh analysis does discover the new c5a
-reference and `eventLine` write expansion; the existing validation-node version
-drift and positional Identifier semantic reuse make the change materially
-changed rather than a pure scope superset. Broadly ignoring that drift would
-weaken containment, and no fixture publisher or task-specific hook is permitted.
+**Original Task-5 stop result (2026-07-16):** after correcting the test harness
+to ingest physical paths from the outset, the original `logEvent`/`eventLine`
+pair proved materially changed rather than expansion-only. X2 changed an
+`eventLine` validation node already in X1's scope and caused positional
+Identifier semantic reuse. The real daemon therefore returned `NeedsDecision`
+without `ScopeExpanded`. Broad node-version-drift tolerance would have weakened
+containment and was rejected.
 
-The experiment therefore remains blocked before live qualification. Operator
-direction is required to select one of three supported paths: redesign the
-operation semantics with a new deterministic containment proof; approve an X
-task/corpus redesign followed by full digest and predicate requalification; or
-amend the design to remove X and the dynamic-live-coordination claim. This
-document does not select among them.
+**Approved replacement feasibility result (2026-07-16):** no current-corpus
+task-only replacement could create a persisted new target reference. The best
+inline-import-type and dynamic-import candidates both added zero target
+references and zero validation resources under the production analyzer. The
+operator therefore selected the fully requalified task/corpus path and approved
+`x-namespace-enriched-v1`.
+
+In a credential-free probe through the production Node bridge and Rust daemon,
+the replacement X passed both orders. With X2 first, X2 submitted `ready`, X1
+submitted `queued`, and X2 published generation 1. Before any X1
+`advance_change_set` request, `read_events` exposed `ScopeExpanded` followed by
+`intent_ready`; the next X1 advance published generation 2. With X1 first, X1
+published generation 1, stale X2 returned `NeedsDecision`, and a fresh X2 using
+`UserTypes.formatUser(user)` published generation 2. Both orders produced the
+same final publication digest and green source-only TypeScript result. The
+probe changed no kernel semantics and used no feature-gated publisher,
+task-specific hook, credential, or model call.
+
+This feasibility pass unblocks deterministic implementation but is not the
+formal Task-5 qualification. Before Task 6, the committed harness must freeze
+the new variant and all affected digests, prove generation-zero greenness, run
+all D/M/R/S/X/G packets in both orders, and assert the externally observable
+`ScopeExpanded` ordering before X1 candidate construction.
 
 Whether an organic live trial actually takes the expanding ordering is recorded
 as `dynamic_scope_observed`. Absence of that event is not relabeled as proof of
@@ -355,27 +391,19 @@ publish exactly once, the standalone negative control to publish nothing, the
 timestamp rename to remain present, all stable IDs to survive, and the final
 shared tree to be green.
 
-### Operator corpus-freeze choice for R, S, and G
+### Resolved corpus-freeze choice
 
-This choice must be made during design approval, before any task manifest,
-source digest, stable-ID mapping, verifier digest, or schedule is frozen:
+The operator originally selected the current corpus and declined `greet`
+caller enrichment. After the original X stop gate falsified the same-module
+pair and credential-free probing found no valid task-only replacement, the
+operator selected the approved task/corpus-redesign path and then approved the
+exact `x-namespace-enriched-v1` replacement above. This is a preregistered
+post-falsification corpus repair, not a result-dependent live adjustment: no
+model trial has run.
 
-- **Keep the current corpus:** preserve the existing `examples/medium` source
-  and deterministic comparability. R, S, and G remain explicitly single-site,
-  cost-unfavorable coordination/atomicity probes and cannot support a
-  propagation claim.
-- **Create a caller-enriched corpus variant:** before manifest freezing, add a
-  final source module containing real imported `greet` calls plus a test of a
-  stable wrapper exported by that module, then regenerate every
-  corpus/graph/task/verifier digest and requalify D, M, R, S, X, and G. The test
-  must not import or spell a task-target symbol that a canonical operation
-  would need to rewrite outside `src/**`. The new module must be appended
-  without reordering existing sibling structure so existing logical IDs remain
-  stable. R, S, and G would then test conflict plus propagation, but results
-  apply to that modified corpus rather than the historical fixture.
-
-The implementation may not choose or switch variants after seeing a model
-result. Adding callers after manifest freezing invalidates the experiment.
+The implementation may not add `greet` callers, make further corpus changes,
+or switch variants after manifest freezing. Any such change invalidates the
+experiment and requires a new design approval and complete requalification.
 
 ## Prompt equivalence
 
@@ -416,15 +444,17 @@ classified without weakening an acceptance predicate, implementation stops for
 operator review. It may not silently expand publication authority or narrow a
 task.
 
-The expected current-corpus inventory is not itself a new finding:
+The expected `x-namespace-enriched-v1` non-canonical inventory retains the
+historical current-corpus findings:
 `tests/format.test.ts` is classified once for each applicable packet as a
 historical fixture, frozen and excluded from the Phase-6 green gate. Its
 `formatTimestamp` reference belongs to D2/G2 and its `logEvent` reference to
-M1/X1. `tests/dateRange.test.ts` is also frozen and excluded but has no
-Phase-6 task-target reference. The preflight must still discover these facts
-from the registered corpus rather than hard-code them, and any different or
-additional non-canonical target occurrence fails manifest freezing pending
-operator review.
+M1. The replacement X targets `displayUser` and `serialize`, neither of which
+may appear in non-canonical content. `tests/dateRange.test.ts` is also frozen
+and excluded but has no Phase-6 task-target reference. The preflight must still
+discover these facts from the registered corpus rather than hard-code them,
+and any different or additional non-canonical target occurrence fails manifest
+freezing pending operator review.
 
 The final verifier is outside all model sessions and has no repair capability.
 Its configuration is immutable manifest data: exact TypeScript version and
@@ -466,8 +496,8 @@ For each arm the final verifier:
    references, and unexpected out-of-scope semantic changes. G's registered
    allowed-delta predicate explicitly whitelists the exact
    `account: Account = undefined as never` parameter at the stable `greet`
-   declaration and, only in the caller-enriched variant, the exact uniform
-   `undefined as never` argument inserted once at each registered callsite;
+   declaration. No `greet` callsite argument is allowed because the approved
+   variant intentionally retains the zero-caller corpus shape;
 7. records stdout/stderr, exit codes, durations, root names, fixture names, and
    all configuration/content digests; and
 8. performs a Strata-only authority audit against the canonical operation log,
@@ -714,6 +744,10 @@ If the deterministic gate and live trials pass, the evidence may support:
 - two independent agents can use the tested Strata service to publish the
   tested stable-ID operations into one shared, externally green codebase;
 - the tested authority boundary avoided the registered correctness failures;
+- the tested X ordering can expand a previously analyzed rename scope when an
+  independently published `add_parameter` introduces one new resolved
+  namespace-member reference, if the qualified live trial actually observes
+  `ScopeExpanded`;
 - observed paired time and model-cost differences for D, M, R, S, X, and G
   under the exact model, prompts, bounds, corpus, and machine; and
 - observed baseline integration overhead and Strata coordination/requeue
@@ -730,15 +764,20 @@ It cannot establish:
 - structural insert/delete/move concurrency;
 - multi-language, human-agent, or long-lived product compatibility;
 - that single-site synthesis is a token or cost win;
-- any propagation or bulk-reference cost claim from R, S, or G when the current
-  zero-caller corpus is selected; those are single-site coordination/atomicity
+- any propagation or bulk-reference cost claim from R, S, or G in the approved
+  zero-`greet`-caller variant; those are single-site coordination/atomicity
   probes expected to be cost-unfavorable under the 2026-05-29 finding;
+- prevalence, robustness, or generality of dynamic expansion across organic
+  code: X is a preregistered post-falsification existence probe, both X tasks
+  are single-site-class at generation zero, and X1 gains only one propagated
+  reference after X2;
 - whole-corpus or historical-test-suite greenness: success is limited to the
   frozen `src/**` TypeScript scope, registered Phase-6 behavioral fixtures, and
   exact task predicates because the shared historical fixtures encode other
   benchmark end states;
-- direct comparability between current-corpus and caller-enriched-corpus runs,
-  because their source, graph, task, prompt, and verifier digests differ;
+- direct comparability or pooled cost estimates between historical
+  current-corpus runs and `x-namespace-enriched-v1`, because their source,
+  graph, reference inventories, task, prompt, and verifier digests differ;
 - causal attribution to redb rather than the complete Strata interface; or
 - a claim of dynamic live coordination unless `ScopeExpanded` is observed in a
   qualified live X trial.
@@ -762,8 +801,11 @@ It cannot establish:
 
 1. **Reviewed design/production-code approval:** attach the required read-only,
    repo-grounded Codex design review, then approve this service boundary, task
-   packets, `current` or `caller-enriched` corpus variant, role-specific bounds,
-   fairness rules, metrics, and stop conditions before production code changes.
+   packets, corpus variant, role-specific bounds, fairness rules, metrics, and
+   stop conditions before production code changes. The original approval chose
+   `current`; after the recorded X stop gate, the operator separately selected
+   task/corpus redesign and approved `x-namespace-enriched-v1` before its source
+   or manifest changes.
 2. **Deterministic implementation gate:** all new behaviors begin with failing
    tests; the service/client/harness/task/verifier suites, existing repository
    tests, unchanged full key-free gate, and default-build sealing pass; evidence

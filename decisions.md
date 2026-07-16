@@ -7,6 +7,72 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-16 — Phase-6 X uses the preregistered `x-namespace-enriched-v1` corpus
+
+**Context:** The original Phase-6 X packet (`logEvent` rename concurrent with an
+`eventLine` parameter whose default introduced a `logEvent` call) reached its
+approved deterministic stop gate. X2 changed an old X1 validation resource, so
+the production analyzer correctly classified the fresh scope as materially
+changed rather than expansion-only. The operator selected the supported
+task/corpus-redesign path rather than weakening containment or dropping the
+dynamic-live-coordination question.
+
+**What was tried first:** A credential-free search exhausted task-only
+replacements in the current corpus under the approved `rename_symbol` and
+uniform-value `add_parameter` classes. Same-module and named-import candidates
+necessarily changed old rename-scope node versions. The only namespace import
+had no unused exported value. An inline import-type `User` candidate and a
+dynamic-import `formatTimestamp` candidate both built valid deltas but produced
+zero new persisted target references and zero new validation resources; the
+former ended `validation_failed` through the real daemon with no
+`ScopeExpanded`. No structural operation, import-adding operation, feature-gated
+publisher, task-specific hook, or broader node-version tolerance was accepted.
+
+**Decided:** Freeze `x-namespace-enriched-v1` before any live result. Relative
+to the current corpus, append
+`displayUser(user: User): string { return user.email; }` to
+`src/types/user.ts` and make the existing `UserTypes` namespace import in
+`src/users/serializer.ts` value-capable. Replace X with: (X1) rename
+`displayUser` to `formatUser`; and (X2) add
+`displayLabel: string = UserTypes.displayUser(user)` at position 1 of
+`serialize`. If X1 publishes first, X2 must record a fresh decision and replace
+the stale default with `UserTypes.formatUser(user)`. No `greet` callers are
+added, so R/S/G remain disclosed single-site probes.
+
+**Credential-free evidence:** Through the production Node bridge and Rust
+daemon, X2-first published generation 1, then exposed `ScopeExpanded` and
+`intent_ready` through `read_events` before any X1 advance request; the next X1
+advance published generation 2. X1-first published generation 1, stale X2
+returned `NeedsDecision`, and a fresh X2 using the renamed helper published
+generation 2. Both orders produced the same final publication digest and green
+source-only TypeScript. Existing `User`, `serialize`, and serializer-import
+statement IDs were preserved in the probe; the projection changed from 1,203
+nodes/592 references to 1,209 nodes/595 references. No credential, Agent SDK
+model call, or spend was used.
+
+**Why:** The replacement creates the narrow shape the kernel's safe expansion
+rule is designed to recognize: X2 adds a resolved namespace-member reference in
+a module absent from X1's generation-zero scope, while every old X1 resource
+remains unchanged. This preserves containment and exercises the real service.
+The cost is an explicit post-falsification corpus repair and full digest
+requalification. It supports an existence claim for this dynamic expansion
+shape, not prevalence or broad-propagation performance; both X tasks are
+single-site-class at generation zero and X1 gains only one reference after X2.
+Within-variant arm fairness is preserved, but results may not be pooled with
+historical current-corpus measurements.
+
+**Design-doc impact:** updates the Phase-6 live-comparison design and plan only.
+`strata-design.md`, the Rust authority boundary, stable-ID invariants, the
+SQLite product path, and the frozen integrated full-key-free fixtures are
+unchanged. Formal Task-5 TDD must still regenerate every affected digest, prove
+generation-zero greenness, requalify all six packets in both orders, and stop
+if the committed result differs from the feasibility probe.
+
+**Revisit when:** formal requalification changes a pre-existing registered ID,
+fails either X order, lacks externally observable pre-advance
+`ScopeExpanded`, requires a kernel semantic exception, or any future experiment
+wants to generalize beyond this exact corpus/reference shape.
+
 ## 2026-07-16 — Phase-6 live comparison blocks at the real X dynamic-expansion gate
 
 **Context:** The approved Phase-6 design required packet X to prove dynamic

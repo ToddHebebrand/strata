@@ -54,9 +54,9 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   RED command before implementation.
 - X is a stop gate: no live dynamic packet without exact deterministic
   two-order proof and a real `ScopeExpanded` event before candidate build.
-- The operator-selected `current` or `caller-enriched` corpus variant is frozen
-  before task-manifest generation and cannot change after any digest is
-  registered.
+- The operator-selected `x-namespace-enriched-v1` corpus variant is frozen
+  before the revised task-manifest generation and cannot change after any
+  revised digest is registered. It adds no `greet` callers.
 - Recommended pilot task-role bounds are 25 turns, 240,000 ms, and USD 0.75 in
   both arms; the baseline-only integration role uses 40 turns, 420,000 ms, and
   USD 4.00; both arms use one 900,000 ms team deadline. Any approved change is
@@ -140,6 +140,9 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   from the request to revise or review the documents.
 - [ ] Record the approval date/message reference and selected corpus variant in
   the implementation spike before Task 1.
+- [ ] After the Task-5 X stop gate, record the separate operator selection of
+  task/corpus redesign, the exact `x-namespace-enriched-v1` approval, and its
+  credential-free feasibility evidence before resuming Task 5.
 - [ ] Confirm the implementation worktree still starts from
   `9aed98c1ceeaaf5d175aeea7993c4abb26b4ba88` plus only approved documentation
   commits and is clean.
@@ -427,24 +430,25 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 
 ## Task 5: Freeze task packets, common verification, and dynamic qualification
 
-> **Status 2026-07-16: BLOCKED at Step 7's X stop gate.** After correction of a
-> physical-path ingest bug in the test harness, the exact X2 candidate validates
-> and exports a delta, but the real daemon advances the already-analyzed X1 to
-> `NeedsDecision`, not `ScopeExpanded`. Task 6 and later tasks must not begin
-> until the operator selects and approves a semantic redesign, a fully
-> requalified X task/corpus redesign, or a design amendment removing X and the
-> dynamic-live-coordination claim. Partial Task-5 production/test work remains
-> uncommitted; no live-model call occurred.
+> **Status 2026-07-16: REDESIGN APPROVED; full requalification pending.** The
+> original `logEvent`/`eventLine` X pair correctly stopped as materially changed.
+> The operator selected task/corpus redesign and approved
+> `x-namespace-enriched-v1`. A credential-free production-daemon probe passed
+> the replacement `displayUser`/`serialize` X in both orders without a kernel
+> semantic change or test hook. Task 6 and later tasks still must not begin until
+> the exact committed variant, all affected digests, generation-zero verifier,
+> boundary inventory, and every D/M/R/S/X/G two-order row pass. Partial Task-5
+> production/test work remains uncommitted; no live-model call occurred.
 
 **Files:**
 
 - Create: `packages/live-compare/src/{tasks,verify}.ts`
 - Create: `packages/live-compare/tests/{tasks,verify,dynamicPreflight}.test.ts`
 - Create task fixtures under `packages/live-compare/tests/fixtures/tasks/`.
-- If and only if Task 0 selected `caller-enriched`, create an appended
-  `examples/medium/src/users/greetCallers.ts` module and a matching test of a
-  stable wrapper without reordering existing source structure or naming a task
-  target from the non-canonical test.
+- Modify: `examples/medium/src/types/user.ts` to append the approved
+  `displayUser` helper without reordering existing declarations.
+- Modify: `examples/medium/src/users/serializer.ts` to make its existing
+  `UserTypes` namespace import value-capable.
 - Modify root `package.json` only for a deterministic preflight command if
   useful.
 
@@ -455,13 +459,15 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   byte-identical task bodies, arm appendices, prompt hashes, and semantic
   predicates. Reject any structural operation or unresolved target.
 
-  Read the approved `corpusVariant`. For `current`, assert `greet` has zero
-  importers, callers, and test references and mark R/S/G as single-site. For
-  `caller-enriched`, first add failing corpus tests for real imported `greet`
-  calls, then add the final source module/test, regenerate all source/graph/task
-  digests, assert existing logical IDs remain stable, and mark the registered
-  callsites as required propagation targets. Reject a manifest whose variant or
-  digest differs from Task 0's approval record.
+  First register `x-namespace-enriched-v1` as the only accepted variant and add
+  failing tests that require an appended `displayUser(user: User): string`
+  helper, the existing serializer namespace import to be value-capable, zero
+  generation-zero `displayUser` references, and unchanged stable IDs for every
+  pre-existing registered declaration/top-level statement. Assert `greet` still
+  has zero importers, callers, and test references and mark R/S/G as single-site.
+  Then make the two approved corpus edits and regenerate every source, graph,
+  task, prompt, predicate, verifier, and final-state digest. Reject a manifest
+  whose variant or digest differs from the approved replacement record.
 
 - [ ] **Step 2: Add failing common-verifier tests.**
 
@@ -475,10 +481,12 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   harness-owned Phase-6 fixtures cannot be modified by either arm. Mutate each
   required fact and prove the verifier fails closed. G's allowed delta must
   explicitly accept only the exact
-  `account: Account = undefined as never` declaration parameter and, in the
-  caller-enriched variant only, one exact `undefined as never` argument at each
-  registered callsite. A different default, duplicate insertion, or insertion
-  outside those stable IDs must fail as unexpected scope.
+  `account: Account = undefined as never` declaration parameter. No `greet`
+  callsite argument is allowed. For X, allow only the exact
+  `displayLabel: string = UserTypes.formatUser(user)` parameter on the stable
+  `serialize` declaration; a different default, duplicate insertion, residual
+  `displayUser` reference, or insertion outside the registered stable IDs must
+  fail as unexpected scope.
 
   Add a generation-zero row for every registered packet configuration. The
   untouched corpus must pass the exact source-only TypeScript roots/options,
@@ -496,16 +504,15 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   classification, content digest, and disposition in the manifest. Fail if an
   accepted task predicate requires rewriting non-canonical content, if an
   occurrence is unclassified, if an excluded historical fixture changes, or if
-  either arm can use a worktree test edit to satisfy the common verifier. In the
-  caller-enriched variant, its test must import only a stable wrapper from the
-  appended source module and must not name a rename target.
+  either arm can use a worktree test edit to satisfy the common verifier.
 
-  For the current corpus, assert the expected discovered dispositions:
+  For `x-namespace-enriched-v1`, assert the expected discovered dispositions:
   `tests/format.test.ts` is a frozen, excluded historical fixture for D2/G2 via
-  `formatTimestamp` and M1/X1 via `logEvent`; `tests/dateRange.test.ts` is a
-  frozen, excluded historical fixture with no Phase-6 task-target reference.
-  Do not hard-code these as the search result: change either file or add a new
-  non-canonical target occurrence and prove the preflight detects the mismatch.
+  `formatTimestamp` and M1 via `logEvent`; neither replacement X target may
+  appear outside `src/**`. `tests/dateRange.test.ts` is a frozen, excluded
+  historical fixture with no Phase-6 task-target reference. Do not hard-code
+  these as the search result: change either file or add a new non-canonical
+  target occurrence and prove the preflight detects the mismatch.
 
 - [ ] **Step 4: Add failing D/M/R/S/G deterministic tests through the service.**
 
@@ -519,11 +526,16 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 
 - [ ] **Step 5: Add the failing X stop-gate tests.**
 
-  On the exact ingest-derived `logEvent` and `eventLine` IDs, run X2-first and
-  X1-first. X2-first must emit `ScopeExpanded` before X1 candidate construction;
-  both orders must converge to `recordEvent` including the new default
-  reference, preserve stable IDs, and pass the common verifier. No fixture
-  publisher or feature-gated hook is allowed.
+  On the exact ingest-derived `displayUser` and `serialize` IDs, run X2-first
+  and X1-first. X2-first must publish X2 at generation 1, then expose
+  `ScopeExpanded` and `intent_ready` through `read_events` before the harness
+  sends any X1 `advance_change_set` request; that next advance must publish
+  generation 2. X1-first must publish X1, return stale X2 as `NeedsDecision`,
+  record a fresh decision, and publish a replacement using
+  `UserTypes.formatUser(user)`. Both orders must converge to the identical
+  publication digest, preserve every pre-existing registered stable ID, and
+  pass the common verifier. No fixture publisher, feature-gated hook, or kernel
+  scope-classification change is allowed.
 
 - [ ] **Step 6: Run RED.**
 
@@ -532,11 +544,13 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
     pnpm --filter @strata/live-compare test -- tasks verify dynamicPreflight
   ```
 
-- [ ] **Step 7: Implement manifests and verifier; then evaluate X.**
+- [ ] **Step 7: Implement manifests, verifier, and the approved X choreography.**
 
-  If X cannot pass without changing operation semantics or adding a
-  task-specific hook, stop. Append the actual finding to `decisions.md`, update
-  the design status, and request operator direction. Do not substitute a task.
+  Rerun generation-zero verification and every D/M/R/S/X/G packet in both
+  orders after freezing complete digests. If the formal replacement differs
+  from the credential-free feasibility result, any pre-existing registered ID
+  churns, or X requires changing operation semantics or adding a task-specific
+  hook, stop and return for operator review. Do not substitute another task.
 
 - [ ] **Step 8: Run GREEN.**
 
@@ -548,7 +562,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 - [ ] **Step 9: Commit.**
 
   ```bash
-  git add packages/live-compare package.json
+  git add packages/live-compare examples/medium/src package.json
   git commit -m "test(live-compare): qualify stable-id coordination tasks"
   ```
 
@@ -691,7 +705,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
     pnpm live-compare:dry-run -- \
       --model=claude-sonnet-4-6 \
       --trials=1 \
-      --corpus-variant=<approved-current-or-caller-enriched> \
+      --corpus-variant=x-namespace-enriched-v1 \
       --task-max-turns=25 \
       --task-wall-ms=240000 \
       --task-max-budget-usd=0.75 \
