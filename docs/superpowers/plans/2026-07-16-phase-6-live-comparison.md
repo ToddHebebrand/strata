@@ -207,7 +207,11 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   pnpm --filter @strata/agent build
   ```
 
-  Expected: PASS with no keyed process.
+  Expected: the focused Task-1 tests and package build PASS with no keyed
+  process. The full package run may retain only the two documented stale replay
+  fixture baseline failures in `labSeam.test.ts` and `replay.test.ts`; any new
+  failure blocks Task 1. Do not regenerate or alter those unrelated fixtures in
+  this task.
 
 - [ ] **Step 7: Commit.**
 
