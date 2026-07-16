@@ -780,12 +780,13 @@ impl ServiceSession {
             .map(|generation| self.kernel.operation(generation))
             .transpose()?
             .flatten();
-        let publication_digest = publication_digest.or_else(|| {
-            change_set.committed_generation.and_then(|generation| {
-                let snapshot = self.kernel.snapshot();
-                (snapshot.generation() == generation).then(|| snapshot.digest().to_owned())
-            })
-        });
+        let publication_digest = match publication_digest {
+            Some(digest) => Some(digest),
+            None => change_set
+                .committed_generation
+                .map(|generation| self.kernel.generation_digest(generation))
+                .transpose()?,
+        };
         Ok(ResponseResult::ChangeSet {
             change_set_id: change_set.change_set_id,
             state: kernel_state(&change_set.state),

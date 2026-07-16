@@ -10,9 +10,14 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[cfg(feature = "coordination-test-api")]
-use strata_kernel::{IntentParameters, Kernel, NodeBridgeConfig};
+use strata_kernel::{
+    BeginChangeSet, ClaimOutcome, IntentParameters, Kernel, NodeBridgeConfig, PublishClaimOutcome,
+    SubmissionOutcome,
+};
 
 const USER_ID: &str = "fc98295bca9efc3e";
+#[cfg(feature = "coordination-test-api")]
+const FORMAT_TIMESTAMP_ID: &str = "9a25d67ed4b74807";
 
 struct Service {
     child: Child,
@@ -44,6 +49,18 @@ fn bridge_worker() -> PathBuf {
         assert!(status.success(), "kernel bridge fixture build failed");
     }
     worker
+}
+
+#[cfg(feature = "coordination-test-api")]
+fn node_bridge_config(worker: &Path) -> NodeBridgeConfig {
+    NodeBridgeConfig::tsc_only(
+        "node",
+        vec![worker.to_owned().into_os_string()],
+        Duration::from_secs(30),
+        repo_root().join("examples/medium/src"),
+        repo_root().join("examples/medium"),
+        true,
+    )
 }
 
 fn snapshot(directory: &TempDir) -> PathBuf {
@@ -702,6 +719,120 @@ fn published_effect_recovery_preserves_the_publication_digest() {
     assert_eq!(response["result"]["state"], "published", "{response}");
     let digest = response["result"]["publicationDigest"].as_str().unwrap();
     assert_eq!(digest.len(), 64, "{response}");
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn published_effect_recovery_preserves_its_historical_digest_after_another_publication() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = bridge_worker();
+    let service = start(&directory, "historical-digest-setup", &worker);
+    let change = send(
+        &service,
+        "begin:a",
+        "client:a",
+        Some("begin:a"),
+        json!({"type":"begin_change_set","reasoning":"historical digest A"}),
+    )["result"]["changeSetId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        send(
+            &service,
+            "add:a",
+            "client:a",
+            Some("add:a"),
+            json!({"type":"add_intent","changeSetId":change,"intent":{"type":"rename_symbol","declarationId":USER_ID,"newName":"Account"}}),
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        send(
+            &service,
+            "submit:a",
+            "client:a",
+            Some("submit:a"),
+            json!({"type":"submit_change_set","changeSetId":change}),
+        )["ok"],
+        true
+    );
+    drop(service);
+
+    let mut crashed = start_with_failpoint(
+        &directory,
+        "historical-digest-crash",
+        &worker,
+        Some("after_effect"),
+    );
+    crash_after_send(
+        &mut crashed,
+        "advance:a",
+        "client:a",
+        "advance:a",
+        json!({"type":"advance_change_set","changeSetId":change}),
+    );
+    drop(crashed);
+
+    let (kernel, _) = Kernel::open_with_node_bridge(
+        directory.path().join("kernel.redb"),
+        node_bridge_config(&worker),
+    )
+    .unwrap();
+    assert_eq!(kernel.snapshot().generation(), 1);
+    let historical_digest = kernel.snapshot().digest().to_owned();
+    kernel
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: "change:b".into(),
+                actor: "client:b".into(),
+                reasoning: "advance canonical generation before A recovery".into(),
+                submission_idempotency_key: "submission:b".into(),
+            },
+            100,
+        )
+        .unwrap();
+    kernel
+        .add_intent(
+            "change:b",
+            IntentParameters::RenameSymbol {
+                declaration_id: FORMAT_TIMESTAMP_ID.into(),
+                new_name: "renderTimestamp".into(),
+            },
+        )
+        .unwrap();
+    let SubmissionOutcome::Ready { offer, .. } = kernel.submit_change_set("change:b", 101).unwrap()
+    else {
+        panic!("B must be ready")
+    };
+    let ClaimOutcome::Claimed(claim) = kernel
+        .claim_ready(&offer.offer_id, &offer.claim_token, 102)
+        .unwrap()
+    else {
+        panic!("B must be claimed")
+    };
+    let PublishClaimOutcome::Published(report) = kernel.execute_claimed(&claim, 103).unwrap()
+    else {
+        panic!("B must publish")
+    };
+    assert_eq!(report.generation, 2);
+    assert_ne!(report.digest, historical_digest);
+    drop(kernel);
+
+    let recovered = start(&directory, "historical-digest-recovered", &worker);
+    let response = send(
+        &recovered,
+        "advance:a:retry",
+        "client:a",
+        Some("advance:a"),
+        json!({"type":"advance_change_set","changeSetId":change}),
+    );
+    assert_eq!(response["result"]["state"], "published", "{response}");
+    assert_eq!(
+        response["result"]["publicationDigest"], historical_digest,
+        "{response}"
+    );
+    assert_eq!(response["result"]["graphGeneration"], "2");
 }
 
 #[cfg(feature = "coordination-test-api")]

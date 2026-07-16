@@ -130,8 +130,16 @@ fn handle_connection(mut stream: UnixStream, session: &ServiceSession) -> Result
         request.extend_from_slice(&chunk[..read]);
     }
     let response = session.handle_frame(&request);
+    let frame = bounded_response_frame(&response)?;
+    // A peer may disconnect after the durable effect and before receiving the response.
+    let _ = stream.write_all(&frame);
+    let _ = stream.flush();
+    Ok(())
+}
+
+fn bounded_response_frame(response: &LocalServiceResponse) -> Result<Vec<u8>> {
     let response_request_id = response.request_id().to_owned();
-    let frame = serialize_response_frame(&response).or_else(|_| {
+    serialize_response_frame(response).or_else(|_| {
         serialize_response_frame(&LocalServiceResponse::error(
             response_request_id,
             "response_too_large",
@@ -139,9 +147,47 @@ fn handle_connection(mut stream: UnixStream, session: &ServiceSession) -> Result
             false,
             Vec::new(),
         ))
-    })?;
-    // A peer may disconnect after the durable effect and before receiving the response.
-    let _ = stream.write_all(&frame);
-    let _ = stream.flush();
-    Ok(())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use super::*;
+    use crate::protocol::{
+        ChangeSetState, MAX_RESPONSE_FRAME_BYTES, ResponseResult, ServiceEvent, WireU64,
+    };
+
+    #[test]
+    fn event_aggregate_uses_the_shared_bounded_fallback() {
+        let events = (0..9)
+            .map(|event| ServiceEvent {
+                sequence: WireU64::new(event + 1),
+                change_set_id: format!("change:{event}"),
+                state: ChangeSetState::Published,
+                operation_id: None,
+                affected_node_ids: (0..64)
+                    .map(|node| {
+                        let prefix = format!("affected-{event:03}-{node:03}-");
+                        format!("{prefix}{}", "x".repeat(512 - prefix.len()))
+                    })
+                    .collect(),
+                diagnostics: Vec::new(),
+                publication_digest: None,
+            })
+            .collect();
+        let response =
+            LocalServiceResponse::success("events:oversized", ResponseResult::Events { events });
+        assert!(serde_json::to_vec(&response).unwrap().len() > MAX_RESPONSE_FRAME_BYTES);
+
+        let frame = bounded_response_frame(&response).unwrap();
+
+        assert!(frame.len() <= MAX_RESPONSE_FRAME_BYTES);
+        assert_eq!(frame.last(), Some(&b'\n'));
+        let parsed: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        assert_eq!(parsed["ok"], false, "{parsed}");
+        assert_eq!(parsed["requestId"], "events:oversized");
+        assert_eq!(parsed["error"]["code"], "response_too_large");
+    }
 }

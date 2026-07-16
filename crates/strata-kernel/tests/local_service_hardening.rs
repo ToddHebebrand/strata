@@ -95,13 +95,29 @@ fn snapshot(directory: &TempDir, large_payload: bool) -> PathBuf {
                 .unwrap();
             node["payload"] = json!(corpus.join(relative).to_string_lossy());
         }
-        if large_payload && node["id"] == USER_ID {
-            node["payload"] = json!("x".repeat(16_000));
-        }
+    }
+    if large_payload {
+        value["nodes"].as_array_mut().unwrap().extend(
+            large_node_ids().into_iter().enumerate().map(|(index, id)| {
+                json!({
+                    "id": id,
+                    "kind": "Synthetic",
+                    "parentId": null,
+                    "childIndex": index as i64,
+                    "payload": "x".repeat(4_096),
+                })
+            }),
+        );
     }
     let path = directory.path().join("snapshot.json");
     fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
     path
+}
+
+fn large_node_ids() -> Vec<String> {
+    (0..256)
+        .map(|index| format!("large-node-{index:03}"))
+        .collect()
 }
 
 fn start(directory: &TempDir, token: &str, worker: &Path, large_payload: bool) -> Service {
@@ -493,22 +509,24 @@ fn expired_and_lock_wait_deadlines_never_start_a_mutation() {
 }
 
 #[test]
-fn oversized_legal_inspect_always_gets_one_bounded_response() {
+fn oversized_legal_inspect_gets_one_bounded_response_too_large_error() {
     let directory = tempfile::tempdir().unwrap();
     let service = start(&directory, "hardening-response", &bridge_worker(), true);
-    let response = send(
+    let bytes = send_raw(
         &service,
         "response:large",
         "client:alpha",
         None,
         120_000,
-        json!({"type":"inspect_nodes","nodeIds":vec![USER_ID;256]}),
+        json!({"type":"inspect_nodes","nodeIds":large_node_ids()}),
     );
-    if response["ok"] == true {
-        assert!(response["result"]["nodes"].as_array().unwrap().len() <= 1);
-    } else {
-        assert_eq!(response["error"]["code"], "response_too_large");
-    }
+    assert!(!bytes.is_empty(), "daemon silently dropped the response");
+    assert!(bytes.len() <= MAX_RESPONSE_FRAME_BYTES);
+    assert_eq!(bytes.last(), Some(&b'\n'));
+    assert_eq!(bytes.iter().filter(|byte| **byte == b'\n').count(), 1);
+    let response: Value = serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap();
+    assert_eq!(response["ok"], false, "{response}");
+    assert_eq!(response["error"]["code"], "response_too_large");
 }
 
 #[test]
