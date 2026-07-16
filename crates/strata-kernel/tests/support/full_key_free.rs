@@ -146,10 +146,6 @@ impl ClientActor {
         &self.actor_id
     }
 
-    pub fn event_client_id(&self) -> &str {
-        &self.event_client_id
-    }
-
     pub fn acknowledged_event_sequence(&self) -> u64 {
         self.acknowledged_event_sequence
     }
@@ -229,10 +225,6 @@ impl ClientActor {
         let cursor = kernel.ack_events(&self.event_client_id, sequence)?;
         self.acknowledged_event_sequence = cursor.acknowledged_sequence;
         Ok(cursor)
-    }
-
-    pub fn resume_event_cursor(&mut self, kernel: &Kernel) -> Result<EventCursor> {
-        self.acknowledge_events(kernel, self.acknowledged_event_sequence)
     }
 }
 

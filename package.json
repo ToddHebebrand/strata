@@ -13,7 +13,7 @@
     "kernel:test": "cargo test -p strata-kernel",
     "kernel:bridge:build": "pnpm --filter @strata/kernel-bridge build && cargo build -p strata-kernel",
     "kernel:bridge:test": "pnpm --filter @strata/kernel-bridge build && pnpm --filter @strata/kernel-bridge test && cargo test -p strata-kernel --test node_bridge -- --ignored --nocapture",
-    "kernel:full-key-free:test": "pnpm --filter @strata/kernel-bridge build && cargo test -p strata-kernel --features coordination-test-api,redb-spike-api --test full_key_free_acceptance -- --ignored --nocapture"
+    "kernel:full-key-free:test": "pnpm kernel:bridge:test && cargo test -p strata-kernel --features redb-spike-api --test full_key_free_acceptance -- --include-ignored --nocapture && cargo test -p strata-kernel && cargo test -p strata-kernel --features coordination-test-api && cargo test -p strata-kernel --features redb-spike-api && cargo test -p strata-kernel --test api_sealing -- --nocapture"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.118",

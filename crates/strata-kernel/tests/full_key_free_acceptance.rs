@@ -3,8 +3,9 @@
 #[path = "support/full_key_free.rs"]
 mod full_key_free_support;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 use full_key_free_support::{
@@ -27,6 +28,161 @@ const ROW_8_CHANGE_SET_ID: &str = "row-8-user-rename";
 const ROW_8_CHILD_DATABASE: &str = "STRATA_ROW_8_CHILD_DATABASE";
 const ROW_8_CHILD_CLAIM: &str = "STRATA_ROW_8_CHILD_CLAIM";
 const ROW_8_CHILD_FAILPOINT: &str = "STRATA_ROW_8_CHILD_FAILPOINT";
+
+struct AcceptanceRow {
+    number: u8,
+    owner_name: &'static str,
+    owner: fn(),
+}
+
+const ACCEPTANCE_ROWS: [AcceptanceRow; 12] = [
+    AcceptanceRow {
+        number: 1,
+        owner_name: "disjoint real renames publish in both orders",
+        owner: row_1_disjoint_real_renames_publish_in_both_orders,
+    },
+    AcceptanceRow {
+        number: 2,
+        owner_name: "same-symbol successor requires a fresh decision",
+        owner: row_2_same_symbol_real_renames_require_a_fresh_decision,
+    },
+    AcceptanceRow {
+        number: 3,
+        owner_name: "real reference facts infer overlap before mutation",
+        owner: row_3_real_reference_facts_infer_overlap_before_mutation,
+    },
+    AcceptanceRow {
+        number: 4,
+        owner_name: "waiting add-parameter requeues against the latest graph",
+        owner: row_4_add_parameter_requeues_before_build_and_updates_the_new_callsite,
+    },
+    AcceptanceRow {
+        number: 5,
+        owner_name: "old wide ticket ages without starvation",
+        owner: row_5_real_scopes_age_the_old_wide_ticket_while_only_disjoint_work_bypasses,
+    },
+    AcceptanceRow {
+        number: 6,
+        owner_name: "restart fences stale real claims",
+        owner:
+            rows_6_7_11_restart_fences_old_claim_and_preserves_queue_events_and_exactly_once_publish,
+    },
+    AcceptanceRow {
+        number: 7,
+        owner_name: "restart preserves queued tickets and unacknowledged events",
+        owner:
+            rows_6_7_11_restart_fences_old_claim_and_preserves_queue_events_and_exactly_once_publish,
+    },
+    AcceptanceRow {
+        number: 8,
+        owner_name: "real claimed publication crashes complete old or new",
+        owner: row_8_real_claimed_node_publication_crashes_complete_old_or_new,
+    },
+    AcceptanceRow {
+        number: 9,
+        owner_name: "real publications replay exactly across a snapshot boundary",
+        owner: row_9_real_publications_replay_exactly_across_a_generation_two_snapshot,
+    },
+    AcceptanceRow {
+        number: 10,
+        owner_name: "only-green-together change set publishes once",
+        owner: row_10_only_green_together_change_set_publishes_once,
+    },
+    AcceptanceRow {
+        number: 11,
+        owner_name: "duplicate event delivery and publication are harmless",
+        owner:
+            rows_6_7_11_restart_fences_old_claim_and_preserves_queue_events_and_exactly_once_publish,
+    },
+    AcceptanceRow {
+        number: 12,
+        owner_name: "Node protocol receives no canonical-storage authority",
+        owner: row_12_real_worker_requests_are_bounded_semantic_inputs_only,
+    },
+];
+
+const FORBIDDEN_NODE_AUTHORITY_KEYS: [&str; 22] = [
+    "redbPath",
+    "databasePath",
+    "storePath",
+    "canonicalStore",
+    "storeHandle",
+    "resourceKeys",
+    "resourceVersions",
+    "dependencyClocks",
+    "reservationKeys",
+    "reservations",
+    "fence",
+    "fences",
+    "fencingTokens",
+    "dynamicExpansionPolicy",
+    "idempotencyClass",
+    "candidateDigest",
+    "publication",
+    "publicationInstructions",
+    "publish",
+    "provider",
+    "candidateBuilder",
+    "workerPath",
+];
+
+fn assert_exact_object_keys(value: &serde_json::Value, expected: &[&str], label: &str) {
+    let object = value
+        .as_object()
+        .unwrap_or_else(|| panic!("{label} must be a JSON object"));
+    let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    assert_eq!(actual, expected, "{label} key allowlist changed");
+}
+
+fn assert_no_node_authority_keys(value: &serde_json::Value, path: &str) {
+    match value {
+        serde_json::Value::Object(object) => {
+            for (key, child) in object {
+                assert!(
+                    !FORBIDDEN_NODE_AUTHORITY_KEYS.contains(&key.as_str()),
+                    "forbidden Rust authority key {key:?} reached the Node worker at {path}"
+                );
+                assert_no_node_authority_keys(child, &format!("{path}.{key}"));
+            }
+        }
+        serde_json::Value::Array(array) => {
+            for (index, child) in array.iter().enumerate() {
+                assert_no_node_authority_keys(child, &format!("{path}[{index}]"));
+            }
+        }
+        _ => {}
+    }
+}
+
+fn module_paths(request: &serde_json::Value) -> BTreeSet<&str> {
+    request["snapshot"]["nodes"]
+        .as_array()
+        .expect("worker request snapshot nodes")
+        .iter()
+        .filter(|node| node["kind"] == "Module")
+        .map(|node| {
+            node["payload"]
+                .as_str()
+                .expect("Module payload is its approved source path")
+        })
+        .collect()
+}
+
+fn assert_request_omits_database_path(request: &serde_json::Value, database_path: &Path) {
+    let serialized = serde_json::to_string(request).unwrap();
+    let raw_path = database_path.to_string_lossy();
+    assert!(
+        !serialized.contains(raw_path.as_ref()),
+        "Node worker request exposed canonical database path {raw_path}"
+    );
+    let canonical_path = fs::canonicalize(database_path).unwrap();
+    let canonical_path = canonical_path.to_string_lossy();
+    assert!(
+        !serialized.contains(canonical_path.as_ref()),
+        "Node worker request exposed canonical database path {canonical_path}"
+    );
+}
 
 fn submit_wide_rename(
     actor: &ClientActor,
@@ -464,104 +620,49 @@ fn run_disjoint_rename_order(format_first: bool) {
 }
 
 #[test]
-#[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
-fn deterministic_acceptance_harness_uses_public_kernel_surface() {
-    let directory = tempdir().unwrap();
-    let database_path = directory.path().join("kernel.redb");
-    let (kernel, created) = create_projected_kernel(&database_path).unwrap();
-    assert_eq!(created.generation, 0);
-
-    let mut alpha = ClientActor::new("agent:acceptance-alpha", "events:acceptance-alpha");
-    let beta = ClientActor::new("agent:acceptance-beta", "events:acceptance-beta");
-    assert_eq!(alpha.actor_id(), "agent:acceptance-alpha");
-    assert_eq!(alpha.acknowledged_event_sequence(), 0);
-    let initial = CanonicalFinalState::capture(&kernel, &[], &[&alpha, &beta]).unwrap();
-    assert_eq!(initial.graph_generation, 0);
-    assert_eq!(initial.nodes.len(), 1_203);
-    assert_eq!(initial.references.len(), 592);
-    assert!(initial.operations.is_empty());
-    assert!(initial.tickets.is_empty());
-
-    alpha
-        .begin_change_set(
-            &kernel,
-            "acceptance-shell-user-rename",
-            "prove the deterministic acceptance harness",
-            0,
-        )
-        .unwrap();
-    alpha
-        .add_intent(
-            &kernel,
-            "acceptance-shell-user-rename",
-            IntentParameters::RenameSymbol {
-                declaration_id: "fc98295bca9efc3e".into(),
-                new_name: "Account".into(),
-            },
-        )
-        .unwrap();
-    let SubmissionOutcome::Ready { offer, .. } = alpha
-        .submit_change_set(&kernel, "acceptance-shell-user-rename", 1)
-        .unwrap()
-    else {
-        panic!("the projected User rename must be ready")
-    };
-    let ClaimOutcome::Claimed(claim) = alpha.claim_ready(&kernel, &offer, 2).unwrap() else {
-        panic!("the projected User rename must be claimed")
-    };
-    let PublishClaimOutcome::Published(report) = alpha.execute_claimed(&kernel, &claim, 3).unwrap()
-    else {
-        panic!("the projected User rename must publish")
-    };
-    assert_eq!(report.generation, 1);
-
-    let delivered = alpha.read_events(&kernel, 100).unwrap();
-    let last_sequence = delivered.last().unwrap().sequence;
-    let cursor = alpha.acknowledge_events(&kernel, last_sequence).unwrap();
-    assert_eq!(cursor.acknowledged_sequence, last_sequence);
-    assert_eq!(alpha.acknowledged_event_sequence(), last_sequence);
-
-    let expected =
-        CanonicalFinalState::capture(&kernel, &["acceptance-shell-user-rename"], &[&alpha, &beta])
-            .unwrap();
-    assert_eq!(expected.graph_generation, 1);
-    assert_eq!(expected.graph_digest.len(), 64);
-    assert_eq!(expected.operations.len(), 1);
-    assert_eq!(expected.tickets.len(), 1);
-    assert_eq!(expected.tickets[0].state, TicketState::Completed);
-    assert!(!expected.events.is_empty());
+fn acceptance_manifest_covers_each_governing_row_exactly_once() {
+    assert_eq!(ACCEPTANCE_ROWS.len(), 12);
     assert_eq!(
-        expected.event_cursors[alpha.event_client_id()],
-        last_sequence
-    );
-    assert_projected_typescript_green(&expected.graph_snapshot());
-    drop(kernel);
-
-    let (reopened, recovered) = reopen_projected_kernel(&database_path).unwrap();
-    assert_eq!(recovered.generation, 1);
-    let mut resumed_alpha = ClientActor::new("agent:acceptance-alpha", "events:acceptance-alpha");
-    let mut resumed_beta = ClientActor::new("agent:acceptance-beta", "events:acceptance-beta");
-    assert!(
-        resumed_alpha
-            .read_events(&reopened, 100)
-            .unwrap()
-            .is_empty()
+        ACCEPTANCE_ROWS
+            .iter()
+            .map(|row| row.number)
+            .collect::<Vec<_>>(),
+        (1..=12).collect::<Vec<_>>()
     );
     assert_eq!(
-        resumed_alpha
-            .resume_event_cursor(&reopened)
-            .unwrap()
-            .acknowledged_sequence,
-        last_sequence
+        ACCEPTANCE_ROWS
+            .iter()
+            .map(|row| row.owner_name)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        12,
+        "each governing row needs a distinct auditable owner label"
     );
-    resumed_beta.resume_event_cursor(&reopened).unwrap();
-    let actual = CanonicalFinalState::capture(
-        &reopened,
-        &["acceptance-shell-user-rename"],
-        &[&resumed_alpha, &resumed_beta],
-    )
-    .unwrap();
-    assert_canonical_final_state(&expected, &actual);
+
+    let mut owner_pointers = Vec::<fn()>::new();
+    for row in &ACCEPTANCE_ROWS {
+        if !owner_pointers
+            .iter()
+            .any(|owner| std::ptr::fn_addr_eq(*owner, row.owner))
+        {
+            owner_pointers.push(row.owner);
+        }
+    }
+    assert_eq!(
+        owner_pointers.len(),
+        10,
+        "only rows 6, 7, and 11 may share one integrated scenario owner"
+    );
+    let shared_restart_owner: fn() =
+        rows_6_7_11_restart_fences_old_claim_and_preserves_queue_events_and_exactly_once_publish;
+    assert_eq!(
+        ACCEPTANCE_ROWS
+            .iter()
+            .filter(|row| std::ptr::fn_addr_eq(row.owner, shared_restart_owner))
+            .map(|row| row.number)
+            .collect::<Vec<_>>(),
+        [6, 7, 11]
+    );
 }
 
 #[test]
@@ -1676,4 +1777,141 @@ fn row_10_only_green_together_change_set_publishes_once() {
         .expect("stable localized deterministic callsite ID");
     assert!(callsite.payload.contains("}, undefined as never)"));
     assert_typescript_green(&after, &fixture.corpus_root);
+}
+
+#[test]
+#[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
+fn row_12_real_worker_requests_are_bounded_semantic_inputs_only() {
+    let directory = tempdir().unwrap();
+    let database_path = directory.path().join("canonical-kernel.redb");
+    let (kernel, created, request_counts) =
+        create_classified_projected_kernel(&database_path, directory.path()).unwrap();
+    assert_eq!(created.generation, 0);
+
+    let actor = ClientActor::new("agent:row-12", "events:row-12");
+    let offer = ready(submit_rename(
+        &actor,
+        &kernel,
+        "row-12-user-rename",
+        USER_DECLARATION_ID,
+        "Account",
+        0,
+    ));
+    assert_eq!(
+        classified_request_count(&request_counts, "analyzeIntent"),
+        2,
+        "add-intent and submit each bind semantic analysis to the current graph"
+    );
+    let analyze = classified_worker_exchange(&request_counts, "analyzeIntent");
+
+    let claimed = claim(&actor, &kernel, &offer, 2);
+    let report = published(actor.execute_claimed(&kernel, &claimed, 3).unwrap());
+    assert_eq!(report.generation, 1);
+    assert_eq!(
+        classified_request_count(&request_counts, "buildValidateCandidate"),
+        1
+    );
+    let candidate = classified_worker_exchange(&request_counts, "buildValidateCandidate");
+
+    assert_exact_object_keys(
+        &analyze.request,
+        &[
+            "protocolVersion",
+            "requestId",
+            "kind",
+            "binding",
+            "snapshot",
+            "intent",
+        ],
+        "analyzeIntent request",
+    );
+    assert_exact_object_keys(
+        &candidate.request,
+        &[
+            "protocolVersion",
+            "requestId",
+            "kind",
+            "binding",
+            "snapshot",
+            "attemptId",
+            "scopeFingerprint",
+            "changeSet",
+            "validationProfile",
+        ],
+        "buildValidateCandidate request",
+    );
+    for (label, request) in [
+        ("analyzeIntent", &analyze.request),
+        ("buildValidateCandidate", &candidate.request),
+    ] {
+        assert_exact_object_keys(
+            &request["binding"],
+            &["serviceEpoch", "graphGeneration", "graphDigest"],
+            &format!("{label} binding"),
+        );
+        assert_eq!(request["binding"]["graphGeneration"], "0");
+        assert_eq!(
+            request["binding"]["graphDigest"]
+                .as_str()
+                .expect("opaque graph digest")
+                .len(),
+            64
+        );
+        assert!(
+            request["binding"]["serviceEpoch"].as_str().is_some_and(
+                |epoch| !epoch.is_empty() && epoch.bytes().all(|byte| byte.is_ascii_digit())
+            ),
+            "{label} must preserve the opaque service epoch"
+        );
+        assert_no_node_authority_keys(request, label);
+        assert_request_omits_database_path(request, &database_path);
+    }
+    assert_eq!(analyze.request["binding"], candidate.request["binding"]);
+    assert_eq!(candidate.request["attemptId"], claimed.attempt_id);
+    assert_eq!(
+        candidate.request["scopeFingerprint"],
+        claimed.scope_fingerprint
+    );
+    assert_eq!(
+        candidate.request["scopeFingerprint"]
+            .as_str()
+            .expect("opaque scope fingerprint")
+            .len(),
+        64
+    );
+
+    assert_exact_object_keys(
+        &candidate.request["validationProfile"],
+        &[
+            "mode",
+            "sourceRoot",
+            "corpusRoot",
+            "behavioralFixtures",
+            "strictSrcOnlyTscScope",
+        ],
+        "candidate validation profile",
+    );
+    let source_root = candidate.request["validationProfile"]["sourceRoot"]
+        .as_str()
+        .expect("approved source root");
+    let corpus_root = candidate.request["validationProfile"]["corpusRoot"]
+        .as_str()
+        .expect("approved corpus root");
+    assert!(Path::new(source_root).ends_with("examples/medium/src"));
+    assert!(Path::new(corpus_root).ends_with("examples/medium"));
+    assert!(Path::new(source_root).starts_with(corpus_root));
+
+    let analyze_modules = module_paths(&analyze.request);
+    let candidate_modules = module_paths(&candidate.request);
+    assert_eq!(analyze_modules, candidate_modules);
+    assert_eq!(analyze_modules.len(), 22);
+    assert!(
+        analyze_modules
+            .iter()
+            .all(|module| Path::new(module).starts_with(source_root)),
+        "the bounded source projection may carry only approved module paths"
+    );
+    assert_eq!(analyze.response["ok"], true);
+    assert_eq!(candidate.response["ok"], true);
+    assert_projected_typescript_green(&kernel.snapshot().snapshot());
 }
