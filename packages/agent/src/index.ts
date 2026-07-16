@@ -15,6 +15,16 @@ export {
 export { buildModuleIndex } from "./moduleIndex";
 export { STRATA_SYSTEM_PROMPT } from "./prompt";
 export {
+  runHermeticSession,
+  type HermeticQuery,
+  type HermeticSessionCallbacks,
+  type HermeticSessionResult,
+  type HermeticTerminalReason,
+  type HermeticToolResultEvent,
+  type HermeticToolUseEvent,
+  type RunHermeticSessionParams
+} from "./hermeticSession";
+export {
   classifySessionError,
   collectSession,
   loadTranscriptFixture,

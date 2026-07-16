@@ -3,8 +3,7 @@ import path from "node:path";
 import {
   query,
   type Options,
-  type SDKMessage,
-  type SDKUserMessage
+  type SDKMessage
 } from "@anthropic-ai/claude-agent-sdk";
 import { ingestBatch } from "@strata/ingest";
 import {
@@ -31,6 +30,13 @@ import {
   type T08Criteria
 } from "@strata/verify";
 import { SessionLog } from "./log";
+import {
+  classifySessionError,
+  runHermeticSession,
+  singlePrompt,
+  type HermeticQuery,
+  type HermeticTerminalReason
+} from "./hermeticSession";
 import { STRATA_SYSTEM_PROMPT } from "./prompt";
 import {
   createStrataToolServer,
@@ -40,16 +46,7 @@ import {
   type StrataSessionContext
 } from "./tools";
 
-/** A single-yield async generator carrying one user prompt. */
-export async function* singlePrompt(
-  text: string
-): AsyncGenerator<SDKUserMessage, void> {
-  yield {
-    type: "user",
-    parent_tool_use_id: null,
-    message: { role: "user", content: text }
-  } as SDKUserMessage;
-}
+export { classifySessionError, singlePrompt };
 
 export interface CollectedSession {
   /** The SDKSystemMessage.init tools list, if an init message was seen. */
@@ -91,6 +88,8 @@ export interface RunAgentT03Params {
   model: string;
   maxTurns: number;
   wallTimeMs: number;
+  /** Optional SDK-enforced per-query dollar limit. */
+  maxBudgetUsd?: number;
   /** When set, drive handlers from this transcript instead of the model. */
   replayTranscript?: ReplayStep[];
   /** Optional JSON-lines log file path. */
@@ -108,13 +107,7 @@ export interface RunAgentT03Params {
   canUseTool?: Options["canUseTool"];
 }
 
-export type TerminalReason =
-  | "success"
-  | "replay_complete"
-  | "error_max_turns"
-  | "error_wall_time"
-  | "error_during_execution"
-  | "error_other";
+export type TerminalReason = HermeticTerminalReason | "replay_complete";
 
 export interface AgentT03Result {
   criteria: T03Criteria;
@@ -658,112 +651,65 @@ export async function runLiveSession(deps: {
   transcript: ReplayStep[];
   setLiveTx: (tx: TxHandle) => void;
   setLastCommitOk: (ok: boolean) => void;
+  queryFn?: HermeticQuery;
 }): Promise<TerminalReason> {
   const { params, ctx, log, transcript } = deps;
   const server = (deps.params.toolServerFactory ?? createStrataToolServer)(ctx);
-  const abortController = new AbortController();
-  const timer = setTimeout(() => abortController.abort(), params.wallTimeMs);
-  const pending = new Map<
-    string,
-    { tool: string; args: unknown; turn: number; started: number }
-  >();
-
-  const options: Options = {
-    mcpServers: { [STRATA_SERVER_NAME]: server },
-    // strictMcpConfig: in the underlying Claude CLI this means "use ONLY the
-    // MCP servers passed here, ignore all other sources" — without it the
-    // SDK inherits ambient servers from ~/.claude.json (e.g. Breeze RMM),
-    // which would break the CLAUDE.md invariant that the agent's only tools
-    // are the in-process Strata ones. settingSources: [] is explicit
-    // filesystem-settings isolation (the documented default when omitted,
-    // set here to make the hermetic intent unambiguous).
-    strictMcpConfig: true,
-    settingSources: [],
-    allowedTools: [...STRATA_QUALIFIED_TOOL_NAMES],
-    tools: [],
-    disallowedTools: BANNED_BUILTINS,
-    permissionMode: "bypassPermissions",
-    allowDangerouslySkipPermissions: true,
+  const output = await runHermeticSession({
+    prompt: deps.prompt ?? T03_PROMPT,
     systemPrompt: STRATA_SYSTEM_PROMPT,
+    serverName: STRATA_SERVER_NAME,
+    server,
+    allowedTools: STRATA_QUALIFIED_TOOL_NAMES,
+    bannedBuiltins: BANNED_BUILTINS,
     model: params.model,
     maxTurns: params.maxTurns,
+    wallTimeMs: params.wallTimeMs,
+    ...(params.maxBudgetUsd === undefined
+      ? {}
+      : { maxBudgetUsd: params.maxBudgetUsd }),
     ...(params.canUseTool ? { canUseTool: params.canUseTool } : {}),
-    abortController,
-    stderr: (data: string) =>
-      log.append({
-        type: "assistant_text",
-        ts: Date.now(),
-        turn: -1,
-        text: `[stderr] ${data}`.slice(0, 240)
-      })
-  };
-
-  let terminal: TerminalReason = "error_other";
-  let turn = 0;
-
-  try {
-    for await (const message of query({
-      prompt: singlePrompt(deps.prompt ?? T03_PROMPT),
-      options
-    })) {
-      if (message.type === "system" && message.subtype === "init") {
-        assertOnlyStrataTools(message.tools);
+    ...(deps.queryFn ? { queryFn: deps.queryFn } : {}),
+    callbacks: {
+      onInit: (message) => {
         log.append({
           type: "init",
           ts: Date.now(),
           tools: message.tools,
           mcpServers: message.mcp_servers
         });
-      } else if (message.type === "assistant") {
-        for (const block of message.message.content) {
-          const content = block as unknown;
-          if (isTextBlock(content)) {
-            log.append({
-              type: "assistant_text",
-              ts: Date.now(),
-              turn,
-              text: content.text.slice(0, 240)
-            });
-          } else if (isToolUseBlock(content)) {
-            const toolName = unqualifyToolName(content.name);
-            pending.set(content.id, {
-              tool: toolName,
-              args: content.input,
-              turn,
-              started: Date.now()
-            });
-            transcript.push({ tool: toolName, args: content.input });
-          }
-        }
-        turn += 1;
-      } else if (message.type === "user") {
-        for (const observed of extractToolResults(message)) {
-          const call = pending.get(observed.toolUseId);
-          if (!call) {
-            continue;
-          }
-          pending.delete(observed.toolUseId);
-          const parsed = parseToolResultPayload(observed.result);
-          applyObservedToolResult(
-            call.tool,
-            parsed,
-            deps.setLiveTx,
-            deps.setLastCommitOk
-          );
-          log.append({
-            type: "tool_call",
-            ts: Date.now(),
-            tool: call.tool,
-            args: call.args,
-            result_summary: log.summarizeResult(parsed),
-            ok: !observed.isError,
-            error: observed.isError ? log.summarizeResult(parsed) : null,
-            durationMs: Date.now() - call.started,
-            turn: call.turn
-          });
-        }
-      } else if (message.type === "result") {
-        terminal = terminalFromResultSubtype(message.subtype);
+      },
+      onAssistantText: ({ text, turn }) => {
+        log.append({
+          type: "assistant_text",
+          ts: Date.now(),
+          turn,
+          text: text.slice(0, 240)
+        });
+      },
+      onToolUse: ({ tool, args }) => {
+        transcript.push({ tool, args });
+      },
+      onToolResult: ({ tool, args, result, isError, durationMs, turn }) => {
+        applyObservedToolResult(
+          tool,
+          result,
+          deps.setLiveTx,
+          deps.setLastCommitOk
+        );
+        log.append({
+          type: "tool_call",
+          ts: Date.now(),
+          tool,
+          args,
+          result_summary: log.summarizeResult(result),
+          ok: !isError,
+          error: isError ? log.summarizeResult(result) : null,
+          durationMs,
+          turn
+        });
+      },
+      onResult: (message) => {
         log.append({
           type: "result",
           ts: Date.now(),
@@ -787,105 +733,29 @@ export async function runLiveSession(deps: {
           modelUsage: message.modelUsage,
           errors: "errors" in message ? message.errors : []
         });
+      },
+      onStderr: (data) => {
+        log.append({
+          type: "assistant_text",
+          ts: Date.now(),
+          turn: -1,
+          text: `[stderr] ${data}`.slice(0, 240)
+        });
+      },
+      onError: (caught) => {
+        log.append({
+          type: "assistant_text",
+          ts: Date.now(),
+          turn: -1,
+          text: `[session error] ${
+            caught instanceof Error ? caught.message : String(caught)
+          }`.slice(0, 240)
+        });
       }
     }
-  } catch (caught) {
-    const { terminal: classified, rethrow } = classifySessionError(
-      caught,
-      abortController.signal.aborted
-    );
-    terminal = classified;
-    log.append({
-      type: "assistant_text",
-      ts: Date.now(),
-      turn: -1,
-      text: `[session error] ${
-        caught instanceof Error ? caught.message : String(caught)
-      }`.slice(0, 240)
-    });
-    if (rethrow) {
-      throw caught;
-    }
-  } finally {
-    clearTimeout(timer);
-    abortController.abort();
-  }
+  });
 
-  return terminal;
-}
-
-/**
- * Classify an error thrown out of the live `query()` loop into a terminal
- * reason, and whether it should propagate.
- *
- * Installed `@anthropic-ai/claude-agent-sdk@0.2.118` signals the `maxTurns`
- * bound by THROWING `Reached maximum number of turns (N)` rather than
- * yielding a `result` message with `subtype: "error_max_turns"` (which
- * `terminalFromResultSubtype` would otherwise map). That is a benign,
- * expected per-trial budget outcome — the harness already defines the
- * `error_max_turns` terminal reason for it — so it must be recorded and
- * swallowed exactly like a wall-time abort, NOT re-thrown (which previously
- * crashed the entire round, discarding every other trial incl. the T03
- * guard; surfaced 2026-05-16 by the first Opus T01 probe). A wall-time
- * abort still wins (it can race the throw). Any other error is genuinely
- * unexpected and still fails loud (rethrow).
- */
-export function classifySessionError(
-  caught: unknown,
-  aborted: boolean
-): {
-  terminal: "error_max_turns" | "error_wall_time" | "error_other";
-  rethrow: boolean;
-} {
-  if (aborted) {
-    return { terminal: "error_wall_time", rethrow: false };
-  }
-  const message = caught instanceof Error ? caught.message : String(caught);
-  if (/maximum number of turns/i.test(message)) {
-    return { terminal: "error_max_turns", rethrow: false };
-  }
-  return { terminal: "error_other", rethrow: true };
-}
-
-function terminalFromResultSubtype(subtype: string): TerminalReason {
-  if (subtype === "success") {
-    return "success";
-  }
-  if (subtype === "error_max_turns") {
-    return "error_max_turns";
-  }
-  if (subtype === "error_during_execution") {
-    return "error_during_execution";
-  }
-  return "error_other";
-}
-
-function assertOnlyStrataTools(tools: string[]): void {
-  const expected = new Set(STRATA_QUALIFIED_TOOL_NAMES);
-  for (const toolName of tools) {
-    if (BANNED_BUILTINS.includes(toolName)) {
-      throw new Error(
-        `Runtime invariant violated: built-in tool ${toolName} present`
-      );
-    }
-    if (!expected.has(toolName)) {
-      throw new Error(
-        `Runtime invariant violated: unexpected tool ${toolName} present`
-      );
-    }
-  }
-  for (const toolName of expected) {
-    if (!tools.includes(toolName)) {
-      throw new Error(
-        `Runtime invariant violated: expected Strata tool ${toolName} missing`
-      );
-    }
-  }
-}
-
-function unqualifyToolName(name: string): string {
-  const prefix = `mcp__${STRATA_SERVER_NAME}__`;
-  return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  return output.terminalReason;
 }
 
 function parseToolHandlerResult(result: {
@@ -896,34 +766,6 @@ function parseToolHandlerResult(result: {
     return null;
   }
   return JSON.parse(block.text) as unknown;
-}
-
-function parseToolResultPayload(value: unknown): unknown {
-  if (isRecord(value)) {
-    if (typeof value.content === "string") {
-      return parseMaybeJson(value.content);
-    }
-    if (Array.isArray(value.content)) {
-      const firstText = value.content.find(
-        (block): block is { type: string; text: string } =>
-          isRecord(block) &&
-          block.type === "text" &&
-          typeof block.text === "string"
-      );
-      if (firstText) {
-        return parseMaybeJson(firstText.text);
-      }
-    }
-  }
-  return value;
-}
-
-function parseMaybeJson(value: string): unknown {
-  try {
-    return JSON.parse(value) as unknown;
-  } catch {
-    return value;
-  }
 }
 
 function applyObservedToolResult(
@@ -937,75 +779,6 @@ function applyObservedToolResult(
   } else if (toolName === "commit_transaction") {
     setLastCommitOk(isRecord(parsed) && parsed.ok === true);
   }
-}
-
-function extractToolResults(
-  message: SDKUserMessage
-): { toolUseId: string; result: unknown; isError: boolean }[] {
-  const out: { toolUseId: string; result: unknown; isError: boolean }[] = [];
-  collectToolResults(message.tool_use_result, out);
-  if (Array.isArray(message.message.content)) {
-    for (const block of message.message.content) {
-      collectToolResults(block, out);
-    }
-  }
-  return out;
-}
-
-function collectToolResults(
-  value: unknown,
-  out: { toolUseId: string; result: unknown; isError: boolean }[]
-): void {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectToolResults(item, out);
-    }
-    return;
-  }
-  if (!isRecord(value)) {
-    return;
-  }
-  const type = value.type;
-  const toolUseId =
-    typeof value.tool_use_id === "string"
-      ? value.tool_use_id
-      : typeof value.toolUseId === "string"
-        ? value.toolUseId
-        : undefined;
-  if (type === "tool_result" && toolUseId) {
-    out.push({
-      toolUseId,
-      result: value,
-      isError: value.is_error === true || value.isError === true
-    });
-    return;
-  }
-  for (const nested of Object.values(value)) {
-    collectToolResults(nested, out);
-  }
-}
-
-function isToolUseBlock(value: unknown): value is {
-  type: "tool_use";
-  id: string;
-  name: string;
-  input: unknown;
-} {
-  return (
-    isRecord(value) &&
-    value.type === "tool_use" &&
-    typeof value.id === "string" &&
-    typeof value.name === "string" &&
-    "input" in value
-  );
-}
-
-function isTextBlock(value: unknown): value is { type: "text"; text: string } {
-  return (
-    isRecord(value) &&
-    value.type === "text" &&
-    typeof value.text === "string"
-  );
 }
 
 function isTxHandle(value: unknown): value is TxHandle {
