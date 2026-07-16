@@ -76,7 +76,7 @@ No production file is changed merely to make the harness convenient.
 
 - [ ] Add a row-1 regression case for two independent disjoint rename clients publishing in both orders, including final green state and two-operation history. Existing behavior may make this green immediately; do not manufacture a product change.
 - [ ] Add a row-2 case for `User -> Account` followed by `User -> Customer`; assert FIFO, fresh generation/context, and `IntentNeedsDecision` with no second publication.
-- [ ] Add a row-3 case for `rename_symbol(greet)` versus `add_parameter(greet)`; assert the inferred reservation overlap exists before mutation and prevents concurrent claims.
+- [ ] Add a row-3 case for `rename_symbol(User)` versus `add_parameter(greet)`; assert the `User` reference in `greet`'s signature creates an inferred reservation overlap before mutation and prevents concurrent claims.
 - [ ] Run only the three cases and record which integrated assertions are already green. For any product defect, preserve the failing assertion as the RED step before implementation.
 - [ ] Make the minimum production correction only if an existing real bridge path fails. Keep Node outputs fact-only and Rust scope/policy authoritative.
 - [ ] Run the focused cases, `node_bridge`, and `coordination_acceptance` suites.

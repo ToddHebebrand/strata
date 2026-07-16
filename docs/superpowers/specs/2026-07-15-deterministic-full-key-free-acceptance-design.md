@@ -68,7 +68,7 @@ Two clients submit `User -> Account` and `User -> Customer`. FIFO ordering allow
 
 ### Real inferred overlap
 
-One client renames `greet`; another adds a parameter to the same function. The clients provide only declaration/function IDs and typed intent parameters. Rust derives reservations from Node semantic facts. The overlap is visible before mutation, so only one claim is executable and no dirty candidate is published.
+One client renames `User`; another adds a parameter to `greet`, whose existing signature references `User`. The clients provide only declaration/function IDs and typed intent parameters. Rust derives the reference-mediated reservation overlap from Node semantic facts. The overlap is visible before mutation, so only one claim is executable and no dirty candidate is published.
 
 ### Dynamic scope expansion
 
