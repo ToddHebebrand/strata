@@ -1,11 +1,11 @@
-// Pins the module-granular validation dependency circle (decisions.md
-// 2026-07-16, operator-amended M). Two appended same-module functions with no
-// shared references and no shared referencing statements still serialize:
-// the successor queues at submit and returns needs_decision after the first
-// publishes, because validationDependencies pins every node of the seed's
-// module. The follow-on kernel iteration that narrows the circle to
-// statement-level resources must flip these assertions deliberately
-// (ready/ready, both publish, zero fresh decisions) as its acceptance test.
+// Acceptance probe for the validation-circle narrowing (spec
+// docs/superpowers/specs/2026-07-17-validation-circle-narrowing-design.md,
+// flipping the 2026-07-16 module-granularity pin as that decision entry
+// anticipated). Two appended same-module functions with no shared references
+// and no shared referencing statements are byte-disjoint work: both submit
+// ready, both publish with zero fresh decisions, and both publication orders
+// converge to the same final graph digest. Every publication passed the
+// service's tsc candidate gate, so `published` implies a green tree.
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -16,8 +16,8 @@ const corpusRoot = resolve(import.meta.dirname, "../../../examples/medium");
 const temporary: string[] = [];
 afterAll(() => temporary.splice(0).forEach((path) => rmSync(path, { recursive: true, force: true })));
 
-describe("module-granular validation circle (current analyzer behavior)", () => {
-  it("serializes even fully independent same-module siblings", async () => {
+describe("statement-granular validation circle", () => {
+  it("publishes fully independent same-module siblings concurrently in both orders", async () => {
     const copy = mkdtempSync(join(tmpdir(), "strata-m-mechanism-"));
     temporary.push(copy);
     cpSync(corpusRoot, copy, { recursive: true });
@@ -28,8 +28,14 @@ describe("module-granular validation circle (current analyzer behavior)", () => 
       "utf8"
     );
     const result = await probeSameModulePair(copy, "probeAlpha", "probeAlphaRenamed", "probeBeta", "probeBetaRenamed");
-    expect(result.submitStates).toEqual(["ready", "queued"]);
-    expect(result.firstState).toBe("published");
-    expect(result.secondState).toBe("needs_decision");
-  }, 120_000);
+    for (const order of result.orders) {
+      expect(order.submitStates).toEqual(["ready", "ready"]);
+      expect(order.leaderState).toBe("published");
+      expect(order.followerState).toBe("published");
+      expect(order.freshDecisions).toBe(0);
+      expect(Number(order.finalGeneration)).toBe(2);
+    }
+    expect(result.orders[0]!.finalGraphDigest).toBeTruthy();
+    expect(result.orders[0]!.finalGraphDigest).toBe(result.orders[1]!.finalGraphDigest);
+  }, 240_000);
 });

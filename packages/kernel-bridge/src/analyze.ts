@@ -1,7 +1,5 @@
 import { compareCodeUnits, type KernelReferenceV1 } from "@strata/ingest";
 import {
-  begin,
-  createInMemoryProgram,
   findNodeById,
   getReferencesByTo,
   listModules,
@@ -9,12 +7,10 @@ import {
   normalizePath,
   resolveCallsites,
   resolveDeclarationNameIdentifier,
-  rollback,
   type Db,
   type NodeRow
 } from "@strata/store";
 import { posix } from "node:path";
-import { buildAnalysisContext } from "@strata/verify";
 import ts from "typescript";
 import {
   semanticFactsSchema,
@@ -391,6 +387,17 @@ function collectContentNames(
   return names;
 }
 
+/**
+ * The validation circle is statement-granular (spec 2026-07-17 Change 1):
+ * each seed pins its enclosing module-level statement plus that statement's
+ * full descendant subtree, and the references leaving those nodes. Within
+ * the current intent vocabulary (renameSymbol, addParameter), any change
+ * that alters the resolution of a name one of these statements uses rewrites
+ * the statement itself (reference propagation covers imports too), so no
+ * module closure or import/export-surface pin is required; intents that
+ * would break that property must extend validation pinning first
+ * (decisions.md 2026-07-17).
+ */
 function validationDependencies(
   db: Db,
   seedNodeIds: readonly string[]
@@ -399,49 +406,40 @@ function validationDependencies(
   "validationDependencyNodeIds" | "validationDependencyReferenceFromNodeIds"
 > {
   const graph = buildGraphIndex(db);
-  const selectedModuleIds = new Set<string>();
+  const childrenByParent = new Map<string, string[]>();
+  for (const node of graph.nodes) {
+    if (node.parentId === null) continue;
+    const siblings = childrenByParent.get(node.parentId) ?? [];
+    siblings.push(node.id);
+    childrenByParent.set(node.parentId, siblings);
+  }
+
+  const pinned = new Set<string>();
   for (const nodeId of seedNodeIds) {
-    const moduleId = graph.moduleIdByNodeId.get(nodeId);
-    if (!moduleId) {
+    let current = graph.nodeById.get(nodeId);
+    if (!current || !graph.moduleIdByNodeId.get(nodeId)) {
       throw new AnalyzeFailure(
         "unresolvedReference",
         [{ nodeId, modulePath: null, message: "node has no module", code: 2304 }],
         "semantic analysis found an unresolved reference"
       );
     }
-    selectedModuleIds.add(moduleId);
-  }
-
-  const graphDependencies = new Map<string, Set<string>>();
-  for (const reference of graph.references) {
-    const sourceModule = graph.moduleIdByNodeId.get(reference.fromNodeId);
-    const targetModule = graph.moduleIdByNodeId.get(reference.toNodeId);
-    if (!sourceModule || !targetModule || sourceModule === targetModule) continue;
-    addDependency(graphDependencies, sourceModule, targetModule);
-  }
-  const programDependencies = buildProgramDependencies(db, graph.moduleIdByPath);
-  for (const [source, targets] of programDependencies) {
-    for (const target of targets) addDependency(graphDependencies, source, target);
-  }
-
-  const queue = [...selectedModuleIds].sort(compareCodeUnits);
-  for (let index = 0; index < queue.length; index += 1) {
-    const moduleId = queue[index]!;
-    const dependencies = [...(graphDependencies.get(moduleId) ?? [])].sort(
-      compareCodeUnits
-    );
-    for (const dependency of dependencies) {
-      if (selectedModuleIds.has(dependency)) continue;
-      selectedModuleIds.add(dependency);
-      queue.push(dependency);
+    while (
+      current.parentId !== null &&
+      graph.nodeById.get(current.parentId)?.kind !== "Module"
+    ) {
+      current = graph.nodeById.get(current.parentId)!;
+    }
+    const stack = [current.id];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      if (pinned.has(id)) continue;
+      pinned.add(id);
+      for (const child of childrenByParent.get(id) ?? []) stack.push(child);
     }
   }
 
-  const validationDependencyNodeIds = canonicalIds(
-    graph.nodes
-      .filter((node) => selectedModuleIds.has(graph.moduleIdByNodeId.get(node.id)!))
-      .map((node) => node.id)
-  );
+  const validationDependencyNodeIds = canonicalIds([...pinned]);
   const selectedNodes = new Set(validationDependencyNodeIds);
   const validationDependencyReferenceFromNodeIds = canonicalIds(
     graph.references
@@ -453,74 +451,6 @@ function validationDependencies(
     validationDependencyNodeIds,
     validationDependencyReferenceFromNodeIds
   };
-}
-
-function buildProgramDependencies(
-  db: Db,
-  moduleIdByPath: Map<string, string>
-): Map<string, Set<string>> {
-  const tx = begin(db, "kernel-bridge-analysis");
-  let renderedByPath: Map<string, string>;
-  let options: ts.CompilerOptions;
-  try {
-    ({ renderedByPath, options } = buildAnalysisContext(db, tx));
-  } finally {
-    rollback(db, tx);
-  }
-
-  const sourceFiles = new Map<string, ts.SourceFile>();
-  for (const [modulePath, text] of renderedByPath) {
-    sourceFiles.set(
-      normalizePath(modulePath),
-      ts.createSourceFile(
-        modulePath,
-        text,
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.TS
-      )
-    );
-  }
-  const program = createInMemoryProgram(renderedByPath, sourceFiles, options);
-  const checker = program.getTypeChecker();
-  const dependencies = new Map<string, Set<string>>();
-
-  for (const sourceFile of sourceFiles.values()) {
-    const sourceModuleId = moduleIdByPath.get(normalizePath(sourceFile.fileName));
-    if (!sourceModuleId) continue;
-    for (const statement of sourceFile.statements) {
-      const specifier = moduleSpecifierOf(statement);
-      if (!specifier) continue;
-      const symbol = checker.getSymbolAtLocation(specifier);
-      for (const declaration of symbol?.declarations ?? []) {
-        const targetPath = normalizePath(declaration.getSourceFile().fileName);
-        const targetModuleId = moduleIdByPath.get(targetPath);
-        if (targetModuleId && targetModuleId !== sourceModuleId) {
-          addDependency(dependencies, sourceModuleId, targetModuleId);
-        }
-      }
-    }
-  }
-  return dependencies;
-}
-
-function moduleSpecifierOf(statement: ts.Statement): ts.StringLiteralLike | undefined {
-  if (
-    (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
-    statement.moduleSpecifier &&
-    ts.isStringLiteralLike(statement.moduleSpecifier)
-  ) {
-    return statement.moduleSpecifier;
-  }
-  if (
-    ts.isImportEqualsDeclaration(statement) &&
-    ts.isExternalModuleReference(statement.moduleReference) &&
-    statement.moduleReference.expression &&
-    ts.isStringLiteralLike(statement.moduleReference.expression)
-  ) {
-    return statement.moduleReference.expression;
-  }
-  return undefined;
 }
 
 function buildGraphIndex(db: Db): GraphIndex {
@@ -648,16 +578,6 @@ function requireDeclarationName(db: Db, declarationId: string): NodeRow {
     );
   }
   return name;
-}
-
-function addDependency(
-  dependencies: Map<string, Set<string>>,
-  source: string,
-  target: string
-): void {
-  const targets = dependencies.get(source) ?? new Set<string>();
-  targets.add(target);
-  dependencies.set(source, targets);
 }
 
 function safeModulePath(db: Db, nodeId: string): string | null {

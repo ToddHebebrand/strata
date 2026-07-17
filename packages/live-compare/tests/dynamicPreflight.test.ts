@@ -48,21 +48,19 @@ describe("canonical boundary and dynamic stop-gate preflight", () => {
     }
   }, 600_000);
 
-  it("M same-module gate: serializes with exactly one fresh decision and converges", async () => {
-    // Operator-amended acceptance (decisions.md 2026-07-16): the module-
-    // granular validation dependency circle serializes same-module work. M
-    // proves the successor queues at submit, records exactly one fresh
-    // decision resubmitting the identical stable-ID typed intent, and both
-    // orders converge to identical green digests. Within-module concurrent
-    // publication is explicitly out of scope for this experiment.
+  it("M same-module gate: publishes concurrently with zero fresh decisions and converges", async () => {
+    // Validation-circle narrowing acceptance (spec 2026-07-17, restoring the
+    // original pre-amendment M clause the 2026-07-16 operator amendment
+    // deferred to this iteration): disjoint same-module renames submit
+    // ready/ready, both publish with no fresh decision, and both orders
+    // converge to identical green digests.
     const results = [];
     for (const order of ["agent-1-first", "agent-2-first"] as const) {
       const result = await runQualifiedServicePacket({ corpusRoot, packetId: "M", order });
       expect(result.green, `M ${order}`).toBe(true);
       expect(result.generation, `M ${order}`).toBe(2);
-      const expectedStates = order === "agent-1-first" ? ["ready", "queued"] : ["queued", "ready"];
-      expect(result.submittedStates, `M ${order}`).toEqual(expectedStates);
-      expect(result.freshDecisions, `M ${order}`).toBe(1);
+      expect(result.submittedStates, `M ${order}`).toEqual(["ready", "ready"]);
+      expect(result.freshDecisions, `M ${order}`).toBe(0);
       expect(result.finalSource).toContain("recordEvent");
       expect(result.finalSource).toContain("formatEventLine");
       expect(result.finalSource).not.toContain("logEvent");
@@ -77,18 +75,21 @@ describe("canonical boundary and dynamic stop-gate preflight", () => {
     const x2First = await runQualifiedServicePacket({ corpusRoot, packetId: "X", order: "agent-2-first" });
     expect(x2First.green).toBe(true);
     expect(x2First.generation).toBe(2);
-    expect(x2First.submittedStates).toEqual(["queued", "ready"]);
+    // Narrowed circle (spec 2026-07-17): X1 and X2 no longer overlap at
+    // submit; the expansion moves to X1's own claim and is still externally
+    // observable before the publishing advance.
+    expect(x2First.submittedStates).toEqual(["ready", "ready"]);
     expect(x2First.eventKinds).toContain("scope_expanded");
     expect(x2First.eventKinds).toContain("intent_ready");
     expect(x2First.scopeExpandedBeforePublishAdvance).toBe(true);
-    expect(x2First.secondAdvances).toBe(1);
+    expect(x2First.secondAdvances).toBe(2);
     expect(x2First.finalSource).toContain("displayLabel: string = UserTypes.formatUser(user)");
     expect(x2First.finalSource).not.toContain("displayUser");
 
     const x1First = await runQualifiedServicePacket({ corpusRoot, packetId: "X", order: "agent-1-first" });
     expect(x1First.green).toBe(true);
     expect(x1First.generation).toBe(2);
-    expect(x1First.submittedStates).toEqual(["ready", "queued"]);
+    expect(x1First.submittedStates).toEqual(["ready", "ready"]);
     expect(x1First.staleX2State).toBe("needs_decision");
     // The needs_decision response itself names the rename, and the harness's
     // fresh decision derived the rewritten value from that response alone.

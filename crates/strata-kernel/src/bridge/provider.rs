@@ -342,7 +342,19 @@ impl<'a> ScopeBuilder<'a> {
     fn reserve_node_and_parent(&mut self, node: &NodeRecord) {
         self.reserve(format!("node:{}", node.id));
         if let Some(parent_id) = &node.parent_id {
-            self.reserve(format!("node:{parent_id}"));
+            // Module parents are never reserved (spec 2026-07-17 Change 4):
+            // payload-class operations on module-level statements would
+            // otherwise serialize every same-module pair. Payload-only
+            // upserts no longer require parent coverage at containment, and
+            // shape-changing statement work still conflicts through the
+            // module's children membership clock.
+            let parent_is_module = self
+                .graph
+                .node(parent_id)
+                .is_some_and(|parent| parent.kind == "Module");
+            if !parent_is_module {
+                self.reserve(format!("node:{parent_id}"));
+            }
         }
     }
 
@@ -449,6 +461,11 @@ impl<'a> ScopeBuilder<'a> {
         Ok(())
     }
 
+    /// Validation facts are observations (spec 2026-07-17 Change 3): they
+    /// version-pin what the analysis depends on so drift is detected at
+    /// claim/publish, but they never reserve. Reservations come only from
+    /// the operation's own read/write paths, so byte-disjoint work stays
+    /// concurrent at submit.
     fn add_validation_facts(&mut self, node_ids: &[String], edge_ids: &[String]) -> Result<()> {
         for id in node_ids {
             let node = self.require_node(id)?.clone();
@@ -458,7 +475,6 @@ impl<'a> ScopeBuilder<'a> {
                 self.validation_set
                     .push(children_resource(self.graph, parent_id)?);
             }
-            self.reserve_node_and_parent(&node);
         }
         for from_id in edge_ids {
             let reference = self
@@ -469,8 +485,6 @@ impl<'a> ScopeBuilder<'a> {
             self.validation_set.push(edge_resource(&reference)?);
             self.validation_set
                 .push(references_to_resource(self.graph, &reference.to_node_id)?);
-            self.reserve(format!("node:{}", reference.from_node_id));
-            self.reserve(format!("node:{}", reference.to_node_id));
         }
         Ok(())
     }

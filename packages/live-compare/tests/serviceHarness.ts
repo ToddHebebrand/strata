@@ -60,8 +60,11 @@ async function allEvents(client: CoordinationClient): Promise<any[]> {
 }
 
 // Drives the daemon on an arbitrary corpus root (no manifest digest gate)
-// with two rename intents resolved by name. Used by the module-granularity
-// regression pin in mMechanism.test.ts.
+// with two rename intents resolved by name, in BOTH publication orders on a
+// fresh service each. Every publication is tsc-validated by the service's
+// candidate gate, so `published` implies a green tree; order convergence is
+// asserted through the final publication digest. Acceptance probe for the
+// validation-circle narrowing (spec 2026-07-17) in mMechanism.test.ts.
 export async function probeSameModulePair(
   corpusRoot: string,
   firstName: string,
@@ -86,36 +89,60 @@ export async function probeSameModulePair(
     if (matches.length !== 1) throw new Error(`unresolved probe target ${name}`);
     return matches[0]!.id;
   };
-  const service = await startService(corpusRoot);
-  try {
-    const clients = [
-      new CoordinationClient({ socketPath: service.socketPath, clientId: "probe:pair:1" }),
-      new CoordinationClient({ socketPath: service.socketPath, clientId: "probe:pair:2" })
-    ];
-    const intent = (name: string, newName: string): TaskAssignment => ({
-      role: "agent-1",
-      taskBody: "",
-      taskBodyBytes: "",
-      intents: [{ type: "rename_symbol", declarationId: declarationId(name), newName }],
-      strataTargets: [],
-      baselineTargets: [],
-      promptHashes: { strata: "", baseline: "" }
-    });
-    const submitted1 = await beginAndSubmit(clients[0]!, intent(firstName, firstNewName), "probe first");
-    const submitted2 = await beginAndSubmit(clients[1]!, intent(secondName, secondNewName), "probe second");
-    const first = await advanceUntilTerminal(clients[0]!, submitted1.changeSetId);
-    const second = await advanceUntilTerminal(clients[1]!, submitted2.changeSetId);
-    return {
-      submitStates: [submitted1.state, submitted2.state],
-      firstState: first.result.state,
-      firstGeneration: first.result.graphGeneration,
-      secondState: second.result.state,
-      secondGeneration: second.result.graphGeneration,
-      secondAdvances: second.advances
-    };
-  } finally {
-    await service.stop();
-  }
+  const intent = (name: string, newName: string): TaskAssignment => ({
+    role: "agent-1",
+    taskBody: "",
+    taskBodyBytes: "",
+    intents: [{ type: "rename_symbol", declarationId: declarationId(name), newName }],
+    strataTargets: [],
+    baselineTargets: [],
+    promptHashes: { strata: "", baseline: "" }
+  });
+  const assignments = [intent(firstName, firstNewName), intent(secondName, secondNewName)];
+
+  const runOrder = async (leader: 0 | 1) => {
+    const follower = leader === 0 ? 1 : 0;
+    const service = await startService(corpusRoot);
+    try {
+      const clients = [
+        new CoordinationClient({ socketPath: service.socketPath, clientId: `probe:pair:1:leader-${leader}` }),
+        new CoordinationClient({ socketPath: service.socketPath, clientId: `probe:pair:2:leader-${leader}` })
+      ];
+      const submitted = [
+        await beginAndSubmit(clients[0]!, assignments[0]!, "probe first"),
+        await beginAndSubmit(clients[1]!, assignments[1]!, "probe second")
+      ];
+      const submitStates = [submitted[0].state, submitted[1].state];
+      let freshDecisions = 0;
+      const advanceRecordingDecisions = async (index: 0 | 1) => {
+        let terminal = await advanceUntilTerminal(clients[index]!, submitted[index].changeSetId);
+        if (terminal.result.state === "needs_decision") {
+          freshDecisions += 1;
+          await clients[index]!.request(
+            { type: "cancel_change_set", changeSetId: submitted[index].changeSetId },
+            120_000
+          );
+          submitted[index] = await beginAndSubmit(clients[index]!, assignments[index]!, "probe fresh decision");
+          terminal = await advanceUntilTerminal(clients[index]!, submitted[index].changeSetId);
+        }
+        return terminal.result;
+      };
+      const leaderResult = await advanceRecordingDecisions(leader);
+      const followerResult = await advanceRecordingDecisions(follower);
+      return {
+        submitStates,
+        leaderState: leaderResult.state,
+        followerState: followerResult.state,
+        freshDecisions,
+        finalGeneration: followerResult.graphGeneration,
+        finalGraphDigest: followerResult.publicationDigest ?? leaderResult.publicationDigest
+      };
+    } finally {
+      await service.stop();
+    }
+  };
+
+  return { orders: [await runOrder(0), await runOrder(1)] };
 }
 
 export async function runQualifiedServicePacket(input: {
@@ -175,16 +202,24 @@ export async function runQualifiedServicePacket(input: {
       derivedFreshValue = staleIntent.value;
       submitted[1] = await beginAndSubmit(clients[1]!, replacement, "X2 fresh decision after rename");
     }
+    let second = await advanceUntilTerminal(clients[secondIndex]!, submitted[secondIndex].changeSetId);
     if (input.packetId === "X" && firstIndex === 1) {
-      const before = await allEvents(clients[0]!);
-      eventKinds.push(...before.map((event) => event.kind));
-      const expandedIndex = before.findIndex((event) => event.kind === "scope_expanded");
-      const readyIndex = before.findIndex(
+      // Since the validation-circle narrowing (spec 2026-07-17), X1 submits
+      // ready alongside X2, so the dynamic expansion surfaces at X1's own
+      // claim: its first advance requeues with the expanded scope and emits
+      // scope_expanded, and only a later advance publishes. The event log
+      // still proves the expansion was externally observable before the
+      // publishing advance: scope_expanded precedes the intent_ready that
+      // precedes publication, and X1 needed more than one advance.
+      const observed = await allEvents(clients[0]!);
+      eventKinds.push(...observed.map((event) => event.kind));
+      const expandedIndex = observed.findIndex((event) => event.kind === "scope_expanded");
+      const readyIndex = observed.findIndex(
         (event, index) => index > expandedIndex && event.kind === "intent_ready"
       );
-      scopeExpandedBeforePublishAdvance = expandedIndex >= 0 && readyIndex > expandedIndex;
+      scopeExpandedBeforePublishAdvance =
+        expandedIndex >= 0 && readyIndex > expandedIndex && second.advances > 1;
     }
-    let second = await advanceUntilTerminal(clients[secondIndex]!, submitted[secondIndex].changeSetId);
     let freshDecisions = 0;
     if (second.result.state === "needs_decision") {
       // The kernel refuses authority derived from stale generation-zero

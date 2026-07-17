@@ -564,10 +564,22 @@ impl ServiceSession {
     }
 
     fn advance(&self, change_set_id: &str, tick: u64, request_id: &str) -> Result<ExecutedEffect> {
-        let change_set = self
+        let mut change_set = self
             .kernel
             .change_set(change_set_id)?
             .with_context(|| format!("change set {change_set_id} does not exist"))?;
+        if change_set.state == KernelChangeSetState::Queued {
+            // A ticket requeued at claim time (dynamic scope expansion) has no
+            // later transition to re-plan it once its sibling already
+            // published, so an advance on queued work runs a reconsideration
+            // pass. Planning is idempotent: work that still overlaps an
+            // active claim or offer stays queued.
+            self.kernel.reconsider_tickets(tick)?;
+            change_set = self
+                .kernel
+                .change_set(change_set_id)?
+                .with_context(|| format!("change set {change_set_id} disappeared"))?;
+        }
         if change_set.state != KernelChangeSetState::Ready {
             return Ok(ExecutedEffect::response(LocalServiceResponse::success(
                 request_id,
