@@ -7,6 +7,8 @@ export interface ArmExecutionResult {
   accounting: TeamAccounting;
   /** Full verification.json payload, or null if the arm died before the verifier ran. */
   verification: Record<string, unknown> | null;
+  /** The verifier's exact rejection message when verification failed. */
+  verifierError?: string;
   /** Strata arm only: the canonical-audit.json payload. */
   canonicalAudit?: Record<string, unknown>;
   /** Bounded evidence snapshots (relative path → content). */
@@ -86,7 +88,8 @@ export async function runComparisonRound(deps: ComparisonRoundDeps): Promise<Rou
           failures: Object.keys(result.accounting.taxonomyCounts),
           timeouts: Object.keys(result.accounting.taxonomyCounts).filter((value) =>
             value.endsWith("timeout")
-          )
+          ),
+          ...(result.verifierError ? { verifierError: result.verifierError } : {})
         },
         { trialId: entry.trialId, arm }
       );

@@ -201,6 +201,7 @@ export function createLiveAdapter(options: LiveAdapterOptions): LiveAdapter {
         const affected = events.flatMap((event) => event.affectedNodeIds);
         finalTree = await materializeFinalTree(harnessClient, corpusRoot, manifest, affected);
         let verificationGreen = true;
+        let verifierError: string | undefined;
         let verification: Record<string, unknown> | null = null;
         try {
           const report = await verifyPhase6Tree({
@@ -226,8 +227,9 @@ export function createLiveAdapter(options: LiveAdapterOptions): LiveAdapter {
             finalTreeDigest: report.finalTreeDigest,
             configurationDigest: report.configurationDigest
           };
-        } catch {
+        } catch (error) {
           verificationGreen = false;
+          verifierError = error instanceof Error ? error.message.split("\n")[0]! : String(error);
         }
         const publications = events.filter((event) => event.kind === "intent_committed");
         const accounting = computeTeamAccounting({
@@ -247,6 +249,7 @@ export function createLiveAdapter(options: LiveAdapterOptions): LiveAdapter {
         return {
           accounting,
           verification,
+          ...(verifierError ? { verifierError } : {}),
           canonicalAudit: {
             schemaVersion: 1,
             trialId: entry.trialId,
@@ -311,6 +314,7 @@ export function createLiveAdapter(options: LiveAdapterOptions): LiveAdapter {
         }
       });
       let verificationGreen = true;
+      let verifierError: string | undefined;
       let verification: Record<string, unknown> | null = null;
       try {
         const report = await verifyPhase6Tree({
@@ -336,8 +340,9 @@ export function createLiveAdapter(options: LiveAdapterOptions): LiveAdapter {
           finalTreeDigest: report.finalTreeDigest,
           configurationDigest: report.configurationDigest
         };
-      } catch {
+      } catch (error) {
         verificationGreen = false;
+        verifierError = error instanceof Error ? error.message.split("\n")[0]! : String(error);
       }
       const accounting = computeTeamAccounting({
         arm: "baseline",
@@ -356,7 +361,7 @@ export function createLiveAdapter(options: LiveAdapterOptions): LiveAdapter {
       trial.finalize();
       trial.cleanup();
       rmSync(workspaceRoot, { recursive: true, force: true });
-      return { accounting, verification, evidence };
+      return { accounting, verification, ...(verifierError ? { verifierError } : {}), evidence };
     };
 
     const outcome = await runComparisonRound({

@@ -7,6 +7,35 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — Live round 2: genuine dispositive baseline failure on S-r1
+
+**Context:** Round 2 (`run-2026-07-17T04-50-45-063Z`, re-approved manifest at
+`702e36a`) ran under the fixed verifier. The S-r1 Strata arm succeeded live
+again (USD 0.087; two-for-two on the coordination protocol including the
+fresh-decision path). The S-r1 baseline arm produced **correct S task work**
+(`welcomeUser(user: User, excited: boolean = false)`) but its integration
+session also changed `src/lib/dateRange.ts` (`date <= end` → `date < end`) —
+a semantic edit to a file outside every S scope that no task requested.
+
+**Verdict:** reproduced deterministically from the preserved evidence tree:
+`unexpected source change outside packet scope: src/lib/dateRange.ts`. This
+is the preregistered dispositive `unexpected_out_of_scope_change` class
+functioning exactly as designed — an uncoordinated file agent with shell
+access drifted outside its lane on the first trial, which the Strata arm is
+structurally incapable of doing. The round stopped after evidence flush at
+USD 0.81. This is a genuine experimental result, not a harness defect, and it
+stands.
+
+**Also fixed before any next round (observability, not semantics):** the live
+adapter swallowed the verifier's rejection message; round-1 diagnosis
+required code archaeology and round-2 diagnosis required reproducing from
+evidence. Team records now carry `verifierError` verbatim.
+
+**Not decided here:** whether to run round 3 under the same frozen seed
+(which schedules S first, so a repeat baseline scope violation would stop it
+at the same place — itself informative) is an operator budget decision. No
+result-dependent schedule mutation is permitted.
+
 ## 2026-07-17 — Live round 1 stopped by a verifier tree-shape defect; evidence preserved
 
 **Context:** The first approved live round (`claude-sonnet-5`, seed

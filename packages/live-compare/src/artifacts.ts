@@ -158,7 +158,9 @@ export const teamRecordSchema = z
     makespanMs: z.number().nonnegative(),
     totalAgentCostUsd: z.number().nonnegative(),
     failures: z.array(z.string()),
-    timeouts: z.array(z.string())
+    timeouts: z.array(z.string()),
+    /** The common verifier's exact rejection message when it failed. */
+    verifierError: z.string().optional()
   })
   .strict();
 
