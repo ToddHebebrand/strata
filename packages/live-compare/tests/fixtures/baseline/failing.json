@@ -1,0 +1,21 @@
+{
+  "description": "Task 2's session dies with no usable artifact; the failure is counted, its unchanged branch is still captured, and the integration agent runs and completes the work.",
+  "task-1": {
+    "edits": [
+      { "path": "src/types/user.ts", "find": "displayUser", "replace": "formatUser", "all": true }
+    ],
+    "outcome": { "numTurns": 6, "durationMs": 4000, "totalCostUsd": 0.21, "inputTokens": 900, "outputTokens": 300, "toolEvents": 9, "repairEdits": 0, "errors": [] }
+  },
+  "task-2": {
+    "throws": "provider crashed before producing a session artifact"
+  },
+  "integration": {
+    "ops": [
+      { "git": ["merge", "--no-edit", "task-1"] },
+      { "write": { "path": "src/lib/dateRange.ts", "content": "export function isWithinRange(date: Date, start: Date, end: Date): boolean {\n  return start <= date && date <= end;\n}\n" } },
+      { "git": ["add", "-A"] },
+      { "git": ["commit", "-m", "baseline: integration completes failed task work"] }
+    ],
+    "outcome": { "numTurns": 20, "durationMs": 17000, "totalCostUsd": 1.8, "inputTokens": 6000, "outputTokens": 1300, "toolEvents": 18, "repairEdits": 2, "errors": [] }
+  }
+}

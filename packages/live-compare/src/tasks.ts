@@ -218,20 +218,29 @@ export function scanCanonicalBoundary(
   return entries.sort((left, right) => left.path.localeCompare(right.path) || String(left.target).localeCompare(String(right.target)));
 }
 
+/** Exact registered Strata-arm prompt bytes for a task body. */
+export function strataTaskPrompt(taskBody: string): string {
+  return `Finish the assigned task and leave the team able to reach the shared success predicate.\n\n${taskBody}\n\n${STRATA_APPENDIX}`;
+}
+
+/** Exact registered baseline-arm prompt bytes for a task body. */
+export function baselineTaskPrompt(taskBody: string): string {
+  return `Finish the assigned task and leave the team able to reach the shared success predicate.\n\n${taskBody}\n\n${BASELINE_APPENDIX}`;
+}
+
 function assignment(
   role: TaskAssignment["role"],
   taskBody: string,
   intents: CoordinationIntent[]
 ): TaskAssignment {
-  const shared = `Finish the assigned task and leave the team able to reach the shared success predicate.\n\n${taskBody}`;
   return {
     role,
     taskBody,
     taskBodyBytes: Buffer.from(utf8.encode(taskBody)).toString("base64"),
     intents,
     promptHashes: {
-      strata: sha256(`${shared}\n\n${STRATA_APPENDIX}`),
-      baseline: sha256(`${shared}\n\n${BASELINE_APPENDIX}`)
+      strata: sha256(strataTaskPrompt(taskBody)),
+      baseline: sha256(baselineTaskPrompt(taskBody))
     }
   };
 }

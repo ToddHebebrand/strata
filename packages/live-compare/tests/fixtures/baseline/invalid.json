@@ -1,0 +1,25 @@
+{
+  "description": "Task 2 commits syntactically broken TypeScript; the capture preserves it byte-for-byte and the integration agent repairs it.",
+  "task-1": {
+    "edits": [
+      { "path": "src/types/user.ts", "find": "displayUser", "replace": "formatUser", "all": true }
+    ],
+    "outcome": { "numTurns": 6, "durationMs": 4000, "totalCostUsd": 0.21, "inputTokens": 900, "outputTokens": 300, "toolEvents": 9, "repairEdits": 0, "errors": [] }
+  },
+  "task-2": {
+    "edits": [
+      { "path": "src/lib/dateRange.ts", "find": "export function isWithinRange(date: Date", "replace": "export function isWithinRange((date: Date", "all": false }
+    ],
+    "outcome": { "numTurns": 9, "durationMs": 6000, "totalCostUsd": 0.3, "inputTokens": 1300, "outputTokens": 450, "toolEvents": 11, "repairEdits": 0, "errors": [] }
+  },
+  "integration": {
+    "ops": [
+      { "git": ["merge", "--no-edit", "task-1"] },
+      { "git": ["merge", "--no-edit", "task-2"] },
+      { "write": { "path": "src/lib/dateRange.ts", "content": "export function isWithinRange(date: Date, start: Date, end: Date): boolean {\n  return date >= start && date <= end;\n}\n" } },
+      { "git": ["add", "-A"] },
+      { "git": ["commit", "-m", "baseline: integration repairs invalid task output"] }
+    ],
+    "outcome": { "numTurns": 16, "durationMs": 13000, "totalCostUsd": 1.3, "inputTokens": 4600, "outputTokens": 950, "toolEvents": 14, "repairEdits": 1, "errors": [] }
+  }
+}

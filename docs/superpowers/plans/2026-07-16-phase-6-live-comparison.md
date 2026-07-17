@@ -586,14 +586,14 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 - Add deterministic fake-session fixtures under
   `packages/live-compare/tests/fixtures/baseline/`.
 
-- [ ] **Step 1: Add failing worktree/isolation tests.**
+- [x] **Step 1: Add failing worktree/isolation tests.**
 
   From a temp Git repository mirroring `examples/medium`, assert two clean task
   worktrees and a clean integration worktree start at the same commit, task
   sessions launch concurrently, neither sees the other branch, and task outputs
   are mechanically captured as standardized commits without repair.
 
-- [ ] **Step 2: Add failing integration-accounting tests.**
+- [x] **Step 2: Add failing integration-accounting tests.**
 
   Use a scripted integration agent to merge disjoint, conflicting, incomplete,
   and invalid branch results. Assert its full wall time, tokens, cost, tool
@@ -604,21 +604,21 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   registered 40 turns, 420,000 ms, and USD 4.00. Any per-trial bound drift must
   invalidate the manifest.
 
-- [ ] **Step 3: Add failing no-human and cleanup tests.**
+- [x] **Step 3: Add failing no-human and cleanup tests.**
 
   Reject dirty starting trees, interactive Git prompts, external/global Git
   configuration dependence, manual edits, missing event records, or cleanup
   that destroys evidence. Preserve failed trees and commits until artifact
   finalization.
 
-- [ ] **Step 4: Run RED.**
+- [x] **Step 4: Run RED.**
 
   ```bash
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
     pnpm --filter @strata/live-compare test -- baseline
   ```
 
-- [ ] **Step 5: Implement using injected session runners.**
+- [x] **Step 5: Implement using injected session runners.**
 
   Production live execution uses the same generic Agent SDK runner and model as
   Strata. Comparable task roles use identical bounds across arms; the
@@ -626,14 +626,14 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   inject deterministic task/integration sessions. The harness, not a model,
   creates worktrees and captures branch commits.
 
-- [ ] **Step 6: Run GREEN.**
+- [x] **Step 6: Run GREEN.**
 
   ```bash
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
     pnpm --filter @strata/live-compare test -- baseline
   ```
 
-- [ ] **Step 7: Commit.**
+- [x] **Step 7: Commit.**
 
   ```bash
   git add packages/live-compare

@@ -1,0 +1,22 @@
+{
+  "description": "Two task sessions touch different files; integration merges both branches cleanly with no repair edits.",
+  "task-1": {
+    "edits": [
+      { "path": "src/types/user.ts", "find": "displayUser", "replace": "formatUser", "all": true }
+    ],
+    "outcome": { "numTurns": 6, "durationMs": 4000, "totalCostUsd": 0.21, "inputTokens": 900, "outputTokens": 320, "toolEvents": 9, "repairEdits": 0, "errors": [] }
+  },
+  "task-2": {
+    "edits": [
+      { "path": "src/lib/dateRange.ts", "find": "return date >= start && date <= end;", "replace": "return start <= date && date <= end;", "all": false }
+    ],
+    "outcome": { "numTurns": 5, "durationMs": 3500, "totalCostUsd": 0.18, "inputTokens": 800, "outputTokens": 250, "toolEvents": 7, "repairEdits": 0, "errors": [] }
+  },
+  "integration": {
+    "ops": [
+      { "git": ["merge", "--no-edit", "task-1"] },
+      { "git": ["merge", "--no-edit", "task-2"] }
+    ],
+    "outcome": { "numTurns": 8, "durationMs": 6000, "totalCostUsd": 0.55, "inputTokens": 2100, "outputTokens": 400, "toolEvents": 5, "repairEdits": 0, "errors": [] }
+  }
+}
