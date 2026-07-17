@@ -617,7 +617,10 @@ fn semantic_name_resources<'a>(
     Ok(resources)
 }
 
-fn declaration_name(graph: &GraphGeneration, declaration: &NodeRecord) -> Result<Option<String>> {
+pub(crate) fn declaration_name(
+    graph: &GraphGeneration,
+    declaration: &NodeRecord,
+) -> Result<Option<String>> {
     if !is_supported_named_declaration_kind(&declaration.kind) {
         return Ok(None);
     }

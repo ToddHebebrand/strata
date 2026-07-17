@@ -178,6 +178,14 @@ const inspectedNodeSchema = z
   })
   .strict();
 
+const renamedSymbolSchema = z
+  .object({
+    nodeId: opaqueIdSchema,
+    previousName: boundedString(MAX_ID_BYTES),
+    currentName: boundedString(MAX_ID_BYTES)
+  })
+  .strict();
+
 const changeSetStateSchema = z.enum([
   "draft",
   "analyzing",
@@ -242,7 +250,13 @@ export const responseResultSchema = z.discriminatedUnion("type", [
       operationId: opaqueIdSchema.nullable(),
       affectedNodeIds: z.array(opaqueIdSchema).max(MAX_ARRAY_ITEMS),
       diagnostics: z.array(diagnosticSchema).max(MAX_DIAGNOSTICS),
-      publicationDigest: digestSchema.nullable()
+      publicationDigest: digestSchema.nullable(),
+      /**
+       * Net renamed-symbol transitions committed after this change set's base
+       * analysis. Non-empty only on needs_decision, where a fresh decision may
+       * have to rewrite intent content that names a renamed symbol.
+       */
+      renamedSymbols: z.array(renamedSymbolSchema).max(MAX_ARRAY_ITEMS)
     })
     .strict(),
   z.object({ type: z.literal("events"), events: z.array(eventSchema).max(MAX_ARRAY_ITEMS) }).strict(),

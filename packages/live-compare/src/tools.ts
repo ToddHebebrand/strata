@@ -117,7 +117,7 @@ function withFreshDecisionGuidance(result: CoordinationResult): unknown {
   return {
     ...result,
     guidance:
-      "A fresh decision is required. Use inspect_nodes only on a bounded set of stable IDs you already have, cancel_change_set for this obsolete change set, then begin, add intents to, and submit a new typed change set from current state."
+      "A fresh decision is required. renamedSymbols lists every symbol renamed since your change set's analysis, with its previous and current name; if any intent content (such as an add_parameter value) mentions a previous name, rewrite that text to the current name. Then cancel_change_set for this obsolete change set and begin, add intents to, and submit a new typed change set from current state. Use inspect_nodes only on a bounded set of stable IDs you already have."
   };
 }
 

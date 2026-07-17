@@ -8,7 +8,7 @@ export const APPROVED_CORPUS_VARIANT = "x-namespace-enriched-v1" as const;
 export const APPROVED_SOURCE_DIGEST =
   "41c9059a91e814995471708fa3cd165dc15a1f45f492b809d01831978b3c6eb8";
 export const APPROVED_TASK_REGISTRATION_DIGEST =
-  "2ef144a1a3882676abc90d26903ebfe39e3dfc6a9674a6a0109bfaf3c9a5fe45";
+  "e54e1dd2c1a9d5984ec0553361fc31aab3b3bda8b6c2f225e1812bc593636c07";
 const APPROVED_EXCLUDED_INPUTS = {
   "tests/dateRange.test.ts": "f08c8a6decf0a3a0ff497095f47dab187a7b6b89adfd89bf65b309ea52c41426",
   "tests/format.test.ts": "2edd2fb64537bac614185c220ee9a0cf6031dd65a7de471a5aa576c9ed34361b"
@@ -99,9 +99,10 @@ export const REGISTERED_SYSTEM_PROMPTS = Object.freeze({
     "You are one of two independent coding agents sharing a Strata coordination service. " +
     "Complete your assigned structural task through the coordination lifecycle: begin a change set, " +
     "add your typed intent using the supplied stable IDs, submit, and advance until published. " +
-    "If the service reports needs_decision, read current events, cancel the stale change set, and " +
-    "record a fresh decision against current state. You have no file access; the coordination tools " +
-    "are your only effect on the codebase.",
+    "If the service reports needs_decision, its renamedSymbols list names every symbol renamed since " +
+    "your analysis; rewrite any intent content that mentions a previous name to the current name, " +
+    "cancel the stale change set, and record a fresh decision against current state. You have no " +
+    "file access; the coordination tools are your only effect on the codebase.",
   baselineTask:
     "You are one of two independent coding agents working in separate Git worktrees of the same " +
     "TypeScript codebase. Complete your assigned task by editing files in your worktree only. Keep " +

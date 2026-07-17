@@ -7,6 +7,68 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — X protocol-usability iteration: needs_decision names renamed symbols
+
+**Problem (from the completed pilot):** X is the only flow whose fresh
+decision requires rewriting intent *content* — the add_parameter value
+`UserTypes.displayUser(user)` must become `UserTypes.formatUser(user)` after
+X1's rename publishes. The live X2 session never derived that rewrite within
+bounds: the needs_decision response told it *that* a decision was needed but
+nothing about *what changed*, and X2's registered stable IDs cover only
+`serialize`, so it could not even inspect the renamed declaration. Scripted
+choreography passed because the harness hard-coded the rewrite.
+
+**Decided (candidate 1 of the pilot's follow-on list, with the candidate-2
+prompt sharpening folded in):** the coordination service now names renamed
+symbols in the fresh-decision context. Mechanism, additive end to end:
+
+- **Publication capture:** each committed rename records
+  `{nodeId, fromName, toName}` on its `OperationRecord` (`renames`,
+  serde-default so pre-existing durable records parse unchanged). The
+  previous name is extracted in pure Rust from the pre-publication graph via
+  the same `declaration_name` tokenizer analysis already trusts; extraction
+  failure fails the publication closed.
+- **Surfacing:** a `needs_decision` change-set response carries
+  `renamedSymbols: [{nodeId, previousName, currentName}]` — the *net*
+  transitions folded over all operations committed after the change set's
+  `base_generation` (chains collapse, A→B→A round trips drop, output bounded
+  at 256, deterministic node-ID order). Empty on every other state; the
+  intent_needs_decision event is deliberately unchanged (the advance response
+  is the actionable surface; events remain lifecycle observations).
+- **Client guidance:** the `advance_change_set` fresh-decision guidance and
+  the registered strata system prompt now instruct: rewrite any intent
+  content that mentions a previous name to the current name before
+  resubmitting. Task bodies are untouched and remain byte-identical across
+  arms; the baseline arm's prompts are untouched.
+
+**Why not alternatives:** parsing old names out of the committed rename's
+`namespace:{container}:{name}` scope resource keys works but couples reporting
+to resource-key syntax; reconstructing historic graph state at needs_decision
+time re-derives what publication already knew. Recording the transition on
+the operation log matches "the operation log is canonical history."
+
+**Qualification:** the full deterministic X gate passes in both orders with
+the harness's fresh decision now derived *solely* from the needs_decision
+response (string substitution previousName→currentName; the hard-coded
+rewrite is gone, and the X1-first row asserts the exact surfaced payload).
+Rust: shared protocol conformance (fixtures gained golden + rejected rows for
+the field), publication capture and needs_decision surfacing proven through
+the real daemon (`cancellation_reports_published_and_needs_decision_truthfully`
+now pins `{User → Account}`), full `cargo test -p strata-kernel` green.
+TS: full live-compare suite green (117 tests). `pnpm -r test` remains at the
+accepted baseline: only @strata/agent's two documented stale replay-fixture
+failures (5073ecfb56151b41).
+
+**Registration impact:** the strata system-prompt hash and
+`APPROVED_TASK_REGISTRATION_DIGEST` are re-frozen
+(`e54e1dd2c1a9d5984ec0553361fc31aab3b3bda8b6c2f225e1812bc593636c07`); the
+design doc's safe-status-fields list is amended with a pointer here. Any live
+X retry requires a fresh operator approval file (new sourceCommit,
+verifierDigest, taskRegistrationDigest) — none has been created, and no live
+run was started. A comparability note for that future round: the Strata arm's
+system prompt differs from the pilot's by the fresh-decision clause, so an X
+retry is a new measurement, not a re-run.
+
 ## 2026-07-17 — Live round 6 completes the pilot: five matched wins, X fails live in both arms
 
 **Result** (`run-2026-07-17T05-43-24-572Z`, manifest at `04848d6`, arm-scoped

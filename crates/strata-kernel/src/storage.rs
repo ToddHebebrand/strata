@@ -1110,6 +1110,7 @@ mod tests {
                 kind: "RenameSymbol".into(),
                 reasoning: "exercise atomic rejection".into(),
                 affected_node_ids: vec!["node:clock".into()],
+                renames: Vec::new(),
             },
             ticket: TicketRecord {
                 ticket_id: "ticket:invalid".into(),

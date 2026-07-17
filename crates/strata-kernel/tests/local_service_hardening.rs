@@ -551,6 +551,11 @@ fn cancellation_reports_published_and_needs_decision_truthfully() {
         json!({"type":"advance_change_set","changeSetId":published_change}),
     );
     assert_eq!(published["result"]["state"], "published", "{published}");
+    assert_eq!(
+        published["result"]["renamedSymbols"],
+        json!([]),
+        "{published}"
+    );
     let cancel_published = send(
         &service,
         "cancel:published",
@@ -603,6 +608,18 @@ fn cancellation_reports_published_and_needs_decision_truthfully() {
     );
     assert_eq!(
         needs_decision["result"]["state"], "needs_decision",
+        "{needs_decision}"
+    );
+    // The fresh-decision context names the symbol renamed since gamma's base
+    // analysis, with its previous and current names, so stale intent content
+    // can be rewritten mechanically.
+    assert_eq!(
+        needs_decision["result"]["renamedSymbols"],
+        json!([{
+            "nodeId": USER_ID,
+            "previousName": "User",
+            "currentName": "Account",
+        }]),
         "{needs_decision}"
     );
     let cancel_needs = send(

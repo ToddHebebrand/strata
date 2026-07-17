@@ -17,7 +17,8 @@ const changeSet = {
   operationId: null,
   affectedNodeIds: [],
   diagnostics: [],
-  publicationDigest: null
+  publicationDigest: null,
+  renamedSymbols: []
 };
 
 function fakeClient(overrides: Partial<CoordinationClientApi> = {}): CoordinationClientApi {

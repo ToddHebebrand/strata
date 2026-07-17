@@ -116,7 +116,8 @@ describe("unprivileged coordination Unix-socket client", () => {
           operationId: null,
           affectedNodeIds: [],
           diagnostics: [],
-          publicationDigest: null
+          publicationDigest: null,
+          renamedSymbols: []
         })
       );
     });
@@ -155,7 +156,8 @@ describe("unprivileged coordination Unix-socket client", () => {
           operationId: null,
           affectedNodeIds: [],
           diagnostics: [],
-          publicationDigest: null
+          publicationDigest: null,
+          renamedSymbols: []
         })
       );
     });

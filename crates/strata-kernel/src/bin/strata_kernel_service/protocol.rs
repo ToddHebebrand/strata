@@ -245,6 +245,10 @@ pub(super) enum ResponseResult {
         affected_node_ids: Vec<String>,
         diagnostics: Vec<Diagnostic>,
         publication_digest: Option<String>,
+        /// Net renamed-symbol transitions committed after this change set's
+        /// base analysis. Populated only when `state` is `needs_decision`, so
+        /// a fresh decision can rewrite stale intent content to current names.
+        renamed_symbols: Vec<RenamedSymbol>,
     },
     Events {
         events: Vec<ServiceEvent>,
@@ -298,6 +302,14 @@ pub(super) enum ServiceEventKind {
     IntentFailed,
     LeaseExpired,
     ScopeExpanded,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct RenamedSymbol {
+    pub(super) node_id: String,
+    pub(super) previous_name: String,
+    pub(super) current_name: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -632,6 +644,7 @@ impl ResponseResult {
                 affected_node_ids,
                 diagnostics,
                 publication_digest,
+                renamed_symbols,
                 ..
             } => {
                 validate_string(change_set_id, MAX_ID_BYTES, false, "changeSetId")?;
@@ -639,6 +652,22 @@ impl ResponseResult {
                 validate_ids(affected_node_ids, "affectedNodeIds")?;
                 validate_diagnostics(diagnostics)?;
                 validate_optional_digest(publication_digest)?;
+                bounded_items(renamed_symbols.len(), 0, MAX_ARRAY_ITEMS, "renamedSymbols")?;
+                for renamed in renamed_symbols {
+                    validate_string(&renamed.node_id, MAX_ID_BYTES, false, "renamedSymbol nodeId")?;
+                    validate_string(
+                        &renamed.previous_name,
+                        MAX_ID_BYTES,
+                        false,
+                        "renamedSymbol previousName",
+                    )?;
+                    validate_string(
+                        &renamed.current_name,
+                        MAX_ID_BYTES,
+                        false,
+                        "renamedSymbol currentName",
+                    )?;
+                }
             }
             Self::Events { events } => {
                 bounded_items(events.len(), 0, MAX_ARRAY_ITEMS, "events")?;

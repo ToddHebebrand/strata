@@ -60,6 +60,7 @@ fn publication_at(
             kind: "RenameSymbol".into(),
             reasoning: "exercise fenced publication".into(),
             affected_node_ids: vec!["node:clock".into()],
+            renames: Vec::new(),
         },
         ticket: TicketRecord {
             ticket_id: format!("ticket:{idempotency_key}"),

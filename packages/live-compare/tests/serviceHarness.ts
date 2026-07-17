@@ -150,6 +150,8 @@ export async function runQualifiedServicePacket(input: {
     const eventKinds: string[] = [];
     let scopeExpandedBeforePublishAdvance = false;
     let staleX2State: string | undefined;
+    let staleRenamedSymbols: { nodeId: string; previousName: string; currentName: string }[] | undefined;
+    let derivedFreshValue: string | undefined;
     const first = await advanceUntilTerminal(clients[firstIndex]!, submitted[firstIndex].changeSetId);
     if (first.result.state !== "published") throw new Error(`${input.packetId} first assignment failed: ${JSON.stringify(first.result)}`);
     published.push(first.result);
@@ -159,9 +161,18 @@ export async function runQualifiedServicePacket(input: {
         throw new Error(`stale X2 must surface needs_decision after the rename: ${JSON.stringify(stale.result)}`);
       }
       staleX2State = stale.result.state;
+      staleRenamedSymbols = stale.result.renamedSymbols;
       await clients[1]!.request({ type: "cancel_change_set", changeSetId: submitted[1].changeSetId }, 120_000);
+      // The fresh decision derives the rewritten intent content purely from
+      // the needs_decision response: every previous name surfaced by the
+      // service is replaced with its current name. No out-of-band knowledge
+      // of the rename is used.
       const replacement = structuredClone(assignments[1]!) as TaskAssignment;
-      (replacement.intents[0] as Extract<CoordinationIntent, { type: "add_parameter" }>).value = "UserTypes.formatUser(user)";
+      const staleIntent = replacement.intents[0] as Extract<CoordinationIntent, { type: "add_parameter" }>;
+      for (const renamed of stale.result.renamedSymbols ?? []) {
+        staleIntent.value = staleIntent.value.split(renamed.previousName).join(renamed.currentName);
+      }
+      derivedFreshValue = staleIntent.value;
       submitted[1] = await beginAndSubmit(clients[1]!, replacement, "X2 fresh decision after rename");
     }
     if (input.packetId === "X" && firstIndex === 1) {
@@ -215,6 +226,8 @@ export async function runQualifiedServicePacket(input: {
       freshDecisions,
       secondAdvances: second.advances,
       staleX2State,
+      staleRenamedSymbols,
+      derivedFreshValue,
       publicationDigest: published.at(-1)!.publicationDigest,
       finalTreeDigest: verification.finalTreeDigest,
       finalSource

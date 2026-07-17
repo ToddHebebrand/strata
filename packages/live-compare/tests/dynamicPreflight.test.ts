@@ -90,6 +90,17 @@ describe("canonical boundary and dynamic stop-gate preflight", () => {
     expect(x1First.generation).toBe(2);
     expect(x1First.submittedStates).toEqual(["ready", "queued"]);
     expect(x1First.staleX2State).toBe("needs_decision");
+    // The needs_decision response itself names the rename, and the harness's
+    // fresh decision derived the rewritten value from that response alone.
+    const manifest = createQualifiedTaskManifest(corpusRoot);
+    expect(x1First.staleRenamedSymbols).toEqual([
+      {
+        nodeId: manifest.targets.displayUser.stableId,
+        previousName: "displayUser",
+        currentName: "formatUser"
+      }
+    ]);
+    expect(x1First.derivedFreshValue).toBe("UserTypes.formatUser(user)");
     expect(x1First.finalSource).toContain("displayLabel: string = UserTypes.formatUser(user)");
     expect(x1First.finalSource).not.toContain("displayUser");
 

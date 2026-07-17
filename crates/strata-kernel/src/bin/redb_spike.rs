@@ -130,6 +130,7 @@ fn make_rename_publication(args: &[String]) -> Result<()> {
             kind: "RenameSymbol".into(),
             reasoning: "real-corpus atomic publication proof".into(),
             affected_node_ids: affected_node_ids.clone(),
+            renames: Vec::new(),
         },
         ticket: TicketRecord {
             ticket_id: "ticket:redb-spike:user-to-account".into(),

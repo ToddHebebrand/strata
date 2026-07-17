@@ -18,8 +18,8 @@ use super::audit::{
 };
 use super::protocol::{
     CancelledState, ChangeSetState, Diagnostic, InspectedNode, Intent, LocalServiceProtocolContext,
-    LocalServiceRequest, LocalServiceResponse, NodeRelationship, RequestAction, ResponseResult,
-    ServiceEvent, ServiceEventKind, TicketState, WireU64, parse_request_frame,
+    LocalServiceRequest, LocalServiceResponse, NodeRelationship, RenamedSymbol, RequestAction,
+    ResponseResult, ServiceEvent, ServiceEventKind, TicketState, WireU64, parse_request_frame,
 };
 
 const MAX_INTENTS: usize = 256;
@@ -788,6 +788,22 @@ impl ServiceSession {
                 .map(|generation| self.kernel.generation_digest(generation))
                 .transpose()?,
         };
+        // A fresh decision must be recordable from this response alone: name
+        // the symbols renamed since the change set's base analysis so stale
+        // intent content can be rewritten to current names.
+        let renamed_symbols = if change_set.state == KernelChangeSetState::NeedsDecision {
+            self.kernel
+                .renamed_symbols_since(change_set.base_generation)?
+                .into_iter()
+                .map(|rename| RenamedSymbol {
+                    node_id: rename.node_id,
+                    previous_name: rename.from_name,
+                    current_name: rename.to_name,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(ResponseResult::ChangeSet {
             change_set_id: change_set.change_set_id,
             state: kernel_state(&change_set.state),
@@ -801,6 +817,7 @@ impl ServiceSession {
             ),
             diagnostics: diagnostic.into_iter().collect(),
             publication_digest,
+            renamed_symbols,
         })
     }
 
@@ -932,6 +949,7 @@ impl ResponseResultStateOverride for ResponseResult {
                 affected_node_ids,
                 diagnostics,
                 publication_digest,
+                renamed_symbols,
                 ..
             } => Self::ChangeSet {
                 change_set_id,
@@ -942,6 +960,7 @@ impl ResponseResultStateOverride for ResponseResult {
                 affected_node_ids,
                 diagnostics,
                 publication_digest,
+                renamed_symbols,
             },
             other => other,
         }

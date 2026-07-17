@@ -60,6 +60,19 @@ pub struct OperationRecord {
     pub kind: String,
     pub reasoning: String,
     pub affected_node_ids: Vec<String>,
+    /// Rename operations record the declaration's name transition so later
+    /// fresh-decision reporting can name renamed symbols without re-deriving
+    /// historic graph state. Absent on records written before this field.
+    #[serde(default)]
+    pub renames: Vec<OperationRename>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationRename {
+    pub node_id: String,
+    pub from_name: String,
+    pub to_name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

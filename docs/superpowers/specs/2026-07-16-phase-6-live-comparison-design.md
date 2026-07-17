@@ -190,10 +190,14 @@ The version-1 client API is intentionally small:
 The service may expose status fields already safe in the public coordination
 model: change-set ID/state, ticket state, graph generation, event sequence,
 operation ID, affected stable node IDs, bounded diagnostics, and final
-publication digest. It must not expose inferred resource keys, reservation
-sets, dependency clocks, scope fingerprints, service epochs, attempt IDs,
-claim handles, fences, candidate deltas, bridge requests, redb paths, or worker
-configuration.
+publication digest. A `needs_decision` change-set response additionally names
+the net renamed-symbol transitions (stable node ID, previous name, current
+name) committed since that change set's base analysis, so a fresh decision can
+rewrite stale intent content mechanically (amended 2026-07-17 after the live X
+failure; see decisions.md "X protocol-usability iteration"). It must not
+expose inferred resource keys, reservation sets, dependency clocks, scope
+fingerprints, service epochs, attempt IDs, claim handles, fences, candidate
+deltas, bridge requests, redb paths, or worker configuration.
 
 Client requests never contain a logical tick. The daemon assigns it. They also
 never contain scope, keys, clocks, reservations, dependency versions, policy,

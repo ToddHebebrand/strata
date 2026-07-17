@@ -47,6 +47,7 @@ fn publication(idempotency_key: &str) -> Publication {
             kind: "RenameSymbol".into(),
             reasoning: "rename the shared clock abstraction".into(),
             affected_node_ids: vec!["node:clock".into()],
+            renames: Vec::new(),
         },
         ticket: TicketRecord {
             ticket_id: "ticket:1".into(),
