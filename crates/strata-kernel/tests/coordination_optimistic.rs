@@ -778,6 +778,13 @@ fn every_dependency_clock_class_invalidates_affected_work_but_unrelated_work_reb
     let mut changed_user = user.clone();
     changed_user.payload.push_str("\n// clock publisher");
     let node_changes = vec![GraphChange::UpsertNode { node: changed_user }];
+    // Membership clocks are shape-only (spec 2026-07-17 Change 5): the
+    // children-bucket invalidator must alter sibling shape, not payload.
+    let reindexed_user = {
+        let mut node = user.clone();
+        node.child_index = node.child_index.map(|index| index + 100);
+        vec![GraphChange::UpsertNode { node }]
+    };
     let edge_changes = vec![GraphChange::DeleteReference {
         from_node_id: reference.from_node_id.clone(),
     }];
@@ -786,7 +793,7 @@ fn every_dependency_clock_class_invalidates_affected_work_but_unrelated_work_reb
         (
             "children",
             format!("children:{}", user.parent_id.as_deref().unwrap_or("root")),
-            node_changes.clone(),
+            reindexed_user,
         ),
         (
             "edge",

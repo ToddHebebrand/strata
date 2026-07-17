@@ -230,14 +230,18 @@ pub fn required_delta_authority(
         match change {
             GraphChange::UpsertNode { node } => {
                 add_node_write(&mut write_resources, &mut reservation_coverage, &node.id);
-                if let Some(parent_id) = current
-                    .node(&node.id)
-                    .and_then(|old_node| old_node.parent_id.as_deref())
-                {
-                    reservation_coverage.insert(node_key(parent_id));
-                }
-                if let Some(parent_id) = &node.parent_id {
-                    reservation_coverage.insert(node_key(parent_id));
+                // Payload-only upserts leave sibling shape untouched; node
+                // write authority alone carries them (spec Change 5).
+                if !super::resources::payload_only_upsert(current, node) {
+                    if let Some(parent_id) = current
+                        .node(&node.id)
+                        .and_then(|old_node| old_node.parent_id.as_deref())
+                    {
+                        reservation_coverage.insert(node_key(parent_id));
+                    }
+                    if let Some(parent_id) = &node.parent_id {
+                        reservation_coverage.insert(node_key(parent_id));
+                    }
                 }
             }
             GraphChange::DeleteNode { node_id } => {
@@ -592,6 +596,43 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("node:unrelated"), "{error}");
+    }
+
+    #[test]
+    fn payload_only_upsert_needs_no_parent_reservation() {
+        // A statement payload splice under a Module parent must be publishable
+        // without reserving the module node (spec Change 5): the node write
+        // authority alone carries it.
+        let graph = containment_graph();
+        let scope = containment_scope(); // reserves writable/direct/target, NOT module
+        let mut payload_edit = graph.node("writable").unwrap().clone();
+        payload_edit.payload = "payload-edited".into();
+        validate_delta_containment(
+            &graph,
+            &delta(vec![GraphChange::UpsertNode { node: payload_edit }]),
+            &scope,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn shape_changing_upsert_still_needs_the_parent_reservation() {
+        let graph = containment_graph();
+        let mut scope = containment_scope();
+        scope
+            .write_set
+            .push(ResourceVersion::new("node:fresh-stmt", "v").unwrap());
+        scope.reservation_keys.push("node:fresh-stmt".into());
+        let error = validate_delta_containment(
+            &graph,
+            &delta(vec![GraphChange::UpsertNode {
+                node: record("fresh-stmt", "ExpressionStatement", Some("module"), 5),
+            }]),
+            &scope,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("node:module"), "{error}");
     }
 
     #[test]

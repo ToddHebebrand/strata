@@ -181,6 +181,13 @@ fn rename_and_retarget_delta(graph: &GraphGeneration) -> GraphDelta {
         .unwrap();
     let declaration_identifier_id = name_identifier.id.clone();
     name_identifier.payload = serde_json::json!({ "text": "Account", "offset": 74 }).to_string();
+    // Membership is shape-only (spec 2026-07-17 Change 5): a payload edit no
+    // longer advances the parent's children bucket, so this monotonicity row
+    // moves the identifier to a fresh child index to keep every bucket class
+    // represented in one published delta.
+    // Identifier rows ship childIndex: null, so assign a concrete index
+    // rather than mapping over None.
+    name_identifier.child_index = Some(name_identifier.child_index.unwrap_or(0) + 100);
 
     let old_reference = graph
         .references_to(&declaration_identifier_id)
