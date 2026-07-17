@@ -7,6 +7,32 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — Live round 6 completes the pilot: five matched wins, X fails live in both arms
+
+**Result** (`run-2026-07-17T05-43-24-572Z`, manifest at `04848d6`, arm-scoped
+stop): D, M, R, S, and G all completed both arms green — Strata won every
+completed matched trial, 4–14× on cost and 4–8× on makespan, with D (bulk
+propagation) the widest margin as the historical taxonomy predicted. M passed
+live under its amended serialize-plus-fresh-decision semantics. X failed in
+**both** arms: the Strata X2 session never published (the only flow whose
+fresh decision requires rewriting intent content to the renamed member —
+scripted choreography passed deterministically, the live model could not
+derive the rewrite within bounds; a liveness/usability gap, not a
+correctness one — no partial or wrong publication occurred), and the baseline
+over-delivered beyond the registered delta a third time. Full table and
+claims scoping: `docs/spikes/2026-07-17-phase-6-live-pilot-results.md`.
+Six-round total spend: USD 9.40.
+
+**Standing:** the pilot is complete. The design's central question — can two
+independent live agents reach one shared green codebase through Strata
+without branches, worktrees, or manual merges — is answered yes for five of
+six scenarios at N=1, with zero Strata-arm correctness or authority failures
+across eleven live arms. Follow-ons, each requiring its own approval: an
+X protocol-usability iteration (name the current symbol in `needs_decision`
+context and/or sharpen fresh-decision prompt guidance, then a fresh X
+qualification), the validation-circle-narrowing kernel iteration, and any
+N=3 directional extension.
+
 ## 2026-07-17 — Live round 5 and the arm-scoped stop amendment
 
 **Round 5 result** (`run-2026-07-17T05-32-39-420Z`, manifest at `e9136de`):
