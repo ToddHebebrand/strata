@@ -1633,7 +1633,10 @@ fn real_worker_derives_wide_user_rename_without_node_authority_fields() {
         .iter()
         .filter(|resource| resource.resource_key.starts_with("node:"))
         .count();
-    assert_eq!(validation_node_count, 1065);
+    // Statement-granular circle (spec 2026-07-17): the rename pins its
+    // declaration statement and every referencing statement's subtree —
+    // 68 nodes — instead of the 1065-node module closure.
+    assert_eq!(validation_node_count, 68);
     assert!(
         scope
             .write_set
@@ -1666,14 +1669,14 @@ fn real_worker_derives_wide_user_rename_without_node_authority_fields() {
             .as_array()
             .unwrap()
             .len(),
-        1065
+        68
     );
     assert_eq!(
         facts["validationDependencyReferenceFromNodeIds"]
             .as_array()
             .unwrap()
             .len(),
-        558
+        28
     );
     assert_eq!(facts["writableStatementIds"].as_array().unwrap().len(), 11);
     assert_eq!(
