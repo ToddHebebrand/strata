@@ -208,11 +208,41 @@ fn user_delta(snapshot: &GraphSnapshot, payload: &str) -> GraphDelta {
         .find(|node| node.id == "fc98295bca9efc3e")
         .unwrap()
         .clone();
+    let new_name = payload
+        .split_whitespace()
+        .nth(2)
+        .expect("fixture payload declares `export interface <Name>`")
+        .to_owned();
+    let new_offset = payload.find(&new_name).unwrap() as u64;
     user.payload = payload.into();
+    // The 2026-07-17 publication capture derives rename transitions from the
+    // declaration name token and fails closed on incoherent graphs. A fixture
+    // rename must therefore move the name identifier together with the
+    // declaration payload; leaving the identifier at "User" strands every
+    // later rename capture against this declaration.
+    let mut identifier = snapshot
+        .nodes
+        .iter()
+        .find(|node| {
+            node.parent_id.as_deref() == Some("fc98295bca9efc3e")
+                && node.kind == "Identifier"
+                && serde_json::from_str::<serde_json::Value>(&node.payload)
+                    .ok()
+                    .and_then(|value| value.get("text")?.as_str().map(str::to_owned))
+                    .as_deref()
+                    == Some("User")
+        })
+        .expect("fixture has the User declaration name identifier")
+        .clone();
+    identifier.payload =
+        serde_json::json!({ "text": new_name, "offset": new_offset }).to_string();
     GraphDelta {
         schema_version: SCHEMA_VERSION,
         base_generation: 0,
-        changes: vec![GraphChange::UpsertNode { node: user }],
+        changes: vec![
+            GraphChange::UpsertNode { node: user },
+            GraphChange::UpsertNode { node: identifier },
+        ],
     }
 }
 
