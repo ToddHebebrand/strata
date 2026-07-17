@@ -189,6 +189,7 @@ pub(crate) fn intent_analysis_from_facts(
             SemanticFacts::AddParameter {
                 function_id: fact_function_id,
                 declaration_name_identifier_id,
+                content_dependency_declaration_ids,
                 direct_call_references,
                 writable_statement_ids,
                 arity_risk_references,
@@ -294,6 +295,9 @@ pub(crate) fn intent_analysis_from_facts(
                 &validation_dependency_node_ids,
                 &validation_dependency_reference_from_node_ids,
             )?;
+            for declaration_id in &content_dependency_declaration_ids {
+                scope.validate_content_declaration(declaration_id)?;
+            }
             scope.reserve(format!("symbol:{function_id}"));
         }
         _ => bail!("semantic fact kind does not match intent kind"),
@@ -474,6 +478,35 @@ impl<'a> ScopeBuilder<'a> {
     fn write_and_validate(&mut self, resource: ResourceVersion) {
         self.write_set.push(resource.clone());
         self.validation_set.push(resource);
+    }
+
+    /// Validation-only pins for an intent-content dependency (spec 2026-07-17
+    /// Changes 2/2a): the declaration node, its name identifier, its child
+    /// membership, and its semantic namespace/absence membership — observed,
+    /// never reserved or written, so independent siblings stay concurrent
+    /// while a rename that touches or merges into the name still drifts the
+    /// claim (`MateriallyChanged`) and its write-set clock bump invalidates
+    /// at publish.
+    fn validate_content_declaration(&mut self, declaration_id: &str) -> Result<()> {
+        let node = self.require_node(declaration_id)?.clone();
+        ensure!(
+            is_declaration(&node),
+            "content dependency {} is not a declaration",
+            node.id
+        );
+        self.validation_set.push(node_resource(&node)?);
+        self.validation_set
+            .push(children_resource(self.graph, &node.id)?);
+        let name = declaration_name_identifier(self.graph, &node)?.clone();
+        self.validation_set.push(node_resource(&name)?);
+        let text = identifier_payload(&name)?.text;
+        let container = node.parent_id.as_deref().unwrap_or("root").to_owned();
+        for semantic in
+            semantic_name_resources(self.graph, &container, &node.kind, [&text])?
+        {
+            self.validation_set.push(semantic);
+        }
+        Ok(())
     }
 
     fn reserve(&mut self, key: String) {
@@ -1099,6 +1132,7 @@ mod tests {
             arity_risk_statement_ids: vec!["risk-statement".into()],
             unresolved_reference_diagnostics: Vec::<BridgeDiagnostic>::new(),
             function_body_read_references: vec![],
+            content_dependency_declaration_ids: vec![],
             validation_dependency_node_ids: validation_nodes,
             validation_dependency_reference_from_node_ids: validation_edges,
         }
@@ -1226,6 +1260,103 @@ mod tests {
             DynamicExpansionPolicy::Requeue { max_expansions: 3 }
         );
         assert_eq!(durable_intent, durable_before);
+    }
+
+    fn merged_interface_graph() -> GraphGeneration {
+        let mut snapshot = graph(false).snapshot();
+        snapshot.nodes.extend([
+            node(
+                "shape-a-one",
+                "InterfaceDeclaration",
+                Some("module"),
+                Some(10),
+                "export interface A { x: number }",
+            ),
+            node(
+                "shape-a-one-name",
+                "Identifier",
+                Some("shape-a-one"),
+                None,
+                r#"{"text":"A","offset":17}"#,
+            ),
+            node(
+                "shape-a-two",
+                "InterfaceDeclaration",
+                Some("module"),
+                Some(11),
+                "export interface A { y: string }",
+            ),
+            node(
+                "shape-a-two-name",
+                "Identifier",
+                Some("shape-a-two"),
+                None,
+                r#"{"text":"A","offset":17}"#,
+            ),
+        ]);
+        GraphGeneration::from_snapshot(snapshot).unwrap()
+    }
+
+    fn with_content_dependencies(mut facts: SemanticFacts, ids: &[&str]) -> SemanticFacts {
+        if let SemanticFacts::AddParameter {
+            content_dependency_declaration_ids,
+            ..
+        } = &mut facts
+        {
+            *content_dependency_declaration_ids =
+                ids.iter().map(|id| (*id).to_owned()).collect();
+        }
+        facts
+    }
+
+    #[test]
+    fn content_dependencies_pin_namespace_membership_without_reserving() {
+        // Interface-merging regression (spec 2026-07-17 Change 2a, review
+        // finding 4): an addParameter whose typeText mentions `A` pins every
+        // merged declaration of A plus `namespace:module:A` — the exact key a
+        // concurrent rename B→A WRITES via semantic_name_resources — so the
+        // merge drifts this analysis at claim/publish. The pins are
+        // observations: reservations and the write set must stay identical.
+        let graph = merged_interface_graph();
+        let intent = add_parameter_intent(0);
+        let baseline =
+            intent_analysis_from_facts(&graph, &intent, add_parameter_facts(false)).unwrap();
+        let pinned = intent_analysis_from_facts(
+            &graph,
+            &intent,
+            with_content_dependencies(
+                add_parameter_facts(false),
+                &["shape-a-one", "shape-a-two"],
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(baseline.reservation_keys, pinned.reservation_keys);
+        assert_eq!(baseline.write_set, pinned.write_set);
+        let validation_keys: std::collections::BTreeSet<&str> = pinned
+            .validation_set
+            .iter()
+            .map(|resource| resource.resource_key.as_str())
+            .collect();
+        for key in [
+            "node:shape-a-one",
+            "node:shape-a-one-name",
+            "node:shape-a-two",
+            "node:shape-a-two-name",
+            "namespace:module:A",
+            "absence:InterfaceDeclaration:module:A",
+        ] {
+            assert!(validation_keys.contains(key), "missing {key}");
+        }
+
+        let error = intent_analysis_from_facts(
+            &graph,
+            &intent,
+            with_content_dependencies(add_parameter_facts(false), &["call-statement"]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("not a declaration"), "{error}");
     }
 
     #[test]

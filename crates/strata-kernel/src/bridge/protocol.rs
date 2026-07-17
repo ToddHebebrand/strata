@@ -711,6 +711,11 @@ pub(crate) enum SemanticFacts {
         arity_risk_statement_ids: Vec<String>,
         unresolved_reference_diagnostics: Vec<BridgeDiagnostic>,
         function_body_read_references: Vec<WireReference>,
+        /// Module-level declarations the intent's typeText/defaultValue will
+        /// reference once executed (spec 2026-07-17 Change 2). Default keeps
+        /// pre-narrowing analyzers parseable.
+        #[serde(default)]
+        content_dependency_declaration_ids: Vec<String>,
         validation_dependency_node_ids: Vec<String>,
         validation_dependency_reference_from_node_ids: Vec<String>,
     },
@@ -746,6 +751,7 @@ impl SemanticFacts {
             Self::AddParameter {
                 function_id,
                 declaration_name_identifier_id,
+                content_dependency_declaration_ids,
                 direct_call_references,
                 writable_statement_ids,
                 arity_risk_references,
@@ -775,6 +781,10 @@ impl SemanticFacts {
                 validate_reference_array(
                     "facts.functionBodyReadReferences",
                     function_body_read_references,
+                )?;
+                validate_id_array(
+                    "facts.contentDependencyDeclarationIds",
+                    content_dependency_declaration_ids,
                 )?;
                 validate_id_array(
                     "facts.validationDependencyNodeIds",
