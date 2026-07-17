@@ -430,20 +430,22 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 
 ## Task 5: Freeze task packets, common verification, and dynamic qualification
 
-> **Status 2026-07-16 (evening): BLOCKED at the M same-module gate.** The
-> formal deterministic requalification of `x-namespace-enriched-v1` froze the
-> variant (source digest matching the feasibility probe byte-for-byte), proved
-> generation-zero greenness and pre-enrichment stable-ID preservation, and
-> passed the boundary preflight, all verifier fail-closed rows, D/R/S/G in
-> both orders (D with zero fresh decisions; R/S/G recording fresh decisions
-> where the kernel refused stale generation-zero authority), and X in both
-> orders with externally observable `ScopeExpanded` before the publishing
-> advance and identical cross-order digests. M falsified its designed
-> concurrent-readiness clause: M2 queues behind the shared `formatTimestamp`
-> callee reference and needs a fresh decision after M1 publishes. Per the M
-> stop clause, execution stopped before Task 6 for operator direction; the
-> Task-5 working set remains uncommitted and the M gate test is red. No
-> live-model call occurred.
+> **Status 2026-07-16 (evening): COMPLETE under the operator-amended M
+> acceptance.** The formal deterministic requalification of
+> `x-namespace-enriched-v1` froze the variant (source digest matching the
+> feasibility probe byte-for-byte), proved generation-zero greenness and
+> pre-enrichment stable-ID preservation, and passed the boundary preflight,
+> all verifier fail-closed rows, D/R/S/G in both orders (D with zero fresh
+> decisions; R/S/G recording fresh decisions where the kernel refused stale
+> generation-zero authority), and X in both orders with externally observable
+> `ScopeExpanded` before the publishing advance and identical cross-order
+> digests. M first falsified its concurrent-readiness clause; a mechanism
+> probe proved the module-granular validation circle serializes even fully
+> independent same-module siblings, and the operator amended M to
+> serialize-plus-fresh-decision semantics (decisions.md 2026-07-16). The
+> amended M passes both orders with identical digests; the prior behavior is
+> pinned as a regression test to be flipped by the follow-on circle-narrowing
+> kernel iteration. No live-model call occurred.
 
 **Files:**
 
@@ -457,7 +459,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 - Modify root `package.json` only for a deterministic preflight command if
   useful.
 
-- [ ] **Step 1: Add failing task-manifest tests.**
+- [x] **Step 1: Add failing task-manifest tests.**
 
   Resolve D, M, R, S, X, and G targets from a fresh `examples/medium` ingest.
   Pin source digest, stable IDs, intent parameters, baseline locators,
@@ -474,7 +476,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   task, prompt, predicate, verifier, and final-state digest. Reject a manifest
   whose variant or digest differs from the approved replacement record.
 
-- [ ] **Step 2: Add failing common-verifier tests.**
+- [x] **Step 2: Add failing common-verifier tests.**
 
   Feed equivalent rendered Strata and filesystem baseline trees. Assert the
   same strict `src/**` TypeScript root-name set/options, registered per-packet
@@ -502,7 +504,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   only after mutation. Prove one failing generation-zero configuration stops
   qualification rather than becoming an arm failure.
 
-- [ ] **Step 3: Add the failing canonical-boundary preflight.**
+- [x] **Step 3: Add the failing canonical-boundary preflight.**
 
   Enumerate every textual occurrence and resolved reference to each D/M/R/S/X/G
   target outside the publishable `src/**` graph. Freeze path, target,
@@ -519,7 +521,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   these as the search result: change either file or add a new non-canonical
   target occurrence and prove the preflight detects the mismatch.
 
-- [ ] **Step 4: Add failing D/M/R/S/G deterministic tests through the service.**
+- [x] **Step 4: Add failing D/M/R/S/G deterministic tests through the service.**
 
   Use two scripted clients and both publication orders. Require one shared green
   final graph, correct operation-log actor/reasoning/generations, no lost
@@ -529,7 +531,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   publishes nothing while the ordered pair publishes once as one aggregate
   generation alongside the second client's disjoint rename.
 
-- [ ] **Step 5: Add the failing X stop-gate tests.**
+- [x] **Step 5: Add the failing X stop-gate tests.**
 
   On the exact ingest-derived `displayUser` and `serialize` IDs, run X2-first
   and X1-first. X2-first must publish X2 at generation 1, then expose
@@ -545,14 +547,14 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   `ScopeExpanded` externally observable; it must carry its own Rust/TypeScript
   protocol tests and the updated frozen protocol-v1 conformance fixture.
 
-- [ ] **Step 6: Run RED.**
+- [x] **Step 6: Run RED.**
 
   ```bash
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
     pnpm --filter @strata/live-compare test -- tasks verify dynamicPreflight
   ```
 
-- [ ] **Step 7: Implement manifests, verifier, and the approved X choreography.**
+- [x] **Step 7: Implement manifests, verifier, and the approved X choreography.**
 
   Rerun generation-zero verification and every D/M/R/S/X/G packet in both
   orders after freezing complete digests. If the formal replacement differs
@@ -560,14 +562,14 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   churns, or X requires changing operation semantics or adding a task-specific
   hook, stop and return for operator review. Do not substitute another task.
 
-- [ ] **Step 8: Run GREEN.**
+- [x] **Step 8: Run GREEN.**
 
   ```bash
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
     pnpm --filter @strata/live-compare test -- tasks verify dynamicPreflight
   ```
 
-- [ ] **Step 9: Commit.**
+- [x] **Step 9: Commit.**
 
   ```bash
   git add packages/live-compare examples/medium/src package.json \

@@ -7,6 +7,48 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-16 — Operator amends M: serialize-plus-fresh-decision, not within-module concurrency
+
+**Context:** The Task-5 M stop (entry below) presented three options. A
+follow-up mechanism probe settled the pivotal question: two appended
+same-module functions with **no** shared references and no shared referencing
+statements still submit `ready`/`queued` and return `needs_decision` after the
+first publishes. The serialization is fundamental to the current analyzer, not
+an artifact of the M pair's shared `formatTimestamp` callee.
+
+**Root cause:** `validationDependencies` in `packages/kernel-bridge/src/analyze.ts`
+pins every node of the seed's module plus all transitive dependency modules as
+validation dependencies. The graph is node-granular; the validation dependency
+circle is module-granular, because "valid" means the rendered modules still
+typecheck and tsc's unit is a module. Any same-module sibling publication
+therefore drifts a pinned dependency, and the kernel correctly refuses
+authority on the stale analysis.
+
+**Decided (operator):** Amend M's acceptance to the observed protocol
+semantics rather than change the kernel inside this experiment. M now proves:
+same-module operations serialize (`queued` at submit); the successor records
+exactly one fresh decision whose stable-ID typed intent resubmits
+byte-identically; both orders converge to identical publication and
+final-tree digests; the shared tree is green. The design's claims sections
+gain the corresponding supported claim and an explicit cannot-support line for
+within-module concurrent publication.
+
+**What was rejected:** narrowing the validation circle now (a kernel semantic
+change on the concurrency core sealed by today's acceptance gates, requiring
+the deterministic proofs to be redone before any live spend), and an M
+task/corpus redesign (the probe proves no same-module pair can pass the
+original clause under the current analyzer).
+
+**Follow-on:** the next kernel iteration narrows the circle to the statement
+subtrees an operation reads/writes plus the module import/export surface. The
+mechanism probe (independent same-module pair must go `ready`/`ready` and both
+publish with zero fresh decisions) is its acceptance test; today's pinned
+regression test documents current behavior and will be flipped deliberately in
+that iteration.
+
+**Revisit when:** that iteration lands, or any live trial shows fresh-decision
+overhead dominating the Strata arm's cost on same-module work.
+
 ## 2026-07-16 — Task-5 requalification: X passes deterministically; M trips its designed same-module gate
 
 **Context:** Deterministic TDD requalification of the approved

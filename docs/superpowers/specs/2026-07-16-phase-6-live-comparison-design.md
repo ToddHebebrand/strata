@@ -1,10 +1,11 @@
 # Phase-6 Live Multi-Agent Comparison Design
 
-**Status:** Deterministic Task-5 requalification BLOCKED at the M same-module
-gate. X requalified in both orders; D/R/S/G requalified with recorded
-fresh-decision choreography; M falsified its concurrent-readiness clause and
-awaits operator direction. No live-model execution is authorized by this
-document
+**Status:** Deterministic Task-5 requalification COMPLETE under the
+operator-amended M acceptance. X requalified in both orders with observable
+`ScopeExpanded`; D/R/S/G requalified; M requalified as serialize-plus-fresh-
+decision after its concurrent-readiness clause was falsified and amended by
+operator direction. Within-module concurrent publication is explicitly out of
+scope. No live-model execution is authorized by this document
 
 **Date:** 2026-07-16
 
@@ -295,10 +296,26 @@ same-module sibling validation drift. A discriminator run (rename in a
 different module that also calls `formatTimestamp`) also queued but published
 cleanly on reanalysis, isolating the two mechanisms. Both orders do reach one
 shared green generation-2 tree when the client records a fresh decision, but
-that is exactly the relabeling this clause forbids without review. The M gate
-test is left red; Task 6 must not begin until the operator selects an M
-amendment, a kernel scope-inference refinement with a new deterministic proof,
-or an M redesign/removal with full requalification.
+that is exactly the relabeling this clause forbids without review. Execution
+stopped for operator direction.
+
+**Operator resolution (2026-07-16): M acceptance amended.** A follow-up
+mechanism probe proved the serialization is fundamental to the current
+analyzer, not an artifact of the shared callee: two appended same-module
+functions with no shared references and no shared referencing statements also
+submit `ready`/`queued` and return `needs_decision` after the first publishes.
+The cause is `validationDependencies` in the kernel bridge, which pins every
+node of the seed's module and its transitive dependency modules — the graph is
+node-granular but the validation dependency circle is module-granular. The
+operator amended M's acceptance to the observed protocol semantics: M must
+prove same-module operations serialize (`queued` at submit), the successor
+records exactly one fresh decision whose stable-ID typed intent is resubmitted
+byte-identically, both orders converge to identical publication and final-tree
+digests, and the shared tree is green. M no longer claims within-module
+concurrent publication; that claim moves to a follow-on kernel iteration that
+narrows the validation circle to the statement subtrees the operation
+reads/writes plus the module import/export surface, with the mechanism probe
+as its acceptance test.
 
 ### R: reference-mediated shared symbol
 
@@ -777,7 +794,10 @@ If the deterministic gate and live trials pass, the evidence may support:
 - observed paired time and model-cost differences for D, M, R, S, X, and G
   under the exact model, prompts, bounds, corpus, and machine; and
 - observed baseline integration overhead and Strata coordination/requeue
-  behavior.
+  behavior, including the amended M semantics: same-module operations
+  serialize behind the module-grained validation dependency circle and the
+  successor converges via a mechanical fresh decision whose stable-ID typed
+  intent is resubmitted unchanged.
 
 ## Claims this experiment cannot support
 
@@ -797,6 +817,11 @@ It cannot establish:
   code: X is a preregistered post-falsification existence probe, both X tasks
   are single-site-class at generation zero, and X1 gains only one propagated
   reference after X2;
+- within-module concurrent publication: the analyzer pins entire module
+  subtrees (plus transitive dependency modules) as validation dependencies,
+  so same-module operations always serialize with a fresh decision regardless
+  of statement disjointness — narrowing that circle is a follow-on kernel
+  iteration, not a claim of this experiment;
 - whole-corpus or historical-test-suite greenness: success is limited to the
   frozen `src/**` TypeScript scope, registered Phase-6 behavioral fixtures, and
   exact task predicates because the shared historical fixtures encode other
