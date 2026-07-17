@@ -156,7 +156,8 @@ mod tests {
 
     use super::*;
     use crate::protocol::{
-        ChangeSetState, MAX_RESPONSE_FRAME_BYTES, ResponseResult, ServiceEvent, WireU64,
+        ChangeSetState, MAX_RESPONSE_FRAME_BYTES, ResponseResult, ServiceEvent, ServiceEventKind,
+        WireU64,
     };
 
     #[test]
@@ -165,6 +166,7 @@ mod tests {
             .map(|event| ServiceEvent {
                 sequence: WireU64::new(event + 1),
                 change_set_id: format!("change:{event}"),
+                kind: ServiceEventKind::IntentCommitted,
                 state: ChangeSetState::Published,
                 operation_id: None,
                 affected_node_ids: (0..64)
