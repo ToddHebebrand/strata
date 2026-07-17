@@ -107,6 +107,10 @@ describe("Phase-6 task qualification", () => {
         for (const target of assignment.baselineTargets) {
           expect(baselinePrompt).toContain(target.path);
         }
+        // Live rounds 2 and 4 proved the corpus's intentionally red
+        // historical test induces out-of-scope "fixes"; the baseline arm
+        // must be told the trap exists (decisions.md 2026-07-17).
+        expect(baselinePrompt).toContain("intentionally failing legacy tests");
         expect(createHash("sha256").update(strataPrompt).digest("hex")).toBe(assignment.promptHashes.strata);
         expect(createHash("sha256").update(baselinePrompt).digest("hex")).toBe(assignment.promptHashes.baseline);
       }

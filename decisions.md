@@ -7,6 +7,44 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — Live round 4: the red historical test induces baseline scope violations; prompts amended
+
+**Context:** Round 4 (`run-2026-07-17T05-11-48-289Z`, manifest at `ac0483a`)
+completed the first two matched trials before stopping at G-r1:
+
+- S-r1: Strata success USD 0.084 / 34s; baseline success USD 0.627 / 192s.
+- R-r1: Strata success USD 0.144 / 61s; baseline success USD 0.468 / 303s.
+- G-r1: Strata success USD 0.067 / 34s; baseline dispositive —
+  `unexpected source change outside packet scope: src/lib/dateRange.ts`,
+  the identical edit as round 2.
+
+**Root cause of the repeated violation, proved deterministically:**
+`tests/dateRange.test.ts` is the historical T05 acceptance test and is
+**intentionally red on the pristine corpus** (it demands half-open interval
+semantics the code does not implement); the Phase-6 verifier already excludes
+it as a frozen historical fixture. A baseline integration agent instructed to
+"leave one green tree" that runs `npm test` sees the planted red test and
+"fixes" `dateRange.ts` (`<=` → `<`) — an induced violation, not recklessness.
+The two arms had asymmetric exposure: the Strata arm cannot see or run tests;
+the baseline arm was invited to and then scored dispositively for responding
+to a red test it did not plant.
+
+**Decided:** amend the registered baseline prompts (task appendix and
+integration system prompt) to disclose that the historical suite contains
+intentionally failing legacy tests that are not the agent's to fix, and that
+out-of-scope changes fail the team; the integration prompt's "green tree"
+language now names src/** compilation explicitly. This is informational
+only — no material help, no corpus change, task bodies byte-identical across
+arms — and requires re-freezing prompt hashes and the registration digest.
+Rejected alternatives: fixing/removing the red test (corpus change requiring
+full requalification, and it destroys a historically meaningful fixture) and
+leaving the trap (indefensible scoring of induced behavior as agent failure).
+
+**Standing results:** the S-r1 and R-r1 matched trials are valid completed
+comparisons. Round 2's recorded verdict stands as an artifact but its
+interpretation is amended by this entry: the violation was induced by the
+experiment's materials. Cumulative spend across four rounds: USD 4.52.
+
 ## 2026-07-17 — Live round 3: lockfile exhaust misclassified; inventory exclusion extended
 
 **Context:** Round 3 (`run-2026-07-17T05-03-26-462Z`, manifest at `93ce348`)

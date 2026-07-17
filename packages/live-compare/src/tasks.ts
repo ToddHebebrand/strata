@@ -8,7 +8,7 @@ export const APPROVED_CORPUS_VARIANT = "x-namespace-enriched-v1" as const;
 export const APPROVED_SOURCE_DIGEST =
   "41c9059a91e814995471708fa3cd165dc15a1f45f492b809d01831978b3c6eb8";
 export const APPROVED_TASK_REGISTRATION_DIGEST =
-  "c792052fb3652c229640574ac140ee79febc917e07789daf41822edf6a031257";
+  "2ef144a1a3882676abc90d26903ebfe39e3dfc6a9674a6a0109bfaf3c9a5fe45";
 const APPROVED_EXCLUDED_INPUTS = {
   "tests/dateRange.test.ts": "f08c8a6decf0a3a0ff497095f47dab187a7b6b89adfd89bf65b309ea52c41426",
   "tests/format.test.ts": "2edd2fb64537bac614185c220ee9a0cf6031dd65a7de471a5aa576c9ed34361b"
@@ -91,7 +91,7 @@ export interface QualifiedTaskManifest {
 const utf8 = new TextEncoder();
 const FIXTURE_NAME = "phase6-invariant.mjs";
 const STRATA_APPENDIX = "Use only the supplied stable IDs and Strata coordination tools. Do not inspect files or coordination authority internals.";
-const BASELINE_APPENDIX = "Use the assigned Git worktree and normal file tools. Do not modify tests, configuration, or content outside src/**.";
+const BASELINE_APPENDIX = "Use the assigned Git worktree and normal file tools. Do not modify tests, configuration, or content outside src/**. The repository's historical test suite contains intentionally failing legacy tests; a failing pre-existing test is not yours to fix, and changing any file outside your assigned task scope fails the whole team.";
 
 /** Registered system prompts; one per session role class, frozen with the manifest. */
 export const REGISTERED_SYSTEM_PROMPTS = Object.freeze({
@@ -108,8 +108,10 @@ export const REGISTERED_SYSTEM_PROMPTS = Object.freeze({
     "the tree compiling. Do not modify tests or configuration.",
   baselineIntegration:
     "You are the integration agent for a two-branch team. Merge both captured task branches into " +
-    "your worktree, resolve conflicts, complete unfinished task work, and leave one green tree. Use " +
-    "normal file, shell, and Git tools."
+    "your worktree, resolve conflicts, complete unfinished task work, and leave one tree where the " +
+    "TypeScript in src/** compiles. Use normal file, shell, and Git tools. The repository's " +
+    "historical test suite contains intentionally failing legacy tests; a failing pre-existing test " +
+    "is not yours to fix, and changing any file outside the assigned tasks' scope fails the whole team."
 });
 
 function sha256(value: string | Uint8Array): string {
