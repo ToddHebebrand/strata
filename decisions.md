@@ -7,6 +7,105 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — Validation-circle narrowing: statement-granular coordination lands
+
+**Problem:** the operator-amended M (entry of 2026-07-16) deferred
+within-module concurrent publication to a follow-on kernel iteration whose
+acceptance test was the pinned mechanism probe: two appended same-module
+functions with no shared references submitted `ready`/`queued` and the
+successor returned `needs_decision` after the first published.
+
+**Root cause (four pinch points, none of them in the kernel's scheduler):**
+(1) the bridge's `validationDependencies` pinned every node of the seed's
+transitive module closure; (2) `add_validation_facts` reserved every one of
+those nodes; (3) `reserve_node_and_parent` reserved `node:{module}` for
+every module-level statement, which `required_delta_authority` demanded for
+every statement-payload upsert; (4) `children:{parent}` membership hashed
+full member records (payloads included) and its clock bumped on any child
+upsert, so both siblings shared a `children:{module}` dependency that either
+one's publish invalidated.
+
+**Decided (spec
+`docs/superpowers/specs/2026-07-17-validation-circle-narrowing-design.md`,
+independent Codex gpt-5.6-sol xhigh review GO-WITH-AMENDMENTS, all
+amendments folded in):**
+
+- **Change 1 — statement-granular validation dependencies.** Each seed pins
+  its enclosing module-level statement's full subtree plus the references
+  leaving it; the module closure and the per-analysis `ts.createProgram`
+  are gone (the live-compare suite runs roughly twice as fast).
+- **Changes 2/2a — intent-content pins.** `addParameter` resolves its
+  `typeText`/`defaultValue` names against the graph (bare identifiers,
+  named imports, namespace members; every same-named declaration — merged
+  interfaces included) and validation-pins each resolved declaration, its
+  name identifier, and its `namespace:`/`absence:` membership. This keeps
+  the X1-first `needs_decision` + `renamedSymbols` path alive (analysis
+  knows the rename drifted the pinned name before any candidate build) and
+  closes the review's interface-merging hole: a concurrent rename B→A
+  writes the same `namespace:{module}:A` key the observer pinned.
+- **Change 2b — semantic clocks bump from write-set keys only**, so an
+  observer's own publish cannot spuriously invalidate unrelated claims.
+- **Changes 3/4 — observations never reserve.** Validation facts and
+  content pins push versions without reservations; module parents are never
+  reserved; payload-only upserts (same parent, index, kind) need no parent
+  coverage at containment.
+- **Change 5 — membership means shape.** `children:{parent}` hashes ordered
+  `(id, kind, childIndex)` tuples; clocks and containment use the same
+  payload-only predicate. Structural insert/delete/reorder still conflicts
+  through the parent bucket, preserving the standing structural-ops
+  boundary.
+- **Change 6 — pinned-target endpoint coverage.** A brand-new reference
+  from a materialized identifier may satisfy target-endpoint containment
+  through an exact `node:{to}` read/validation pin (the review caught that
+  X2's candidate would otherwise fail containment once validation pins
+  stopped reserving). Retargeting and unpinned targets stay
+  reservation-gated.
+- **Daemon liveness:** `advance_change_set` on a queued change set now runs
+  a `reconsider_tickets` pass — a ticket requeued at claim time (dynamic
+  expansion) has no later transition to re-plan it once its sibling already
+  published.
+
+**Deliberate flips, each re-asserted:** the mechanism probe is now the
+acceptance test (both orders `ready`/`ready`, both publish, zero fresh
+decisions, identical final digests); M restores its original pre-amendment
+clause (concurrent publication, `freshDecisions` 0) — exactly the transfer
+the 2026-07-16 amendment anticipated; X submits `ready`/`ready` in both
+orders, with X2-first's expansion surfacing at X1's own claim (still
+externally observable before the publishing advance) and X1-first's
+`needs_decision`+`renamedSymbols` preserved byte-for-byte; the node-bridge
+wide-rename fixture pins 68 statement-subtree validation nodes instead of
+the 1065-node closure; `coordination_scope`'s payload-only parent-coverage
+row and the two payload-sensitive membership rows moved to shape-changing
+fixtures. **Preserved without edits:** D/R/S/G qualification rows, the
+same-symbol fresh-decision row, all recovery/sealing/lease suites, and the
+full bridge conformance suite (which gained golden and rejected rows for
+the new serde-default `contentDependencyDeclarationIds` field). A new
+kernel acceptance scenario proves same-module disjoint renames publish in
+both orders with both claims held, through the real Node bridge, onto a
+green projected tree.
+
+**Also fixed en route (pre-existing, disclosed):**
+`coordination_publication`'s `user_delta` renamed declaration payloads
+without their name identifiers; the 2026-07-17 publication capture fails
+closed on such incoherent graphs, so the feature-gated sweep had one red
+row at the accepted baseline (that session's gate ran `cargo test -p
+strata-kernel` without `--features coordination-test-api`). The fixture now
+renames coherently.
+
+**Standing constraint (the narrowed circle's contract):** any future intent
+that can change name resolution without rewriting the dependent statements
+(e.g. `add_import`, `move_declaration`, structural inserts that shadow)
+must extend validation pinning before joining the concurrent vocabulary.
+Within the current vocabulary (renameSymbol, addParameter) reference
+propagation closes the gap: every resolution-changing edit rewrites the
+statements it affects, including import statements.
+
+**Registration impact:** task bodies, prompts, and the registered strata
+system prompt are untouched; the analyzer, daemon, and harness changed, so
+any live retry needs a fresh operator approval file (new sourceCommit and
+recomputed verifier digest) as always. No live spend occurred; every gate
+in this iteration is deterministic and key-free.
+
 ## 2026-07-17 — X protocol-usability iteration: needs_decision names renamed symbols
 
 **Problem (from the completed pilot):** X is the only flow whose fresh

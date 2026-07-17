@@ -321,6 +321,18 @@ narrows the validation circle to the statement subtrees the operation
 reads/writes plus the module import/export surface, with the mechanism probe
 as its acceptance test.
 
+**Landed (2026-07-17):** the narrowing iteration shipped
+(`docs/superpowers/specs/2026-07-17-validation-circle-narrowing-design.md`
+and the decisions.md entry of the same date). The mechanism probe is now its
+acceptance test, M's original concurrent clause above is restored
+(`ready`/`ready`, zero fresh decisions, both orders digest-convergent), and
+X submits `ready`/`ready` with its X1-first `needs_decision` and X2-first
+observable expansion preserved. The import/export-surface pin named in the
+previous paragraph was deliberately dropped in design review: for the
+current intent vocabulary, reference propagation rewrites import statements
+of renamed symbols, so statement-level conflict detection already covers it,
+and intent-content pins cover graph-invisible expression dependencies.
+
 ### R: reference-mediated shared symbol
 
 - Agent R1: rename exported interface `User` to `Account` throughout the
