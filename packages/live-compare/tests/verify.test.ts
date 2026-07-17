@@ -69,6 +69,14 @@ describe("arm-neutral Phase-6 verifier", () => {
     writeFileSync(join(gitAndModules, "node_modules/x/index.js"), "module.exports = {};\n", "utf8");
     const report = await verifyPhase6Tree({ treeRoot: gitAndModules, manifest, packetId: "D", generationZero: true });
     expect(report.green).toBe(true);
+
+    // A git WORKTREE has .git as a gitdir-pointer FILE, not a directory.
+    // Live round 1 (2026-07-17, run-2026-07-17T04-40-47-222Z) stopped on
+    // exactly this shape; it must verify green.
+    const worktreeShaped = copyCorpus();
+    writeFileSync(join(worktreeShaped, ".git"), "gitdir: /elsewhere/worktrees/integration\n", "utf8");
+    const worktreeReport = await verifyPhase6Tree({ treeRoot: worktreeShaped, manifest, packetId: "S", generationZero: true });
+    expect(worktreeReport.green).toBe(true);
   }, 120_000);
 
   it("rejects noncanonical edits, unregistered source edits, and imprecise G defaults", async () => {

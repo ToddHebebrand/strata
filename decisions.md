@@ -7,6 +7,47 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — Live round 1 stopped by a verifier tree-shape defect; evidence preserved
+
+**Context:** The first approved live round (`claude-sonnet-5`, seed
+`pilot-seed-1`, approval of 2026-07-16, run
+`run-2026-07-17T04-40-47-222Z`) executed under the full guard. The S-r1
+Strata arm **succeeded live**: a production model drove the eight-tool
+coordination protocol — including the same-node fresh-decision path — to one
+shared green tree in 50 seconds at USD 0.13. This is the first live-model
+coordination proof on the kernel.
+
+**What stopped the round:** the S-r1 baseline arm was scored
+`invalid_final_code` and the round stopped dispositively after evidence
+flush, per the pre-registered rule. Post-hoc analysis proved the baseline's
+integration output was **correct** (`welcomeUser(user: User, excited:
+boolean = false)` in the preserved evidence tree); the verifier threw
+`tree file listing diverges (extra: [".git"])` because a git *worktree* has
+`.git` as a gitdir-pointer file, while the review-remediation inventory check
+only excluded `.git` directories. The defect was reproduced deterministically
+on an untouched corpus copy before any fix.
+
+**Decided:** Fix the inventory exclusion to cover `.git`/`node_modules`
+regardless of entry type, with a worktree-shaped regression row in the
+verifier suite. Per the design's rule — "a harness or verifier defect
+discovered after model output is preserved and stops the round; no silent
+rerun" — round 1 remains a stopped round with USD 0.83 total spend and its
+artifacts finalized. A fresh round requires a regenerated manifest (new
+source commit and verifier digest) and new operator approval. The S-r1
+baseline arm's taxonomy classification stands in round 1's frozen artifacts
+but is annotated here as a verifier infrastructure defect, not a model
+failure; no conclusions about either arm's S performance may be drawn from
+round 1 beyond the Strata arm's live protocol success.
+
+**Why the gate missed it:** the baseline suite never composed
+`verifyPhase6Tree` with real worktrees (fakes verified plain copies), and the
+verifier suite's `.git` row used a directory. The live adapter composed them
+for the first time. The regression row now encodes the worktree shape.
+
+**Revisit when:** round 2 runs; if any further tree-shape legitimacy question
+appears (e.g., agent-created node_modules during integration), classify
+explicitly rather than widening exclusions silently.
+
 ## 2026-07-16 — Operator amends M: serialize-plus-fresh-decision, not within-module concurrency
 
 **Context:** The Task-5 M stop (entry below) presented three options. A

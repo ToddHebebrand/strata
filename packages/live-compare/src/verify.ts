@@ -67,14 +67,16 @@ export function boundVerifierOutput(value: string): string {
   return Buffer.byteLength(value) <= OUTPUT_LIMIT ? value : Buffer.from(value).subarray(0, OUTPUT_LIMIT).toString("utf8");
 }
 
-const INVENTORY_EXCLUDED_DIRECTORIES = new Set([".git", "node_modules"]);
+// `.git` is a directory in a normal repository but a FILE in a git worktree
+// (a gitdir pointer), so the exclusion must apply regardless of entry type.
+const INVENTORY_EXCLUDED_ENTRIES = new Set([".git", "node_modules"]);
 
 function allTreeFiles(root: string): string[] {
   const result: string[] = [];
   const visit = (directory: string, prefix: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (prefix === "" && INVENTORY_EXCLUDED_ENTRIES.has(entry.name)) continue;
       if (entry.isDirectory()) {
-        if (prefix === "" && INVENTORY_EXCLUDED_DIRECTORIES.has(entry.name)) continue;
         visit(join(directory, entry.name), `${prefix}${entry.name}/`);
       } else {
         result.push(`${prefix}${entry.name}`);
