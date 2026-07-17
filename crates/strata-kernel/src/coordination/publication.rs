@@ -460,10 +460,11 @@ impl Kernel {
         delta.base_generation = graph.generation();
         super::validate_delta_containment(&graph, &delta, &fresh_scope)
             .context("rebased candidate delta is outside inferred scope")?;
+        // Write-set keys only: validation-set namespace pins are observations
+        // (spec 2026-07-17 Change 2b) and must not bump conflict clocks.
         let semantic_index_keys = fresh_scope
             .write_set
             .iter()
-            .chain(&fresh_scope.validation_set)
             .filter(|resource| {
                 resource.resource_key.starts_with("namespace:")
                     || resource.resource_key.starts_with("absence:")

@@ -1163,6 +1163,49 @@ fn concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original
 }
 
 #[test]
+fn validation_only_semantic_pins_do_not_bump_their_clocks() {
+    // Spec 2026-07-17 Change 2b: intent-content analysis observes namespace
+    // membership without writing it. Publication must bump semantic clocks
+    // only for write-set keys, or an observer's own publish would spuriously
+    // invalidate unrelated claims that pinned the same namespace.
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let mut scoped = analysis(&user_scope(&snapshot));
+    scoped.write_set.push(resource("namespace:test:Written"));
+    scoped
+        .validation_set
+        .push(resource("namespace:test:Written"));
+    scoped
+        .validation_set
+        .push(resource("namespace:test:Observed"));
+    let analyzer = SequencedAnalyzer::new(vec![scoped; 3]);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
+    let claim = begin_submit_claim(&kernel, "semantic-clocks", 0);
+    published(
+        kernel
+            .publish_claimed(
+                &claim,
+                &RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}")),
+                2,
+            )
+            .unwrap(),
+    );
+    let clocks = kernel
+        .test_resource_clocks(&BTreeSet::from([
+            "namespace:test:Written".to_owned(),
+            "namespace:test:Observed".to_owned(),
+        ]))
+        .unwrap();
+    assert_eq!(clocks["namespace:test:Written"], 1);
+    assert_eq!(
+        clocks["namespace:test:Observed"], 0,
+        "a namespace pin observed in the validation set must not bump on publish"
+    );
+}
+
+#[test]
 fn retry_after_a_later_disjoint_generation_returns_the_earlier_generation_and_digest() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("kernel.redb");
