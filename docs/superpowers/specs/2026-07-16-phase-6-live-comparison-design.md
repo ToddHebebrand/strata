@@ -1,8 +1,10 @@
 # Phase-6 Live Multi-Agent Comparison Design
 
-**Status:** X redesign approved after a credential-free production-daemon
-feasibility pass; deterministic Task-5 requalification is pending and no
-live-model execution is authorized by this document
+**Status:** Deterministic Task-5 requalification BLOCKED at the M same-module
+gate. X requalified in both orders; D/R/S/G requalified with recorded
+fresh-decision choreography; M falsified its concurrent-readiness clause and
+awaits operator direction. No live-model execution is authorized by this
+document
 
 **Date:** 2026-07-16
 
@@ -285,6 +287,19 @@ infers disjoint reservation scopes and can make both ready concurrently; if
 module-wide validation makes them overlap, stop and return for review rather
 than relabeling the scenario.
 
+**Verified Task-5 result (2026-07-16): STOPPED at this clause.** Through the
+production daemon, M2 submits `queued` behind M1 — both function bodies call
+`formatTimestamp`, and the shared callee reference lands in both inferred
+scopes — and after M1 publishes, M2's advance returns `needs_decision` from
+same-module sibling validation drift. A discriminator run (rename in a
+different module that also calls `formatTimestamp`) also queued but published
+cleanly on reanalysis, isolating the two mechanisms. Both orders do reach one
+shared green generation-2 tree when the client records a fresh decision, but
+that is exactly the relabeling this clause forbids without review. The M gate
+test is left red; Task 6 must not begin until the operator selects an M
+amendment, a kernel scope-inference refinement with a new deterministic proof,
+or an M redesign/removal with full requalification.
+
 ### R: reference-mediated shared symbol
 
 - Agent R1: rename exported interface `User` to `Account` throughout the
@@ -371,6 +386,17 @@ formal Task-5 qualification. Before Task 6, the committed harness must freeze
 the new variant and all affected digests, prove generation-zero greenness, run
 all D/M/R/S/X/G packets in both orders, and assert the externally observable
 `ScopeExpanded` ordering before X1 candidate construction.
+
+**Formal X requalification result (2026-07-16): PASSED.** The deterministic
+harness reproduces the probe exactly on the frozen variant (source digest
+`41c9059a…3c6eb8`): X2-first submits `ready`/`queued`, publishes X2 at
+generation 1, exposes `ScopeExpanded` followed by `intent_ready` through
+`read_events` before any X1 advance, and the next X1 advance publishes
+generation 2. X1-first returns stale X2 as `NeedsDecision` and a fresh
+decision publishes `UserTypes.formatUser(user)`. Both orders converge to
+identical publication and final-tree digests and pass the common verifier.
+Task 6 remains blocked by the separate M same-module stop recorded in the M
+section above.
 
 Whether an organic live trial actually takes the expanding ordering is recorded
 as `dynamic_scope_observed`. Absence of that event is not relabeled as proof of

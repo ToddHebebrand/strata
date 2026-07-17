@@ -7,6 +7,109 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-16 — Task-5 requalification: X passes deterministically; M trips its designed same-module gate
+
+**Context:** Deterministic TDD requalification of the approved
+`x-namespace-enriched-v1` variant, resuming Task 5 after the operator-approved
+X redesign. All runs were credential-free through the production Node bridge
+and Rust daemon.
+
+**What passed:**
+- The two corpus edits reproduce the feasibility probe exactly: the frozen
+  source digest is `41c9059a…3c6eb8`, byte-identical to the probe's recorded
+  abbreviated value. All 82 pre-enrichment semantic statement IDs survive
+  unchanged (see the trivia-gate entry below).
+- Generation-zero verification for all six packet configurations, the
+  canonical-boundary preflight, the verifier fail-closed rows, and the exact-X
+  allowed-delta rows (stale default, duplicate insertion, and out-of-stable-ID
+  insertion all rejected).
+- D, R, S, and G publish in both orders to one shared green generation-2
+  tree. D requires no fresh decision (asserted). R, S, and G record a fresh
+  decision wherever the kernel refuses stale generation-zero authority,
+  matching the committed full-key-free acceptance semantics ("the second
+  client must not receive authority from its stale G0 analysis"); the
+  identical stable-ID typed intents are resubmitted unchanged because a
+  sibling rename does not invalidate ID-addressed intents.
+- X passes both orders: X2-first exposes `ScopeExpanded` then `intent_ready`
+  through `read_events` before any X1 advance, and that next advance publishes
+  generation 2; X1-first returns stale X2 as `NeedsDecision` and a fresh
+  decision publishes `UserTypes.formatUser(user)`. Both orders converge to
+  identical publication and final-tree digests.
+
+**Found and fixed en route (harness/manifest only, no kernel change):**
+- `inspect_nodes` trips the sealed 256-child read bound on any large statement
+  (the corpus's `KvStore` class has 314 immediate children). Materialization
+  now inspects only operation-affected statements and reconstructs the rest
+  from registered generation-zero payloads.
+- The manifest resolved references against declaration statement IDs, but
+  ingest references target declaration-name identifiers, so re-exports such as
+  `export type { User }` in `src/index.ts` were invisibly outside allowed
+  scope. Target scope now collects references into the declaration subtree.
+- Boundary re-scans of copied or mutated trees cannot reproduce gen-zero
+  resolved-reference counts (stable IDs are physical-path-derived and renames
+  legitimately unresolve), so tree-level checks compare the textual inventory;
+  full resolution fidelity stays frozen in the manifest at the registered
+  root.
+
+**The M stop:** M2 (`eventLine` rename) submits `queued`, not `ready`, behind
+M1 (`logEvent` rename) although the sibling declarations are disjoint, and
+after M1 publishes, M2's advance returns `needs_decision`. A discriminator run
+showed a cross-module pair sharing only the `formatTimestamp` callee also
+queues but then publishes cleanly on reanalysis — so the queueing is driven by
+the shared callee reference in the inferred scope, while the fresh-decision
+demand is same-module sibling validation drift. The design's M clause requires
+proving "disjoint reservation scopes and … both ready concurrently; if
+module-wide validation makes them overlap, stop and return for review rather
+than relabeling the scenario." Both halves are falsified today. Execution
+stops before Task 6; the M gate test is left red and unrelabeled.
+
+**Operator options (none selected here):**
+1. Amend M's acceptance to the observed protocol semantics — queued behind the
+   shared callee, fresh-decision publication — reframing M as overlap handling
+   rather than a disjoint-concurrency proof. An explicit relabel requiring
+   design approval.
+2. Refine kernel scope inference/validation to statement-level resources so
+   sibling operations neither share the callee reservation nor drift — a
+   kernel semantic change requiring a new deterministic containment proof.
+3. Redesign or drop the M packet with full requalification, as was done for X.
+
+**Not committed:** the Task-5 production/test working set stays uncommitted
+pending direction, per the Step-7 stop rule. No credential, Agent SDK call, or
+spend was used.
+
+## 2026-07-16 — Task-5 stable-ID preservation gate covers semantic statements, not trivia
+
+**Context:** Task-5 requalification of `x-namespace-enriched-v1` freezes a
+pre-enrichment inventory of `examples/medium` top-level statement IDs and fails
+manifest creation if any pre-existing ID churns after the two approved corpus
+edits.
+
+**What was tried first:** A full inventory including trivia nodes. Appending
+the `displayUser` helper to `src/types/user.ts` reindexes that module's
+`EndOfFileTrivia` node from child 1 to child 2, and stable IDs derive from
+`(module path, child index, kind)`, so the trivia ID necessarily churns under
+any append. A gate that includes trivia can never pass for an appended-module
+corpus variant.
+
+**Decided:** The frozen inventory and the gate exclude trivia kinds
+(`*Trivia`). Trivia nodes carry no references, are never operation targets,
+and their reindexing under append is the already-disclosed sibling-position
+limitation (structural insert concurrency waits for stable logical IDs).
+All 82 pre-enrichment semantic statements — every declaration, import, and
+statement across 22 modules, including the `User` interface, `serialize`
+declaration, and the serializer import statement named in the feasibility
+probe — must keep byte-identical IDs, and do.
+
+**Why:** The alternative (freezing trivia too) would misreport the disclosed
+append as ID churn and permanently block the approved variant; silently
+pinning post-edit trivia IDs would hide the limitation instead of disclosing
+it. The narrower gate matches the probe's recorded claim exactly ("existing
+`User` and `serialize` declaration IDs and serializer import-statement ID were
+preserved") while still failing closed on any semantic-statement churn.
+
+**Revisit when:** stable logical IDs independent of sibling position land; the
+gate should then include trivia and the corpus-append caveat disappears.
+
 ## 2026-07-16 — Phase-6 X uses the preregistered `x-namespace-enriched-v1` corpus
 
 **Context:** The original Phase-6 X packet (`logEvent` rename concurrent with an

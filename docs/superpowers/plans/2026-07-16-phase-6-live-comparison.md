@@ -430,15 +430,20 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 
 ## Task 5: Freeze task packets, common verification, and dynamic qualification
 
-> **Status 2026-07-16: REDESIGN APPROVED; full requalification pending.** The
-> original `logEvent`/`eventLine` X pair correctly stopped as materially changed.
-> The operator selected task/corpus redesign and approved
-> `x-namespace-enriched-v1`. A credential-free production-daemon probe passed
-> the replacement `displayUser`/`serialize` X in both orders without a kernel
-> semantic change or test hook. Task 6 and later tasks still must not begin until
-> the exact committed variant, all affected digests, generation-zero verifier,
-> boundary inventory, and every D/M/R/S/X/G two-order row pass. Partial Task-5
-> production/test work remains uncommitted; no live-model call occurred.
+> **Status 2026-07-16 (evening): BLOCKED at the M same-module gate.** The
+> formal deterministic requalification of `x-namespace-enriched-v1` froze the
+> variant (source digest matching the feasibility probe byte-for-byte), proved
+> generation-zero greenness and pre-enrichment stable-ID preservation, and
+> passed the boundary preflight, all verifier fail-closed rows, D/R/S/G in
+> both orders (D with zero fresh decisions; R/S/G recording fresh decisions
+> where the kernel refused stale generation-zero authority), and X in both
+> orders with externally observable `ScopeExpanded` before the publishing
+> advance and identical cross-order digests. M falsified its designed
+> concurrent-readiness clause: M2 queues behind the shared `formatTimestamp`
+> callee reference and needs a fresh decision after M1 publishes. Per the M
+> stop clause, execution stopped before Task 6 for operator direction; the
+> Task-5 working set remains uncommitted and the M gate test is red. No
+> live-model call occurred.
 
 **Files:**
 

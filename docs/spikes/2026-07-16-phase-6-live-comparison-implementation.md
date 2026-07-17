@@ -248,3 +248,43 @@ shape (the `kind` field and its frozen conformance fixture), and assert that
 externally visible after X2 publication and before X1 candidate advance. No
 kernel semantic change or test hook is authorized. No live-model call or spend
 is authorized.
+
+## Formal Task-5 requalification result (2026-07-16 evening)
+
+The deterministic requalification ran credential-free through the production
+daemon on the frozen `x-namespace-enriched-v1` variant. The committed corpus
+edits reproduce the feasibility probe byte-for-byte (frozen source digest
+`41c9059a91e814995471708fa3cd165dc15a1f45f492b809d01831978b3c6eb8`). Passed:
+manifest freeze with fail-closed drift rows; the pre-enrichment stable-ID
+gate (all 82 semantic statements across 22 modules, trivia excluded per the
+decisions entry); generation-zero verification for all six packet
+configurations; the discovered (not hard-coded) boundary inventory with both
+X targets absent outside `src/**`; the exact-X allowed-delta rows; the
+extended protocol fixture in both the Rust and TypeScript conformance suites;
+D/R/S/G in both publication orders (D with zero fresh decisions, asserted;
+R/S/G recording fresh decisions where the kernel refused stale
+generation-zero authority, per the full-key-free row-2 semantics — the
+identical stable-ID typed intents resubmit unchanged across sibling renames);
+and X in both orders with `ScopeExpanded` then `intent_ready` observable
+through `read_events` before any X1 advance, the stale-X2 `NeedsDecision`
+path, and identical cross-order publication and final-tree digests.
+
+Three harness/manifest defects were found and fixed with no kernel change:
+materialization now inspects only operation-affected statements (the sealed
+256-child read bound rejects `inspect_nodes` on the corpus's 314-child
+`KvStore` class); target scope now collects references into the declaration
+subtree (declaration-only matching missed the `src/index.ts`
+`export type { User }` re-export that the kernel correctly rewrites); and
+tree-level boundary checks compare the root-independent textual inventory
+(resolved counts are physical-path- and generation-dependent).
+
+**Stopped at the M same-module gate.** M2 submits `queued` behind the shared
+`formatTimestamp` callee reference and returns `needs_decision` after M1
+publishes; a cross-module discriminator sharing only the callee also queued
+but published cleanly on reanalysis. The design's M clause forbids relabeling
+this without review. The M gate test is left red, the Task-5 working set
+remains uncommitted, and Task 6 remains blocked pending operator selection
+among: amending M's acceptance to the observed protocol semantics; a kernel
+scope-inference refinement with a new deterministic proof; or an M
+redesign/removal with full requalification. No credential, Agent SDK call, or
+spend was used.
