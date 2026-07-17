@@ -1,7 +1,12 @@
 # Validation-circle narrowing: statement-granular coordination
 
 **Date:** 2026-07-17
-**Status:** Draft — pending independent review
+**Status:** Approved with amendments — independent Codex (gpt-5.6-sol, xhigh,
+read-only, repo-grounded) review returned GO-WITH-AMENDMENTS; findings 2, 4,
+8, and 9 are folded in below as Changes 2a/2b/6 and the amended verification
+plan. The two confirmed-defect code claims (reference-endpoint containment,
+semantic clock bumps from the validation set) were re-verified against
+`coordination/analyzer.rs` and `coordination/publication.rs` before adoption.
 **Predecessors:** `2026-07-13-multi-agent-coordination-kernel-design.md`,
 `2026-07-16-phase-6-live-comparison-design.md`, decisions.md 2026-07-16
 ("Operator amends M") and 2026-07-17 ("X protocol-usability iteration").
@@ -105,9 +110,43 @@ enumerate the declaration, name, references, and referencing statements.
 - Every resolved declaration contributes its name identifier and enclosing
   statement subtree to the validation dependencies (validation-only — see
   Change 3; no reservations).
+- Resolution collects **every** module-level declaration matching the name
+  (merged interfaces, overloads), not a first match, and the resulting IDs
+  are code-unit sorted and deduped (review finding 8). Forms beyond bare
+  identifiers and single-member namespace access (qualified chains,
+  import-equals aliases) resolve conservatively: pin what resolves, and
+  rely on the fail-closed backstop for the rest.
 - Unresolved names pin nothing: the candidate build's tsc validation remains
   the fail-closed backstop, and `needs_decision` could not have named a
   symbol that never existed.
+
+### Change 2a — intent-content pins include semantic name membership
+(review finding 4)
+
+Reference propagation does **not** cover legal declaration merging: a sibling
+rename `B → A` that merges with an existing `interface A` changes the meaning
+of `A` for an `addParameter` whose `typeText` mentions it, without drifting
+any node the operation pinned and without statement overlap. The kernel
+already models this class of drift with `namespace:{container}:{name}` and
+`absence:{kind}:{container}:{name}` membership resources — but only the
+rename arm writes them. Therefore: every resolved intent-content symbol also
+**validation-pins** its `namespace:{container}:{name}` membership (and the
+kind-specific absence resource) for each container the symbol resolves in.
+The merging rename writes those same keys, so the concurrent pair is caught
+at claim/publish as `MateriallyChanged` (namespace drift is not
+membership-tolerated) and by the dependency clock. The interface-merging
+pair becomes a regression test.
+
+### Change 2b — semantic clock bumps come from the write set only
+(review finding 4, second half)
+
+`publish_claim` currently collects `semantic_index_keys` from the write set
+**and** the validation set before bumping clocks. Once `addParameter`
+validation-pins namespace keys, its own publication would spuriously bump
+namespace clocks it merely observed, invalidating unrelated claims. Restrict
+the collection to write-set semantic keys. Rename writes its name resources
+via `write_and_validate`, so its conflict-producing bumps are preserved
+byte-for-byte.
 
 This preserves the X flow's just-shipped protocol-usability mechanism
 (decisions.md 2026-07-17): in the X1-first order, X1's rename drifts the
@@ -154,7 +193,26 @@ operation is pinned individually as a `node:{id}` resource (read, write, or
 validation), and `node:{id}` clocks and versions still move on payload
 changes. Structural concurrency (insert/delete/move) still conflicts on the
 parent bucket exactly as before, preserving the standing hard boundary that
-structural ops wait for stable logical IDs.
+structural ops wait for stable logical IDs. Shape tuples are explicitly
+sorted by member id before hashing (review finding 8).
+
+### Change 6 — pinned-target endpoint coverage for new references
+(review finding 2)
+
+`required_delta_authority` demands **reservation** coverage for both
+endpoints of every upserted reference. X2's real candidate upserts a new
+edge from a materialized identifier to `displayUser`'s existing name
+identifier; today that passes only because the module closure *reserves* the
+target. With validation pins non-reserving (Change 3), X2 would reach
+candidate construction and then fail containment instead of publishing.
+Amendment: when the reference source is a materialized identifier under an
+authorized writable statement, the target endpoint may instead be satisfied
+by an **exact `node:{to}` pin in the read or validation set** — the pin's
+version (and clock) already guarantees the target has not drifted since
+analysis. Ordinary reference retargeting (source not materialized) remains
+reservation-gated. Positive (pinned-target X2-shaped) and negative
+(unpinned-target) containment rows are added beside the existing endpoint
+tests.
 
 ## Behavior changes (deliberate flips) and preservations
 
@@ -211,13 +269,23 @@ Preservations — each is re-asserted, not assumed:
 
 ## Verification plan
 
-1. RED first: flip `mMechanism.test.ts` to the target assertions and watch
-   it fail for the current reasons (queued, needs_decision).
-2. Land Changes 1–5 with unit coverage at each pinch point (bridge
-   validation-dependency shape; provider reservation rules; membership hash;
-   clock bump rule; containment rule), including a regression row proving a
-   *structural* upsert still bumps membership, still requires parent
-   coverage, and still conflicts.
+1. RED first (review finding 9): extend `probeSameModulePair` to run **both
+   publication orders**, materialize and verify the tree, and return
+   publication/final-tree digests plus the fresh-decision count; flip
+   `mMechanism.test.ts` to the full target assertions (ready/ready, both
+   publish, zero decisions, green, digest equality across orders) and watch
+   it fail for the current reasons. Add a kernel-side acceptance row driving
+   two disjoint same-module declarations through the real Node bridge with
+   both claims held before either publication.
+2. Land Changes 1–6 with unit coverage at each pinch point (bridge
+   validation-dependency shape; intent-content resolution incl. the
+   interface-merging regression; provider reservation rules; membership
+   hash; clock bump rule; containment rule incl. pinned-target endpoint
+   rows), including a regression row proving a *structural* upsert still
+   bumps membership, still requires parent coverage, and still conflicts.
+   Rewrite the two tests that deliberately relied on payload-sensitive
+   `children:*` versions (`coordination_resources.rs`,
+   `coordination_optimistic.rs`) to use shape-changing invalidators.
 3. Regenerate shared conformance fixtures (Rust + TS) — golden and rejected
    rows both.
 4. Full `cargo test -p strata-kernel` (including the ignored
