@@ -197,10 +197,16 @@ importers:
       '@strata/agent':
         specifier: workspace:*
         version: link:../agent
+      '@strata/ingest':
+        specifier: workspace:*
+        version: link:../ingest
       zod:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
+      '@strata/kernel-bridge':
+        specifier: workspace:*
+        version: link:../kernel-bridge
       '@types/node':
         specifier: ^22.15.29
         version: 22.19.19
