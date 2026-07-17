@@ -67,11 +67,43 @@ export function boundVerifierOutput(value: string): string {
   return Buffer.byteLength(value) <= OUTPUT_LIMIT ? value : Buffer.from(value).subarray(0, OUTPUT_LIMIT).toString("utf8");
 }
 
+const INVENTORY_EXCLUDED_DIRECTORIES = new Set([".git", "node_modules"]);
+
+function allTreeFiles(root: string): string[] {
+  const result: string[] = [];
+  const visit = (directory: string, prefix: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (prefix === "" && INVENTORY_EXCLUDED_DIRECTORIES.has(entry.name)) continue;
+        visit(join(directory, entry.name), `${prefix}${entry.name}/`);
+      } else {
+        result.push(`${prefix}${entry.name}`);
+      }
+    }
+  };
+  visit(root, "");
+  return result.sort();
+}
+
 function assertFrozenInputs(treeRoot: string, manifest: QualifiedTaskManifest): void {
   for (const [path, digest] of Object.entries(manifest.excludedInputs)) {
     if (sha256(readFileSync(join(treeRoot, path))) !== digest) {
       throw new Error(`excluded historical input ${path} changed`);
     }
+  }
+  for (const [path, digest] of Object.entries(manifest.frozenTreeFiles)) {
+    if (sha256(readFileSync(join(treeRoot, path))) !== digest) {
+      throw new Error(`frozen tree file ${path} changed`);
+    }
+  }
+  const registered = [...Object.keys(manifest.sourceFiles), ...Object.keys(manifest.frozenTreeFiles)].sort();
+  const actual = allTreeFiles(treeRoot);
+  if (JSON.stringify(actual) !== JSON.stringify(registered)) {
+    const extra = actual.filter((path) => !registered.includes(path));
+    const missing = registered.filter((path) => !actual.includes(path));
+    throw new Error(
+      `tree file listing diverges from the registered inventory (extra: ${JSON.stringify(extra)}, missing: ${JSON.stringify(missing)})`
+    );
   }
   const textualInventory = (entries: readonly QualifiedTaskManifest["boundary"][number][]) =>
     entries.map(({ path, target, textualOccurrenceCount, contentDigest, disposition }) =>

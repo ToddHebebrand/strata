@@ -8,7 +8,7 @@ export const APPROVED_CORPUS_VARIANT = "x-namespace-enriched-v1" as const;
 export const APPROVED_SOURCE_DIGEST =
   "41c9059a91e814995471708fa3cd165dc15a1f45f492b809d01831978b3c6eb8";
 export const APPROVED_TASK_REGISTRATION_DIGEST =
-  "e8dd8a78a94b5b7f5d6e1a0d284a7834d7b8c52a8c6c671fee5d6e583e60955e";
+  "c792052fb3652c229640574ac140ee79febc917e07789daf41822edf6a031257";
 const APPROVED_EXCLUDED_INPUTS = {
   "tests/dateRange.test.ts": "f08c8a6decf0a3a0ff497095f47dab187a7b6b89adfd89bf65b309ea52c41426",
   "tests/format.test.ts": "2edd2fb64537bac614185c220ee9a0cf6031dd65a7de471a5aa576c9ed34361b"
@@ -48,6 +48,10 @@ export interface TaskAssignment {
   taskBody: string;
   taskBodyBytes: string;
   intents: CoordinationIntent[];
+  /** Arm-equivalent target addressing: the Strata arm gets registered stable IDs. */
+  strataTargets: { name: string; stableId: string }[];
+  /** The baseline arm gets the same targets as file locations and symbol names. */
+  baselineTargets: { name: string; path: string }[];
   promptHashes: { strata: string; baseline: string };
 }
 
@@ -72,7 +76,15 @@ export interface QualifiedTaskManifest {
   greetNonCanonicalReferences: string[];
   sourceFiles: Record<string, { digest: string; text: string; statementIds: string[]; statementPayloads: string[] }>;
   excludedInputs: Record<string, string>;
+  /**
+   * Digest of every corpus file outside `src/`, including configuration
+   * (package.json, tsconfig.json, vitest.config.ts) and historical tests.
+   * The verifier rejects any change to these and any file not in the
+   * registered inventory.
+   */
+  frozenTreeFiles: Record<string, string>;
   boundary: BoundaryEntry[];
+  systemPromptHashes: { strata: string; baselineTask: string; baselineIntegration: string };
   registrationDigest: string;
 }
 
@@ -80,6 +92,25 @@ const utf8 = new TextEncoder();
 const FIXTURE_NAME = "phase6-invariant.mjs";
 const STRATA_APPENDIX = "Use only the supplied stable IDs and Strata coordination tools. Do not inspect files or coordination authority internals.";
 const BASELINE_APPENDIX = "Use the assigned Git worktree and normal file tools. Do not modify tests, configuration, or content outside src/**.";
+
+/** Registered system prompts; one per session role class, frozen with the manifest. */
+export const REGISTERED_SYSTEM_PROMPTS = Object.freeze({
+  strata:
+    "You are one of two independent coding agents sharing a Strata coordination service. " +
+    "Complete your assigned structural task through the coordination lifecycle: begin a change set, " +
+    "add your typed intent using the supplied stable IDs, submit, and advance until published. " +
+    "If the service reports needs_decision, read current events, cancel the stale change set, and " +
+    "record a fresh decision against current state. You have no file access; the coordination tools " +
+    "are your only effect on the codebase.",
+  baselineTask:
+    "You are one of two independent coding agents working in separate Git worktrees of the same " +
+    "TypeScript codebase. Complete your assigned task by editing files in your worktree only. Keep " +
+    "the tree compiling. Do not modify tests or configuration.",
+  baselineIntegration:
+    "You are the integration agent for a two-branch team. Merge both captured task branches into " +
+    "your worktree, resolve conflicts, complete unfinished task work, and leave one green tree. Use " +
+    "normal file, shell, and Git tools."
+});
 
 function sha256(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
@@ -218,29 +249,50 @@ export function scanCanonicalBoundary(
   return entries.sort((left, right) => left.path.localeCompare(right.path) || String(left.target).localeCompare(String(right.target)));
 }
 
-/** Exact registered Strata-arm prompt bytes for a task body. */
-export function strataTaskPrompt(taskBody: string): string {
-  return `Finish the assigned task and leave the team able to reach the shared success predicate.\n\n${taskBody}\n\n${STRATA_APPENDIX}`;
+/**
+ * Exact registered Strata-arm prompt bytes: identical task body, then the
+ * registered stable IDs the appendix refers to, then the arm appendix.
+ */
+export function strataTaskPrompt(
+  assignment: Pick<TaskAssignment, "taskBody" | "strataTargets">
+): string {
+  const targets = assignment.strataTargets
+    .map((target) => `- ${target.name}: ${target.stableId}`)
+    .join("\n");
+  return `Finish the assigned task and leave the team able to reach the shared success predicate.\n\n${assignment.taskBody}\n\nRegistered stable IDs:\n${targets}\n\n${STRATA_APPENDIX}`;
 }
 
-/** Exact registered baseline-arm prompt bytes for a task body. */
-export function baselineTaskPrompt(taskBody: string): string {
-  return `Finish the assigned task and leave the team able to reach the shared success predicate.\n\n${taskBody}\n\n${BASELINE_APPENDIX}`;
+/**
+ * Exact registered baseline-arm prompt bytes: identical task body, then the
+ * same targets as file locations, then the arm appendix.
+ */
+export function baselineTaskPrompt(
+  assignment: Pick<TaskAssignment, "taskBody" | "baselineTargets">
+): string {
+  const targets = assignment.baselineTargets
+    .map((target) => `- ${target.name} in ${target.path}`)
+    .join("\n");
+  return `Finish the assigned task and leave the team able to reach the shared success predicate.\n\n${assignment.taskBody}\n\nTarget locations:\n${targets}\n\n${BASELINE_APPENDIX}`;
 }
 
 function assignment(
   role: TaskAssignment["role"],
   taskBody: string,
-  intents: CoordinationIntent[]
+  intents: CoordinationIntent[],
+  targets: { name: string; stableId: string; path: string }[]
 ): TaskAssignment {
+  const strataTargets = targets.map(({ name, stableId }) => ({ name, stableId }));
+  const baselineTargets = targets.map(({ name, path }) => ({ name, path }));
   return {
     role,
     taskBody,
     taskBodyBytes: Buffer.from(utf8.encode(taskBody)).toString("base64"),
     intents,
+    strataTargets,
+    baselineTargets,
     promptHashes: {
-      strata: sha256(strataTaskPrompt(taskBody)),
-      baseline: sha256(baselineTaskPrompt(taskBody))
+      strata: sha256(strataTaskPrompt({ taskBody, strataTargets })),
+      baseline: sha256(baselineTaskPrompt({ taskBody, baselineTargets }))
     }
   };
 }
@@ -340,13 +392,19 @@ export function createQualifiedTaskManifest(corpusRootInput: string): QualifiedT
   const body = (text: string): string => `${text}\nApply the change only inside the registered canonical src/** projection. Do not modify tests, configuration, or other non-canonical content.`;
   const rename = (name: Phase6TargetName, newName: string): CoordinationIntent => ({ type: "rename_symbol", declarationId: targets[name].stableId, newName });
   const add = (target: "greet" | "serialize", name: string, typeText: string, value: string): CoordinationIntent => ({ type: "add_parameter", functionId: targets[target].stableId, name, typeText, position: 1, value });
+  const addressing = (...names: Phase6TargetName[]) =>
+    names.map((name) => ({
+      name,
+      stableId: targets[name].stableId,
+      path: targets[name].baselineLocator.path
+    }));
   const definitions: Record<Phase6PacketId, TaskAssignment[]> = {
-    D: [assignment("agent-1", body("Rename exported interface User to Account throughout the registered projection."), [rename("User", "Account")]), assignment("agent-2", body("Rename exported function formatTimestamp to renderTimestamp throughout the registered projection."), [rename("formatTimestamp", "renderTimestamp")])],
-    M: [assignment("agent-1", body("Rename logEvent to recordEvent throughout the registered projection."), [rename("logEvent", "recordEvent")]), assignment("agent-2", body("Rename eventLine to formatEventLine throughout the registered projection."), [rename("eventLine", "formatEventLine")])],
-    R: [assignment("agent-1", body("Rename exported interface User to Account throughout the registered projection."), [rename("User", "Account")]), assignment("agent-2", body("Add excited: boolean = false at position 1 of greet using one uniform value."), [add("greet", "excited", "boolean", "false")])],
-    S: [assignment("agent-1", body("Rename greet to welcomeUser throughout the registered projection."), [rename("greet", "welcomeUser")]), assignment("agent-2", body("Add excited: boolean = false at position 1 of the same greet declaration using one uniform value."), [add("greet", "excited", "boolean", "false")])],
-    X: [assignment("agent-1", body("Rename exported function displayUser to formatUser throughout the registered projection."), [rename("displayUser", "formatUser")]), assignment("agent-2", body("Add displayLabel: string = UserTypes.displayUser(user) at position 1 of serialize using one uniform value."), [add("serialize", "displayLabel", "string", "UserTypes.displayUser(user)")])],
-    G: [assignment("agent-1", body("As one ordered change set, rename User to Account and add account: Account = undefined as never at position 1 of greet."), [rename("User", "Account"), add("greet", "account", "Account", "undefined as never")]), assignment("agent-2", body("Rename exported function formatTimestamp to renderTimestamp throughout the registered projection."), [rename("formatTimestamp", "renderTimestamp")])]
+    D: [assignment("agent-1", body("Rename exported interface User to Account throughout the registered projection."), [rename("User", "Account")], addressing("User")), assignment("agent-2", body("Rename exported function formatTimestamp to renderTimestamp throughout the registered projection."), [rename("formatTimestamp", "renderTimestamp")], addressing("formatTimestamp"))],
+    M: [assignment("agent-1", body("Rename logEvent to recordEvent throughout the registered projection."), [rename("logEvent", "recordEvent")], addressing("logEvent")), assignment("agent-2", body("Rename eventLine to formatEventLine throughout the registered projection."), [rename("eventLine", "formatEventLine")], addressing("eventLine"))],
+    R: [assignment("agent-1", body("Rename exported interface User to Account throughout the registered projection."), [rename("User", "Account")], addressing("User")), assignment("agent-2", body("Add excited: boolean = false at position 1 of greet using one uniform value."), [add("greet", "excited", "boolean", "false")], addressing("greet"))],
+    S: [assignment("agent-1", body("Rename greet to welcomeUser throughout the registered projection."), [rename("greet", "welcomeUser")], addressing("greet")), assignment("agent-2", body("Add excited: boolean = false at position 1 of the same greet declaration using one uniform value."), [add("greet", "excited", "boolean", "false")], addressing("greet"))],
+    X: [assignment("agent-1", body("Rename exported function displayUser to formatUser throughout the registered projection."), [rename("displayUser", "formatUser")], addressing("displayUser")), assignment("agent-2", body("Add displayLabel: string = UserTypes.displayUser(user) at position 1 of serialize using one uniform value."), [add("serialize", "displayLabel", "string", "UserTypes.displayUser(user)")], addressing("serialize"))],
+    G: [assignment("agent-1", body("As one ordered change set, rename User to Account and add account: Account = undefined as never at position 1 of greet."), [rename("User", "Account"), add("greet", "account", "Account", "undefined as never")], addressing("User", "greet")), assignment("agent-2", body("Rename exported function formatTimestamp to renderTimestamp throughout the registered projection."), [rename("formatTimestamp", "renderTimestamp")], addressing("formatTimestamp"))]
   };
   const allowedTargets: Record<Phase6PacketId, Phase6TargetName[]> = {
     D: ["User", "formatTimestamp"], M: ["logEvent", "eventLine"], R: ["User", "greet"],
@@ -369,6 +427,10 @@ export function createQualifiedTaskManifest(corpusRootInput: string): QualifiedT
   if (JSON.stringify(excludedInputs) !== JSON.stringify(APPROVED_EXCLUDED_INPUTS)) {
     throw new Error("approved canonical boundary or excluded historical input digest changed");
   }
+  const frozenTreeFiles = Object.fromEntries(
+    filesBelow(corpusRoot, (path) => !path.startsWith(join(corpusRoot, "src") + sep))
+      .map((absolute) => [posix(relative(corpusRoot, absolute)), sha256(readFileSync(absolute))])
+  );
   const snapshot = toKernelSnapshot(batch);
   const graphDigest = sha256(JSON.stringify(snapshot));
   const boundary = scanCanonicalBoundary(corpusRoot, targets);
@@ -383,12 +445,26 @@ export function createQualifiedTaskManifest(corpusRootInput: string): QualifiedT
     greetNonCanonicalReferences: boundary.filter((entry) => entry.target === "greet").map((entry) => entry.path),
     sourceFiles,
     excludedInputs,
+    frozenTreeFiles,
     boundary,
+    systemPromptHashes: {
+      strata: sha256(REGISTERED_SYSTEM_PROMPTS.strata),
+      baselineTask: sha256(REGISTERED_SYSTEM_PROMPTS.baselineTask),
+      baselineIntegration: sha256(REGISTERED_SYSTEM_PROMPTS.baselineIntegration)
+    },
     registrationDigest: ""
   };
   manifest.registrationDigest = sha256(JSON.stringify({ ...manifest, registrationDigest: undefined }));
   assertApprovedTaskManifest(manifest);
-  return manifest;
+  return deepFreeze(manifest);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const entry of Object.values(value)) deepFreeze(entry);
+  }
+  return value;
 }
 
 export function assertApprovedTaskManifest(manifest: QualifiedTaskManifest): void {

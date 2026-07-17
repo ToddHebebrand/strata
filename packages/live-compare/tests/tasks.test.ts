@@ -7,8 +7,10 @@ import { buildValidateCandidate } from "@strata/kernel-bridge";
 import {
   APPROVED_CORPUS_VARIANT,
   assertApprovedTaskManifest,
+  baselineTaskPrompt,
   createQualifiedKernelSnapshot,
   createQualifiedTaskManifest,
+  strataTaskPrompt,
   type Phase6PacketId
 } from "../src/tasks.js";
 
@@ -91,6 +93,25 @@ describe("Phase-6 task qualification", () => {
         )).toBe(true);
       }
     }
+    for (const packet of Object.values(manifest.packets)) {
+      for (const assignment of packet.assignments) {
+        const intentIds = assignment.intents.map((intent: any) =>
+          intent.type === "rename_symbol" ? intent.declarationId : intent.functionId
+        );
+        const strataPrompt = strataTaskPrompt(assignment);
+        const baselinePrompt = baselineTaskPrompt(assignment);
+        for (const id of intentIds) {
+          expect(strataPrompt, `${packet.id} ${assignment.role} strata prompt must supply ${id}`).toContain(id);
+          expect(baselinePrompt.includes(id), `${packet.id} baseline prompt must not leak ${id}`).toBe(false);
+        }
+        for (const target of assignment.baselineTargets) {
+          expect(baselinePrompt).toContain(target.path);
+        }
+        expect(createHash("sha256").update(strataPrompt).digest("hex")).toBe(assignment.promptHashes.strata);
+        expect(createHash("sha256").update(baselinePrompt).digest("hex")).toBe(assignment.promptHashes.baseline);
+      }
+    }
+
     const x = manifest.packets.X;
     expect(x.assignments[0]!.intents).toEqual([
       { type: "rename_symbol", declarationId: manifest.targets.displayUser.stableId, newName: "formatUser" }

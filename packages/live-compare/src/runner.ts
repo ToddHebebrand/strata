@@ -80,8 +80,25 @@ export interface TeamSessionRecord {
   totalCostUsd: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  apiDurationMs: number;
+  toolCalls: number;
   terminal: string;
   failures: string[];
+}
+
+export interface CoordinationCounters {
+  freshDecisions: number;
+  requeues: number;
+  scopeExpansions: number;
+  publicationGenerations: number;
+}
+
+export interface IntegrationCounters {
+  mergeConflicts: number;
+  repairEdits: number;
+  changedPaths: number;
 }
 
 export interface TeamAccounting {
@@ -92,10 +109,17 @@ export interface TeamAccounting {
   numTurns: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  apiDurationMs: number;
+  toolCalls: number;
   budgetTerminals: number;
   taxonomyCounts: Partial<Record<FailureValue, number>>;
   dynamicScopeObserved: boolean;
   dispositiveStop: boolean;
+  verificationGreen: boolean | null;
+  coordination?: CoordinationCounters;
+  integration?: IntegrationCounters;
   sessions: TeamSessionRecord[];
 }
 
@@ -104,7 +128,11 @@ export function computeTeamAccounting(params: {
   teamWallMs: number;
   sessions: TeamSessionRecord[];
   verificationEndedMonoMs: number;
+  /** Result of the arm-neutral final verifier; null if the arm died before it ran. */
+  verification: { green: boolean } | null;
   kernelEventKinds: readonly string[];
+  coordination?: CoordinationCounters;
+  integration?: IntegrationCounters;
 }): TeamAccounting {
   const taxonomyCounts: Partial<Record<FailureValue, number>> = {};
   const count = (value: string): void => {
@@ -114,6 +142,7 @@ export function computeTeamAccounting(params: {
   for (const session of params.sessions) {
     for (const failure of session.failures) count(failure);
   }
+  if (params.verification !== null && !params.verification.green) count("invalid_final_code");
 
   const makespanMs = Math.max(
     params.verificationEndedMonoMs,
@@ -137,27 +166,41 @@ export function computeTeamAccounting(params: {
     numTurns: sum((session) => session.numTurns),
     inputTokens: sum((session) => session.inputTokens),
     outputTokens: sum((session) => session.outputTokens),
+    cacheReadInputTokens: sum((session) => session.cacheReadInputTokens),
+    cacheCreationInputTokens: sum((session) => session.cacheCreationInputTokens),
+    apiDurationMs: sum((session) => session.apiDurationMs),
+    toolCalls: sum((session) => session.toolCalls),
     budgetTerminals,
     taxonomyCounts,
     dynamicScopeObserved: params.kernelEventKinds.includes("scope_expanded"),
     dispositiveStop,
+    verificationGreen: params.verification?.green ?? null,
+    ...(params.coordination ? { coordination: params.coordination } : {}),
+    ...(params.integration ? { integration: params.integration } : {}),
     sessions: [...params.sessions]
   };
 }
 
+const RERUNNABLE_FAILURES: readonly string[] = ["provider_unavailable", "provider_rate_limited"];
+
 /**
- * One rerun is permitted only for a provider-level failure that produced no
- * assistant content, no tool call, no source/canonical mutation, and no
- * billable result. The original attempt remains an artifact.
+ * One rerun is permitted only for a provider outage or rate limit that
+ * produced no assistant content, no tool call, no source/canonical mutation,
+ * and no billable result. Every other failure class — including service
+ * crashes, harness invariants, and verifier failures — is never rerunnable.
+ * The original attempt remains an artifact.
  */
 export function permitProviderRerun(attempt: {
+  failureValue: string;
   assistantTextCount: number;
   toolCallCount: number;
   mutatedSource: boolean;
   billedUsd: number;
   priorRerunsForSession: number;
 }): boolean {
+  classifyFailure(attempt.failureValue);
   return (
+    RERUNNABLE_FAILURES.includes(attempt.failureValue) &&
     attempt.priorRerunsForSession === 0 &&
     attempt.assistantTextCount === 0 &&
     attempt.toolCallCount === 0 &&

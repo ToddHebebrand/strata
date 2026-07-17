@@ -72,9 +72,9 @@ function scriptedRunner(
       await barrier;
       if (request.role === "task-1") {
         observed.probes.otherBranchTipDuringSession = git(request.worktreePath, ["rev-parse", "task-2"]).trim();
-        observed.probes.otherWorktreeFileDuringSession = readFileSync(
-          join(request.worktreePath, "../task-2/src/lib/dateRange.ts"), "utf8"
-        );
+        observed.probes.siblingTraversalHitsOtherWorktree =
+          existsSync(join(request.worktreePath, "../task-2/src/lib/dateRange.ts")) ||
+          existsSync(join(request.worktreePath, "../../task-2/src/lib/dateRange.ts"));
       }
       if (script.throws) throw new Error(script.throws);
       for (const edit of script.edits ?? []) {
@@ -123,12 +123,18 @@ describe("matched multi-worktree baseline", () => {
     expect(captureParents).toEqual([result.baseCommit, result.baseCommit]);
     expect(result.integrationStartCommit).toBe(result.baseCommit);
 
+    const worktreeRequests = observed.requests.map((request) => request.worktreePath);
+    expect(new Set(worktreeRequests.map((path) => join(path, ".."))).size).toBe(worktreeRequests.length);
+    for (const path of worktreeRequests) {
+      expect(path.startsWith(result.repoRoot), `worktree ${path} must not live under the repo`).toBe(false);
+    }
+    expect(observed.probes.siblingTraversalHitsOtherWorktree).toBe(false);
+
     const order = result.events.filter((event) => event.type === "session_started" || event.type === "session_ended");
     expect(order[0]!.type).toBe("session_started");
     expect(order[1]!.type).toBe("session_started");
 
     expect(observed.probes.otherBranchTipDuringSession).toBe(result.baseCommit);
-    expect(observed.probes.otherWorktreeFileDuringSession).toContain("date >= start && date <= end");
 
     for (const capture of result.captures) {
       expect(capture.changed).toBe(true);
@@ -148,7 +154,9 @@ describe("matched multi-worktree baseline", () => {
     for (const request of taskRequests) {
       expect(request.bounds).toEqual({ maxTurns: 25, wallTimeMs: 240_000, maxBudgetUsd: 0.75 });
       const assignment = manifest.packets.D.assignments.find((entry) => entry.role === (request.role === "task-1" ? "agent-1" : "agent-2"))!;
-      expect(request.prompt).toBe(baselineTaskPrompt(assignment.taskBody));
+      expect(request.prompt).toBe(baselineTaskPrompt(assignment));
+      expect(request.prompt).toContain("Target locations:");
+      expect(/\b[0-9a-f]{16}\b/.test(request.prompt), "baseline prompt must not leak stable IDs").toBe(false);
     }
     const integration = observed.requests.find((request) => request.role === "integration")!;
     expect(integration.bounds).toEqual({ maxTurns: 40, wallTimeMs: 420_000, maxBudgetUsd: 4 });
@@ -260,10 +268,27 @@ describe("matched multi-worktree baseline", () => {
     expect(() => result.finalize()).toThrow(/missing event/);
   }, 60_000);
 
-  it("detects manual edits to the integration worktree before the integration session", async () => {
-    await expect(runScenario("disjoint", (scenario) => {
-      const edits = scenario["task-2"]!.edits!;
-      edits.push({ path: "../integration/tamper.txt", find: "", replace: "", all: false });
-    })).rejects.toThrow();
-  }, 60_000);
+  it("rejects a manifest whose registration digest drifted before any session", async () => {
+    const manifest = createQualifiedTaskManifest(corpusRoot);
+    const tampered = structuredClone(manifest) as any;
+    tampered.packets.D.allowedSourcePaths.push("src/store.ts");
+    const observed = { requests: [] as BaselineSessionRequest[], probes: {} };
+    await expect(runBaselineTrial({
+      corpusRoot,
+      workspaceRoot: workspace(),
+      manifest: tampered,
+      packetId: "D",
+      sessionRunner: scriptedRunner(loadScenario("disjoint"), observed),
+      bounds: { task: REGISTERED_TASK_ROLE_BOUNDS, integration: REGISTERED_INTEGRATION_ROLE_BOUNDS }
+    })).rejects.toThrow(/registration digest/);
+    expect(observed.requests).toHaveLength(0);
+  }, 30_000);
+
+  it("returns a deeply frozen manifest from qualification", () => {
+    const manifest = createQualifiedTaskManifest(corpusRoot);
+    expect(() => { (manifest as any).sourceDigest = "0".repeat(64); }).toThrow();
+    expect(() => { (manifest.packets.D as any).allowedSourcePaths.push("src/store.ts"); }).toThrow();
+    expect(() => { (manifest.targets.User as any).stableId = "0".repeat(16); }).toThrow();
+    expect(() => { (manifest.boundary as any).push(manifest.boundary[0]); }).toThrow();
+  });
 });

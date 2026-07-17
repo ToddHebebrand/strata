@@ -1,8 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { baselineTaskPrompt, type Phase6PacketId, type QualifiedTaskManifest } from "./tasks.js";
+import {
+  assertApprovedTaskManifest,
+  baselineTaskPrompt,
+  type Phase6PacketId,
+  type QualifiedTaskManifest
+} from "./tasks.js";
 
 /**
  * Registered role bounds. Comparable task roles use identical bounds across
@@ -155,6 +161,8 @@ export async function runBaselineTrial(params: BaselineTrialParams): Promise<Bas
     throw new Error("per-trial bound drift invalidates the registered manifest");
   }
 
+  assertApprovedTaskManifest(params.manifest);
+
   const workspaceRoot = resolve(params.workspaceRoot);
   if (readdirSync(workspaceRoot).length > 0) {
     throw new Error(`dirty starting tree rejected: workspace ${workspaceRoot} is not empty`);
@@ -184,10 +192,19 @@ export async function runBaselineTrial(params: BaselineTrialParams): Promise<Bas
   const baseCommit = git(repoRoot, ["rev-parse", "HEAD"]).trim();
   events.push({ type: "repo_created", detail: baseCommit, atMs: at() });
 
+  // Each worktree lives under its own unguessable temp root so a session with
+  // normal file/shell tools cannot traverse to a teammate's live worktree or
+  // the integration worktree by relative-path guessing.
+  const isolatedRoots: string[] = [];
+  const isolatedWorktree = (role: BaselineRole): string => {
+    const root = mkdtempSync(join(tmpdir(), `strata-phase6-${role}-`));
+    isolatedRoots.push(root);
+    return join(root, "wt");
+  };
   const worktrees: Record<BaselineRole, string> = {
-    "task-1": join(workspaceRoot, "task-1"),
-    "task-2": join(workspaceRoot, "task-2"),
-    integration: join(workspaceRoot, "integration")
+    "task-1": isolatedWorktree("task-1"),
+    "task-2": isolatedWorktree("task-2"),
+    integration: isolatedWorktree("integration")
   };
   for (const role of ["task-1", "task-2", "integration"] as const) {
     git(repoRoot, ["worktree", "add", "-b", role, worktrees[role], "main"]);
@@ -205,7 +222,7 @@ export async function runBaselineTrial(params: BaselineTrialParams): Promise<Bas
 
   const taskPromises = taskRoles.map((role, index) => {
     const assignment = assignments[index]!;
-    const prompt = baselineTaskPrompt(assignment.taskBody);
+    const prompt = baselineTaskPrompt(assignment);
     if (sha256(prompt) !== assignment.promptHashes.baseline) {
       throw new Error(`baseline prompt bytes diverge from the registered hash for ${role}`);
     }
@@ -320,6 +337,7 @@ export async function runBaselineTrial(params: BaselineTrialParams): Promise<Bas
         throw new Error("evidence must be preserved: finalize artifacts before cleanup");
       }
       rmSync(workspaceRoot, { recursive: true, force: true });
+      for (const root of isolatedRoots) rmSync(root, { recursive: true, force: true });
     }
   };
 }

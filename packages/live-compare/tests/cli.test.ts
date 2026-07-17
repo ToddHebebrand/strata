@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runDryRunCommand, runLiveCommand } from "../src/cli.js";
+import { computeVerifierDigest, runDryRunCommand, runLiveCommand } from "../src/cli.js";
 import { createQualifiedTaskManifest } from "../src/tasks.js";
 
 const corpusRoot = resolve(import.meta.dirname, "../../../examples/medium");
@@ -51,7 +51,9 @@ function approvalFor(manifest: ReturnType<typeof createQualifiedTaskManifest>, s
     projectedMaxUsd: 55,
     sourceCommit,
     sourceDigest: manifest.sourceDigest,
-    taskRegistrationDigest: manifest.registrationDigest
+    taskRegistrationDigest: manifest.registrationDigest,
+    verifierDigest: computeVerifierDigest(),
+    credentialSource: "ANTHROPIC_API_KEY"
   };
 }
 
@@ -96,6 +98,7 @@ describe("guarded live-comparison CLI", () => {
     const deps = {
       corpusRoot,
       currentSourceCommit: sourceCommit,
+      worktreeStatus: "",
       env: { ANTHROPIC_API_KEY: "test-credential" } as NodeJS.ProcessEnv,
       loadLiveAdapter: async () => async (plan: unknown) => { started.push(plan); }
     };
@@ -115,6 +118,7 @@ describe("guarded live-comparison CLI", () => {
     const deps = {
       corpusRoot,
       currentSourceCommit: sourceCommit,
+      worktreeStatus: "",
       env: { ANTHROPIC_API_KEY: "test-credential" } as NodeJS.ProcessEnv,
       loadLiveAdapter: async () => async (plan: unknown) => { started.push(plan); }
     };
@@ -130,6 +134,21 @@ describe("guarded live-comparison CLI", () => {
       { ...deps, env: {} as NodeJS.ProcessEnv }
     )).rejects.toThrow(/credential/);
 
+    await expect(runLiveCommand(
+      [...DRY_RUN_ARGS, `--approval=${writeApproval(good)}`, "--execute-live"],
+      { ...deps, env: { CLAUDE_CODE_OAUTH_TOKEN: "other-credential" } as NodeJS.ProcessEnv }
+    ), "wrong credential source must refuse").rejects.toThrow(/credential/);
+
+    await expect(runLiveCommand(
+      [...DRY_RUN_ARGS, `--approval=${writeApproval(good)}`, "--execute-live"],
+      { ...deps, env: { ANTHROPIC_API_KEY: "a", CLAUDE_CODE_OAUTH_TOKEN: "b" } as NodeJS.ProcessEnv }
+    ), "both credentials set must refuse").rejects.toThrow(/credential/);
+
+    await expect(runLiveCommand(
+      [...DRY_RUN_ARGS, `--approval=${writeApproval(good)}`, "--execute-live"],
+      { ...deps, worktreeStatus: " M packages/live-compare/src/verify.ts" }
+    ), "dirty worktree must refuse").rejects.toThrow(/clean/);
+
     const tampers: [string, unknown][] = [
       ["model", "claude-haiku-4-5"],
       ["provider", "other"],
@@ -143,14 +162,16 @@ describe("guarded live-comparison CLI", () => {
       ["projectedMaxUsd", 60],
       ["sourceCommit", "0".repeat(40)],
       ["sourceDigest", "0".repeat(64)],
-      ["taskRegistrationDigest", "0".repeat(64)]
+      ["taskRegistrationDigest", "0".repeat(64)],
+      ["verifierDigest", "0".repeat(64)],
+      ["credentialSource", "OTHER_VARIABLE"]
     ];
     for (const [field, value] of tampers) {
       const tampered = { ...good, [field]: value };
       await expect(
         runLiveCommand([...DRY_RUN_ARGS, `--approval=${writeApproval(tampered)}`, "--execute-live"], deps),
         `tampered ${field} must refuse`
-      ).rejects.toThrow(new RegExp(field));
+      ).rejects.toThrow(new RegExp(field.replace(/[A-Z]/g, (c) => c)));
     }
     expect(started).toHaveLength(0);
   }, 60_000);

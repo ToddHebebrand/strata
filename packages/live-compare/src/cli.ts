@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { REGISTERED_INTEGRATION_ROLE_BOUNDS, REGISTERED_TASK_ROLE_BOUNDS, type BaselineRoleBounds } from "./baseline.js";
 import { planRound, type RoundPlan } from "./runner.js";
 import { createQualifiedTaskManifest, APPROVED_CORPUS_VARIANT } from "./tasks.js";
@@ -132,8 +133,26 @@ export type LiveAdapter = (plan: RoundPlan) => Promise<void>;
 export interface LiveCommandDeps {
   corpusRoot: string;
   currentSourceCommit: string;
+  /** Output of `git status --porcelain`; must be empty for live execution. */
+  worktreeStatus: string;
   env: NodeJS.ProcessEnv;
   loadLiveAdapter: () => Promise<LiveAdapter>;
+}
+
+const CREDENTIAL_SOURCES = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] as const;
+
+/**
+ * Digest over the registered live-compare source files. Binds the operator
+ * approval to the exact verifier/harness code, independent of the source
+ * commit (which cannot see uncommitted modifications on its own).
+ */
+export function computeVerifierDigest(): string {
+  const sourceRoot = resolve(__dirname, __dirname.endsWith("dist") ? "../src" : ".");
+  const hash = createHash("sha256");
+  for (const name of readdirSync(sourceRoot).filter((entry) => entry.endsWith(".ts")).sort()) {
+    hash.update(name).update("\0").update(readFileSync(join(sourceRoot, name))).update("\0");
+  }
+  return hash.digest("hex");
 }
 
 function assertApprovalField(field: string, actual: unknown, expected: unknown): void {
@@ -179,10 +198,27 @@ export async function runLiveCommand(
     approval.taskRegistrationDigest,
     manifest.registrationDigest
   );
+  assertApprovalField("verifierDigest", approval.verifierDigest, computeVerifierDigest());
 
-  if (!deps.env.ANTHROPIC_API_KEY && !deps.env.CLAUDE_CODE_OAUTH_TOKEN) {
+  if (deps.worktreeStatus.trim().length > 0) {
     throw new Error(
-      "a supported credential variable (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) is required for live execution"
+      "live execution requires a clean worktree; uncommitted changes present:\n" + deps.worktreeStatus
+    );
+  }
+
+  const credentialSource = approval.credentialSource;
+  if (!CREDENTIAL_SOURCES.includes(credentialSource as (typeof CREDENTIAL_SOURCES)[number])) {
+    throw new Error(
+      `approval field credentialSource must be one of ${CREDENTIAL_SOURCES.join(", ")}`
+    );
+  }
+  const otherSource = CREDENTIAL_SOURCES.find((source) => source !== credentialSource)!;
+  if (!deps.env[credentialSource as string]) {
+    throw new Error(`the approved credential source ${credentialSource} is not set`);
+  }
+  if (deps.env[otherSource]) {
+    throw new Error(
+      `only the approved credential source may be set; unset ${otherSource} (do not run both)`
     );
   }
 
@@ -201,16 +237,25 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "run") {
+    const repoRoot = resolve(corpusRoot, "../..");
     const currentSourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: resolve(corpusRoot, "../.."),
+      cwd: repoRoot,
       encoding: "utf8"
     }).trim();
+    const worktreeStatus = execFileSync("git", ["status", "--porcelain"], {
+      cwd: repoRoot,
+      encoding: "utf8"
+    });
     const outcome = await runLiveCommand(rest, {
       corpusRoot,
       currentSourceCommit,
+      worktreeStatus,
       env: process.env,
       loadLiveAdapter: async () => {
-        throw new Error("live session adapter is gated behind the separately approved Task 9 live stage");
+        const { createLiveAdapter } = await import("./liveAdapter.js");
+        const model = rest.find((argument) => argument.startsWith("--model="))?.slice("--model=".length);
+        if (!model) throw new Error("missing required --model");
+        return createLiveAdapter({ model });
       }
     });
     process.exitCode = outcome.exitCode;

@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -32,8 +32,44 @@ describe("arm-neutral Phase-6 verifier", () => {
     const manifest = createQualifiedTaskManifest(corpusRoot);
     const tree = copyCorpus();
     writeFileSync(join(tree, "tests/format.test.ts"), "// changed\n", "utf8");
-    await expect(qualifyGenerationZero({ treeRoot: tree, manifest })).rejects.toThrow(/excluded historical input/);
+    await expect(qualifyGenerationZero({ treeRoot: tree, manifest })).rejects.toThrow(/excluded historical input|frozen tree file/);
   });
+
+  it("rejects configuration edits and unregistered files anywhere in the tree", async () => {
+    const manifest = createQualifiedTaskManifest(corpusRoot);
+
+    const configEdit = copyCorpus();
+    writeFileSync(
+      join(configEdit, "tsconfig.json"),
+      readFileSync(join(configEdit, "tsconfig.json"), "utf8").replace('"strict": true', '"strict": false'),
+      "utf8"
+    );
+    await expect(verifyPhase6Tree({ treeRoot: configEdit, manifest, packetId: "D", generationZero: true }))
+      .rejects.toThrow(/frozen tree file/);
+
+    const packageEdit = copyCorpus();
+    writeFileSync(join(packageEdit, "package.json"), "{}\n", "utf8");
+    await expect(verifyPhase6Tree({ treeRoot: packageEdit, manifest, packetId: "D", generationZero: true }))
+      .rejects.toThrow(/frozen tree file/);
+
+    const strayFile = copyCorpus();
+    writeFileSync(join(strayFile, "helper.mjs"), "export const cheat = true;\n", "utf8");
+    await expect(verifyPhase6Tree({ treeRoot: strayFile, manifest, packetId: "D", generationZero: true }))
+      .rejects.toThrow(/tree file listing/);
+
+    const strayInSrc = copyCorpus();
+    writeFileSync(join(strayInSrc, "src/extra.d.ts.bak"), "// stray\n", "utf8");
+    await expect(verifyPhase6Tree({ treeRoot: strayInSrc, manifest, packetId: "D", generationZero: true }))
+      .rejects.toThrow(/tree file listing|source root-name set/);
+
+    const gitAndModules = copyCorpus();
+    mkdirSync(join(gitAndModules, ".git"), { recursive: true });
+    writeFileSync(join(gitAndModules, ".git/HEAD"), "ref: refs/heads/main\n", "utf8");
+    mkdirSync(join(gitAndModules, "node_modules/x"), { recursive: true });
+    writeFileSync(join(gitAndModules, "node_modules/x/index.js"), "module.exports = {};\n", "utf8");
+    const report = await verifyPhase6Tree({ treeRoot: gitAndModules, manifest, packetId: "D", generationZero: true });
+    expect(report.green).toBe(true);
+  }, 120_000);
 
   it("rejects noncanonical edits, unregistered source edits, and imprecise G defaults", async () => {
     const manifest = createQualifiedTaskManifest(corpusRoot);

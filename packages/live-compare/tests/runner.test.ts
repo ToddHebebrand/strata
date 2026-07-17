@@ -17,6 +17,10 @@ const session = (overrides: Record<string, unknown> = {}) => ({
   totalCostUsd: 0.2,
   inputTokens: 900,
   outputTokens: 300,
+  cacheReadInputTokens: 4_000,
+  cacheCreationInputTokens: 1_200,
+  apiDurationMs: 22_000,
+  toolCalls: 9,
   terminal: "success",
   failures: [] as string[],
   ...overrides
@@ -57,6 +61,7 @@ describe("accounting, failure taxonomy, and deadlines", () => {
         session({ sessionId: "s3", role: "integration", startedMonoMs: 260_000, endedMonoMs: 640_000, totalCostUsd: 2.9, numTurns: 22 })
       ],
       verificationEndedMonoMs: 830_000,
+      verification: { green: true },
       kernelEventKinds: []
     });
     expect(accounting.makespanMs).toBe(830_000);
@@ -66,6 +71,41 @@ describe("accounting, failure taxonomy, and deadlines", () => {
     expect(accounting.status).toBe("failed");
     expect(accounting.dispositiveStop).toBe(false);
     expect(accounting.sessions).toHaveLength(3);
+    expect(accounting.cacheReadInputTokens).toBe(3 * 4_000);
+    expect(accounting.cacheCreationInputTokens).toBe(3 * 1_200);
+    expect(accounting.apiDurationMs).toBe(3 * 22_000);
+    expect(accounting.toolCalls).toBe(3 * 9);
+    expect(accounting.verificationGreen).toBe(true);
+  });
+
+  it("fails the arm when the common verifier fails, dispositively", () => {
+    const accounting = computeTeamAccounting({
+      arm: "strata",
+      teamWallMs: 900_000,
+      sessions: [session()],
+      verificationEndedMonoMs: 200_000,
+      verification: { green: false },
+      kernelEventKinds: []
+    });
+    expect(accounting.verificationGreen).toBe(false);
+    expect(accounting.taxonomyCounts.invalid_final_code).toBe(1);
+    expect(accounting.status).toBe("failed");
+    expect(accounting.dispositiveStop).toBe(true);
+  });
+
+  it("records coordination and integration counters when provided", () => {
+    const accounting = computeTeamAccounting({
+      arm: "strata",
+      teamWallMs: 900_000,
+      sessions: [session()],
+      verificationEndedMonoMs: 100_000,
+      verification: { green: true },
+      kernelEventKinds: ["scope_expanded"],
+      coordination: { freshDecisions: 1, requeues: 0, scopeExpansions: 1, publicationGenerations: 2 },
+      integration: { mergeConflicts: 1, repairEdits: 2, changedPaths: 3 }
+    });
+    expect(accounting.coordination).toEqual({ freshDecisions: 1, requeues: 0, scopeExpansions: 1, publicationGenerations: 2 });
+    expect(accounting.integration).toEqual({ mergeConflicts: 1, repairEdits: 2, changedPaths: 3 });
   });
 
   it("flags team timeout, dispositive stop, and dynamic scope observation", () => {
@@ -74,6 +114,7 @@ describe("accounting, failure taxonomy, and deadlines", () => {
       teamWallMs: 900_000,
       sessions: [session({ endedMonoMs: 400_000 })],
       verificationEndedMonoMs: 950_000,
+      verification: { green: true },
       kernelEventKinds: []
     });
     expect(timedOut.taxonomyCounts.team_timeout).toBe(1);
@@ -84,6 +125,7 @@ describe("accounting, failure taxonomy, and deadlines", () => {
       teamWallMs: 900_000,
       sessions: [session({ failures: ["lost_update"], terminal: "failure" })],
       verificationEndedMonoMs: 100_000,
+      verification: { green: true },
       kernelEventKinds: ["intent_committed"]
     });
     expect(dispositive.dispositiveStop).toBe(true);
@@ -93,6 +135,7 @@ describe("accounting, failure taxonomy, and deadlines", () => {
       teamWallMs: 900_000,
       sessions: [session()],
       verificationEndedMonoMs: 100_000,
+      verification: { green: true },
       kernelEventKinds: ["intent_ready", "scope_expanded", "intent_committed"]
     });
     expect(dynamic.dynamicScopeObserved).toBe(true);
@@ -101,6 +144,7 @@ describe("accounting, failure taxonomy, and deadlines", () => {
 
   it("permits exactly one zero-output provider rerun and preserves the attempt", () => {
     const dead = {
+      failureValue: "provider_unavailable",
       assistantTextCount: 0,
       toolCallCount: 0,
       mutatedSource: false,
@@ -108,11 +152,16 @@ describe("accounting, failure taxonomy, and deadlines", () => {
       priorRerunsForSession: 0
     };
     expect(permitProviderRerun(dead)).toBe(true);
+    expect(permitProviderRerun({ ...dead, failureValue: "provider_rate_limited" })).toBe(true);
     expect(permitProviderRerun({ ...dead, priorRerunsForSession: 1 })).toBe(false);
     expect(permitProviderRerun({ ...dead, assistantTextCount: 1 })).toBe(false);
     expect(permitProviderRerun({ ...dead, toolCallCount: 2 })).toBe(false);
     expect(permitProviderRerun({ ...dead, mutatedSource: true })).toBe(false);
     expect(permitProviderRerun({ ...dead, billedUsd: 0.01 })).toBe(false);
+    expect(permitProviderRerun({ ...dead, failureValue: "service_process_crash" })).toBe(false);
+    expect(permitProviderRerun({ ...dead, failureValue: "harness_invariant_failed" })).toBe(false);
+    expect(permitProviderRerun({ ...dead, failureValue: "verifier_infrastructure_failed" })).toBe(false);
+    expect(permitProviderRerun({ ...dead, failureValue: "team_timeout" })).toBe(false);
 
     const failed = computeTeamAccounting({
       arm: "baseline",
@@ -122,6 +171,7 @@ describe("accounting, failure taxonomy, and deadlines", () => {
         session({ sessionId: "attempt-2", startedMonoMs: 70_000, endedMonoMs: 130_000 })
       ],
       verificationEndedMonoMs: 200_000,
+      verification: { green: true },
       kernelEventKinds: []
     });
     expect(failed.sessions.map((entry) => entry.sessionId)).toEqual(["attempt-1", "attempt-2"]);

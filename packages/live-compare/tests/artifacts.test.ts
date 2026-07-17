@@ -98,11 +98,11 @@ describe("immutable run artifacts", () => {
         { path: "tests/format.test.ts", target: "logEvent", disposition: "frozen_excluded_historical" }
       ],
       sourceDigest: "0".repeat(64), finalTreeDigest: "0".repeat(64), configurationDigest: "0".repeat(64)
-    });
+    }, { trialId: "D-r1", arm: "strata" });
     run.write("team", {
       schemaVersion: 1, trialId: "D-r1", arm: "strata", status: "success",
       makespanMs: 120000, totalAgentCostUsd: 0.61, failures: [], timeouts: []
-    });
+    }, { trialId: "D-r1", arm: "strata" });
 
     const sessions = readArtifactStream(join(root, "sessions.jsonl"));
     expect(sessions.partialTail).toBe(false);
@@ -121,6 +121,50 @@ describe("immutable run artifacts", () => {
     expect(() => createArtifactRun({ root, clock: fakeClock(), redactions: [] })).toThrow(/finalized/);
   });
 
+  it("holds a full multi-trial pilot: per-trial team/verification, tasks, audit, and evidence", () => {
+    const root = runRoot();
+    const run = createArtifactRun({ root, clock: fakeClock(), redactions: [] });
+    const team = (trialId: string, arm: "strata" | "baseline") => ({
+      schemaVersion: 1 as const, trialId, arm, status: "success" as const,
+      makespanMs: 100, totalAgentCostUsd: 0.5, failures: [], timeouts: []
+    });
+    run.write("team", team("D-r1", "strata"), { trialId: "D-r1", arm: "strata" });
+    run.write("team", team("D-r1", "baseline"), { trialId: "D-r1", arm: "baseline" });
+    run.write("team", team("M-r1", "strata"), { trialId: "M-r1", arm: "strata" });
+    expect(() => run.write("team", team("D-r1", "strata"), { trialId: "D-r1", arm: "strata" }))
+      .toThrow(/write-once/);
+
+    run.write("tasks", {
+      schemaVersion: 1, packetId: "D",
+      assignments: [
+        { role: "agent-1", taskBody: "body-1", promptHashes: { strata: "0".repeat(64), baseline: "0".repeat(64) } },
+        { role: "agent-2", taskBody: "body-2", promptHashes: { strata: "0".repeat(64), baseline: "0".repeat(64) } }
+      ]
+    }, { packetId: "D" });
+
+    run.write("canonical-audit", {
+      schemaVersion: 1, trialId: "D-r1", arm: "strata", finalGeneration: "2",
+      operations: [{ operationId: "operation:1", changeSetId: "change:1", actor: "phase6:agent-1" }]
+    }, { trialId: "D-r1", arm: "strata" });
+
+    run.writeEvidence({ trialId: "D-r1", arm: "strata" }, "final-tree/src/types/user.ts", "export interface Account {}\n");
+
+    expect(existsSync(join(root, "trials/D-r1/strata/team.json"))).toBe(true);
+    expect(existsSync(join(root, "trials/D-r1/baseline/team.json"))).toBe(true);
+    expect(existsSync(join(root, "tasks/D.json"))).toBe(true);
+    expect(existsSync(join(root, "trials/D-r1/strata/canonical-audit.json"))).toBe(true);
+    expect(existsSync(join(root, "trials/D-r1/strata/evidence/final-tree/src/types/user.ts"))).toBe(true);
+
+    run.finalize({
+      schemaVersion: 1, trialsRecorded: 2, sessionsRecorded: 0,
+      totalCostUsd: 1.5, failures: 0, generatedFrom: "finalized trial records"
+    });
+    const marker = JSON.parse(readFileSync(join(root, "finalized.json"), "utf8"));
+    expect(Object.keys(marker.contentHashes)).toContain("trials/D-r1/strata/team.json");
+    expect(Object.keys(marker.contentHashes)).toContain("trials/D-r1/strata/evidence/final-tree/src/types/user.ts");
+    expect(() => run.writeEvidence({ trialId: "X-r1", arm: "strata" }, "late.txt", "no")).toThrow(/finalized/);
+  });
+
   it("rejects malformed records for every stream", () => {
     const run = createArtifactRun({ root: runRoot(), clock: fakeClock(), redactions: [] });
     expect(() => run.write("experiment-manifest", { schemaVersion: 1 })).toThrow();
@@ -128,8 +172,8 @@ describe("immutable run artifacts", () => {
     expect(() => run.append("service", { schemaVersion: 1 })).toThrow();
     expect(() => run.append("kernel-events", { schemaVersion: 1, sequence: 5 })).toThrow();
     expect(() => run.append("git-events", { schemaVersion: 1, unknown: true })).toThrow();
-    expect(() => run.write("verification", { schemaVersion: 1, packetId: "D" })).toThrow();
-    expect(() => run.write("team", { schemaVersion: 1, trialId: "D-r1" })).toThrow();
+    expect(() => run.write("verification", { schemaVersion: 1, packetId: "D" }, { trialId: "D-r1", arm: "strata" })).toThrow();
+    expect(() => run.write("team", { schemaVersion: 1, trialId: "D-r1" }, { trialId: "D-r1", arm: "strata" })).toThrow();
     expect(() => run.finalize({ schemaVersion: 1 })).toThrow();
   });
 

@@ -180,11 +180,74 @@ const APPEND_STREAMS = {
   "git-events": gitEventRecordSchema
 } as const;
 
+export const tasksRecordSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    packetId: z.enum(["D", "M", "R", "S", "X", "G"]),
+    assignments: z
+      .array(
+        z
+          .object({
+            role: z.enum(["agent-1", "agent-2"]),
+            taskBody: z.string().min(1),
+            promptHashes: z.object({ strata: digestSchema, baseline: digestSchema }).strict()
+          })
+          .strict()
+      )
+      .length(2)
+  })
+  .strict();
+
+export const canonicalAuditRecordSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    trialId: z.string().min(1),
+    arm: z.enum(["strata", "baseline"]),
+    finalGeneration: z.string().regex(/^\d+$/),
+    operations: z.array(
+      z
+        .object({
+          operationId: z.string().min(1),
+          changeSetId: z.string().min(1),
+          actor: z.string().min(1)
+        })
+        .strict()
+    )
+  })
+  .strict();
+
 const WRITE_STREAMS = {
   "experiment-manifest": experimentManifestSchema,
   verification: verificationRecordSchema,
-  team: teamRecordSchema
+  team: teamRecordSchema,
+  tasks: tasksRecordSchema,
+  "canonical-audit": canonicalAuditRecordSchema
 } as const;
+
+export interface ArtifactScope {
+  trialId?: string;
+  arm?: "strata" | "baseline";
+  packetId?: string;
+}
+
+const SAFE_PATH_COMPONENT = /^[A-Za-z0-9._-]+$/;
+
+function scopedPath(stream: WriteStream, scope: ArtifactScope | undefined): string {
+  const component = (value: string | undefined, name: string): string => {
+    if (!value || !SAFE_PATH_COMPONENT.test(value)) {
+      throw new Error(`artifact scope ${name} is required and must be a safe path component`);
+    }
+    return value;
+  };
+  if (stream === "experiment-manifest") return "experiment-manifest.json";
+  if (stream === "tasks") return join("tasks", `${component(scope?.packetId, "packetId")}.json`);
+  return join(
+    "trials",
+    component(scope?.trialId, "trialId"),
+    component(scope?.arm, "arm"),
+    `${stream}.json`
+  );
+}
 
 export type AppendStream = keyof typeof APPEND_STREAMS;
 export type WriteStream = keyof typeof WRITE_STREAMS;
@@ -215,7 +278,9 @@ function redactValue(value: unknown, redactions: readonly string[]): unknown {
 export interface ArtifactRun {
   root: string;
   append(stream: AppendStream, record: unknown): void;
-  write(stream: WriteStream, record: unknown): void;
+  write(stream: WriteStream, record: unknown, scope?: ArtifactScope): void;
+  /** Raw evidence snapshot (e.g., a final tree file), write-once per path. */
+  writeEvidence(scope: ArtifactScope, relativePath: string, content: string): void;
   finalize(summary: unknown): void;
 }
 
@@ -251,13 +316,30 @@ export function createArtifactRun(params: {
       const redacted = redactValue(stamp(validated), params.redactions);
       appendFileSync(join(root, `${stream}.jsonl`), `${JSON.stringify(redacted)}\n`, "utf8");
     },
-    write(stream, record): void {
+    write(stream, record, scope): void {
       assertOpen();
-      const path = join(root, `${stream}.json`);
-      if (existsSync(path)) throw new Error(`artifact ${stream}.json is write-once`);
+      const relative = scopedPath(stream, scope);
+      const path = join(root, relative);
+      if (existsSync(path)) throw new Error(`artifact ${relative} is write-once`);
       const validated = WRITE_STREAMS[stream].parse(record);
       const redacted = redactValue(stamp(validated), params.redactions);
+      mkdirSync(join(path, ".."), { recursive: true });
       writeFileSync(path, `${JSON.stringify(redacted, null, 2)}\n`, "utf8");
+    },
+    writeEvidence(scope, relativePath, content): void {
+      assertOpen();
+      const trialId = scope.trialId ?? "";
+      const arm = scope.arm ?? "";
+      if (!SAFE_PATH_COMPONENT.test(trialId) || !SAFE_PATH_COMPONENT.test(arm)) {
+        throw new Error("evidence scope requires safe trialId and arm components");
+      }
+      if (relativePath.split("/").some((part) => part === ".." || part === "" || part === ".")) {
+        throw new Error(`evidence path ${relativePath} must be a clean relative path`);
+      }
+      const path = join(root, "trials", trialId, arm, "evidence", relativePath);
+      if (existsSync(path)) throw new Error(`evidence ${relativePath} is write-once`);
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, redactValue(content, params.redactions) as string, "utf8");
     },
     finalize(summary): void {
       assertOpen();
@@ -268,10 +350,16 @@ export function createArtifactRun(params: {
         "utf8"
       );
       const contentHashes: Record<string, string> = {};
-      for (const name of readdirSync(root).sort()) {
-        if (name === "finalized.json") continue;
-        contentHashes[name] = createHash("sha256").update(readFileSync(join(root, name))).digest("hex");
-      }
+      const visit = (directory: string, prefix: string): void => {
+        for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+          const relative = `${prefix}${entry.name}`;
+          if (entry.isDirectory()) visit(join(directory, entry.name), `${relative}/`);
+          else if (relative !== "finalized.json") {
+            contentHashes[relative] = createHash("sha256").update(readFileSync(join(directory, entry.name))).digest("hex");
+          }
+        }
+      };
+      visit(root, "");
       writeFileSync(
         join(root, "finalized.json"),
         `${JSON.stringify({ schemaVersion: 1, contentHashes }, null, 2)}\n`,

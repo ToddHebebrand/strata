@@ -1,15 +1,11 @@
-import { randomUUID } from "node:crypto";
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
 import { CoordinationClient, type CoordinationIntent } from "../src/client.js";
+import { materializeFinalTree, startKernelService, type RunningKernelService } from "../src/service.js";
 import {
-  createQualifiedKernelSnapshot,
   createQualifiedTaskManifest,
   type Phase6PacketId,
-  type QualifiedTaskManifest,
   type TaskAssignment
 } from "../src/tasks.js";
 import { verifyPhase6Tree } from "../src/verify.js";
@@ -36,46 +32,9 @@ function ensureBuilt(): void {
   built = true;
 }
 
-interface RunningService {
-  child: ChildProcessWithoutNullStreams;
-  socketPath: string;
-  directory: string;
-  auditPath: string;
-  stop(): Promise<void>;
-}
-
-async function startService(corpusRoot: string): Promise<RunningService> {
+async function startService(corpusRoot: string): Promise<RunningKernelService> {
   ensureBuilt();
-  const directory = mkdtempSync(join(tmpdir(), "strata-phase6-service-"));
-  const snapshotPath = join(directory, "snapshot.json");
-  const auditPath = join(directory, "audit.jsonl");
-  writeFileSync(snapshotPath, JSON.stringify(createQualifiedKernelSnapshot(corpusRoot)), "utf8");
-  const child = spawn(join(repoRoot, "target/debug/strata-kernel-service"), [
-    "serve", "--db", join(directory, "kernel.redb"), "--snapshot", snapshotPath,
-    "--bridge-worker", join(repoRoot, "packages/kernel-bridge/dist/worker.js"),
-    "--source-root", join(corpusRoot, "src"), "--corpus-root", corpusRoot,
-    "--audit", auditPath, "--socket-token", randomUUID()
-  ], { cwd: repoRoot, env: credentialFreeEnv(), stdio: ["ignore", "pipe", "pipe"] });
-  const stderr: Buffer[] = [];
-  child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
-  const line = await new Promise<string>((resolveLine, reject) => {
-    const reader = createInterface({ input: child.stdout });
-    const timer = setTimeout(() => reject(new Error("service readiness timed out")), 10_000);
-    reader.once("line", (value) => { clearTimeout(timer); reader.close(); resolveLine(value); });
-    child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`service exited ${code}: ${Buffer.concat(stderr)}`)); });
-  });
-  const ready = JSON.parse(line) as { socketPath: string };
-  return {
-    child,
-    socketPath: ready.socketPath,
-    directory,
-    auditPath,
-    async stop() {
-      if (child.exitCode === null) child.kill("SIGTERM");
-      await new Promise<void>((resolveStop) => child.once("exit", () => resolveStop()));
-      rmSync(directory, { recursive: true, force: true });
-    }
-  };
+  return startKernelService(corpusRoot, { env: credentialFreeEnv() });
 }
 
 async function beginAndSubmit(client: CoordinationClient, assignment: TaskAssignment, reasoning: string) {
@@ -93,33 +52,6 @@ async function advanceUntilTerminal(client: CoordinationClient, changeSetId: str
     if (["published", "validation_failed", "needs_decision", "failed", "cancelled"].includes(result.state)) return { result, advances };
   }
   throw new Error(`change set ${changeSetId} did not terminate`);
-}
-
-async function materialize(
-  service: RunningService,
-  client: CoordinationClient,
-  corpusRoot: string,
-  manifest: QualifiedTaskManifest,
-  affectedNodeIds: readonly string[]
-): Promise<string> {
-  const output = mkdtempSync(join(tmpdir(), "strata-phase6-final-"));
-  cpSync(corpusRoot, output, { recursive: true });
-  const registered = new Set(Object.values(manifest.sourceFiles).flatMap((file) => file.statementIds));
-  const ids = [...new Set(affectedNodeIds)].filter((id) => registered.has(id));
-  const updated = new Map<string, string>();
-  for (let index = 0; index < ids.length; index += 200) {
-    const response = await client.request({ type: "inspect_nodes", nodeIds: ids.slice(index, index + 200) }, 120_000) as any;
-    for (const node of response.nodes) updated.set(node.nodeId, node.payload);
-  }
-  for (const [path, file] of Object.entries(manifest.sourceFiles)) {
-    if (!file.statementIds.some((id) => updated.has(id))) continue;
-    writeFileSync(
-      join(output, path),
-      file.statementIds.map((id, index) => updated.get(id) ?? file.statementPayloads[index]!).join(""),
-      "utf8"
-    );
-  }
-  return output;
 }
 
 async function allEvents(client: CoordinationClient): Promise<any[]> {
@@ -165,6 +97,8 @@ export async function probeSameModulePair(
       taskBody: "",
       taskBodyBytes: "",
       intents: [{ type: "rename_symbol", declarationId: declarationId(name), newName }],
+      strataTargets: [],
+      baselineTargets: [],
       promptHashes: { strata: "", baseline: "" }
     });
     const submitted1 = await beginAndSubmit(clients[0]!, intent(firstName, firstNewName), "probe first");
@@ -260,7 +194,7 @@ export async function runQualifiedServicePacket(input: {
     published.push(second.result);
     for (const client of clients) eventKinds.push(...(await allEvents(client)).map((event) => event.kind));
     const affectedNodeIdsForMaterialize = published.flatMap((result) => result.affectedNodeIds);
-    finalTree = await materialize(service, clients[0]!, input.corpusRoot, manifest, affectedNodeIdsForMaterialize);
+    finalTree = await materializeFinalTree(clients[0]!, input.corpusRoot, manifest, affectedNodeIdsForMaterialize);
     const verification = await verifyPhase6Tree({ treeRoot: finalTree, manifest, packetId: input.packetId, generationZero: false, arm: "strata" });
     const finalSource = Object.keys(manifest.sourceFiles).map((path) => readFileSync(join(finalTree!, path), "utf8")).join("\n");
     const auditActions = readFileSync(service.auditPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line).event.action).filter(Boolean);
