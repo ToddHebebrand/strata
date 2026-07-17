@@ -748,7 +748,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 - Modify: `decisions.md` only for a real divergence.
 - Modify implementation/tests only for findings from the single review round.
 
-- [ ] **Step 1: Run scoped package gates without credentials.**
+- [x] **Step 1: Run scoped package gates without credentials.**
 
   ```bash
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN pnpm --filter @strata/agent test
@@ -760,7 +760,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   cargo test -p strata-kernel --test local_service_sealing -- --nocapture
   ```
 
-- [ ] **Step 2: Run repository and authority gates.**
+- [x] **Step 2: Run repository and authority gates.**
 
   ```bash
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN pnpm -r test
@@ -773,14 +773,14 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN pnpm live-compare:test
   ```
 
-- [ ] **Step 3: Capture evidence.**
+- [x] **Step 3: Capture evidence.**
 
   Record exact commits, toolchain versions, commands, pass counts, timings,
   service/protocol bounds, dynamic preflight events, default-build sealing,
   dry-run manifest/session count/spend projection, known stale replay-fixture
   baselines, and confirmation that no key/model spend was used.
 
-- [ ] **Step 4: Obtain one independent repo-grounded review.**
+- [x] **Step 4: Obtain one independent repo-grounded review.**
 
   Use the `delegating-to-codex` skill with `gpt-5.5`, reasoning `xhigh`,
   read-only. Give it the approved design, hard boundaries, falsified
@@ -791,13 +791,13 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   round and is distinct from Task 0's pre-implementation design review; do not
   recurse unless its fix touches a new high-blast surface.
 
-- [ ] **Step 5: Address valid findings with RED/GREEN.**
+- [x] **Step 5: Address valid findings with RED/GREEN.**
 
   Each behavior fix begins with a failing deterministic regression test. Re-run
   the smallest gate and then all commands in Steps 1-2. Log a decision only if
   the approved design changed.
 
-- [ ] **Step 6: Update roadmap/evidence and commit.**
+- [x] **Step 6: Update roadmap/evidence and commit.**
 
   Mark only the deterministic harness/service gate complete. Leave the live
   comparison unchecked. Then:
@@ -810,7 +810,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 
   Omit `decisions.md` from `git add` if unchanged.
 
-- [ ] **Step 7: Prove clean handoff.**
+- [x] **Step 7: Prove clean handoff.**
 
   ```bash
   git status --short
