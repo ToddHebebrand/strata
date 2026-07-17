@@ -67,7 +67,7 @@ export function evaluateT03TextCriteria(
       /Promise<Account\[\]>/.test(listText) &&
       !/Promise<User\[\]>/.test(listText),
     namespaceImportRenamed:
-      /import type \* as UserTypes from "\.\.\/types\/user\.ts";/.test(
+      /import \* as UserTypes from "\.\.\/types\/user\.ts";/.test(
         serializerText
       ) && /user: UserTypes\.Account/.test(serializerText),
     auditLiteralUntouched:

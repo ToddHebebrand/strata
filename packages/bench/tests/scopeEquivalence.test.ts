@@ -111,7 +111,7 @@ function correctMap(taskId: BenchTaskId): Map<string, string> {
     ],
     [
       "users/serializer.ts",
-      'import type * as UserTypes from "../types/user.ts";\n' +
+      'import * as UserTypes from "../types/user.ts";\n' +
         "export function serialize(user: UserTypes.Account): string {\n" +
         "  return JSON.stringify({ id: user.id, email: user.email });\n}\n"
     ],
@@ -229,7 +229,7 @@ function seedMap(taskId: BenchTaskId): Map<string, string> {
     ],
     [
       "users/serializer.ts",
-      'import type * as UserTypes from "../types/user.ts";\n' +
+      'import * as UserTypes from "../types/user.ts";\n' +
         "export function serialize(user: UserTypes.User): string {\n" +
         "  return JSON.stringify({ id: user.id, email: user.email });\n}\n"
     ],
