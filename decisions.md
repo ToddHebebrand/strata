@@ -7,6 +7,35 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — Live round 3: lockfile exhaust misclassified; inventory exclusion extended
+
+**Context:** Round 3 (`run-2026-07-17T05-03-26-462Z`, manifest at `93ce348`)
+stopped at S-r1 again. The Strata arm succeeded a third consecutive time
+(USD 0.100, 53s). The new `verifierError` artifact identified the baseline
+failure instantly: `tree file listing diverges (extra: ["package-lock.json"])`
+— the integration agent ran `npm install` to execute the corpus's test
+script, as its registered system prompt ("leave one green tree") and the
+design's integration role ("may need to … run tsc/tests") require, and the
+lockfile byproduct was scored as an unregistered file.
+
+**Decided:** Root-level dependency lockfiles (`package-lock.json`,
+`pnpm-lock.yaml`, `yarn.lock`) join `node_modules` in the inventory
+exclusion. Before widening anything, the complete toolchain exhaust was
+enumerated deterministically: running the corpus's own `npm install` +
+`vitest run` + `tsc --noEmit` end-to-end produces exactly one new file, the
+lockfile, and does not modify `package.json`. Edits to any registered file —
+including `package.json` — still fail closed, as does any other unregistered
+file. The alternative (instructing agents to delete the lockfile) would
+burden the baseline with janitorial work no real workflow performs, an
+unfairness in the opposite direction.
+
+**Classification:** rounds 1 and 3 were harness misclassifications of
+legitimate tree shapes (worktree `.git` pointer; install exhaust) and each
+carries a deterministic regression row; round 2 remains the one genuine
+dispositive baseline failure (semantic out-of-scope edit). Spend to date
+across three stopped rounds: USD 2.26. Per the no-silent-rerun rule, each
+round stays closed; round 4 requires a fresh manifest and approval.
+
 ## 2026-07-17 — Live round 2: genuine dispositive baseline failure on S-r1
 
 **Context:** Round 2 (`run-2026-07-17T04-50-45-063Z`, re-approved manifest at

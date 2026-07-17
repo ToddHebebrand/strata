@@ -77,6 +77,16 @@ describe("arm-neutral Phase-6 verifier", () => {
     writeFileSync(join(worktreeShaped, ".git"), "gitdir: /elsewhere/worktrees/integration\n", "utf8");
     const worktreeReport = await verifyPhase6Tree({ treeRoot: worktreeShaped, manifest, packetId: "S", generationZero: true });
     expect(worktreeReport.green).toBe(true);
+
+    // Running the corpus's own install+test toolchain leaves exactly one
+    // root lockfile (live round 3, run-2026-07-17T05-03-26-462Z stopped on
+    // it); dependency-install exhaust must verify green while an edited
+    // package.json still fails closed above.
+    const installed = copyCorpus();
+    writeFileSync(join(installed, ".git"), "gitdir: /elsewhere/worktrees/integration\n", "utf8");
+    writeFileSync(join(installed, "package-lock.json"), '{"lockfileVersion": 3}\n', "utf8");
+    const installedReport = await verifyPhase6Tree({ treeRoot: installed, manifest, packetId: "S", generationZero: true });
+    expect(installedReport.green).toBe(true);
   }, 120_000);
 
   it("rejects noncanonical edits, unregistered source edits, and imprecise G defaults", async () => {

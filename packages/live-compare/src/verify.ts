@@ -69,7 +69,18 @@ export function boundVerifierOutput(value: string): string {
 
 // `.git` is a directory in a normal repository but a FILE in a git worktree
 // (a gitdir pointer), so the exclusion must apply regardless of entry type.
-const INVENTORY_EXCLUDED_ENTRIES = new Set([".git", "node_modules"]);
+// Root-level lockfiles are non-semantic exhaust of `npm/pnpm/yarn install`,
+// which the baseline integration role legitimately runs to execute tests
+// (deterministically enumerated 2026-07-17: the full install+vitest+tsc
+// toolchain leaves exactly package-lock.json). Edits to registered files —
+// including package.json itself — still fail closed.
+const INVENTORY_EXCLUDED_ENTRIES = new Set([
+  ".git",
+  "node_modules",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock"
+]);
 
 function allTreeFiles(root: string): string[] {
   const result: string[] = [];
