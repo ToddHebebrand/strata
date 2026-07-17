@@ -650,14 +650,14 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
 - Modify: `packages/live-compare/src/index.ts`
 - Modify: root `package.json`
 
-- [ ] **Step 1: Add failing schedule tests.**
+- [x] **Step 1: Add failing schedule tests.**
 
   Prove seeded D/M/R/S/X/G scenario permutations, exactly balanced pilot AB/BA
   arm order and alternation per scenario on extension, stable task-process
   mapping, concurrent within-arm release, and identical reconstruction from a
   manifest. Reject result-dependent schedule mutation.
 
-- [ ] **Step 2: Add failing artifact-schema tests.**
+- [x] **Step 2: Add failing artifact-schema tests.**
 
   Cover manifest/tasks/team/sessions/service/kernel-events/canonical-audit/
   git-events/verification/summary schemas, wall plus monotonic timestamps,
@@ -667,7 +667,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   excluded historical-fixture digests, and every non-canonical-reference
   disposition.
 
-- [ ] **Step 3: Add failing accounting/failure tests.**
+- [x] **Step 3: Add failing accounting/failure tests.**
 
   Exercise every taxonomy value, team makespan, summed model cost including
   integration, per-query budget terminal, team timeout, dynamic-observed flag,
@@ -678,7 +678,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   verification. Reject the old 480-second team deadline as structurally
   insufficient.
 
-- [ ] **Step 4: Add failing live-guard tests.**
+- [x] **Step 4: Add failing live-guard tests.**
 
   The live command must refuse to start unless a strict approval file matches
   the manifest's provider, model, task set, corpus variant, trial count, seed,
@@ -688,14 +688,14 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   and a supported credential variable. Dry-run must never read credentials or
   call the SDK.
 
-- [ ] **Step 5: Run RED.**
+- [x] **Step 5: Run RED.**
 
   ```bash
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
     pnpm --filter @strata/live-compare test -- artifacts schedule runner cli
   ```
 
-- [ ] **Step 6: Implement the runner and scripts.**
+- [x] **Step 6: Implement the runner and scripts.**
 
   Add:
 
@@ -708,7 +708,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   `test` and `dry-run` must work with credentials removed. `run` validates the
   approval before importing/starting the live session adapter.
 
-- [ ] **Step 7: Run GREEN and a key-free dry run.**
+- [x] **Step 7: Run GREEN and a key-free dry run.**
 
   ```bash
   env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN pnpm live-compare:test
@@ -732,7 +732,7 @@ sockets, TypeScript 5.8, Zod 4, Vitest 3, `@anthropic-ai/claude-agent-sdk`
   budgets, report USD 55.00 projected round maximum, write no live result, and
   make no keyed call.
 
-- [ ] **Step 8: Commit.**
+- [x] **Step 8: Commit.**
 
   ```bash
   git add packages/live-compare package.json

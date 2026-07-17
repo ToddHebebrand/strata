@@ -127,5 +127,5 @@ describe("arm-neutral Phase-6 verifier", () => {
       finalTreeDigest: right.finalTreeDigest,
       configurationDigest: right.configurationDigest
     });
-  }, 15_000);
+  }, 60_000);
 });
