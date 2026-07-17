@@ -103,11 +103,16 @@ export async function runComparisonRound(deps: ComparisonRoundDeps): Promise<Rou
         deps.artifacts.writeEvidence({ trialId: entry.trialId, arm }, relativePath, content);
       }
 
-      if (result.accounting.dispositiveStop) {
+      // Operator-approved amendment (decisions.md 2026-07-17): only a
+      // Strata-arm dispositive failure — the authority/correctness class the
+      // round-stop exists for — halts the round. A baseline-arm conduct
+      // violation marks its matched trial failed and the round continues.
+      if (result.accounting.dispositiveStop && arm === "strata") {
         stopped = "dispositive_failure";
         trialComplete = false;
         break;
       }
+      if (result.accounting.dispositiveStop) trialComplete = false;
     }
     if (trialComplete) completedTrials += 1;
     if (stopped) break;

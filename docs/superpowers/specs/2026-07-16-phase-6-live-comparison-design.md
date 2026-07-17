@@ -737,6 +737,11 @@ Stop deterministic implementation and return for operator review if:
   task-role bounds across arms, and one fixed integration-role bound across all
   baseline trials.
 
+**Amended 2026-07-17 (operator-approved, decisions.md):** the dispositive
+round-stop below is arm-scoped. A dispositive failure in the Strata arm or in
+harness/verifier infrastructure stops the round; a baseline-arm dispositive
+task-conduct failure marks that matched trial failed and the round continues.
+
 Stop a live round immediately after artifact flush if:
 
 - any dispositive failure occurs;

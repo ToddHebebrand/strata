@@ -103,7 +103,7 @@ describe("comparison round orchestrator", () => {
     expect(outcome.totalCostUsd).toBe(60);
   });
 
-  it("stops immediately after a dispositive failure with evidence flushed", async () => {
+  it("stops immediately after a STRATA-arm dispositive failure with evidence flushed", async () => {
     const { root, run } = artifactsRun();
     let calls = 0;
     const outcome = await runComparisonRound({
@@ -111,13 +111,33 @@ describe("comparison round orchestrator", () => {
       artifacts: run,
       executeStrataArm: async () => {
         calls += 1;
-        return armResult(0.5, { status: "failed", dispositiveStop: true, taxonomyCounts: { lost_update: 1 } });
+        return armResult(0.5, { arm: "strata", status: "failed", dispositiveStop: true, taxonomyCounts: { lost_update: 1 } });
       },
-      executeBaselineArm: async () => { calls += 1; return armResult(1); }
+      executeBaselineArm: async () => { calls += 1; return armResult(1, { arm: "baseline" }); }
     });
     expect(outcome.stopped).toBe("dispositive_failure");
     expect(calls).toBeLessThanOrEqual(2);
     expect(outcome.failures).toBeGreaterThanOrEqual(1);
+    expect(existsSync(join(root, "finalized.json"))).toBe(true);
+  });
+
+  it("continues past a BASELINE-arm conduct failure, marking only that trial failed", async () => {
+    // Operator-approved amendment (decisions.md 2026-07-17): the round-stop
+    // protects against a broken experiment; a baseline task-conduct
+    // violation is a result, not experiment breakage.
+    const { root, run } = artifactsRun();
+    const outcome = await runComparisonRound({
+      plan: plan(),
+      artifacts: run,
+      executeStrataArm: async () => armResult(0.1, { arm: "strata" }),
+      executeBaselineArm: async () => armResult(0.7, {
+        arm: "baseline", status: "failed", dispositiveStop: true,
+        taxonomyCounts: { unexpected_out_of_scope_change: 1 }, verificationGreen: false
+      })
+    });
+    expect(outcome.stopped).toBeNull();
+    expect(outcome.completedArms).toBe(12);
+    expect(outcome.failures).toBe(6);
     expect(existsSync(join(root, "finalized.json"))).toBe(true);
   });
 });

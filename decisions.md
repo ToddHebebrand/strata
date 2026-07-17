@@ -7,6 +7,38 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — Live round 5 and the arm-scoped stop amendment
+
+**Round 5 result** (`run-2026-07-17T05-32-39-420Z`, manifest at `e9136de`):
+S-r1 completed both arms (Strata USD 0.103/45s; baseline USD 0.429/124s — the
+baseline's fastest S, consistent with the red-test disclosure removing its
+test-fixing detour). R-r1 stopped the round: the baseline agent added the
+registered `excited` parameter **and wired it into the function body**
+(`hello ${user.email}${excited ? "!" : ""}`), a behavioral change beyond the
+registered exact delta, caught by the normalized-AST check. This is a genuine
+conduct failure and stands: the same byte-identical task body drove the
+Strata arm's typed `add_parameter`, whose semantics make over-delivery
+inexpressible, while prose invited elaboration. Third distinct baseline
+failure mode in three genuine failures (planted-test fixing; out-of-scope
+drift; spec over-delivery). The guard also correctly refused round 5's first
+launch over a stale approval digest at zero cost.
+
+**Amendment (operator-approved):** the preregistered round-stop existed to
+prevent spending against a broken experiment; with the round stopping on
+every baseline conduct failure, D/M/X could never be reached. The stop is now
+arm-scoped: any dispositive failure in the Strata arm (or harness/verifier
+infrastructure) still halts the round; a baseline-arm dispositive conduct
+failure marks its matched trial failed and the round continues. The asymmetry
+is disclosed: it weakens no correctness claim (Strata failures remain
+round-fatal) and converts baseline conduct failures from round-killers into
+recorded results. Orchestrator change covered by both-direction tests; the
+design doc's stop-conditions section is amended with a pointer here.
+
+**Standing tally after five rounds (~USD 5.50):** Strata 5/5 live arms at
+~USD 0.10 / ~42s each; baseline 3 completed S/R arms (one S at 3-6x Strata
+cost/time now in two valid matched trials), 3 dispositive conduct failures;
+D, M, X still unobserved live.
+
 ## 2026-07-17 — Live round 4: the red historical test induces baseline scope violations; prompts amended
 
 **Context:** Round 4 (`run-2026-07-17T05-11-48-289Z`, manifest at `ac0483a`)
