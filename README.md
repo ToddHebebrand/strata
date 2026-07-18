@@ -2,7 +2,7 @@
 
 **A structural code substrate for AI agents.** Strata replaces the file abstraction with a persistent, queryable node graph. An AI agent addresses functions, declarations, and identifiers by stable ID; mutates them through structural operations inside transactions; verifies against a real type-checker; and never sees a filesystem.
 
-The hypothesis: AI coding agents are bottlenecked by files. Same model, same task — a structural substrate should get to the right answer with materially less work.
+The hypothesis: AI coding agents are bottlenecked by files. Same model, same task — a structural substrate should get to the right answer with materially less work. And because the substrate can see what every change touches, multiple agents should be able to share one canonical codebase directly — no branches, no worktrees, no merge step. That multi-agent question is what Strata was built to answer.
 
 ![Strata explore demo: modules → find → show → refs on a real corpus](docs/demo/strata-explore.gif)
 
@@ -12,9 +12,20 @@ The hypothesis: AI coding agents are bottlenecked by files. Same model, same tas
 
 *The sequel: an agent with no filesystem tools renames the interface across all 16 reference sites in one transaction — validated by tsc plus the project's tests before the commit gate lets it through. 6 tool calls, ~$0.05, ~25 s ([`docs/demo/strata-agent.tape`](docs/demo/strata-agent.tape)).*
 
-## Headline result
+## Headline results
 
-On a reference-aware **rename** across a real multi-module TypeScript codebase — same model (`claude-sonnet-4-6`), same prompt, same success bar, one shared scoring core — a Strata agent (no filesystem tools) vs. a file-editing baseline agent:
+**Multi-agent — the original question.** Two concurrent agents sharing one canonical codebase through Strata's Rust coordination kernel — no branches, no worktrees, no merge step — against the strongest practical baseline, git worktrees plus an integration agent, with the same model, corpus, and final tsc+tests acceptance:
+
+| N=3 directional round (5 evaluable scenarios) | Result |
+|---|---|
+| Directional consistency | `+++` on **both** cost and makespan in every scenario — all 30 evaluable cells favored Strata, no reversal, no tie |
+| Cost margins (baseline/Strata, per pair) | 2.5–10.7× |
+| Makespan margins (dispatch → one shared green codebase) | 4.6–25.6× |
+| Strata arm reliability | 18/18 green; the pre-registered falsifiers (silent overwrite, dirty read, partial commit) never occurred |
+
+Directional consistency at N=3 under one model/corpus/seed/machine — no significance or generality claim. Full evidence chain: [deterministic acceptance](docs/spikes/2026-07-15-deterministic-full-key-free-acceptance.md) → [pilot](docs/spikes/2026-07-17-phase-6-live-pilot-results.md) → [retry](docs/spikes/2026-07-18-phase-6-live-xm-retry-results.md) → [N=3 round](docs/spikes/2026-07-18-phase-6-n3-directional-results.md).
+
+**Single-agent — the foundation.** On a reference-aware **rename** across a real multi-module TypeScript codebase — same model (`claude-sonnet-4-6`), same prompt, same success bar, one shared scoring core — a Strata agent (no filesystem tools) vs. a file-editing baseline agent:
 
 | | Substrate | Baseline |
 |---|---|---|
@@ -24,7 +35,7 @@ On a reference-aware **rename** across a real multi-module TypeScript codebase �
 
 Disjoint distributions, ~3.5× fewer tokens, ~2.2× faster, both 3/3 success with identical output quality. Observed separation at N=3 (not a significance claim), and it is robust — it survived a fully adversarially-validated harness and a prompt change.
 
-**Honest scope:** the rename-class win is robust and model-independent. Behavioral-gate extensions and one precisely-bounded negative on a per-callsite expressiveness task (`add_parameter`) are documented in **[`docs/RESULTS.md`](docs/RESULTS.md)**; the full decision trail is in **[`decisions.md`](decisions.md)**.
+**Honest scope:** the substrate's single-agent cost edge is specific to bulk propagation (rename/move/parameter fan-out over many references); single-site synthesis stays cheaper with file tools, and one per-callsite expressiveness task is a precisely-bounded negative — all documented in **[`docs/RESULTS.md`](docs/RESULTS.md)**; the full decision trail is in **[`decisions.md`](decisions.md)**.
 
 **📄 The write-up — [When does a structural substrate beat files?](docs/write-up.md)** — is the narrative version: the result, the task-class boundary, where it sits in prior art, and why the numbers are trustworthy.
 
@@ -39,6 +50,9 @@ ingest (@strata-code/ingest)  TypeScript → nodes (TS Compiler API)
 render (@strata-code/render)  nodes → canonical TypeScript (+ source map)
 verify (@strata-code/verify)  in-process tsc over rendered output; commit gate
 bench  (@strata-code/bench)   substrate vs. file-baseline harness, distributions
+kernel (crates/strata-kernel) Rust/redb multi-agent coordination daemon: typed
+                              operations, graph-inferred leases, fenced
+                              only-green publication (research path, not on npm)
 ```
 
 Files are not first-class: they exist only as transient render artifacts for `tsc`. The operation log is canonical history (no git-style commits inside the store). See [`strata-design.md`](strata-design.md) for the full design and [`decisions.md`](decisions.md) for the append-only record of every build-time decision and divergence.
