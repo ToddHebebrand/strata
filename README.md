@@ -59,6 +59,17 @@ kernel (crates/strata-kernel) Rust/redb multi-agent coordination daemon: typed
 
 Files are not first-class: they exist only as transient render artifacts for `tsc`. The operation log is canonical history (no git-style commits inside the store). See [`strata-design.md`](strata-design.md) for the full design and [`decisions.md`](decisions.md) for the append-only record of every build-time decision and divergence.
 
+### The coordination kernel (Rust + redb)
+
+The multi-agent path runs on a different storage architecture than the single-agent SQLite product, built for concurrency from the ground up:
+
+- **Memory-native hot state.** The canonical graph lives in the kernel's memory, not behind per-query SQL — analysis and scope inference read it directly.
+- **redb durability.** Every publication commits atomically in a single [redb](https://github.com/cberner/redb) transaction: the operation, the graph delta, the lifecycle event, the fence claim, the resource clocks, and the generation digest together — so there is no state where history and graph disagree. Recovery is snapshot + delta replay, proven **byte-exact** in the deterministic acceptance gate (including real process-crash joins and restart/fencing/event resumption).
+- **Sealed single-owner daemon.** One process owns canonical storage, served over a Unix socket; clients never open the database. Typed operations go in; leases, events, and `needs_decision` responses come out.
+- **TypeScript stays the semantic authority.** Ingest, render, and validation (tsc + tests) run as Node workers the kernel invokes — the kernel coordinates; the TypeScript compiler adjudicates.
+
+Design: [`docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md`](docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md). Deterministic acceptance evidence (twelve named rows, key-free): [`docs/spikes/2026-07-15-deterministic-full-key-free-acceptance.md`](docs/spikes/2026-07-15-deterministic-full-key-free-acceptance.md).
+
 For a visual map of the current implementation, see [`docs/architecture-visual-guide.md`](docs/architecture-visual-guide.md).
 
 ## Three-layer codebase index
