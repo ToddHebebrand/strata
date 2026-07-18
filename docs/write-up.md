@@ -117,12 +117,14 @@ For tool builders, three transferable findings:
 ## Try it
 
 ```bash
-git clone <repo> && cd strata && pnpm install && pnpm -r build && pnpm -r test   # no key needed
-node packages/cli/dist/cli.js modules examples/medium        # explore the graph
-node packages/cli/dist/cli.js find examples/medium User
-node packages/cli/dist/cli.js refs examples/medium <nodeId>  # the thing files can't do
+npm i -g @strata-code/cli                    # published packages, no key needed
+strata modules ./your-ts-project             # explore the graph
+strata find ./your-ts-project User
+strata refs ./your-ts-project <nodeId>       # the thing files can't do
 # with ANTHROPIC_API_KEY — run the no-filesystem agent on any TS corpus:
-node packages/cli/dist/cli.js agent examples/medium "Rename the exported interface User to Account everywhere it is referenced" --print
+strata agent ./your-ts-project "Rename the exported interface User to Account everywhere it is referenced" --print
 ```
+
+Or from source: `git clone https://github.com/ToddHebebrand/strata && cd strata && pnpm install && pnpm -r build && pnpm -r test` — the full suite runs without a key.
 
 The full design ([`strata-design.md`](../strata-design.md)), the complete decision trail including every falsified lever ([`decisions.md`](../decisions.md)), and the detailed results ([`RESULTS.md`](RESULTS.md)) are in the repo.
