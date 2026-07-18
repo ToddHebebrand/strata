@@ -7,6 +7,59 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — Stable-root ingest lands: live-compare qualification is location-independent
+
+**Context:** Supersedes the deferral in the entry below — the operator
+delegated the queued follow-ons to discretion, and the portability fix
+landed the same day. The defect: live-compare qualification only reproduced
+from `.worktrees/phase6-live-comparison` because `nodeId()` hashes the module
+path string and every qualification ingest fed it checkout-absolute paths.
+
+**Decided (all landed together):**
+1. **Corpus-relative ingest everywhere in qualification.** All three
+   live-compare ingest sites (`createQualifiedTaskManifest`,
+   `createQualifiedKernelSnapshot`, `scanCanonicalBoundary`) and the
+   service-harness probe ingest now feed corpus-relative posix paths — the
+   scheme kernel-bridge's own tests always used. Stable IDs are now a
+   function of corpus content and structure only.
+2. **Verify separates store-facing keys from program-facing names.**
+   `renderPendingModules` keys rendered modules by raw payload (the string
+   node IDs derive from); `validate`/`commit` accept an optional
+   `moduleBaseDir` and physicalize names only for the TypeScript program, so
+   tsconfig discovery and import resolution see the real corpus from any
+   CWD. `boundedRenderInputs` matching stopped resolving keys against CWD.
+   The behavioral gate physicalizes against its own `corpusRoot`. Product
+   callers pass absolute payloads, for which every one of these changes is
+   an identity — behavior is unchanged for the SQLite path.
+3. **Bridge candidate validation is corpus-anchored.** Module containment
+   resolves payloads against `corpusRoot` (was: process CWD), and `commit`
+   receives `corpusRoot` as the module base. A first attempt that
+   physicalized module payloads in the scratch snapshot was reverted after
+   it churned re-derived identifier IDs (the store mints child IDs from the
+   module payload during commit re-derivation) — payloads must stay
+   byte-identical to the hydrated snapshot through the whole scratch
+   lifecycle.
+4. **Regenerated pinned artifacts.** `pre-enrichment-statement-ids.json`
+   was regenerated from the pre-enrichment corpus content (`db2efa7^`) under
+   relative-path ingest, and `APPROVED_TASK_REGISTRATION_DIGEST` moved to
+   the stable-root value
+   (`628bd6da…`). `APPROVED_SOURCE_DIGEST` is content-only and did not
+   change.
+
+**Verification:** kernel-bridge 76/76 and live-compare 117/117 green from
+the main checkout (previously 30 red); the qualification manifest produces
+the identical registration digest from `examples/medium` and from a copy of
+the corpus relocated to an unrelated temp path; the key-free dry-run passes
+from main; the full `pnpm kernel:full-key-free:test` gate is green (exit 0,
+109 suites) after the change. One pre-existing, unrelated red was observed
+on main (`verify` `corpusRun.test.ts` "runs only the named fixture" —
+subprocess-environment class, fails identically with this change stashed).
+
+**Note on the in-flight retry:** the X/M live retry launched earlier runs
+in the worktree at e236895 with the pre-fix approval digests — exactly the
+frozen code its approval file pins. A future round from main needs a fresh
+approval file with the new registration digest.
+
 ## 2026-07-17 — Live-compare qualification is bound to the checkout's absolute path; X/M retry approval drafted against the worktree
 
 **Context:** After merging the validation-circle iteration into main

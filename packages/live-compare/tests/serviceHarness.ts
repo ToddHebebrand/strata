@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { CoordinationClient, type CoordinationIntent } from "../src/client.js";
 import { materializeFinalTree, startKernelService, type RunningKernelService } from "../src/service.js";
 import {
@@ -83,7 +83,10 @@ export async function probeSameModulePair(
     }
   };
   visit(join(corpusRoot, "src"));
-  const batch = ingestBatch(files.map((path) => ({ path, text: readFileSync(path, "utf8") })));
+  const batch = ingestBatch(files.map((path) => ({
+    path: relative(corpusRoot, path).split(sep).join("/"),
+    text: readFileSync(path, "utf8")
+  })));
   const declarationId = (name: string): string => {
     const matches = batch.allNodes.filter((node: any) => new RegExp(`\\bfunction\\s+${name}\\b`).test(node.payload));
     if (matches.length !== 1) throw new Error(`unresolved probe target ${name}`);

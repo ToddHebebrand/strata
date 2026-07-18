@@ -111,7 +111,7 @@ export function buildValidateCandidateInScratch(
     stage = "validate";
     const commitResult =
       request.validationProfile.mode === "tscOnly"
-        ? commit(db, tx)
+        ? commit(db, tx, request.validationProfile.corpusRoot)
         : commitWithBehavioralGate(db, tx, {
             srcRoot: request.validationProfile.sourceRoot,
             corpusRoot: request.validationProfile.corpusRoot,
@@ -256,7 +256,7 @@ function validateProfile(
     }
 
     for (const module of snapshot.nodes.filter((node) => node.kind === "Module")) {
-      const resolvedModulePath = path.resolve(module.payload);
+      const resolvedModulePath = path.resolve(corpusRoot, module.payload);
       const modulePath = existsSync(resolvedModulePath)
         ? realpathSync(resolvedModulePath)
         : resolvedModulePath;

@@ -29,6 +29,24 @@ export type CommitResult =
   | { ok: true }
   | { ok: false; diagnostics: Diagnostic[] };
 
+/**
+ * Store-facing rendered-module key: the module payload verbatim with
+ * separators normalized. Reference refresh and dirty-module matching must
+ * see the exact payload strings node IDs were derived from — resolving them
+ * against a directory here would silently churn IDs for corpora ingested
+ * with relative module paths.
+ */
+function rawModuleKey(payload: string): string {
+  return payload.replaceAll("\\", "/");
+}
+
+/** Physicalize a store-facing key for the TypeScript program and tsconfig discovery. */
+function physicalFileName(rawKey: string, moduleBaseDir: string | undefined): string {
+  return normalizeFileName(
+    moduleBaseDir !== undefined ? path.resolve(moduleBaseDir, rawKey) : rawKey
+  );
+}
+
 export function renderPendingModules(
   db: Db,
   tx: TxHandle
@@ -50,15 +68,26 @@ export function renderPendingModules(
         textSpanMutations: overlay.textSpanMutations
       }
     );
-    renderedFiles.set(normalizeFileName(module.payload), text);
-    sourceMaps.set(normalizeFileName(module.payload), sourceMap);
+    renderedFiles.set(rawModuleKey(module.payload), text);
+    sourceMaps.set(rawModuleKey(module.payload), sourceMap);
   }
 
   return { renderedFiles, sourceMaps };
 }
 
-export function validate(db: Db, tx: TxHandle): Diagnostic[] {
-  const { renderedFiles, sourceMaps } = renderPendingModules(db, tx);
+export function validate(db: Db, tx: TxHandle, moduleBaseDir?: string): Diagnostic[] {
+  const rendered = renderPendingModules(db, tx);
+
+  // The program sees physical file names (so tsconfig discovery and module
+  // resolution work from any process CWD); the store-facing raw keys stay
+  // payload-exact for ID coherence elsewhere.
+  const renderedFiles = new Map<string, string>();
+  const sourceMaps = new Map<string, SourceMapEntry[]>();
+  for (const [rawKey, text] of rendered.renderedFiles) {
+    const physical = physicalFileName(rawKey, moduleBaseDir);
+    renderedFiles.set(physical, text);
+    sourceMaps.set(physical, rendered.sourceMaps.get(rawKey)!);
+  }
 
   const options = loadCompilerOptions([...renderedFiles.keys()]);
   const host = ts.createCompilerHost(options, true);
@@ -137,7 +166,8 @@ function boundedRenderInputs(
   renderedFiles: Map<string, string>,
   dirtyModulePaths: string[]
 ): Map<string, string> {
-  const norm = (p: string) => normalizeFileName(p);
+  // Keys are raw payload strings; matching must not resolve against CWD.
+  const norm = (p: string) => rawModuleKey(p);
   const byNorm = new Map<string, string>();
   for (const [abs, text] of renderedFiles) byNorm.set(norm(abs), text);
 
@@ -175,14 +205,14 @@ function resolveRelativeToRenderedKey(
   renderedKeys: Map<string, string>
 ): string | undefined {
   const specBase = spec.replace(/\.(ts|tsx|js|mjs)$/, "");
-  const candidateBase = normalizeFileName(path.join(dir, specBase));
+  const candidateBase = rawModuleKey(path.join(dir, specBase));
   for (const ext of ["", ".ts", ".tsx", ".js", ".mjs"]) {
     const candidate = candidateBase + ext;
     if (renderedKeys.has(candidate)) return candidate;
   }
   // Barrel directory: try index files
   for (const ext of [".ts", ".tsx", ".js", ".mjs"]) {
-    const candidate = normalizeFileName(path.join(candidateBase, "index" + ext));
+    const candidate = rawModuleKey(path.join(candidateBase, "index" + ext));
     if (renderedKeys.has(candidate)) return candidate;
   }
   return undefined;
@@ -204,8 +234,8 @@ export function buildAnalysisContext(
   return { renderedByPath: renderedFiles, options };
 }
 
-export function commit(db: Db, tx: TxHandle): CommitResult {
-  const diagnostics = validate(db, tx);
+export function commit(db: Db, tx: TxHandle, moduleBaseDir?: string): CommitResult {
+  const diagnostics = validate(db, tx, moduleBaseDir);
   if (diagnostics.length > 0) {
     return { ok: false, diagnostics };
   }
@@ -215,7 +245,9 @@ export function commit(db: Db, tx: TxHandle): CommitResult {
   const plan = planMaterialization(db, getOverlay(tx));
   const { renderedFiles } = renderPendingModules(db, tx);
   const renderedByPath = boundedRenderInputs(renderedFiles, plan.dirtyModulePaths);
-  const options = loadCompilerOptions([...renderedFiles.keys()]);
+  const options = loadCompilerOptions(
+    [...renderedFiles.keys()].map((rawKey) => physicalFileName(rawKey, moduleBaseDir))
+  );
 
   // Single transaction so a throw mid-materialization rolls back payloads,
   // node/identifier changes, edges, and the op-log together (no partial state).
@@ -291,12 +323,14 @@ export function commitWithBehavioralGate(
 
   const { renderedFiles } = renderPendingModules(db, tx);
   const renderedByPath = boundedRenderInputs(renderedFiles, plan.dirtyModulePaths);
-  const options = loadCompilerOptions([...renderedFiles.keys()]);
+  const options = loadCompilerOptions(
+    [...renderedFiles.keys()].map((rawKey) => physicalFileName(rawKey, acceptance.corpusRoot))
+  );
 
   const renderedSrc = new Map<string, string>();
-  for (const [absPath, text] of renderedFiles) {
+  for (const [rawKey, text] of renderedFiles) {
     const rel = path
-      .relative(acceptance.srcRoot, absPath)
+      .relative(acceptance.srcRoot, physicalFileName(rawKey, acceptance.corpusRoot))
       .replaceAll("\\", "/");
     renderedSrc.set(rel, text);
   }

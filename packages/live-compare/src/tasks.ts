@@ -8,7 +8,7 @@ export const APPROVED_CORPUS_VARIANT = "x-namespace-enriched-v1" as const;
 export const APPROVED_SOURCE_DIGEST =
   "41c9059a91e814995471708fa3cd165dc15a1f45f492b809d01831978b3c6eb8";
 export const APPROVED_TASK_REGISTRATION_DIGEST =
-  "e54e1dd2c1a9d5984ec0553361fc31aab3b3bda8b6c2f225e1812bc593636c07";
+  "628bd6dabedc2e99b09375bb3b05da1663e6c25f86933113fd64497c1a140233";
 const APPROVED_EXCLUDED_INPUTS = {
   "tests/dateRange.test.ts": "f08c8a6decf0a3a0ff497095f47dab187a7b6b89adfd89bf65b309ea52c41426",
   "tests/format.test.ts": "2edd2fb64537bac614185c220ee9a0cf6031dd65a7de471a5aa576c9ed34361b"
@@ -188,7 +188,7 @@ export function scanCanonicalBoundary(
   const sourceInputs = filesBelow(join(corpusRoot, "src"), (path) => path.endsWith(".ts"));
   const testInputs = filesBelow(testsRoot, (path) => path.endsWith(".ts"));
   const batch = ingestBatch([...sourceInputs, ...testInputs].map((absolute) => ({
-    path: absolute,
+    path: posix(relative(corpusRoot, absolute)),
     text: readFileSync(absolute, "utf8")
   })));
   const nodeById = new Map(batch.allNodes.map((node) => [node.id, node]));
@@ -234,7 +234,7 @@ export function scanCanonicalBoundary(
         if (!subtree.has(reference.toNodeId) || subtree.has(reference.fromNodeId)) return false;
         let node = nodeById.get(reference.fromNodeId);
         while (node?.parentId) node = nodeById.get(node.parentId);
-        return node?.payload === join(corpusRoot, path);
+        return node?.payload === path;
       }).length;
       entries.push({
         path,
@@ -304,12 +304,12 @@ export function createQualifiedTaskManifest(corpusRootInput: string): QualifiedT
   const corpusRoot = resolve(corpusRootInput);
   const inputs = filesBelow(join(corpusRoot, "src"), (path) => path.endsWith(".ts")).map((absolute) => {
     const relativePath = posix(relative(corpusRoot, absolute));
-    return { absolute, relativePath, path: absolute, text: readFileSync(absolute, "utf8") };
+    return { absolute, relativePath, path: relativePath, text: readFileSync(absolute, "utf8") };
   });
   const batch = ingestBatch(inputs.map(({ path, text }) => ({ path, text })));
   const sourceFiles: QualifiedTaskManifest["sourceFiles"] = {};
   const nodeById = new Map(batch.allNodes.map((node) => [node.id, node]));
-  const modulePathById = new Map(batch.modules.map((module) => [module.moduleId, posix(relative(corpusRoot, module.path))]));
+  const modulePathById = new Map(batch.modules.map((module) => [module.moduleId, module.path]));
   const statementFor = (nodeId: string): string => {
     let node = nodeById.get(nodeId);
     if (!node) throw new Error(`unresolved node ${nodeId}`);
@@ -495,7 +495,7 @@ export function assertApprovedTaskManifest(manifest: QualifiedTaskManifest): voi
 export function createQualifiedKernelSnapshot(corpusRootInput: string) {
   const corpusRoot = resolve(corpusRootInput);
   const inputs = filesBelow(join(corpusRoot, "src"), (path) => path.endsWith(".ts")).map((absolute) => ({
-    path: absolute,
+    path: posix(relative(corpusRoot, absolute)),
     text: readFileSync(absolute, "utf8")
   }));
   const snapshot = toKernelSnapshot(ingestBatch(inputs));
