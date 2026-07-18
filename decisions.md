@@ -7,6 +7,52 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-18 — The kernel protocol is the canonical agent surface; MCP and CLI are adapters only
+
+**Context:** With npm live, the question "how does a user's own agent use
+Strata?" surfaced three candidate surfaces: CLI-over-Bash (cheapest in
+tokens today), an MCP server (`strata mcp`, broadest compatibility), and
+the kernel's native coordination protocol (typed intents over the sealed
+daemon's socket — the surface the Phase-6 proof actually ran on, minus
+discovery). The operator chose to skip interim flagships and commit to
+the one implementation.
+
+**Decided (operator, 2026-07-18):** The kernel coordination protocol —
+`inspect_nodes` / `begin_change_set` / `add_intent` / `submit_change_set`
+/ `advance_change_set` / `cancel_change_set` / `read_events`, plus the
+discovery calls Iteration 6 slice B adds — is the **canonical agent
+surface** for Strata. A thin typed client library (TypeScript first) is
+the thing harnesses embed. Any MCP server or CLI agent surface is an
+**adapter over that client**, never a parallel implementation with its
+own store access or semantics.
+
+**Why:** The efficiency argument is structural, not incremental: in
+worktree-world coordination is paid in model tokens (an integration agent
+re-derives both sides to merge); on the kernel protocol coordination is
+paid in silicon (scope inference, leases, fenced publication) and agents
+pay tokens only for decisions. Measured: the Phase-6 makespan margins.
+The protocol also carries the correctness properties (fresh-decision
+instead of merge, only-green publication, fencing) that no tool-shim
+surface can retrofit.
+
+**Sequencing caution, recorded so the title is earned not assumed:** the
+protocol becomes usable as *the* surface only after slice B (discovery on
+the kernel + full tsc+vitest daemon gate) and enough of slice C (stable
+logical IDs for the create/insert class) exist. Until then nothing real
+can orient on it — which is exactly where the Phase-6 evidence stopped.
+Known plumbing debts on the path: per-request socket connections
+(reuse needed), daemon lifecycle/packaging (esbuild-style platform
+binaries), actor auth beyond the socket token.
+
+**Design-doc impact:** roadmap Iteration 6 gains slice D (typed client
+library + session hygiene) and the adapter principle; "What not to do"
+gains the parallel-surface prohibition. The kernel design spec's client
+model is unchanged — this narrows product surface choices to it.
+
+**Revisit when:** a harness that cannot embed the client or reach a
+socket demonstrates real demand the adapters cannot serve, or slice-B/C
+work falsifies the protocol's usability for arbitrary tasks.
+
 ## 2026-07-18 — Iteration 6 approved: kernel convergence first slice + real-world race scenario design
 
 **Context:** With the write-up reframed around the worktree-replacement
