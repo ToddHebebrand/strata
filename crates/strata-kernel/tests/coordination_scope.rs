@@ -349,10 +349,10 @@ fn node_delta_authority_includes_node_and_old_and_new_parent_coverage() {
     )
     .unwrap();
     assert_eq!(payload_only.write_resources, vec!["node:caller"]);
-    assert_eq!(
-        payload_only.reservation_coverage,
-        vec!["node:caller", "node:old-parent"]
-    );
+    // Spec 2026-07-17 Change 5: a payload-only upsert leaves sibling shape
+    // untouched, so node write authority alone carries it — no parent
+    // coverage. Shape changes (the move below) still demand both parents.
+    assert_eq!(payload_only.reservation_coverage, vec!["node:caller"]);
 
     let parent_move = required_delta_authority(
         &graph,

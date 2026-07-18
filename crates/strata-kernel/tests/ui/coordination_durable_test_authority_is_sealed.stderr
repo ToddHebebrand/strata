@@ -1,0 +1,38 @@
+error[E0432]: unresolved imports `strata_kernel::CoordinationDurable`, `strata_kernel::CoordinationFailpoint`
+ --> tests/ui/coordination_durable_test_authority_is_sealed.rs:1:21
+  |
+1 | use strata_kernel::{CoordinationDurable, CoordinationFailpoint};
+  |                     ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^ no `CoordinationFailpoint` in the root
+  |                     |
+  |                     no `CoordinationDurable` in the root
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | pub use coordination::{CoordinationDurable, CoordinationFailpoint};
+  |                        ^^^^^^^^^^^^^^^^^^^
+note: the item is gated behind the `coordination-test-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "coordination-test-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | pub use coordination::{CoordinationDurable, CoordinationFailpoint};
+  |                                             ^^^^^^^^^^^^^^^^^^^^^
+note: the item is gated behind the `coordination-test-api` feature
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "coordination-test-api")]
+  |       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: a similar name exists in the module
+  |
+1 - use strata_kernel::{CoordinationDurable, CoordinationFailpoint};
+1 + use strata_kernel::{CoordinationError, CoordinationFailpoint};
+  |
+help: a similar name exists in the module
+  |
+1 - use strata_kernel::{CoordinationDurable, CoordinationFailpoint};
+1 + use strata_kernel::{CoordinationDurable, CoordinationTableCounts};
+  |

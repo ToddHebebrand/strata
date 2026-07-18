@@ -323,6 +323,11 @@ impl Kernel {
             .clone()
     }
 
+    /// Reads the retained canonical digest for one exact graph generation.
+    pub fn generation_digest(&self, generation: u64) -> Result<String> {
+        self.store.generation_digest(generation)
+    }
+
     pub(crate) fn resource_clock_snapshot(&self) -> Arc<ResourceClockSnapshot> {
         self.resource_clocks
             .read()

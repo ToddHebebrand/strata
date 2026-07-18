@@ -1,0 +1,1 @@
+{"protocolVersion":1,"requestId":"request:position-negative-zero","clientId":"client:alpha","deadlineMs":"30000","idempotencyKey":"idem:position-negative-zero","action":{"type":"add_intent","changeSetId":"change:1","intent":{"type":"add_parameter","functionId":"node:format-user","name":"locale","typeText":"string","position":-0,"value":"\"en-US\""}}}

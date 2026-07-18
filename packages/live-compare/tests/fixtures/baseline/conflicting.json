@@ -1,0 +1,25 @@
+{
+  "description": "Both task sessions rewrite the same line of src/types/user.ts; the second merge conflicts and the integration agent resolves it with one repair edit.",
+  "task-1": {
+    "edits": [
+      { "path": "src/types/user.ts", "find": "return user.email;", "replace": "return user.email.toLowerCase();", "all": false }
+    ],
+    "outcome": { "numTurns": 7, "durationMs": 4200, "totalCostUsd": 0.24, "inputTokens": 950, "outputTokens": 340, "toolEvents": 10, "repairEdits": 0, "errors": [] }
+  },
+  "task-2": {
+    "edits": [
+      { "path": "src/types/user.ts", "find": "return user.email;", "replace": "return `<${user.email}>`;", "all": false }
+    ],
+    "outcome": { "numTurns": 6, "durationMs": 3900, "totalCostUsd": 0.2, "inputTokens": 850, "outputTokens": 280, "toolEvents": 8, "repairEdits": 0, "errors": [] }
+  },
+  "integration": {
+    "ops": [
+      { "git": ["merge", "--no-edit", "task-1"] },
+      { "gitAllowFail": ["merge", "--no-edit", "task-2"] },
+      { "write": { "path": "src/types/user.ts", "content": "/**\n * Represents a user of the system.\n * @internal\n */\nexport interface User {\n  id: string;\n  email: string;\n}\n\nexport function displayUser(user: User): string {\n  return `<${user.email.toLowerCase()}>`;\n}\n" } },
+      { "git": ["add", "-A"] },
+      { "git": ["commit", "-m", "baseline: integration conflict resolution"] }
+    ],
+    "outcome": { "numTurns": 14, "durationMs": 11000, "totalCostUsd": 1.1, "inputTokens": 4200, "outputTokens": 900, "toolEvents": 12, "repairEdits": 1, "errors": [] }
+  }
+}

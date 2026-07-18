@@ -45,6 +45,24 @@ impl Kernel {
         self.store.coordination().change_set(id)
     }
 
+    /// Reads only the bounded intent records needed by the local service to
+    /// reconcile a write-ahead request after restart. These records are never
+    /// part of the client protocol.
+    pub fn intents_for_change_set_bounded(
+        &self,
+        id: &str,
+        limit: usize,
+    ) -> Result<Vec<IntentRecord>> {
+        if limit == 0 || limit > 256 {
+            bail!("intent projection limit must be in 1..=256");
+        }
+        let intents = self.store.coordination().intents_for(id)?;
+        if intents.len() > limit {
+            bail!("change set {id} exceeds {limit} intent projection bound");
+        }
+        Ok(intents)
+    }
+
     pub fn ticket_for_change_set(&self, id: &str) -> Result<Option<CoordinationTicket>> {
         Ok(self
             .store
@@ -56,6 +74,28 @@ impl Kernel {
 
     pub fn operation(&self, generation: u64) -> Result<Option<OperationRecord>> {
         self.store.operation(generation)
+    }
+
+    /// Net renamed-symbol transitions committed after `base_generation`, for
+    /// fresh-decision reporting: an agent whose change set needs a decision
+    /// authored its intent content against `base_generation`, so any name it
+    /// used may have moved. Walks the operation log; bounded, deterministic.
+    pub fn renamed_symbols_since(
+        &self,
+        base_generation: u64,
+    ) -> Result<Vec<crate::OperationRename>> {
+        let current = self.snapshot().generation();
+        let mut operations = Vec::new();
+        let mut generation = base_generation;
+        while generation < current {
+            generation = generation
+                .checked_add(1)
+                .context("operation walk generation overflow")?;
+            if let Some(operation) = self.store.operation(generation)? {
+                operations.push(operation);
+            }
+        }
+        Ok(fold_operation_renames(operations.iter()))
     }
 
     pub fn ready_offer_for_change_set(&self, id: &str) -> Result<Option<ReadyOffer>> {
@@ -992,6 +1032,69 @@ pub(super) fn intent_kind(intent: &IntentRecord) -> &'static str {
         IntentParameters::RenameSymbol { .. } => "RenameSymbol",
         IntentParameters::AddParameter { .. } => "AddParameter",
     }
+}
+
+/// Record each rename intent's name transition against the pre-publication
+/// graph. Analysis already proved every rename target is a supported named
+/// declaration, so extraction failure here is graph corruption and fails the
+/// publication closed.
+pub(super) fn operation_renames(
+    graph: &crate::GraphGeneration,
+    intents: &[IntentRecord],
+) -> Result<Vec<crate::OperationRename>> {
+    let mut renames = Vec::new();
+    for intent in intents {
+        let IntentParameters::RenameSymbol {
+            declaration_id,
+            new_name,
+        } = &intent.parameters
+        else {
+            continue;
+        };
+        let declaration = graph.node(declaration_id).with_context(|| {
+            format!("rename target {declaration_id} disappeared before publication")
+        })?;
+        let from_name = crate::bridge::declaration_name(graph, declaration)?
+            .with_context(|| format!("rename target {declaration_id} has no declaration name"))?;
+        renames.push(crate::OperationRename {
+            node_id: declaration_id.clone(),
+            from_name,
+            to_name: new_name.clone(),
+        });
+    }
+    Ok(renames)
+}
+
+/// The maximum renamed-symbol entries a fresh-decision report carries; this
+/// matches the local-service protocol's array bound.
+pub const MAX_RENAMED_SYMBOLS: usize = 256;
+
+/// Fold the rename transitions recorded by a sequence of operations
+/// (ascending generation order) into per-declaration net transitions.
+/// Renames that return to their starting name are dropped; output is
+/// deterministic (ordered by node ID) and bounded.
+pub fn fold_operation_renames<'a>(
+    operations: impl Iterator<Item = &'a OperationRecord>,
+) -> Vec<crate::OperationRename> {
+    let mut chains: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
+    for operation in operations {
+        for rename in &operation.renames {
+            chains
+                .entry(rename.node_id.as_str())
+                .and_modify(|(_, current)| *current = rename.to_name.as_str())
+                .or_insert((rename.from_name.as_str(), rename.to_name.as_str()));
+        }
+    }
+    chains
+        .into_iter()
+        .filter(|(_, (from, to))| from != to)
+        .take(MAX_RENAMED_SYMBOLS)
+        .map(|(node_id, (from, to))| crate::OperationRename {
+            node_id: node_id.to_owned(),
+            from_name: from.to_owned(),
+            to_name: to.to_owned(),
+        })
+        .collect()
 }
 
 pub(super) fn bounded_wake_payload(

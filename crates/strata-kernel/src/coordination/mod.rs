@@ -28,13 +28,14 @@ pub use authority::{
 pub(crate) use authority::{CandidateEnvelope, PreparedCandidate};
 pub(crate) use authority::{SemanticProvider, canonical_candidate_digest};
 pub use coordinator::{
-    BeginChangeSet, CLAIM_TTL_TICKS, CancellationOutcome, DRAFT_TTL_TICKS,
-    MAX_WAKE_AFFECTED_NODE_IDS, READY_OFFER_TTL_TICKS,
+    BeginChangeSet, CLAIM_TTL_TICKS, CancellationOutcome, DRAFT_TTL_TICKS, MAX_RENAMED_SYMBOLS,
+    MAX_WAKE_AFFECTED_NODE_IDS, READY_OFFER_TTL_TICKS, fold_operation_renames,
 };
+#[cfg(feature = "coordination-test-api")]
+pub use durable::CoordinationFailpoint;
 pub(crate) use durable::PUBLICATION_ATTEMPTS;
 pub use durable::{
-    CoordinationDurable, CoordinationFailpoint, CoordinationMetadataState, CoordinationTableCounts,
-    CreateDraftOutcome,
+    CoordinationDurable, CoordinationMetadataState, CoordinationTableCounts, CreateDraftOutcome,
 };
 pub(crate) use durable::{
     LifecycleTransition, RecoveryMigrationPlan, ensure_coordination_schema,

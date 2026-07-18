@@ -4,6 +4,7 @@ export type TerminalReason =
   | "success"
   | "error_max_turns"
   | "error_wall_time"
+  | "max_budget"
   | "error_during_execution"
   | "error_other";
 

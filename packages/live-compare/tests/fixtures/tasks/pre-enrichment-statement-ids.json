@@ -1,0 +1,460 @@
+{
+  "description": "Frozen pre-enrichment top-level semantic statement inventory of examples/medium src/** (trivia excluded: trivia nodes carry no references and reindex under append, the disclosed sibling-position limitation); every entry must survive the x-namespace-enriched-v1 corpus edits with an identical stable ID.",
+  "frozenAt": "pre x-namespace-enriched-v1",
+  "statements": {
+    "src/cli.ts": [
+      {
+        "id": "bcd7e55e56b206c2",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "a38cd5d8accb923d",
+        "childIndex": 1,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "bb21e56155c6b508",
+        "childIndex": 2,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "15c81144a7d95ed3",
+        "childIndex": 3,
+        "kind": "InterfaceDeclaration"
+      },
+      {
+        "id": "846b6eeea6a33e8b",
+        "childIndex": 4,
+        "kind": "FirstStatement"
+      },
+      {
+        "id": "d87ff083945b2071",
+        "childIndex": 5,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "b870af46ba0ede2b",
+        "childIndex": 6,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "96181070cbce344d",
+        "childIndex": 7,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "1aea24a8cc8cf79d",
+        "childIndex": 8,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "4f8629be886d2708",
+        "childIndex": 9,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "de79aebe7737450d",
+        "childIndex": 10,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "a28a039ccde3f5d5",
+        "childIndex": 11,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "336484271c4a1889",
+        "childIndex": 12,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/clock.ts": [
+      {
+        "id": "6f05771fb2d85f5b",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "42074f5b5722a960",
+        "childIndex": 1,
+        "kind": "ClassDeclaration"
+      }
+    ],
+    "src/events.ts": [
+      {
+        "id": "91a542c7b61c0d62",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "f9247a967e36d9b0",
+        "childIndex": 1,
+        "kind": "TypeAliasDeclaration"
+      },
+      {
+        "id": "e3069f7c57a23ffe",
+        "childIndex": 2,
+        "kind": "ClassDeclaration"
+      }
+    ],
+    "src/flags.ts": [
+      {
+        "id": "610cbe8893b5e379",
+        "childIndex": 0,
+        "kind": "InterfaceDeclaration"
+      },
+      {
+        "id": "1b952e0b6f6e38cc",
+        "childIndex": 1,
+        "kind": "ClassDeclaration"
+      },
+      {
+        "id": "4f16a9a4f5a8f387",
+        "childIndex": 2,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "5d73ed49413a0603",
+        "childIndex": 3,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/index.ts": [
+      {
+        "id": "65d5d342509cf2f4",
+        "childIndex": 0,
+        "kind": "ExportDeclaration"
+      },
+      {
+        "id": "5c999509d205f7fe",
+        "childIndex": 1,
+        "kind": "ExportDeclaration"
+      },
+      {
+        "id": "5d5a8a17e32c632e",
+        "childIndex": 2,
+        "kind": "ExportDeclaration"
+      },
+      {
+        "id": "35b2b8c876a46208",
+        "childIndex": 3,
+        "kind": "ExportDeclaration"
+      },
+      {
+        "id": "7e8e34363f3656a0",
+        "childIndex": 4,
+        "kind": "ExportDeclaration"
+      },
+      {
+        "id": "2c036960645e6c02",
+        "childIndex": 5,
+        "kind": "ExportDeclaration"
+      },
+      {
+        "id": "051acdc385833f8e",
+        "childIndex": 6,
+        "kind": "ExportDeclaration"
+      },
+      {
+        "id": "1838385cc280a9c0",
+        "childIndex": 7,
+        "kind": "ExportDeclaration"
+      },
+      {
+        "id": "f902a339170f4fef",
+        "childIndex": 8,
+        "kind": "ExportDeclaration"
+      }
+    ],
+    "src/lib/dateRange.ts": [
+      {
+        "id": "26c4e025d8bd1c6c",
+        "childIndex": 0,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/lib/format.ts": [
+      {
+        "id": "2332ec869bcee5b4",
+        "childIndex": 0,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/lib/permissions.ts": [
+      {
+        "id": "c7c015467031aeac",
+        "childIndex": 0,
+        "kind": "FirstStatement"
+      },
+      {
+        "id": "54c06f9fd6e94bf5",
+        "childIndex": 1,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "12465916e3ab0a1f",
+        "childIndex": 2,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/lru.ts": [
+      {
+        "id": "c0d0106cfd1b0b48",
+        "childIndex": 0,
+        "kind": "ClassDeclaration"
+      }
+    ],
+    "src/main.ts": [
+      {
+        "id": "6f63216b19975735",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "1f61fc1cd74763bd",
+        "childIndex": 1,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "5f960dc32db390ee",
+        "childIndex": 2,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "e50a67da5f4b95cc",
+        "childIndex": 3,
+        "kind": "FirstStatement"
+      },
+      {
+        "id": "60b4297695c667e4",
+        "childIndex": 4,
+        "kind": "IfStatement"
+      }
+    ],
+    "src/persistence.ts": [
+      {
+        "id": "d094303de5a2dc42",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "e3bc18f05b12440c",
+        "childIndex": 1,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "872ac63aa885b32e",
+        "childIndex": 2,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "dc19754322394fab",
+        "childIndex": 3,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "1a483c48f13cef2b",
+        "childIndex": 4,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "7d34fe042816ba5e",
+        "childIndex": 5,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/server/audit.ts": [
+      {
+        "id": "17a990121741c33b",
+        "childIndex": 0,
+        "kind": "TypeAliasDeclaration"
+      },
+      {
+        "id": "9ccc6b1fb80fa88d",
+        "childIndex": 1,
+        "kind": "InterfaceDeclaration"
+      },
+      {
+        "id": "fc8972d084f0509c",
+        "childIndex": 2,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/server/events.ts": [
+      {
+        "id": "6715afbcd4cdec23",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "cde74a08bd34ca4f",
+        "childIndex": 1,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "13debac05f973311",
+        "childIndex": 2,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/store.ts": [
+      {
+        "id": "8e72634b5aea5721",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "22323898417f3767",
+        "childIndex": 1,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "e32cf4e22754f387",
+        "childIndex": 2,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "c164eade3525ea90",
+        "childIndex": 3,
+        "kind": "InterfaceDeclaration"
+      },
+      {
+        "id": "94e5a0769322e05d",
+        "childIndex": 4,
+        "kind": "ClassDeclaration"
+      }
+    ],
+    "src/types.ts": [
+      {
+        "id": "b3dcfc8558e5be04",
+        "childIndex": 0,
+        "kind": "TypeAliasDeclaration"
+      },
+      {
+        "id": "7f4f5c208184335b",
+        "childIndex": 1,
+        "kind": "InterfaceDeclaration"
+      },
+      {
+        "id": "a9d2c3f347d3e89f",
+        "childIndex": 2,
+        "kind": "InterfaceDeclaration"
+      },
+      {
+        "id": "51c1ad212e5845b8",
+        "childIndex": 3,
+        "kind": "InterfaceDeclaration"
+      },
+      {
+        "id": "20eae43d6d331749",
+        "childIndex": 4,
+        "kind": "TypeAliasDeclaration"
+      },
+      {
+        "id": "0180784e1d4cbdd9",
+        "childIndex": 5,
+        "kind": "InterfaceDeclaration"
+      },
+      {
+        "id": "a490bb0facf64aed",
+        "childIndex": 6,
+        "kind": "FirstStatement"
+      },
+      {
+        "id": "b992baabad7d8e5a",
+        "childIndex": 7,
+        "kind": "InterfaceDeclaration"
+      }
+    ],
+    "src/types/user.ts": [
+      {
+        "id": "d4cd77d438298878",
+        "childIndex": 0,
+        "kind": "InterfaceDeclaration"
+      }
+    ],
+    "src/ui/timeline.ts": [
+      {
+        "id": "2b74282eb9ec29e9",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "9b930c2e6eeef50b",
+        "childIndex": 1,
+        "kind": "FunctionDeclaration"
+      },
+      {
+        "id": "681d76cf56cb91cd",
+        "childIndex": 2,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/users/greet.ts": [
+      {
+        "id": "d7f7af26b793ddc4",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "4ea1d7feeb7c6fec",
+        "childIndex": 1,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/users/legacy.ts": [
+      {
+        "id": "4c0caf870785e978",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "67584ed5c9a03441",
+        "childIndex": 1,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/users/list.ts": [
+      {
+        "id": "38e8f47098898461",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "e0b0f58d4e9d9b7b",
+        "childIndex": 1,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/users/repo.ts": [
+      {
+        "id": "895b10845697076e",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "efd158d1698dea4e",
+        "childIndex": 1,
+        "kind": "InterfaceDeclaration"
+      },
+      {
+        "id": "b6c1b7da15351a39",
+        "childIndex": 2,
+        "kind": "FunctionDeclaration"
+      }
+    ],
+    "src/users/serializer.ts": [
+      {
+        "id": "eacf14f88a0bc0ef",
+        "childIndex": 0,
+        "kind": "ImportDeclaration"
+      },
+      {
+        "id": "3163d1833a514072",
+        "childIndex": 1,
+        "kind": "FunctionDeclaration"
+      }
+    ]
+  }
+}

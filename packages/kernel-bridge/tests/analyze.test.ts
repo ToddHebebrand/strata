@@ -389,6 +389,129 @@ describe("semantic intent analysis", () => {
     ).toEqual([]);
   });
 
+  it("pins the namespace-member declaration referenced by a default value", () => {
+    const snapshot = mediumSnapshot();
+    const serializeId = declarationId(snapshot, /export function serialize\s*\(/);
+    const displayUserId = declarationId(snapshot, /export function displayUser\s*\(/);
+    const request = addParameterRequest(snapshot, serializeId);
+    request.intent.parameters = {
+      ...request.intent.parameters,
+      type: "addParameter",
+      functionId: serializeId,
+      name: "displayLabel",
+      typeText: "string",
+      position: 1,
+      defaultValue: "UserTypes.displayUser(user)"
+    };
+    const result = analyzeIntent(request);
+    if (!("facts" in result) || result.facts.type !== "addParameter") {
+      throw new Error("expected add-parameter facts");
+    }
+    expect(result.facts.contentDependencyDeclarationIds).toContain(displayUserId);
+    expectCanonicalUnique(result.facts.contentDependencyDeclarationIds);
+    expect(result.facts.validationDependencyNodeIds).toContain(displayUserId);
+  });
+
+  it("pins bare identifiers and named imports referenced by intent content", () => {
+    const snapshot = scratchSnapshot([
+      {
+        path: "greet.ts",
+        text:
+          "export function helper(value: number): number { return value; }\n" +
+          "export function greet(value: string): string { return value; }\n"
+      },
+      {
+        path: "use.ts",
+        text:
+          'import { helper } from "./greet.ts";\n' +
+          "export function local(value: number): number { return value; }\n" +
+          "export function target(value: string): string { return value; }\n"
+      }
+    ]);
+    const targetId = declarationId(snapshot, /export function target\s*\(/);
+    const helperId = declarationId(snapshot, /export function helper\s*\(/);
+    const localId = declarationId(snapshot, /export function local\s*\(/);
+    const request = addParameterRequest(snapshot, targetId);
+    request.intent.parameters = {
+      ...request.intent.parameters,
+      type: "addParameter",
+      functionId: targetId,
+      name: "score",
+      typeText: "number",
+      position: 1,
+      defaultValue: "helper(local(1))"
+    };
+    const result = analyzeIntent(request);
+    if (!("facts" in result) || result.facts.type !== "addParameter") {
+      throw new Error("expected add-parameter facts");
+    }
+    expect(result.facts.contentDependencyDeclarationIds).toContain(helperId);
+    expect(result.facts.contentDependencyDeclarationIds).toContain(localId);
+    expectCanonicalUnique(result.facts.contentDependencyDeclarationIds);
+  });
+
+  it("pins every merged declaration sharing a referenced type name", () => {
+    const snapshot = scratchSnapshot([
+      {
+        path: "shapes.ts",
+        text:
+          "export interface A { x: number }\n" +
+          "export interface A { y: string }\n" +
+          "export function target(value: string): string { return value; }\n"
+      }
+    ]);
+    const targetId = declarationId(snapshot, /export function target\s*\(/);
+    const mergedIds = snapshot.nodes
+      .filter((node) => /export interface A \{/.test(node.payload))
+      .map((node) => node.id)
+      .sort();
+    expect(mergedIds).toHaveLength(2);
+    const request = addParameterRequest(snapshot, targetId);
+    request.intent.parameters = {
+      ...request.intent.parameters,
+      type: "addParameter",
+      functionId: targetId,
+      name: "shape",
+      typeText: "A",
+      position: 1,
+      defaultValue: null
+    };
+    const result = analyzeIntent(request);
+    if (!("facts" in result) || result.facts.type !== "addParameter") {
+      throw new Error("expected add-parameter facts");
+    }
+    for (const id of mergedIds) {
+      expect(result.facts.contentDependencyDeclarationIds).toContain(id);
+    }
+  });
+
+  it("contributes nothing for unresolved or primitive intent content", () => {
+    const snapshot = mediumSnapshot();
+    const serializeId = declarationId(snapshot, /export function serialize\s*\(/);
+    const unresolved = addParameterRequest(snapshot, serializeId);
+    unresolved.intent.parameters = {
+      ...unresolved.intent.parameters,
+      type: "addParameter",
+      functionId: serializeId,
+      name: "label",
+      typeText: "string",
+      position: 1,
+      defaultValue: "Nonexistent.member(user)"
+    };
+    const unresolvedResult = analyzeIntent(unresolved);
+    if (!("facts" in unresolvedResult) || unresolvedResult.facts.type !== "addParameter") {
+      throw new Error("expected add-parameter facts");
+    }
+    expect(unresolvedResult.facts.contentDependencyDeclarationIds).toEqual([]);
+
+    const primitive = addParameterRequest(snapshot, serializeId);
+    const primitiveResult = analyzeIntent(primitive);
+    if (!("facts" in primitiveResult) || primitiveResult.facts.type !== "addParameter") {
+      throw new Error("expected add-parameter facts");
+    }
+    expect(primitiveResult.facts.contentDependencyDeclarationIds).toEqual([]);
+  });
+
   it("returns the stable identity of an internal validation member whose value changes", () => {
     const snapshot = mediumSnapshot();
     const userId = declarationId(snapshot, /export interface User\s*\{/);

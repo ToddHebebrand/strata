@@ -11,7 +11,7 @@ use super::authority::plan_change_set;
 use super::coordinator::{
     affected_node_ids, append_event, append_event_with_payload, bounded_wake_payload,
     bounded_wake_payload_with_scope, combine_release_and_readiness, coordination_commit_key,
-    intent_kind, scheduler_ticket_updates, transition,
+    intent_kind, operation_renames, scheduler_ticket_updates, transition,
 };
 use super::planner::{PlannerSnapshot, plan_readiness};
 use super::resource_keys;
@@ -460,10 +460,11 @@ impl Kernel {
         delta.base_generation = graph.generation();
         super::validate_delta_containment(&graph, &delta, &fresh_scope)
             .context("rebased candidate delta is outside inferred scope")?;
+        // Write-set keys only: validation-set namespace pins are observations
+        // (spec 2026-07-17 Change 2b) and must not bump conflict clocks.
         let semantic_index_keys = fresh_scope
             .write_set
             .iter()
-            .chain(&fresh_scope.validation_set)
             .filter(|resource| {
                 resource.resource_key.starts_with("namespace:")
                     || resource.resource_key.starts_with("absence:")
@@ -582,6 +583,7 @@ impl Kernel {
             },
             reasoning: before_change_set.reasoning.clone(),
             affected_node_ids: affected_node_ids.clone(),
+            renames: operation_renames(&graph, &intents)?,
         };
         let publication = Publication {
             schema_version: SCHEMA_VERSION,

@@ -11,6 +11,7 @@ import {
 const FIXTURE_NAMES = [
   "analyze-request",
   "analyze-response",
+  "analyze-response-add-parameter",
   "candidate-request",
   "candidate-response",
   "error-response"
@@ -167,5 +168,15 @@ describe("bridge protocol v1", () => {
     const response = clone(fixture("candidate-response")) as any;
     response.result.delta.baseGeneration = "1";
     expectResponseRejected(response);
+  });
+
+  it("rejects malformed content dependency declarations", () => {
+    const nonArray = clone(fixture("analyze-response-add-parameter")) as any;
+    nonArray.result.facts.contentDependencyDeclarationIds = "decl:helper";
+    expectResponseRejected(nonArray);
+
+    const emptyEntry = clone(fixture("analyze-response-add-parameter")) as any;
+    emptyEntry.result.facts.contentDependencyDeclarationIds = [""];
+    expectResponseRejected(emptyEntry);
   });
 });

@@ -672,6 +672,103 @@ fn row_1_disjoint_real_renames_publish_in_both_orders() {
     run_disjoint_rename_order(false);
 }
 
+/// Validation-circle narrowing acceptance (spec 2026-07-17, kernel-side
+/// counterpart of the live-compare mMechanism probe): two byte-disjoint
+/// declarations of ONE module (`logEvent` and `eventLine` in
+/// src/server/events.ts — they share only a cross-module callee, never a
+/// statement) submit ready/ready, hold both claims before either
+/// publication, publish in both orders with no fresh decision or
+/// needs_decision event, and leave a green projected tree.
+#[test]
+#[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
+fn same_module_disjoint_renames_publish_concurrently_in_both_orders() {
+    run_same_module_disjoint_order(true);
+    run_same_module_disjoint_order(false);
+}
+
+fn run_same_module_disjoint_order(event_line_first: bool) {
+    const LOG_EVENT_DECLARATION_ID: &str = "377324e0d5d31549";
+    const EVENT_LINE_DECLARATION_ID: &str = "55fffd2a919faf4c";
+    let directory = tempdir().unwrap();
+    let database_path = directory.path().join("kernel.redb");
+    let (kernel, created) = create_projected_kernel(&database_path).unwrap();
+    assert_eq!(created.generation, 0);
+
+    let log_agent = ClientActor::new("agent:same-module-log", "events:same-module-log");
+    let line_agent = ClientActor::new("agent:same-module-line", "events:same-module-line");
+    let log_offer = ready(submit_rename(
+        &log_agent,
+        &kernel,
+        "same-module-log",
+        LOG_EVENT_DECLARATION_ID,
+        "recordEvent",
+        0,
+    ));
+    let log_claim = claim(&log_agent, &kernel, &log_offer, 2);
+    let line_offer = ready(submit_rename(
+        &line_agent,
+        &kernel,
+        "same-module-line",
+        EVENT_LINE_DECLARATION_ID,
+        "formatEventLine",
+        0,
+    ));
+    let line_claim = claim(&line_agent, &kernel, &line_offer, 2);
+    assert_eq!(log_claim.graph_generation, 0);
+    assert_eq!(line_claim.graph_generation, 0);
+
+    let (first, second) = if event_line_first {
+        (
+            published(
+                line_agent
+                    .execute_claimed(&kernel, &line_claim, 3)
+                    .unwrap(),
+            ),
+            published(log_agent.execute_claimed(&kernel, &log_claim, 4).unwrap()),
+        )
+    } else {
+        (
+            published(log_agent.execute_claimed(&kernel, &log_claim, 3).unwrap()),
+            published(
+                line_agent
+                    .execute_claimed(&kernel, &line_claim, 4)
+                    .unwrap(),
+            ),
+        )
+    };
+    assert_eq!(first.generation, 1);
+    assert_eq!(second.generation, 2);
+
+    let final_state = CanonicalFinalState::capture(
+        &kernel,
+        &["same-module-log", "same-module-line"],
+        &[&log_agent, &line_agent],
+    )
+    .unwrap();
+    assert_eq!(final_state.graph_generation, 2);
+    assert_eq!(final_state.operations.len(), 2);
+    let snapshot = final_state.graph_snapshot();
+    assert!(
+        snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id == LOG_EVENT_DECLARATION_ID)
+            .unwrap()
+            .payload
+            .contains("function recordEvent")
+    );
+    assert!(
+        snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id == EVENT_LINE_DECLARATION_ID)
+            .unwrap()
+            .payload
+            .contains("function formatEventLine")
+    );
+    assert_projected_typescript_green(&snapshot);
+}
+
 #[test]
 #[ignore = "run through pnpm kernel:full-key-free:test after building the Node worker"]
 fn row_2_same_symbol_real_renames_require_a_fresh_decision() {

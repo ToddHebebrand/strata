@@ -208,11 +208,41 @@ fn user_delta(snapshot: &GraphSnapshot, payload: &str) -> GraphDelta {
         .find(|node| node.id == "fc98295bca9efc3e")
         .unwrap()
         .clone();
+    let new_name = payload
+        .split_whitespace()
+        .nth(2)
+        .expect("fixture payload declares `export interface <Name>`")
+        .to_owned();
+    let new_offset = payload.find(&new_name).unwrap() as u64;
     user.payload = payload.into();
+    // The 2026-07-17 publication capture derives rename transitions from the
+    // declaration name token and fails closed on incoherent graphs. A fixture
+    // rename must therefore move the name identifier together with the
+    // declaration payload; leaving the identifier at "User" strands every
+    // later rename capture against this declaration.
+    let mut identifier = snapshot
+        .nodes
+        .iter()
+        .find(|node| {
+            node.parent_id.as_deref() == Some("fc98295bca9efc3e")
+                && node.kind == "Identifier"
+                && serde_json::from_str::<serde_json::Value>(&node.payload)
+                    .ok()
+                    .and_then(|value| value.get("text")?.as_str().map(str::to_owned))
+                    .as_deref()
+                    == Some("User")
+        })
+        .expect("fixture has the User declaration name identifier")
+        .clone();
+    identifier.payload =
+        serde_json::json!({ "text": new_name, "offset": new_offset }).to_string();
     GraphDelta {
         schema_version: SCHEMA_VERSION,
         base_generation: 0,
-        changes: vec![GraphChange::UpsertNode { node: user }],
+        changes: vec![
+            GraphChange::UpsertNode { node: user },
+            GraphChange::UpsertNode { node: identifier },
+        ],
     }
 }
 
@@ -1129,6 +1159,49 @@ fn concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original
             .filter(|event| event.kind == CoordinationEventKind::IntentCommitted)
             .count(),
         1
+    );
+}
+
+#[test]
+fn validation_only_semantic_pins_do_not_bump_their_clocks() {
+    // Spec 2026-07-17 Change 2b: intent-content analysis observes namespace
+    // membership without writing it. Publication must bump semantic clocks
+    // only for write-set keys, or an observer's own publish would spuriously
+    // invalidate unrelated claims that pinned the same namespace.
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let mut scoped = analysis(&user_scope(&snapshot));
+    scoped.write_set.push(resource("namespace:test:Written"));
+    scoped
+        .validation_set
+        .push(resource("namespace:test:Written"));
+    scoped
+        .validation_set
+        .push(resource("namespace:test:Observed"));
+    let analyzer = SequencedAnalyzer::new(vec![scoped; 3]);
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), Arc::new(analyzer)).unwrap();
+    let claim = begin_submit_claim(&kernel, "semantic-clocks", 0);
+    published(
+        kernel
+            .publish_claimed(
+                &claim,
+                &RecordingBuilder::new(user_delta(&snapshot, "export interface Account {}")),
+                2,
+            )
+            .unwrap(),
+    );
+    let clocks = kernel
+        .test_resource_clocks(&BTreeSet::from([
+            "namespace:test:Written".to_owned(),
+            "namespace:test:Observed".to_owned(),
+        ]))
+        .unwrap();
+    assert_eq!(clocks["namespace:test:Written"], 1);
+    assert_eq!(
+        clocks["namespace:test:Observed"], 0,
+        "a namespace pin observed in the validation set must not bump on publish"
     );
 }
 

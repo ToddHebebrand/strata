@@ -1,7 +1,5 @@
 import { compareCodeUnits, type KernelReferenceV1 } from "@strata/ingest";
 import {
-  begin,
-  createInMemoryProgram,
   findNodeById,
   getReferencesByTo,
   listModules,
@@ -9,11 +7,10 @@ import {
   normalizePath,
   resolveCallsites,
   resolveDeclarationNameIdentifier,
-  rollback,
   type Db,
   type NodeRow
 } from "@strata/store";
-import { buildAnalysisContext } from "@strata/verify";
+import { posix } from "node:path";
 import ts from "typescript";
 import {
   semanticFactsSchema,
@@ -78,7 +75,12 @@ export function analyzeIntentInDb(
     const facts =
       intent.parameters.type === "renameSymbol"
         ? analyzeRename(db, intent.parameters.declarationId)
-        : analyzeAddParameter(db, intent.parameters.functionId);
+        : analyzeAddParameter(
+            db,
+            intent.parameters.functionId,
+            intent.parameters.typeText,
+            intent.parameters.defaultValue
+          );
     return { facts: semanticFactsSchema.parse(facts) };
   } catch (error) {
     if (error instanceof AnalyzeFailure) {
@@ -132,7 +134,12 @@ function analyzeRename(db: Db, declarationId: string): SemanticFacts {
   };
 }
 
-function analyzeAddParameter(db: Db, functionId: string): SemanticFacts {
+function analyzeAddParameter(
+  db: Db,
+  functionId: string,
+  typeText: string,
+  defaultValue: string | null
+): SemanticFacts {
   const declaration = requireNode(
     db,
     functionId,
@@ -184,7 +191,14 @@ function analyzeAddParameter(db: Db, functionId: string): SemanticFacts {
     declaration.id,
     ...resolution.callsites.map((callsite) => callsite.statementId)
   ]);
+  const contentDependencyDeclarationIds = resolveContentDependencies(
+    db,
+    functionId,
+    typeText,
+    defaultValue
+  );
   const validation = validationDependencies(db, [
+    ...contentDependencyDeclarationIds,
     declaration.id,
     name.id,
     ...directCallReferences.flatMap((reference) => [
@@ -213,10 +227,177 @@ function analyzeAddParameter(db: Db, functionId: string): SemanticFacts {
     arityRiskStatementIds,
     unresolvedReferenceDiagnostics: [],
     functionBodyReadReferences,
+    contentDependencyDeclarationIds,
     ...validation
   };
 }
 
+interface ContentName {
+  root: string;
+  member?: string;
+}
+
+/**
+ * Names the module-level declarations an addParameter's typeText and
+ * defaultValue will reference once executed, resolved purely against the
+ * graph (spec 2026-07-17 Changes 2/2a). Bare identifiers resolve in the
+ * function's own module and through named imports; single-member namespace
+ * accesses resolve through namespace imports. Every same-named declaration
+ * is pinned (interface merging, overloads). Unresolvable names contribute
+ * nothing — the candidate build's tsc validation is the fail-closed
+ * backstop, and a fresh-decision response could not name a symbol that
+ * never existed in the graph.
+ */
+function resolveContentDependencies(
+  db: Db,
+  functionId: string,
+  typeText: string,
+  defaultValue: string | null
+): string[] {
+  const names = collectContentNames(typeText, defaultValue);
+  if (names.length === 0) return [];
+  const graph = buildGraphIndex(db);
+  const moduleId = graph.moduleIdByNodeId.get(functionId);
+  if (!moduleId) return [];
+
+  const statementsOf = (owner: string): NodeRow[] =>
+    graph.nodes.filter((node) => node.parentId === owner);
+  const declarationsNamed = (owner: string, name: string): string[] =>
+    statementsOf(owner)
+      .filter((statement) => {
+        const identifier = resolveDeclarationNameIdentifier(db, statement.id);
+        if (!identifier) return false;
+        try {
+          return (JSON.parse(identifier.payload) as { text: string }).text === name;
+        } catch {
+          return false;
+        }
+      })
+      .map((statement) => statement.id);
+
+  const importerPath = normalizePath(
+    graph.nodeById.get(moduleId)?.payload ?? ""
+  );
+  const resolveSpecifier = (specifier: string): string | undefined => {
+    if (!specifier.startsWith(".")) return undefined;
+    const base = posix.normalize(posix.join(posix.dirname(importerPath), specifier));
+    for (const candidate of [
+      base,
+      base.replace(/\.js$/, ".ts"),
+      `${base}.ts`,
+      posix.join(base, "index.ts")
+    ]) {
+      const target = graph.moduleIdByPath.get(normalizePath(candidate));
+      if (target) return target;
+    }
+    return undefined;
+  };
+
+  // root binding → target module and exported name (null = namespace import,
+  // resolved per member at the use site).
+  const importBindings = new Map<
+    string,
+    { targetModuleId: string; exportedName: string | null }
+  >();
+  for (const statement of statementsOf(moduleId)) {
+    if (statement.kind !== "ImportDeclaration") continue;
+    const file = ts.createSourceFile(
+      "import.ts",
+      statement.payload,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS
+    );
+    const parsed = file.statements[0];
+    if (
+      !parsed ||
+      !ts.isImportDeclaration(parsed) ||
+      !ts.isStringLiteralLike(parsed.moduleSpecifier)
+    ) {
+      continue;
+    }
+    const targetModuleId = resolveSpecifier(parsed.moduleSpecifier.text);
+    if (!targetModuleId || !parsed.importClause) continue;
+    const bindings = parsed.importClause.namedBindings;
+    if (bindings && ts.isNamespaceImport(bindings)) {
+      importBindings.set(bindings.name.text, { targetModuleId, exportedName: null });
+    }
+    if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        importBindings.set(element.name.text, {
+          targetModuleId,
+          exportedName: (element.propertyName ?? element.name).text
+        });
+      }
+    }
+  }
+
+  const pinned = new Set<string>();
+  for (const { root, member } of names) {
+    for (const id of declarationsNamed(moduleId, root)) pinned.add(id);
+    const binding = importBindings.get(root);
+    if (!binding) continue;
+    const exported = binding.exportedName ?? member;
+    if (!exported) continue;
+    for (const id of declarationsNamed(binding.targetModuleId, exported)) {
+      pinned.add(id);
+    }
+  }
+  return canonicalIds([...pinned]);
+}
+
+function collectContentNames(
+  typeText: string,
+  defaultValue: string | null
+): ContentName[] {
+  const names: ContentName[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      ts.isIdentifier(node.name)
+    ) {
+      names.push({ root: node.expression.text, member: node.name.text });
+      return;
+    }
+    if (ts.isQualifiedName(node) && ts.isIdentifier(node.left)) {
+      names.push({ root: node.left.text, member: node.right.text });
+      return;
+    }
+    if (ts.isIdentifier(node)) {
+      names.push({ root: node.text });
+      return;
+    }
+    node.forEachChild(visit);
+  };
+  const parse = (text: string): void => {
+    const file = ts.createSourceFile(
+      "content.ts",
+      text,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS
+    );
+    file.statements.forEach(visit);
+  };
+  parse(`type __ContentProbe = ${typeText};`);
+  if (defaultValue !== null) parse(`const __contentProbe = (${defaultValue});`);
+  // The probe wrappers' own binding names never resolve to module-level
+  // declarations, so they need no special-casing.
+  return names;
+}
+
+/**
+ * The validation circle is statement-granular (spec 2026-07-17 Change 1):
+ * each seed pins its enclosing module-level statement plus that statement's
+ * full descendant subtree, and the references leaving those nodes. Within
+ * the current intent vocabulary (renameSymbol, addParameter), any change
+ * that alters the resolution of a name one of these statements uses rewrites
+ * the statement itself (reference propagation covers imports too), so no
+ * module closure or import/export-surface pin is required; intents that
+ * would break that property must extend validation pinning first
+ * (decisions.md 2026-07-17).
+ */
 function validationDependencies(
   db: Db,
   seedNodeIds: readonly string[]
@@ -225,49 +406,40 @@ function validationDependencies(
   "validationDependencyNodeIds" | "validationDependencyReferenceFromNodeIds"
 > {
   const graph = buildGraphIndex(db);
-  const selectedModuleIds = new Set<string>();
+  const childrenByParent = new Map<string, string[]>();
+  for (const node of graph.nodes) {
+    if (node.parentId === null) continue;
+    const siblings = childrenByParent.get(node.parentId) ?? [];
+    siblings.push(node.id);
+    childrenByParent.set(node.parentId, siblings);
+  }
+
+  const pinned = new Set<string>();
   for (const nodeId of seedNodeIds) {
-    const moduleId = graph.moduleIdByNodeId.get(nodeId);
-    if (!moduleId) {
+    let current = graph.nodeById.get(nodeId);
+    if (!current || !graph.moduleIdByNodeId.get(nodeId)) {
       throw new AnalyzeFailure(
         "unresolvedReference",
         [{ nodeId, modulePath: null, message: "node has no module", code: 2304 }],
         "semantic analysis found an unresolved reference"
       );
     }
-    selectedModuleIds.add(moduleId);
-  }
-
-  const graphDependencies = new Map<string, Set<string>>();
-  for (const reference of graph.references) {
-    const sourceModule = graph.moduleIdByNodeId.get(reference.fromNodeId);
-    const targetModule = graph.moduleIdByNodeId.get(reference.toNodeId);
-    if (!sourceModule || !targetModule || sourceModule === targetModule) continue;
-    addDependency(graphDependencies, sourceModule, targetModule);
-  }
-  const programDependencies = buildProgramDependencies(db, graph.moduleIdByPath);
-  for (const [source, targets] of programDependencies) {
-    for (const target of targets) addDependency(graphDependencies, source, target);
-  }
-
-  const queue = [...selectedModuleIds].sort(compareCodeUnits);
-  for (let index = 0; index < queue.length; index += 1) {
-    const moduleId = queue[index]!;
-    const dependencies = [...(graphDependencies.get(moduleId) ?? [])].sort(
-      compareCodeUnits
-    );
-    for (const dependency of dependencies) {
-      if (selectedModuleIds.has(dependency)) continue;
-      selectedModuleIds.add(dependency);
-      queue.push(dependency);
+    while (
+      current.parentId !== null &&
+      graph.nodeById.get(current.parentId)?.kind !== "Module"
+    ) {
+      current = graph.nodeById.get(current.parentId)!;
+    }
+    const stack = [current.id];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      if (pinned.has(id)) continue;
+      pinned.add(id);
+      for (const child of childrenByParent.get(id) ?? []) stack.push(child);
     }
   }
 
-  const validationDependencyNodeIds = canonicalIds(
-    graph.nodes
-      .filter((node) => selectedModuleIds.has(graph.moduleIdByNodeId.get(node.id)!))
-      .map((node) => node.id)
-  );
+  const validationDependencyNodeIds = canonicalIds([...pinned]);
   const selectedNodes = new Set(validationDependencyNodeIds);
   const validationDependencyReferenceFromNodeIds = canonicalIds(
     graph.references
@@ -279,74 +451,6 @@ function validationDependencies(
     validationDependencyNodeIds,
     validationDependencyReferenceFromNodeIds
   };
-}
-
-function buildProgramDependencies(
-  db: Db,
-  moduleIdByPath: Map<string, string>
-): Map<string, Set<string>> {
-  const tx = begin(db, "kernel-bridge-analysis");
-  let renderedByPath: Map<string, string>;
-  let options: ts.CompilerOptions;
-  try {
-    ({ renderedByPath, options } = buildAnalysisContext(db, tx));
-  } finally {
-    rollback(db, tx);
-  }
-
-  const sourceFiles = new Map<string, ts.SourceFile>();
-  for (const [modulePath, text] of renderedByPath) {
-    sourceFiles.set(
-      normalizePath(modulePath),
-      ts.createSourceFile(
-        modulePath,
-        text,
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.TS
-      )
-    );
-  }
-  const program = createInMemoryProgram(renderedByPath, sourceFiles, options);
-  const checker = program.getTypeChecker();
-  const dependencies = new Map<string, Set<string>>();
-
-  for (const sourceFile of sourceFiles.values()) {
-    const sourceModuleId = moduleIdByPath.get(normalizePath(sourceFile.fileName));
-    if (!sourceModuleId) continue;
-    for (const statement of sourceFile.statements) {
-      const specifier = moduleSpecifierOf(statement);
-      if (!specifier) continue;
-      const symbol = checker.getSymbolAtLocation(specifier);
-      for (const declaration of symbol?.declarations ?? []) {
-        const targetPath = normalizePath(declaration.getSourceFile().fileName);
-        const targetModuleId = moduleIdByPath.get(targetPath);
-        if (targetModuleId && targetModuleId !== sourceModuleId) {
-          addDependency(dependencies, sourceModuleId, targetModuleId);
-        }
-      }
-    }
-  }
-  return dependencies;
-}
-
-function moduleSpecifierOf(statement: ts.Statement): ts.StringLiteralLike | undefined {
-  if (
-    (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
-    statement.moduleSpecifier &&
-    ts.isStringLiteralLike(statement.moduleSpecifier)
-  ) {
-    return statement.moduleSpecifier;
-  }
-  if (
-    ts.isImportEqualsDeclaration(statement) &&
-    ts.isExternalModuleReference(statement.moduleReference) &&
-    statement.moduleReference.expression &&
-    ts.isStringLiteralLike(statement.moduleReference.expression)
-  ) {
-    return statement.moduleReference.expression;
-  }
-  return undefined;
 }
 
 function buildGraphIndex(db: Db): GraphIndex {
@@ -474,16 +578,6 @@ function requireDeclarationName(db: Db, declarationId: string): NodeRow {
     );
   }
   return name;
-}
-
-function addDependency(
-  dependencies: Map<string, Set<string>>,
-  source: string,
-  target: string
-): void {
-  const targets = dependencies.get(source) ?? new Set<string>();
-  targets.add(target);
-  dependencies.set(source, targets);
 }
 
 function safeModulePath(db: Db, nodeId: string): string | null {

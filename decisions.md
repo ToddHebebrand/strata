@@ -7,6 +7,681 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — Validation-circle narrowing: statement-granular coordination lands
+
+**Problem:** the operator-amended M (entry of 2026-07-16) deferred
+within-module concurrent publication to a follow-on kernel iteration whose
+acceptance test was the pinned mechanism probe: two appended same-module
+functions with no shared references submitted `ready`/`queued` and the
+successor returned `needs_decision` after the first published.
+
+**Root cause (four pinch points, none of them in the kernel's scheduler):**
+(1) the bridge's `validationDependencies` pinned every node of the seed's
+transitive module closure; (2) `add_validation_facts` reserved every one of
+those nodes; (3) `reserve_node_and_parent` reserved `node:{module}` for
+every module-level statement, which `required_delta_authority` demanded for
+every statement-payload upsert; (4) `children:{parent}` membership hashed
+full member records (payloads included) and its clock bumped on any child
+upsert, so both siblings shared a `children:{module}` dependency that either
+one's publish invalidated.
+
+**Decided (spec
+`docs/superpowers/specs/2026-07-17-validation-circle-narrowing-design.md`,
+independent Codex gpt-5.6-sol xhigh review GO-WITH-AMENDMENTS, all
+amendments folded in):**
+
+- **Change 1 — statement-granular validation dependencies.** Each seed pins
+  its enclosing module-level statement's full subtree plus the references
+  leaving it; the module closure and the per-analysis `ts.createProgram`
+  are gone (the live-compare suite runs roughly twice as fast).
+- **Changes 2/2a — intent-content pins.** `addParameter` resolves its
+  `typeText`/`defaultValue` names against the graph (bare identifiers,
+  named imports, namespace members; every same-named declaration — merged
+  interfaces included) and validation-pins each resolved declaration, its
+  name identifier, and its `namespace:`/`absence:` membership. This keeps
+  the X1-first `needs_decision` + `renamedSymbols` path alive (analysis
+  knows the rename drifted the pinned name before any candidate build) and
+  closes the review's interface-merging hole: a concurrent rename B→A
+  writes the same `namespace:{module}:A` key the observer pinned.
+- **Change 2b — semantic clocks bump from write-set keys only**, so an
+  observer's own publish cannot spuriously invalidate unrelated claims.
+- **Changes 3/4 — observations never reserve.** Validation facts and
+  content pins push versions without reservations; module parents are never
+  reserved; payload-only upserts (same parent, index, kind) need no parent
+  coverage at containment.
+- **Change 5 — membership means shape.** `children:{parent}` hashes ordered
+  `(id, kind, childIndex)` tuples; clocks and containment use the same
+  payload-only predicate. Structural insert/delete/reorder still conflicts
+  through the parent bucket, preserving the standing structural-ops
+  boundary.
+- **Change 6 — pinned-target endpoint coverage.** A brand-new reference
+  from a materialized identifier may satisfy target-endpoint containment
+  through an exact `node:{to}` read/validation pin (the review caught that
+  X2's candidate would otherwise fail containment once validation pins
+  stopped reserving). Retargeting and unpinned targets stay
+  reservation-gated.
+- **Daemon liveness:** `advance_change_set` on a queued change set now runs
+  a `reconsider_tickets` pass — a ticket requeued at claim time (dynamic
+  expansion) has no later transition to re-plan it once its sibling already
+  published.
+
+**Deliberate flips, each re-asserted:** the mechanism probe is now the
+acceptance test (both orders `ready`/`ready`, both publish, zero fresh
+decisions, identical final digests); M restores its original pre-amendment
+clause (concurrent publication, `freshDecisions` 0) — exactly the transfer
+the 2026-07-16 amendment anticipated; X submits `ready`/`ready` in both
+orders, with X2-first's expansion surfacing at X1's own claim (still
+externally observable before the publishing advance) and X1-first's
+`needs_decision`+`renamedSymbols` preserved byte-for-byte; the node-bridge
+wide-rename fixture pins 68 statement-subtree validation nodes instead of
+the 1065-node closure; `coordination_scope`'s payload-only parent-coverage
+row and the two payload-sensitive membership rows moved to shape-changing
+fixtures. **Preserved without edits:** D/R/S/G qualification rows, the
+same-symbol fresh-decision row, all recovery/sealing/lease suites, and the
+full bridge conformance suite (which gained golden and rejected rows for
+the new serde-default `contentDependencyDeclarationIds` field). A new
+kernel acceptance scenario proves same-module disjoint renames publish in
+both orders with both claims held, through the real Node bridge, onto a
+green projected tree.
+
+**Also fixed en route (pre-existing, disclosed):**
+`coordination_publication`'s `user_delta` renamed declaration payloads
+without their name identifiers; the 2026-07-17 publication capture fails
+closed on such incoherent graphs, so the feature-gated sweep had one red
+row at the accepted baseline (that session's gate ran `cargo test -p
+strata-kernel` without `--features coordination-test-api`). The fixture now
+renames coherently.
+
+**Standing constraint (the narrowed circle's contract):** any future intent
+that can change name resolution without rewriting the dependent statements
+(e.g. `add_import`, `move_declaration`, structural inserts that shadow)
+must extend validation pinning before joining the concurrent vocabulary.
+Within the current vocabulary (renameSymbol, addParameter) reference
+propagation closes the gap: every resolution-changing edit rewrites the
+statements it affects, including import statements.
+
+**Registration impact:** task bodies, prompts, and the registered strata
+system prompt are untouched; the analyzer, daemon, and harness changed, so
+any live retry needs a fresh operator approval file (new sourceCommit and
+recomputed verifier digest) as always. No live spend occurred; every gate
+in this iteration is deterministic and key-free.
+
+## 2026-07-17 — X protocol-usability iteration: needs_decision names renamed symbols
+
+**Problem (from the completed pilot):** X is the only flow whose fresh
+decision requires rewriting intent *content* — the add_parameter value
+`UserTypes.displayUser(user)` must become `UserTypes.formatUser(user)` after
+X1's rename publishes. The live X2 session never derived that rewrite within
+bounds: the needs_decision response told it *that* a decision was needed but
+nothing about *what changed*, and X2's registered stable IDs cover only
+`serialize`, so it could not even inspect the renamed declaration. Scripted
+choreography passed because the harness hard-coded the rewrite.
+
+**Decided (candidate 1 of the pilot's follow-on list, with the candidate-2
+prompt sharpening folded in):** the coordination service now names renamed
+symbols in the fresh-decision context. Mechanism, additive end to end:
+
+- **Publication capture:** each committed rename records
+  `{nodeId, fromName, toName}` on its `OperationRecord` (`renames`,
+  serde-default so pre-existing durable records parse unchanged). The
+  previous name is extracted in pure Rust from the pre-publication graph via
+  the same `declaration_name` tokenizer analysis already trusts; extraction
+  failure fails the publication closed.
+- **Surfacing:** a `needs_decision` change-set response carries
+  `renamedSymbols: [{nodeId, previousName, currentName}]` — the *net*
+  transitions folded over all operations committed after the change set's
+  `base_generation` (chains collapse, A→B→A round trips drop, output bounded
+  at 256, deterministic node-ID order). Empty on every other state; the
+  intent_needs_decision event is deliberately unchanged (the advance response
+  is the actionable surface; events remain lifecycle observations).
+- **Client guidance:** the `advance_change_set` fresh-decision guidance and
+  the registered strata system prompt now instruct: rewrite any intent
+  content that mentions a previous name to the current name before
+  resubmitting. Task bodies are untouched and remain byte-identical across
+  arms; the baseline arm's prompts are untouched.
+
+**Why not alternatives:** parsing old names out of the committed rename's
+`namespace:{container}:{name}` scope resource keys works but couples reporting
+to resource-key syntax; reconstructing historic graph state at needs_decision
+time re-derives what publication already knew. Recording the transition on
+the operation log matches "the operation log is canonical history."
+
+**Qualification:** the full deterministic X gate passes in both orders with
+the harness's fresh decision now derived *solely* from the needs_decision
+response (string substitution previousName→currentName; the hard-coded
+rewrite is gone, and the X1-first row asserts the exact surfaced payload).
+Rust: shared protocol conformance (fixtures gained golden + rejected rows for
+the field), publication capture and needs_decision surfacing proven through
+the real daemon (`cancellation_reports_published_and_needs_decision_truthfully`
+now pins `{User → Account}`), full `cargo test -p strata-kernel` green.
+TS: full live-compare suite green (117 tests). `pnpm -r test` remains at the
+accepted baseline: only @strata/agent's two documented stale replay-fixture
+failures (5073ecfb56151b41).
+
+**Registration impact:** the strata system-prompt hash and
+`APPROVED_TASK_REGISTRATION_DIGEST` are re-frozen
+(`e54e1dd2c1a9d5984ec0553361fc31aab3b3bda8b6c2f225e1812bc593636c07`); the
+design doc's safe-status-fields list is amended with a pointer here. Any live
+X retry requires a fresh operator approval file (new sourceCommit,
+verifierDigest, taskRegistrationDigest) — none has been created, and no live
+run was started. A comparability note for that future round: the Strata arm's
+system prompt differs from the pilot's by the fresh-decision clause, so an X
+retry is a new measurement, not a re-run.
+
+## 2026-07-17 — Live round 6 completes the pilot: five matched wins, X fails live in both arms
+
+**Result** (`run-2026-07-17T05-43-24-572Z`, manifest at `04848d6`, arm-scoped
+stop): D, M, R, S, and G all completed both arms green — Strata won every
+completed matched trial, 4–14× on cost and 4–8× on makespan, with D (bulk
+propagation) the widest margin as the historical taxonomy predicted. M passed
+live under its amended serialize-plus-fresh-decision semantics. X failed in
+**both** arms: the Strata X2 session never published (the only flow whose
+fresh decision requires rewriting intent content to the renamed member —
+scripted choreography passed deterministically, the live model could not
+derive the rewrite within bounds; a liveness/usability gap, not a
+correctness one — no partial or wrong publication occurred), and the baseline
+over-delivered beyond the registered delta a third time. Full table and
+claims scoping: `docs/spikes/2026-07-17-phase-6-live-pilot-results.md`.
+Six-round total spend: USD 9.40.
+
+**Standing:** the pilot is complete. The design's central question — can two
+independent live agents reach one shared green codebase through Strata
+without branches, worktrees, or manual merges — is answered yes for five of
+six scenarios at N=1, with zero Strata-arm correctness or authority failures
+across eleven live arms. Follow-ons, each requiring its own approval: an
+X protocol-usability iteration (name the current symbol in `needs_decision`
+context and/or sharpen fresh-decision prompt guidance, then a fresh X
+qualification), the validation-circle-narrowing kernel iteration, and any
+N=3 directional extension.
+
+## 2026-07-17 — Live round 5 and the arm-scoped stop amendment
+
+**Round 5 result** (`run-2026-07-17T05-32-39-420Z`, manifest at `e9136de`):
+S-r1 completed both arms (Strata USD 0.103/45s; baseline USD 0.429/124s — the
+baseline's fastest S, consistent with the red-test disclosure removing its
+test-fixing detour). R-r1 stopped the round: the baseline agent added the
+registered `excited` parameter **and wired it into the function body**
+(`hello ${user.email}${excited ? "!" : ""}`), a behavioral change beyond the
+registered exact delta, caught by the normalized-AST check. This is a genuine
+conduct failure and stands: the same byte-identical task body drove the
+Strata arm's typed `add_parameter`, whose semantics make over-delivery
+inexpressible, while prose invited elaboration. Third distinct baseline
+failure mode in three genuine failures (planted-test fixing; out-of-scope
+drift; spec over-delivery). The guard also correctly refused round 5's first
+launch over a stale approval digest at zero cost.
+
+**Amendment (operator-approved):** the preregistered round-stop existed to
+prevent spending against a broken experiment; with the round stopping on
+every baseline conduct failure, D/M/X could never be reached. The stop is now
+arm-scoped: any dispositive failure in the Strata arm (or harness/verifier
+infrastructure) still halts the round; a baseline-arm dispositive conduct
+failure marks its matched trial failed and the round continues. The asymmetry
+is disclosed: it weakens no correctness claim (Strata failures remain
+round-fatal) and converts baseline conduct failures from round-killers into
+recorded results. Orchestrator change covered by both-direction tests; the
+design doc's stop-conditions section is amended with a pointer here.
+
+**Standing tally after five rounds (~USD 5.50):** Strata 5/5 live arms at
+~USD 0.10 / ~42s each; baseline 3 completed S/R arms (one S at 3-6x Strata
+cost/time now in two valid matched trials), 3 dispositive conduct failures;
+D, M, X still unobserved live.
+
+## 2026-07-17 — Live round 4: the red historical test induces baseline scope violations; prompts amended
+
+**Context:** Round 4 (`run-2026-07-17T05-11-48-289Z`, manifest at `ac0483a`)
+completed the first two matched trials before stopping at G-r1:
+
+- S-r1: Strata success USD 0.084 / 34s; baseline success USD 0.627 / 192s.
+- R-r1: Strata success USD 0.144 / 61s; baseline success USD 0.468 / 303s.
+- G-r1: Strata success USD 0.067 / 34s; baseline dispositive —
+  `unexpected source change outside packet scope: src/lib/dateRange.ts`,
+  the identical edit as round 2.
+
+**Root cause of the repeated violation, proved deterministically:**
+`tests/dateRange.test.ts` is the historical T05 acceptance test and is
+**intentionally red on the pristine corpus** (it demands half-open interval
+semantics the code does not implement); the Phase-6 verifier already excludes
+it as a frozen historical fixture. A baseline integration agent instructed to
+"leave one green tree" that runs `npm test` sees the planted red test and
+"fixes" `dateRange.ts` (`<=` → `<`) — an induced violation, not recklessness.
+The two arms had asymmetric exposure: the Strata arm cannot see or run tests;
+the baseline arm was invited to and then scored dispositively for responding
+to a red test it did not plant.
+
+**Decided:** amend the registered baseline prompts (task appendix and
+integration system prompt) to disclose that the historical suite contains
+intentionally failing legacy tests that are not the agent's to fix, and that
+out-of-scope changes fail the team; the integration prompt's "green tree"
+language now names src/** compilation explicitly. This is informational
+only — no material help, no corpus change, task bodies byte-identical across
+arms — and requires re-freezing prompt hashes and the registration digest.
+Rejected alternatives: fixing/removing the red test (corpus change requiring
+full requalification, and it destroys a historically meaningful fixture) and
+leaving the trap (indefensible scoring of induced behavior as agent failure).
+
+**Standing results:** the S-r1 and R-r1 matched trials are valid completed
+comparisons. Round 2's recorded verdict stands as an artifact but its
+interpretation is amended by this entry: the violation was induced by the
+experiment's materials. Cumulative spend across four rounds: USD 4.52.
+
+## 2026-07-17 — Live round 3: lockfile exhaust misclassified; inventory exclusion extended
+
+**Context:** Round 3 (`run-2026-07-17T05-03-26-462Z`, manifest at `93ce348`)
+stopped at S-r1 again. The Strata arm succeeded a third consecutive time
+(USD 0.100, 53s). The new `verifierError` artifact identified the baseline
+failure instantly: `tree file listing diverges (extra: ["package-lock.json"])`
+— the integration agent ran `npm install` to execute the corpus's test
+script, as its registered system prompt ("leave one green tree") and the
+design's integration role ("may need to … run tsc/tests") require, and the
+lockfile byproduct was scored as an unregistered file.
+
+**Decided:** Root-level dependency lockfiles (`package-lock.json`,
+`pnpm-lock.yaml`, `yarn.lock`) join `node_modules` in the inventory
+exclusion. Before widening anything, the complete toolchain exhaust was
+enumerated deterministically: running the corpus's own `npm install` +
+`vitest run` + `tsc --noEmit` end-to-end produces exactly one new file, the
+lockfile, and does not modify `package.json`. Edits to any registered file —
+including `package.json` — still fail closed, as does any other unregistered
+file. The alternative (instructing agents to delete the lockfile) would
+burden the baseline with janitorial work no real workflow performs, an
+unfairness in the opposite direction.
+
+**Classification:** rounds 1 and 3 were harness misclassifications of
+legitimate tree shapes (worktree `.git` pointer; install exhaust) and each
+carries a deterministic regression row; round 2 remains the one genuine
+dispositive baseline failure (semantic out-of-scope edit). Spend to date
+across three stopped rounds: USD 2.26. Per the no-silent-rerun rule, each
+round stays closed; round 4 requires a fresh manifest and approval.
+
+## 2026-07-17 — Live round 2: genuine dispositive baseline failure on S-r1
+
+**Context:** Round 2 (`run-2026-07-17T04-50-45-063Z`, re-approved manifest at
+`702e36a`) ran under the fixed verifier. The S-r1 Strata arm succeeded live
+again (USD 0.087; two-for-two on the coordination protocol including the
+fresh-decision path). The S-r1 baseline arm produced **correct S task work**
+(`welcomeUser(user: User, excited: boolean = false)`) but its integration
+session also changed `src/lib/dateRange.ts` (`date <= end` → `date < end`) —
+a semantic edit to a file outside every S scope that no task requested.
+
+**Verdict:** reproduced deterministically from the preserved evidence tree:
+`unexpected source change outside packet scope: src/lib/dateRange.ts`. This
+is the preregistered dispositive `unexpected_out_of_scope_change` class
+functioning exactly as designed — an uncoordinated file agent with shell
+access drifted outside its lane on the first trial, which the Strata arm is
+structurally incapable of doing. The round stopped after evidence flush at
+USD 0.81. This is a genuine experimental result, not a harness defect, and it
+stands.
+
+**Also fixed before any next round (observability, not semantics):** the live
+adapter swallowed the verifier's rejection message; round-1 diagnosis
+required code archaeology and round-2 diagnosis required reproducing from
+evidence. Team records now carry `verifierError` verbatim.
+
+**Not decided here:** whether to run round 3 under the same frozen seed
+(which schedules S first, so a repeat baseline scope violation would stop it
+at the same place — itself informative) is an operator budget decision. No
+result-dependent schedule mutation is permitted.
+
+## 2026-07-17 — Live round 1 stopped by a verifier tree-shape defect; evidence preserved
+
+**Context:** The first approved live round (`claude-sonnet-5`, seed
+`pilot-seed-1`, approval of 2026-07-16, run
+`run-2026-07-17T04-40-47-222Z`) executed under the full guard. The S-r1
+Strata arm **succeeded live**: a production model drove the eight-tool
+coordination protocol — including the same-node fresh-decision path — to one
+shared green tree in 50 seconds at USD 0.13. This is the first live-model
+coordination proof on the kernel.
+
+**What stopped the round:** the S-r1 baseline arm was scored
+`invalid_final_code` and the round stopped dispositively after evidence
+flush, per the pre-registered rule. Post-hoc analysis proved the baseline's
+integration output was **correct** (`welcomeUser(user: User, excited:
+boolean = false)` in the preserved evidence tree); the verifier threw
+`tree file listing diverges (extra: [".git"])` because a git *worktree* has
+`.git` as a gitdir-pointer file, while the review-remediation inventory check
+only excluded `.git` directories. The defect was reproduced deterministically
+on an untouched corpus copy before any fix.
+
+**Decided:** Fix the inventory exclusion to cover `.git`/`node_modules`
+regardless of entry type, with a worktree-shaped regression row in the
+verifier suite. Per the design's rule — "a harness or verifier defect
+discovered after model output is preserved and stops the round; no silent
+rerun" — round 1 remains a stopped round with USD 0.83 total spend and its
+artifacts finalized. A fresh round requires a regenerated manifest (new
+source commit and verifier digest) and new operator approval. The S-r1
+baseline arm's taxonomy classification stands in round 1's frozen artifacts
+but is annotated here as a verifier infrastructure defect, not a model
+failure; no conclusions about either arm's S performance may be drawn from
+round 1 beyond the Strata arm's live protocol success.
+
+**Why the gate missed it:** the baseline suite never composed
+`verifyPhase6Tree` with real worktrees (fakes verified plain copies), and the
+verifier suite's `.git` row used a directory. The live adapter composed them
+for the first time. The regression row now encodes the worktree shape.
+
+**Revisit when:** round 2 runs; if any further tree-shape legitimacy question
+appears (e.g., agent-created node_modules during integration), classify
+explicitly rather than widening exclusions silently.
+
+## 2026-07-16 — Operator amends M: serialize-plus-fresh-decision, not within-module concurrency
+
+**Context:** The Task-5 M stop (entry below) presented three options. A
+follow-up mechanism probe settled the pivotal question: two appended
+same-module functions with **no** shared references and no shared referencing
+statements still submit `ready`/`queued` and return `needs_decision` after the
+first publishes. The serialization is fundamental to the current analyzer, not
+an artifact of the M pair's shared `formatTimestamp` callee.
+
+**Root cause:** `validationDependencies` in `packages/kernel-bridge/src/analyze.ts`
+pins every node of the seed's module plus all transitive dependency modules as
+validation dependencies. The graph is node-granular; the validation dependency
+circle is module-granular, because "valid" means the rendered modules still
+typecheck and tsc's unit is a module. Any same-module sibling publication
+therefore drifts a pinned dependency, and the kernel correctly refuses
+authority on the stale analysis.
+
+**Decided (operator):** Amend M's acceptance to the observed protocol
+semantics rather than change the kernel inside this experiment. M now proves:
+same-module operations serialize (`queued` at submit); the successor records
+exactly one fresh decision whose stable-ID typed intent resubmits
+byte-identically; both orders converge to identical publication and
+final-tree digests; the shared tree is green. The design's claims sections
+gain the corresponding supported claim and an explicit cannot-support line for
+within-module concurrent publication.
+
+**What was rejected:** narrowing the validation circle now (a kernel semantic
+change on the concurrency core sealed by today's acceptance gates, requiring
+the deterministic proofs to be redone before any live spend), and an M
+task/corpus redesign (the probe proves no same-module pair can pass the
+original clause under the current analyzer).
+
+**Follow-on:** the next kernel iteration narrows the circle to the statement
+subtrees an operation reads/writes plus the module import/export surface. The
+mechanism probe (independent same-module pair must go `ready`/`ready` and both
+publish with zero fresh decisions) is its acceptance test; today's pinned
+regression test documents current behavior and will be flipped deliberately in
+that iteration.
+
+**Revisit when:** that iteration lands, or any live trial shows fresh-decision
+overhead dominating the Strata arm's cost on same-module work.
+
+## 2026-07-16 — Task-5 requalification: X passes deterministically; M trips its designed same-module gate
+
+**Context:** Deterministic TDD requalification of the approved
+`x-namespace-enriched-v1` variant, resuming Task 5 after the operator-approved
+X redesign. All runs were credential-free through the production Node bridge
+and Rust daemon.
+
+**What passed:**
+- The two corpus edits reproduce the feasibility probe exactly: the frozen
+  source digest is `41c9059a…3c6eb8`, byte-identical to the probe's recorded
+  abbreviated value. All 82 pre-enrichment semantic statement IDs survive
+  unchanged (see the trivia-gate entry below).
+- Generation-zero verification for all six packet configurations, the
+  canonical-boundary preflight, the verifier fail-closed rows, and the exact-X
+  allowed-delta rows (stale default, duplicate insertion, and out-of-stable-ID
+  insertion all rejected).
+- D, R, S, and G publish in both orders to one shared green generation-2
+  tree. D requires no fresh decision (asserted). R, S, and G record a fresh
+  decision wherever the kernel refuses stale generation-zero authority,
+  matching the committed full-key-free acceptance semantics ("the second
+  client must not receive authority from its stale G0 analysis"); the
+  identical stable-ID typed intents are resubmitted unchanged because a
+  sibling rename does not invalidate ID-addressed intents.
+- X passes both orders: X2-first exposes `ScopeExpanded` then `intent_ready`
+  through `read_events` before any X1 advance, and that next advance publishes
+  generation 2; X1-first returns stale X2 as `NeedsDecision` and a fresh
+  decision publishes `UserTypes.formatUser(user)`. Both orders converge to
+  identical publication and final-tree digests.
+
+**Found and fixed en route (harness/manifest only, no kernel change):**
+- `inspect_nodes` trips the sealed 256-child read bound on any large statement
+  (the corpus's `KvStore` class has 314 immediate children). Materialization
+  now inspects only operation-affected statements and reconstructs the rest
+  from registered generation-zero payloads.
+- The manifest resolved references against declaration statement IDs, but
+  ingest references target declaration-name identifiers, so re-exports such as
+  `export type { User }` in `src/index.ts` were invisibly outside allowed
+  scope. Target scope now collects references into the declaration subtree.
+- Boundary re-scans of copied or mutated trees cannot reproduce gen-zero
+  resolved-reference counts (stable IDs are physical-path-derived and renames
+  legitimately unresolve), so tree-level checks compare the textual inventory;
+  full resolution fidelity stays frozen in the manifest at the registered
+  root.
+
+**The M stop:** M2 (`eventLine` rename) submits `queued`, not `ready`, behind
+M1 (`logEvent` rename) although the sibling declarations are disjoint, and
+after M1 publishes, M2's advance returns `needs_decision`. A discriminator run
+showed a cross-module pair sharing only the `formatTimestamp` callee also
+queues but then publishes cleanly on reanalysis — so the queueing is driven by
+the shared callee reference in the inferred scope, while the fresh-decision
+demand is same-module sibling validation drift. The design's M clause requires
+proving "disjoint reservation scopes and … both ready concurrently; if
+module-wide validation makes them overlap, stop and return for review rather
+than relabeling the scenario." Both halves are falsified today. Execution
+stops before Task 6; the M gate test is left red and unrelabeled.
+
+**Operator options (none selected here):**
+1. Amend M's acceptance to the observed protocol semantics — queued behind the
+   shared callee, fresh-decision publication — reframing M as overlap handling
+   rather than a disjoint-concurrency proof. An explicit relabel requiring
+   design approval.
+2. Refine kernel scope inference/validation to statement-level resources so
+   sibling operations neither share the callee reservation nor drift — a
+   kernel semantic change requiring a new deterministic containment proof.
+3. Redesign or drop the M packet with full requalification, as was done for X.
+
+**Not committed:** the Task-5 production/test working set stays uncommitted
+pending direction, per the Step-7 stop rule. No credential, Agent SDK call, or
+spend was used.
+
+## 2026-07-16 — Task-5 stable-ID preservation gate covers semantic statements, not trivia
+
+**Context:** Task-5 requalification of `x-namespace-enriched-v1` freezes a
+pre-enrichment inventory of `examples/medium` top-level statement IDs and fails
+manifest creation if any pre-existing ID churns after the two approved corpus
+edits.
+
+**What was tried first:** A full inventory including trivia nodes. Appending
+the `displayUser` helper to `src/types/user.ts` reindexes that module's
+`EndOfFileTrivia` node from child 1 to child 2, and stable IDs derive from
+`(module path, child index, kind)`, so the trivia ID necessarily churns under
+any append. A gate that includes trivia can never pass for an appended-module
+corpus variant.
+
+**Decided:** The frozen inventory and the gate exclude trivia kinds
+(`*Trivia`). Trivia nodes carry no references, are never operation targets,
+and their reindexing under append is the already-disclosed sibling-position
+limitation (structural insert concurrency waits for stable logical IDs).
+All 82 pre-enrichment semantic statements — every declaration, import, and
+statement across 22 modules, including the `User` interface, `serialize`
+declaration, and the serializer import statement named in the feasibility
+probe — must keep byte-identical IDs, and do.
+
+**Why:** The alternative (freezing trivia too) would misreport the disclosed
+append as ID churn and permanently block the approved variant; silently
+pinning post-edit trivia IDs would hide the limitation instead of disclosing
+it. The narrower gate matches the probe's recorded claim exactly ("existing
+`User` and `serialize` declaration IDs and serializer import-statement ID were
+preserved") while still failing closed on any semantic-statement churn.
+
+**Revisit when:** stable logical IDs independent of sibling position land; the
+gate should then include trivia and the corpus-append caveat disappears.
+
+## 2026-07-16 — Phase-6 X uses the preregistered `x-namespace-enriched-v1` corpus
+
+**Context:** The original Phase-6 X packet (`logEvent` rename concurrent with an
+`eventLine` parameter whose default introduced a `logEvent` call) reached its
+approved deterministic stop gate. X2 changed an old X1 validation resource, so
+the production analyzer correctly classified the fresh scope as materially
+changed rather than expansion-only. The operator selected the supported
+task/corpus-redesign path rather than weakening containment or dropping the
+dynamic-live-coordination question.
+
+**What was tried first:** A credential-free search exhausted task-only
+replacements in the current corpus under the approved `rename_symbol` and
+uniform-value `add_parameter` classes. Same-module and named-import candidates
+necessarily changed old rename-scope node versions. The only namespace import
+had no unused exported value. An inline import-type `User` candidate and a
+dynamic-import `formatTimestamp` candidate both built valid deltas but produced
+zero new persisted target references and zero new validation resources; the
+former ended `validation_failed` through the real daemon with no
+`ScopeExpanded`. No structural operation, import-adding operation, feature-gated
+publisher, task-specific hook, or broader node-version tolerance was accepted.
+
+**Decided:** Freeze `x-namespace-enriched-v1` before any live result. Relative
+to the current corpus, append
+`displayUser(user: User): string { return user.email; }` to
+`src/types/user.ts` and make the existing `UserTypes` namespace import in
+`src/users/serializer.ts` value-capable. Replace X with: (X1) rename
+`displayUser` to `formatUser`; and (X2) add
+`displayLabel: string = UserTypes.displayUser(user)` at position 1 of
+`serialize`. If X1 publishes first, X2 must record a fresh decision and replace
+the stale default with `UserTypes.formatUser(user)`. No `greet` callers are
+added, so R/S/G remain disclosed single-site probes.
+
+**Credential-free evidence:** Through the production Node bridge and Rust
+daemon, X2-first published generation 1, then exposed `ScopeExpanded` and
+`intent_ready` through `read_events` before any X1 advance request; the next X1
+advance published generation 2. X1-first published generation 1, stale X2
+returned `NeedsDecision`, and a fresh X2 using the renamed helper published
+generation 2. Both orders produced the same final publication digest and green
+source-only TypeScript. Existing `User`, `serialize`, and serializer-import
+statement IDs were preserved in the probe; the projection changed from 1,203
+nodes/592 references to 1,209 nodes/595 references. No credential, Agent SDK
+model call, or spend was used.
+
+**Why:** The replacement creates the narrow shape the kernel's safe expansion
+rule is designed to recognize: X2 adds a resolved namespace-member reference in
+a module absent from X1's generation-zero scope, while every old X1 resource
+remains unchanged. This preserves containment and exercises the real service.
+The cost is an explicit post-falsification corpus repair and full digest
+requalification. It supports an existence claim for this dynamic expansion
+shape, not prevalence or broad-propagation performance; both X tasks are
+single-site-class at generation zero and X1 gains only one reference after X2.
+Within-variant arm fairness is preserved, but results may not be pooled with
+historical current-corpus measurements.
+
+**Design-doc impact:** updates the Phase-6 live-comparison design and plan only.
+`strata-design.md`, the Rust authority boundary, stable-ID invariants, the
+SQLite product path, and the frozen integrated full-key-free fixtures are
+unchanged. Formal Task-5 TDD must still regenerate every affected digest, prove
+generation-zero greenness, requalify all six packets in both orders, and stop
+if the committed result differs from the feasibility probe.
+
+**Revisit when:** formal requalification changes a pre-existing registered ID,
+fails either X order, lacks externally observable pre-advance
+`ScopeExpanded`, requires a kernel semantic exception, or any future experiment
+wants to generalize beyond this exact corpus/reference shape.
+
+## 2026-07-16 — Phase-6 live comparison blocks at the real X dynamic-expansion gate
+
+**Context:** The approved Phase-6 design required packet X to prove dynamic
+scope expansion through the real local service before any live comparison. The
+integrated full key-free acceptance gate used a fixture publisher for its
+dynamic-expansion row, so it did not establish this behavior through the
+production Rust/Node operation path. The first Task-5 harness also ingested
+virtual `/project/...` module paths and then rewrote only Module payloads to
+physical absolute paths, breaking the relationship between stable IDs and the
+module paths from which they were derived.
+
+**What was tried first:** The harness was corrected to ingest the physical
+absolute paths from the outset, without rewriting Module payloads after ingest.
+Regression tests now prove every top-level statement ID derives from the
+unchanged physical Module path. The corrected `eventLine` ID is
+`13debac05f973311` rather than the invalid virtual-path ID
+`55fffd2a919faf4c`, and the exact X2 complex default produces a real validated
+graph delta. This removed the harness artifact but did not make the X stop gate
+pass.
+
+**Evidence:** Through the real daemon, X2 publishes generation 1. Advancing the
+already-analyzed X1 then returns `NeedsDecision` at graph generation 1, with no
+operation ID, publication digest, `ScopeExpanded` event, or requeue. Independent
+inspection confirmed that fresh X1 analysis discovers the new c5a reference and
+the `eventLine` write expansion. However, the existing `eventLine` validation
+node has also changed version and positional Identifier semantic reuse is not a
+pure scope superset, so the analyzer correctly classifies the transition as
+`MateriallyChanged`; the planner therefore takes its terminal `NeedsDecision`
+path.
+
+**Rejected shortcuts:** Broadly tolerating validation-node version drift would
+weaken malicious-delta containment. A task-specific production hook,
+feature-gated publisher, or fixture substitution would evade the required real
+service proof. Silently replacing X would violate the frozen design's explicit
+stop rule.
+
+**Decided:** Task 5 and the Phase-6 live-comparison implementation are blocked
+pending explicit operator direction. No live-model call is authorized. The
+supported next choices, none selected by this entry, are: (1) redesign the
+operation semantics and add a new deterministic containment proof; (2) approve
+an X task or corpus redesign and fully requalify all affected digests and
+predicates; or (3) amend the experiment design to remove X and any dynamic-live-
+coordination claim.
+
+**Design-doc impact:** The Phase-6 live-comparison design now records the failed
+X admission gate and blocked status. Its implementation spike records the exact
+credential-free evidence, and its implementation plan stops at Task 5 before
+the baseline or live-execution tasks.
+
+**Revisit when:** The operator explicitly selects one of the supported semantic,
+task/corpus, or claim-scope directions and approves the resulting requalification
+work.
+
+## 2026-07-16 — Local service journal records request bindings and prepared effect results
+
+**Context:** Independent review of the first local-service implementation found
+that `Pending`/`Completed` alone could not preserve the exact
+`validation_failed` response if the process died after candidate execution but
+before cancellation/completion. It also found that request-ID reuse was checked
+only by the protocol helper's caller-owned in-memory context, so the daemon was
+neither synchronizing that context across connection threads nor preserving the
+binding across restart. A committed publication recovered from `Pending` also
+lost its publication digest.
+
+**What was tried first:** Recovery re-ran state-aware kernel operations from a
+`Pending` record and derived a fresh safe response. That is sufficient for
+idempotent begin/submit and most terminal states, but a validation failure has a
+service-only diagnostic followed by a separate durable cancellation, and the
+published response's digest was supplied by the just-completed bridge call.
+Reconstructing either response from only `Pending` was not exact at every crash
+boundary.
+
+**Decided:** The private hash-chained journal now has four durable stages:
+hashed `RequestBound`, `Pending`, `EffectResult`, and `Completed`.
+`EffectResult` fsyncs the exact bounded response plus an optional idempotent
+follow-up before that follow-up executes. Startup applies any outstanding
+follow-up and completes the cached response before socket bind. Request IDs are
+stored only as hashes bound to hashes of their canonical requests; live parsing
+uses one synchronized protocol context. A terminal committed response derives
+the current canonical snapshot digest when recovering before `EffectResult`.
+Feature-gated daemon crash injection covers death after each stage and is
+rejected as an unknown option by default builds.
+
+**Why:** This preserves exact transport truth without moving graph or
+coordination authority out of the kernel. The journal remains recovery metadata,
+not canonical code history. Fsync-before-follow-up makes validation cancellation
+replayable; hashed request bindings survive restart without persisting raw
+request IDs; and startup still fails closed on a complete corrupt record or an
+ambiguous pending add while accepting only a torn final record.
+
+**Design-doc impact:** None. This refines the private transport journal selected
+in the decision below; it does not change the protocol, graph model, operation
+log, or single authoritative kernel/redb ownership boundary.
+
+## 2026-07-16 — Local coordination service uses a private write-ahead request journal and cancels failed validation
+
+**Context:** The frozen Phase-6 local protocol makes every mutating request retryable by client ID plus idempotency key, including a disconnect after the service has accepted a request but before the response arrives. The kernel durably owns graph and coordination transitions, but it does not atomically store arbitrary transport responses, and `add_intent` has no caller-supplied intent ID. A crash between mutation and transport acknowledgement therefore could not be resolved exactly once from the kernel tables alone. The implementation audit also found that existing coordination failpoint types and methods remained reachable from a default library build, and the production bridge worker is an ignored build artifact absent from a clean checkout.
+
+**What was tried first:** The service first attempted to use only normal `Kernel` APIs plus their existing durable idempotency. That covers begin and final graph publication, but not every frozen transport boundary: an interrupted `add_intent` could otherwise be appended twice, while an interrupted event acknowledgement or cancellation had no stored response to replay. Treating every unresolved request as uncommitted would duplicate effects; treating it as committed without checking durable state would manufacture success.
+
+**Decided:** The Rust service owns a private, fsynced, hash-chained `Pending`/`Completed` request journal beside the redb database. It records a bounded pre-mutation intent projection (maximum 256 records), serializes mutations per change set, writes `Pending` before calling the normal kernel API, and writes `Completed` before replying. Startup validates the journal and reconciles every pending record before binding the Unix socket. `add_intent` recovery compares the bounded before/after durable intent projection and fails closed on ambiguity; the other operations replay their normal idempotent or state-aware kernel path. Two bounded read-only helpers were added for child and intent projection without exposing a redb handle or full snapshot.
+
+Candidate-execution failure is represented on the frozen wire as `validation_failed`, written to the redacted hash-chained service audit, and immediately followed by normal durable `Kernel::cancel_change_set`; no new kernel failure transition or raw publication path was added. Default builds now hide coordination failpoints, direct durable coordination access, and bridge executable injection behind `coordination-test-api`, with independent compile-fail fixtures. Key-free service tests may build `@strata/kernel-bridge` when its ignored worker artifact is absent, after removing model credential variables from that build process.
+
+**Why:** This is the narrowest mechanism that makes every frozen transport mutation crash-retryable while retaining the kernel as the only graph/coordination authority. Reconciliation happens before reachability, ambiguous state fails closed, test-only authority remains unavailable in production, and bridge validation failure cannot leave a claim exposed to the client.
+
+**Design-doc impact:** No architectural change. The service still owns the single authoritative kernel/redb process, clients see only typed operations and bounded projections, and the operation log remains canonical graph history. The private request journal is transport recovery metadata rather than a second graph history. The existing SQLite path remains supported.
+
 ## 2026-07-15 — Two-operation bridge passes on the explicit source projection; complete-fixture candidate validation remains unproved
 
 **Context:** The approved Rust–Node bridge design required real `rename_symbol` and `add_parameter` analysis, candidate construction, TypeScript validation, Rust containment/publication, and recovery on `examples/medium`. The committed ingest fixture contains 1,282 nodes and 614 references across source, tests, and tool configuration. The existing validation profile also requires every rendered module to remain under its trusted `sourceRoot`.

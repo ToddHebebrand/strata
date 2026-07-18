@@ -318,6 +318,7 @@ export const semanticFactsSchema = z.discriminatedUnion("type", [
       arityRiskStatementIds: boundedIdArraySchema,
       unresolvedReferenceDiagnostics: z.array(bridgeDiagnosticSchema).max(MAX_PROTOCOL_ARRAY_ITEMS),
       functionBodyReadReferences: boundedReferenceArraySchema,
+      contentDependencyDeclarationIds: boundedIdArraySchema,
       validationDependencyNodeIds: boundedIdArraySchema,
       validationDependencyReferenceFromNodeIds: boundedIdArraySchema
     })

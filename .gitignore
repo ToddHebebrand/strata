@@ -20,3 +20,5 @@ packages/bench/results/*
 docs/dogfood-results/*
 !docs/dogfood-results/.gitkeep
 !docs/dogfood-results/*-prep-*.md
+packages/live-compare/results/*
+!packages/live-compare/results/.gitkeep

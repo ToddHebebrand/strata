@@ -230,14 +230,18 @@ pub fn required_delta_authority(
         match change {
             GraphChange::UpsertNode { node } => {
                 add_node_write(&mut write_resources, &mut reservation_coverage, &node.id);
-                if let Some(parent_id) = current
-                    .node(&node.id)
-                    .and_then(|old_node| old_node.parent_id.as_deref())
-                {
-                    reservation_coverage.insert(node_key(parent_id));
-                }
-                if let Some(parent_id) = &node.parent_id {
-                    reservation_coverage.insert(node_key(parent_id));
+                // Payload-only upserts leave sibling shape untouched; node
+                // write authority alone carries them (spec Change 5).
+                if !super::resources::payload_only_upsert(current, node) {
+                    if let Some(parent_id) = current
+                        .node(&node.id)
+                        .and_then(|old_node| old_node.parent_id.as_deref())
+                    {
+                        reservation_coverage.insert(node_key(parent_id));
+                    }
+                    if let Some(parent_id) = &node.parent_id {
+                        reservation_coverage.insert(node_key(parent_id));
+                    }
                 }
             }
             GraphChange::DeleteNode { node_id } => {
@@ -290,6 +294,8 @@ pub fn validate_delta_containment(
         scope.reservation_keys.iter().map(String::as_str).collect();
 
     let materialized_children = materialized_identifier_children(current, delta, &allowed_writes);
+    let pinned_endpoints =
+        pinned_fresh_reference_endpoints(current, delta, scope, &materialized_children);
     let missing_writes: Vec<_> = required
         .write_resources
         .iter()
@@ -305,6 +311,7 @@ pub fn validate_delta_containment(
         .filter(|resource| {
             !allowed_reservations.contains(resource.as_str())
                 && !materialized_children.contains(resource.as_str())
+                && !pinned_endpoints.contains(resource.as_str())
         })
         .cloned()
         .collect();
@@ -315,6 +322,92 @@ pub fn validate_delta_containment(
         );
     }
     Ok(())
+}
+
+/// `node:{to}` allowances for brand-new references whose source is a
+/// materialized identifier and whose target the analysis pinned in the read
+/// or validation set (spec 2026-07-17 Change 6). The pin's version already
+/// guards the target, so reservation coverage is not additionally required —
+/// but only when nothing else in the delta demands the same key.
+fn pinned_fresh_reference_endpoints(
+    current: &GraphGeneration,
+    delta: &GraphDelta,
+    scope: &InferredScope,
+    materialized_children: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let pinned_nodes: BTreeSet<&str> = scope
+        .read_set
+        .iter()
+        .chain(&scope.validation_set)
+        .map(|resource| resource.resource_key.as_str())
+        .filter(|key| key.starts_with("node:"))
+        .collect();
+
+    // Keys demanded by any change other than a fresh materialized-source
+    // reference must keep their reservation requirement.
+    let mut otherwise_required = BTreeSet::new();
+    for change in &delta.changes {
+        match change {
+            GraphChange::UpsertNode { node } => {
+                if !super::resources::payload_only_upsert(current, node) {
+                    if let Some(parent_id) = current
+                        .node(&node.id)
+                        .and_then(|old_node| old_node.parent_id.as_deref())
+                    {
+                        otherwise_required.insert(node_key(parent_id));
+                    }
+                    if let Some(parent_id) = &node.parent_id {
+                        otherwise_required.insert(node_key(parent_id));
+                    }
+                }
+            }
+            GraphChange::DeleteNode { node_id } => {
+                if let Some(parent_id) = current
+                    .node(node_id)
+                    .and_then(|old_node| old_node.parent_id.as_deref())
+                {
+                    otherwise_required.insert(node_key(parent_id));
+                }
+            }
+            GraphChange::UpsertReference { reference } => {
+                let fresh_from_materialized = current
+                    .reference_from(&reference.from_node_id)
+                    .is_none()
+                    && materialized_children
+                        .contains(format!("node:{}", reference.from_node_id).as_str());
+                if !fresh_from_materialized {
+                    otherwise_required.insert(node_key(&reference.to_node_id));
+                    if let Some(old) = current.reference_from(&reference.from_node_id) {
+                        otherwise_required.insert(node_key(&old.to_node_id));
+                    }
+                }
+            }
+            GraphChange::DeleteReference { from_node_id } => {
+                if let Some(old) = current.reference_from(from_node_id) {
+                    otherwise_required.insert(node_key(&old.to_node_id));
+                    otherwise_required.insert(node_key(&old.from_node_id));
+                }
+            }
+        }
+    }
+
+    let mut allowed = BTreeSet::new();
+    for change in &delta.changes {
+        let GraphChange::UpsertReference { reference } = change else {
+            continue;
+        };
+        if current.reference_from(&reference.from_node_id).is_some() {
+            continue;
+        }
+        if !materialized_children.contains(format!("node:{}", reference.from_node_id).as_str()) {
+            continue;
+        }
+        let to_key = node_key(&reference.to_node_id);
+        if pinned_nodes.contains(to_key.as_str()) && !otherwise_required.contains(&to_key) {
+            allowed.insert(to_key);
+        }
+    }
+    allowed
 }
 
 fn materialized_identifier_children(
@@ -592,6 +685,123 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("node:unrelated"), "{error}");
+    }
+
+    #[test]
+    fn fresh_reference_from_materialized_identifier_accepts_a_pinned_target() {
+        // Spec 2026-07-17 Change 6: X2-shaped candidates create a brand-new
+        // edge to a declaration the analysis pinned (read/validation) but —
+        // with validation pins non-reserving — never reserved. The pin's
+        // version already guards the target, so containment must accept it.
+        let graph = containment_graph();
+        let mut scope = containment_scope();
+        scope
+            .validation_set
+            .push(ResourceVersion::new("node:unrelated", "v").unwrap());
+        validate_delta_containment(
+            &graph,
+            &delta(vec![
+                GraphChange::UpsertNode {
+                    node: record("fresh-direct", "Identifier", Some("writable"), 1),
+                },
+                GraphChange::UpsertReference {
+                    reference: ReferenceRecord {
+                        from_node_id: "fresh-direct".into(),
+                        to_node_id: "unrelated".into(),
+                        kind: "reference".into(),
+                    },
+                },
+            ]),
+            &scope,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn fresh_reference_without_pin_or_reservation_is_still_rejected() {
+        let graph = containment_graph();
+        let scope = containment_scope(); // no node:unrelated pin anywhere
+        let error = validate_delta_containment(
+            &graph,
+            &delta(vec![
+                GraphChange::UpsertNode {
+                    node: record("fresh-direct", "Identifier", Some("writable"), 1),
+                },
+                GraphChange::UpsertReference {
+                    reference: ReferenceRecord {
+                        from_node_id: "fresh-direct".into(),
+                        to_node_id: "unrelated".into(),
+                        kind: "reference".into(),
+                    },
+                },
+            ]),
+            &scope,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("node:unrelated"), "{error}");
+    }
+
+    #[test]
+    fn retargeting_an_existing_reference_ignores_validation_pins() {
+        // Only fresh edges from materialized identifiers may lean on a pin;
+        // ordinary retargeting stays reservation-gated.
+        let graph = containment_graph();
+        let mut scope = containment_scope();
+        scope
+            .validation_set
+            .push(ResourceVersion::new("node:unrelated", "v").unwrap());
+        let error = validate_delta_containment(
+            &graph,
+            &delta(vec![GraphChange::UpsertReference {
+                reference: ReferenceRecord {
+                    from_node_id: "direct".into(),
+                    to_node_id: "unrelated".into(),
+                    kind: "reference".into(),
+                },
+            }]),
+            &scope,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("node:unrelated"), "{error}");
+    }
+
+    #[test]
+    fn payload_only_upsert_needs_no_parent_reservation() {
+        // A statement payload splice under a Module parent must be publishable
+        // without reserving the module node (spec Change 5): the node write
+        // authority alone carries it.
+        let graph = containment_graph();
+        let scope = containment_scope(); // reserves writable/direct/target, NOT module
+        let mut payload_edit = graph.node("writable").unwrap().clone();
+        payload_edit.payload = "payload-edited".into();
+        validate_delta_containment(
+            &graph,
+            &delta(vec![GraphChange::UpsertNode { node: payload_edit }]),
+            &scope,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn shape_changing_upsert_still_needs_the_parent_reservation() {
+        let graph = containment_graph();
+        let mut scope = containment_scope();
+        scope
+            .write_set
+            .push(ResourceVersion::new("node:fresh-stmt", "v").unwrap());
+        scope.reservation_keys.push("node:fresh-stmt".into());
+        let error = validate_delta_containment(
+            &graph,
+            &delta(vec![GraphChange::UpsertNode {
+                node: record("fresh-stmt", "ExpressionStatement", Some("module"), 5),
+            }]),
+            &scope,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("node:module"), "{error}");
     }
 
     #[test]

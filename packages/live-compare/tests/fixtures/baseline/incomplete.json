@@ -1,0 +1,23 @@
+{
+  "description": "Task 2 produces no edits; its branch is captured empty and the integration agent completes the missing task work itself.",
+  "task-1": {
+    "edits": [
+      { "path": "src/types/user.ts", "find": "displayUser", "replace": "formatUser", "all": true }
+    ],
+    "outcome": { "numTurns": 6, "durationMs": 4100, "totalCostUsd": 0.22, "inputTokens": 920, "outputTokens": 310, "toolEvents": 9, "repairEdits": 0, "errors": [] }
+  },
+  "task-2": {
+    "edits": [],
+    "outcome": { "numTurns": 25, "durationMs": 240000, "totalCostUsd": 0.75, "inputTokens": 5000, "outputTokens": 1200, "toolEvents": 30, "repairEdits": 0, "errors": ["turn budget exhausted before any edit"] }
+  },
+  "integration": {
+    "ops": [
+      { "git": ["merge", "--no-edit", "task-1"] },
+      { "git": ["merge", "--no-edit", "task-2"] },
+      { "write": { "path": "src/lib/dateRange.ts", "content": "export function isWithinRange(date: Date, start: Date, end: Date): boolean {\n  return start <= date && date <= end;\n}\n" } },
+      { "git": ["add", "-A"] },
+      { "git": ["commit", "-m", "baseline: integration completes task-2 work"] }
+    ],
+    "outcome": { "numTurns": 18, "durationMs": 15000, "totalCostUsd": 1.6, "inputTokens": 5200, "outputTokens": 1100, "toolEvents": 16, "repairEdits": 2, "errors": [] }
+  }
+}

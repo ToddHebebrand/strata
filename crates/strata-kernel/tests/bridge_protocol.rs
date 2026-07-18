@@ -141,6 +141,7 @@ fn shared_protocol_v1_golden_messages_round_trip_without_schema_drift() {
 
     for (response_name, request_name) in [
         ("analyze-response.json", "analyze-request.json"),
+        ("analyze-response-add-parameter.json", "analyze-request.json"),
         ("candidate-response.json", "candidate-request.json"),
         ("error-response.json", "analyze-request.json"),
     ] {
@@ -301,6 +302,16 @@ fn response_schema_rejects_unknown_fields_variants_and_oversized_diagnostics() {
     let mut variant = fixture_value("analyze-response.json");
     variant["result"]["facts"]["type"] = json!("unknownFacts");
     assert_response_value_rejected(variant, "analyze-request.json");
+
+    let mut non_array_content = fixture_value("analyze-response-add-parameter.json");
+    non_array_content["result"]["facts"]["contentDependencyDeclarationIds"] =
+        json!("decl:helper");
+    assert_response_value_rejected(non_array_content, "analyze-request.json");
+
+    let mut unsorted_content = fixture_value("analyze-response-add-parameter.json");
+    unsorted_content["result"]["facts"]["contentDependencyDeclarationIds"] =
+        json!(["decl:z", "decl:a"]);
+    assert_response_value_rejected(unsorted_content, "analyze-request.json");
 
     let mut error = fixture_value("error-response.json");
     error["error"]["diagnostics"][0]["message"] = json!("x".repeat(1024));

@@ -62,7 +62,7 @@ describe("scoreBaselineTrial", () => {
     );
     write(
       "users/serializer.ts",
-      'import type * as UserTypes from "../types/user.ts";\n' +
+      'import * as UserTypes from "../types/user.ts";\n' +
         "export function s(user: UserTypes.Account): string { return user.name; }\n"
     );
     write(

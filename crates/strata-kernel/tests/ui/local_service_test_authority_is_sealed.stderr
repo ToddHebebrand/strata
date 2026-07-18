@@ -1,0 +1,13 @@
+error[E0599]: no method named `test_with_executable` found for struct `NodeBridgeConfig` in the current scope
+  --> tests/ui/local_service_test_authority_is_sealed.rs:15:6
+   |
+7  |       let config = NodeBridgeConfig::tsc_only(
+   |  __________________-
+8  | |         "node",
+9  | |         vec![],
+10 | |         Duration::from_secs(1),
+...  |
+15 | |     .test_with_executable("fixture-worker");
+   | |     -^^^^^^^^^^^^^^^^^^^^ method not found in `NodeBridgeConfig`
+   | |_____|
+   |
