@@ -6,13 +6,13 @@ import {
   parseCanonicalU64,
   toKernelSnapshot,
   type KernelSnapshotV1
-} from "@strata/ingest";
+} from "@strata-code/ingest";
 import {
   findNodeById,
   getReferencesByTo,
   resolveCallsites,
   resolveDeclarationNameIdentifier
-} from "@strata/store";
+} from "@strata-code/store";
 import { describe, expect, it } from "vitest";
 import {
   analyzeIntent,

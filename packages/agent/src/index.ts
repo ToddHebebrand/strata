@@ -1,4 +1,4 @@
-export const AGENT_PACKAGE = "@strata/agent" as const;
+export const AGENT_PACKAGE = "@strata-code/agent" as const;
 export {
   SessionLog,
   type CommitPatternEmbedEvent,

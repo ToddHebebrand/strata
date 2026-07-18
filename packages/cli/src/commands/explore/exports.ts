@@ -1,4 +1,4 @@
-import { listModuleExports, listModules, type Db } from "@strata/store";
+import { listModuleExports, listModules, type Db } from "@strata-code/store";
 import {
   fail,
   kindLabel,

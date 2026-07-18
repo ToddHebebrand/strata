@@ -1,5 +1,5 @@
-import { openDb, begin, rollback } from "@strata/store";
-import { commit } from "@strata/verify";
+import { openDb, begin, rollback } from "@strata-code/store";
+import { commit } from "@strata-code/verify";
 
 const dbPath = process.argv[2];
 const corpusRoot = process.argv[3];

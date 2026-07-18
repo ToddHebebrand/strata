@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { renderWithSourceMap, type SourceMapEntry } from "@strata/render";
+import { renderWithSourceMap, type SourceMapEntry } from "@strata-code/render";
 import { runCorpusAcceptance } from "./corpusRun";
 import {
   commitWithoutValidate,
@@ -15,7 +15,7 @@ import {
   type Db,
   type NodeRow,
   type TxHandle
-} from "@strata/store";
+} from "@strata-code/store";
 import ts from "typescript";
 
 export interface Diagnostic {
@@ -373,7 +373,7 @@ export function commitWithBehavioralGate(
  */
 function collectReDerivedIdentifierIds(
   db: Db,
-  plan: import("@strata/store").MaterializationPlan
+  plan: import("@strata-code/store").MaterializationPlan
 ): Set<string> {
   const ids = new Set<string>();
   const query = db.prepare(

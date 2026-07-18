@@ -1,7 +1,7 @@
 import type {
   HermeticQuery,
   HermeticTerminalReason
-} from "@strata/agent";
+} from "@strata-code/agent";
 import type { Options, SDKMessage, SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";

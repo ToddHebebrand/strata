@@ -1,4 +1,4 @@
-import { resolveReferencesForModules, type NodeRow, type Reference } from "@strata/store";
+import { resolveReferencesForModules, type NodeRow, type Reference } from "@strata-code/store";
 import ts from "typescript";
 import { ingest } from "./index";
 

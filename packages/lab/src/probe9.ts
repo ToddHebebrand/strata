@@ -22,7 +22,7 @@
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   openDb,
   insertNodes,
@@ -40,7 +40,7 @@ import {
   replace_body,
   type Db,
   type TxHandle
-} from "@strata/store";
+} from "@strata-code/store";
 import { renderCommittedSrc } from "./experiment";
 import { scoreHonestDerivable } from "./tasks/honestDerivable";
 import { scoreTrapped } from "./tasks/trappedControl";

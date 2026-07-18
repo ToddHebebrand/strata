@@ -19,7 +19,7 @@
  * RATIO should generalize but absolute numbers will differ.
  */
 
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   openDb,
   insertNodes,
@@ -28,7 +28,7 @@ import {
   listModules,
   type Db,
   type NodeRow
-} from "@strata/store";
+} from "@strata-code/store";
 import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import path from "node:path";
 import type { LabExperiment } from "../experiment";
@@ -164,7 +164,7 @@ function collectTsFiles(rootDir: string): { path: string; text: string }[] {
  *   "kinded" (v1): "src/server/config.ts: exports const ZONE, function foo"
  *     The agent sees declaration kinds and is tempted to query with
  *     {name, kind:"variable"}, which currently triggers the FirstStatement
- *     bug in @strata/store/queries.ts:22 (kind:"variable" → SQL filter
+ *     bug in @strata-code/store/queries.ts:22 (kind:"variable" → SQL filter
  *     "VariableStatement" but ingest emits "FirstStatement"). The N=1 opus
  *     run measured this as a 250% increase in empty queries — the agent
  *     retries the same kind-filtered query that the substrate can't surface.

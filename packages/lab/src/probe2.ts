@@ -2,7 +2,7 @@
  *  modules' `export const ZONE = "..."`? Model-free, free. */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 
 const SRC_ROOT = path.join(__dirname, "..", "corpus", "src");
 

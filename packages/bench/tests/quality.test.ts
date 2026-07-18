@@ -6,7 +6,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   begin,
   find_declarations,
@@ -14,8 +14,8 @@ import {
   insertReferences,
   openDb,
   rename_symbol
-} from "@strata/store";
-import { commit } from "@strata/verify";
+} from "@strata-code/store";
+import { commit } from "@strata-code/verify";
 import { describe, expect, it } from "vitest";
 import { renderStoreToDir, tscNoEmit } from "../src/quality";
 

@@ -3,7 +3,7 @@ import {
   runHermeticSession,
   type HermeticQuery,
   type HermeticTerminalReason
-} from "@strata/agent";
+} from "@strata-code/agent";
 import { createHash } from "node:crypto";
 import { createCoordinationClient } from "./client.js";
 import {

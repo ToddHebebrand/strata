@@ -9,7 +9,7 @@ import {
   T03_PROMPT,
   TASK_PROMPTS,
   type MaterializeCorpusOptions
-} from "@strata/agent";
+} from "@strata-code/agent";
 import {
   readModuleMap,
   isSharedSuccess,

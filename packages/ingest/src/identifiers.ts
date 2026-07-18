@@ -1,1 +1,1 @@
-export { emitIdentifiers } from "@strata/store";
+export { emitIdentifiers } from "@strata-code/store";

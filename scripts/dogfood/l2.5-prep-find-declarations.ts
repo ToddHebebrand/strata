@@ -1,4 +1,4 @@
-import { openDb, find_declarations } from "@strata/store";
+import { openDb, find_declarations } from "@strata-code/store";
 
 const dbPath = process.argv[2];
 const name = process.argv[3] ?? "parse";

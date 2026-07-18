@@ -23,7 +23,7 @@ function credentialFreeEnv(): NodeJS.ProcessEnv {
 function ensureBuilt(): void {
   if (built) return;
   for (const [command, args] of [
-    ["pnpm", ["--filter", "@strata/kernel-bridge", "build"]],
+    ["pnpm", ["--filter", "@strata-code/kernel-bridge", "build"]],
     ["cargo", ["build", "-p", "strata-kernel", "--bin", "strata-kernel-service"]]
   ] as const) {
     const result = spawnSync(command, args, { cwd: repoRoot, env: credentialFreeEnv(), encoding: "utf8" });
@@ -72,7 +72,7 @@ export async function probeSameModulePair(
   secondName: string,
   secondNewName: string
 ) {
-  const { ingestBatch } = await import("@strata/ingest");
+  const { ingestBatch } = await import("@strata-code/ingest");
   const { readdirSync } = await import("node:fs");
   const files: string[] = [];
   const visit = (directory: string): void => {

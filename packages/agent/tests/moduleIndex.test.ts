@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
-import { insertNodes, openDb } from "@strata/store";
+import { ingestBatch } from "@strata-code/ingest";
+import { insertNodes, openDb } from "@strata-code/store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildModuleIndex } from "../src/moduleIndex";
 

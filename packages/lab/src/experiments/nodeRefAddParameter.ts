@@ -37,7 +37,7 @@ import {
   createStrataTools,
   STRATA_SERVER_NAME,
   type StrataSessionContext
-} from "@strata/agent";
+} from "@strata-code/agent";
 import {
   find_declarations,
   findNodeById,
@@ -49,7 +49,7 @@ import {
   resolveCallsites,
   type Db,
   type TxHandle
-} from "@strata/store";
+} from "@strata-code/store";
 import type { LabExperiment } from "../experiment";
 import { buildEquippedToolServer } from "./equippedToolServer";
 import { HD_DIRECTIVE_PROMPT } from "./directivePrompt";

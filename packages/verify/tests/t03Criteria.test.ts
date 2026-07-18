@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   begin,
   find_declarations,
@@ -8,8 +8,8 @@ import {
   insertReferences,
   openDb,
   rename_symbol
-} from "@strata/store";
-import { commit, evaluateT03Criteria } from "@strata/verify";
+} from "@strata-code/store";
+import { commit, evaluateT03Criteria } from "@strata-code/verify";
 import { describe, expect, it } from "vitest";
 
 function collect(rootDir: string): { path: string; text: string }[] {

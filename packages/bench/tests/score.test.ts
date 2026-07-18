@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
-import { renderWithSourceMap } from "@strata/render";
+import { ingestBatch } from "@strata-code/ingest";
+import { renderWithSourceMap } from "@strata-code/render";
 import {
   begin,
   find_declarations,
@@ -11,8 +11,8 @@ import {
   loadModule,
   openDb,
   rename_symbol
-} from "@strata/store";
-import { commit, evaluateT03Criteria } from "@strata/verify";
+} from "@strata-code/store";
+import { commit, evaluateT03Criteria } from "@strata-code/verify";
 import { describe, expect, it } from "vitest";
 import {
   scoreBaselineWorkingTree,

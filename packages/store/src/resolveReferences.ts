@@ -6,7 +6,7 @@ import type { Reference, ReferenceKind } from "./references";
  * Build a program over the supplied rendered modules and resolve every
  * identifier in each `dirtyModulePaths` module into a Reference edge
  * (use -> declaration-name identifier). Caller supplies rendered text and
- * compiler options so this never imports @strata/render and matches the
+ * compiler options so this never imports @strata-code/render and matches the
  * commit gate's tsconfig. Mirrors the DFS in emitIdentifiers exactly.
  */
 export function resolveReferencesForModules(

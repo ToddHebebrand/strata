@@ -1,12 +1,12 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   find_declarations,
   insertNodes,
   insertReferences,
   openDb
-} from "@strata/store";
+} from "@strata-code/store";
 import { describe, expect, it } from "vitest";
 import {
   loadTranscriptFixture,

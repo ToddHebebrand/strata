@@ -1,5 +1,5 @@
 {
-  "name": "@strata/kernel-bridge",
+  "name": "@strata-code/kernel-bridge",
   "version": "0.0.0",
   "private": true,
   "main": "dist/index.js",
@@ -17,9 +17,9 @@
     "start:worker": "node dist/worker.js"
   },
   "dependencies": {
-    "@strata/ingest": "workspace:*",
-    "@strata/store": "workspace:*",
-    "@strata/verify": "workspace:*",
+    "@strata-code/ingest": "workspace:*",
+    "@strata-code/store": "workspace:*",
+    "@strata-code/verify": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {

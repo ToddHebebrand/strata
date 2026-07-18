@@ -5,7 +5,7 @@ import {
   type Options,
   type SDKMessage
 } from "@anthropic-ai/claude-agent-sdk";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   begin,
   insertNodes,
@@ -14,7 +14,7 @@ import {
   rollback,
   type Db,
   type TxHandle
-} from "@strata/store";
+} from "@strata-code/store";
 import {
   emptyT03Criteria,
   evaluateT01Criteria,
@@ -28,7 +28,7 @@ import {
   type T03Criteria,
   type T05Criteria,
   type T08Criteria
-} from "@strata/verify";
+} from "@strata-code/verify";
 import { SessionLog } from "./log";
 import {
   classifySessionError,

@@ -1,10 +1,10 @@
 /**
- * @strata/bench — the Phase 4 T03 benchmark harness: substrate
+ * @strata-code/bench — the Phase 4 T03 benchmark harness: substrate
  * (runAgentTask/runAgentT03) vs. file-based baseline, N trials each,
  * scored through provably-equivalent text-criteria cores and reported as
  * distributions.
  *
- * The shared T03 scorer core intentionally stays in @strata/verify and is
+ * The shared T03 scorer core intentionally stays in @strata-code/verify and is
  * imported through that package's barrel. Moving it here would create a
  * verify/agent/bench cycle, so do not "tidy" evaluateT03TextCriteria into
  * this package.
@@ -12,7 +12,7 @@
  * The live round is the operator-only `bench:t03` script, never a vitest
  * test.
  */
-export const BENCH_PACKAGE = "@strata/bench" as const;
+export const BENCH_PACKAGE = "@strata-code/bench" as const;
 export {
   aggregate,
   distribution,

@@ -12,26 +12,26 @@ NOT decisions.md. Freeform exploration log. Nothing here is a claim.
   row, zero `oldText mismatch` thrash, no colliding `replace_body` — the
   four-falsified-levers root cause); expect HD PASS. Mechanism: a lab-local
   `applyPerScopeAddParameter` faithfully reimplements the canonical
-  `@strata/store` add_parameter algorithm composed ONLY from exported store
+  `@strata-code/store` add_parameter algorithm composed ONLY from exported store
   primitives (`resolveCallsites` / `queueTextSpanEdit` / `queuePendingOp` /
   `modulePathOf` / `findNodeById` / `locateSpan`), extended with
   longest-prefix `per_scope` slot selection. The canonical store op hardcodes
   a single uniform slot value with no per-callsite hook, so it cannot be
-  reused for per-scope values; `@strata/store` is NOT modified (a store
+  reused for per-scope values; `@strata-code/store` is NOT modified (a store
   change is graduation-class) — the sandbox composes store primitives
   directly, the sanctioned fallback. Variant reuses the EXACT tool NAME
   `add_parameter` (hermetic guard intact); no net-new tool name.
   Step-5 export-only re-exports were NOT needed: `createStrataTools`,
   `createStrataToolServer`, and `STRATA_SERVER_NAME` were already exported
-  from `@strata/agent`'s index by the Phase-1 seam — Task 10 made ZERO
+  from `@strata-code/agent`'s index by the Phase-1 seam — Task 10 made ZERO
   canonical change (store/render/verify byte-identical to main; agent diff is
   purely the pre-existing reviewed seam). Lab `typescript` moved from
   devDependency to dependency (lab package.json is non-canonical) because the
   variant handler parses TS at runtime.
   Ready for the cheap live inner loop:
-  `pnpm --filter @strata/lab lab per-scope-add-parameter`
+  `pnpm --filter @strata-code/lab lab per-scope-add-parameter`
   (operator-run, ~cents, NOT a claim).
-  DRIFT RISK: applyPerScopeAddParameter is a hand-copy of @strata/store add_parameter; if that canonical algorithm changes, re-sync this copy before trusting any lever result. Mechanical guard: the faithfulness-pin test.
+  DRIFT RISK: applyPerScopeAddParameter is a hand-copy of @strata-code/store add_parameter; if that canonical algorithm changes, re-sync this copy before trusting any lever result. Mechanical guard: the faithfulness-pin test.
 
 ## 2026-05-17 — First cents-loop trajectory (operator burst, ~$1.5/$5, NON-AUTHORITATIVE)
 
@@ -48,7 +48,7 @@ NOT decisions.md. Freeform exploration log. Nothing here is a claim.
 ## 2026-05-17 — CORRECTION: the trajectory entry above is VOID (broken instrument)
 
 The preceding "First cents-loop trajectory" entry's conclusion is WITHDRAWN.
-Root cause found model-free (probe.ts/probe2.ts): `@strata/ingest` ingests
+Root cause found model-free (probe.ts/probe2.ts): `@strata-code/ingest` ingests
 `export const ZONE = "..."` as kind `FirstStatement` with the name in a child
 `Identifier`; there is NO findable variable/const declaration node, and
 `Module` nodes are not returned by `find_declarations`. So:
@@ -110,7 +110,7 @@ for deliberate review, not claimed against the published result.
 
 Operator decision: the tooling-ceiling finding is the deliverable. Reproduce
 it FREE/model-free (no API key) from packages/lab:
-  pnpm --filter @strata/lab build
+  pnpm --filter @strata-code/lab build
   node dist/probe.js    # find_declarations cannot surface const ZONE / config
   node dist/probe2.js   # ingest emits `export const` as nameless FirstStatement
   node dist/probe3.js   # no documented node→module attribution (only parentId walk)
@@ -396,7 +396,7 @@ OPEN QUESTIONS this arc did not resolve:
   with $0.16-0.18 spend — well under maxTurns and budget. Untested.
 
 REPRODUCING (operator):
-  pnpm --filter @strata/lab build
+  pnpm --filter @strata-code/lab build
   ANTHROPIC_API_KEY=... node packages/lab/dist/run.js node-ref-add-parameter-equipped-gated
   ANTHROPIC_API_KEY=... node packages/lab/dist/run.js node-ref-add-parameter-equipped-gated-trap
   # Opus variants:
@@ -445,7 +445,7 @@ CROSS-MODEL FINDING (sandbox, non-authoritative): the corpus-preload hypothesis 
 - Opus baseline behavior: already parsimonious — 3 find_declarations total, only 2 empty (the failed ZONE-as-variable queries). Opus doesn't fish.
 - When you give opus the preload, it sees "src/server/config.ts: exports const ZONE" and tries find_declarations({name:"ZONE",kind:"variable"}) repeatedly (6 of its 11 finds were ZONE-targeted), gets [] every time, and burns budget on retry loops. The preload PROMISES facts the canonical query layer can't deliver.
 
-ROOT CAUSE OF OPUS-PRELOAD INVERSION: the find_declarations({kind:"variable"}) bug documented in the 2026-05-17 CORRECTION entry above. Verified mechanically: ts.SyntaxKind.FirstStatement === ts.SyntaxKind.VariableStatement (both === 244), but ts.SyntaxKind[244] returns "FirstStatement" because that alias wins TypeScript's reverse-lookup race. So @strata/ingest stores `export const X` as kind "FirstStatement" while @strata/store/queries.ts:22 maps DeclarationKind.variable to "VariableStatement". The query never matches the data; the bug has been latent since 2026-05-17. Same mismatch in @strata/store/rename.ts:17 (DECLARATION_KINDS set).
+ROOT CAUSE OF OPUS-PRELOAD INVERSION: the find_declarations({kind:"variable"}) bug documented in the 2026-05-17 CORRECTION entry above. Verified mechanically: ts.SyntaxKind.FirstStatement === ts.SyntaxKind.VariableStatement (both === 244), but ts.SyntaxKind[244] returns "FirstStatement" because that alias wins TypeScript's reverse-lookup race. So @strata-code/ingest stores `export const X` as kind "FirstStatement" while @strata-code/store/queries.ts:22 maps DeclarationKind.variable to "VariableStatement". The query never matches the data; the bug has been latent since 2026-05-17. Same mismatch in @strata-code/store/rename.ts:17 (DECLARATION_KINDS set).
 
 CANONICAL BUG IMPACT NOW MEASURED OPERATIONALLY:
 - Without preload: sonnet thrashes via fishing (and accidentally avoids the bug by querying without `kind`); opus doesn't notice.

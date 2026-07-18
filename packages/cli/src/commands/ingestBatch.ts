@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
-import { insertNodes, insertReferences, openDb } from "@strata/store";
+import { ingestBatch } from "@strata-code/ingest";
+import { insertNodes, insertReferences, openDb } from "@strata-code/store";
 
 export interface RunIngestBatchInput {
   rootDir: string;

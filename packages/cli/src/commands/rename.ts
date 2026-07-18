@@ -4,8 +4,8 @@ import {
   openDb,
   rename_symbol,
   type Db
-} from "@strata/store";
-import { commit, type Diagnostic } from "@strata/verify";
+} from "@strata-code/store";
+import { commit, type Diagnostic } from "@strata-code/verify";
 
 export interface RunRenameInput {
   dbPath: string;

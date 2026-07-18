@@ -226,7 +226,7 @@ Honest list:
 - **No incremental re-ingest.** Re-running against the same `--db` skips ingestion when the store has nodes, but if the on-disk corpus has changed under it, you need `--reset`. Watch-mode is not built.
 - **TypeScript only.** No other languages.
 - **17 structural tools.** `extract_function`, `inline_function`, `move_declaration` are on the roadmap but unstarted. The "rename-class" win is the strongest validated finding; other task classes are mixed (see [`docs/RESULTS.md`](RESULTS.md)).
-- **Bench is operator-only.** `pnpm --filter @strata/bench bench:t03` runs paired live trials against `examples/medium` and is gated behind `ANTHROPIC_API_KEY`. The dogfood harnesses (`dogfood:l1`, `dogfood:l3`) are the same shape but single-paired.
+- **Bench is operator-only.** `pnpm --filter @strata-code/bench bench:t03` runs paired live trials against `examples/medium` and is gated behind `ANTHROPIC_API_KEY`. The dogfood harnesses (`dogfood:l1`, `dogfood:l3`) are the same shape but single-paired.
 - **License is unchosen.** The repo has no LICENSE file yet.
 
 ## 9. Read next
@@ -241,7 +241,7 @@ Honest list:
 
 If you want to:
 
-- **Replicate the headline result** — `pnpm --filter @strata/bench bench:t03 -- --trials=3` (operator-only, ~$0.30).
+- **Replicate the headline result** — `pnpm --filter @strata-code/bench bench:t03 -- --trials=3` (operator-only, ~$0.30).
 - **Try your own task** — `strata agent <your-corpus> "<your prompt>" --db /tmp/your.db --print`. The agent works on any TypeScript directory with a `src/` root.
 - **Compare against file-tools Claude Code on the same task** — `strata baseline <your-corpus> "<your prompt>"`. Same shape, file tools.
 - **Inspect the operation log** — open `/tmp/your.db` in any SQLite browser; the `operations` table is the canonical history, `nodes` is the graph state.

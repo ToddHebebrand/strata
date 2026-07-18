@@ -1,5 +1,5 @@
 {
-  "name": "@strata/cli",
+  "name": "@strata-code/cli",
   "version": "0.1.0",
   "description": "Strata CLI — explore and mutate a TypeScript codebase as a structural node graph, and run the no-filesystem agent",
   "keywords": [
@@ -42,11 +42,11 @@
     "roundtrip": "node dist/cli.js roundtrip"
   },
   "dependencies": {
-    "@strata/agent": "workspace:*",
-    "@strata/ingest": "workspace:*",
-    "@strata/render": "workspace:*",
-    "@strata/store": "workspace:*",
-    "@strata/verify": "workspace:*",
+    "@strata-code/agent": "workspace:*",
+    "@strata-code/ingest": "workspace:*",
+    "@strata-code/render": "workspace:*",
+    "@strata-code/store": "workspace:*",
+    "@strata-code/verify": "workspace:*",
     "typescript": "^5.8.3"
   },
   "devDependencies": {

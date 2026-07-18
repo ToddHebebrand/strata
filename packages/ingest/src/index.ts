@@ -1,4 +1,4 @@
-import { nodeId, type NodeRow } from "@strata/store";
+import { nodeId, type NodeRow } from "@strata-code/store";
 import ts from "typescript";
 import { emitIdentifiers } from "./identifiers";
 

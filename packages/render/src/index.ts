@@ -1,4 +1,4 @@
-import type { NodeRow } from "@strata/store";
+import type { NodeRow } from "@strata-code/store";
 import {
   identifierMutationToSpan,
   spliceStatement,

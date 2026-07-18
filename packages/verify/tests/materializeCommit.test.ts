@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   openDb,
   insertNodes,
@@ -16,7 +16,7 @@ import {
   listChildren,
   findNodeById,
   queueTextSpanEdit
-} from "@strata/store";
+} from "@strata-code/store";
 import { commit } from "../src/validate";
 
 function seed(filePath: string, text: string) {

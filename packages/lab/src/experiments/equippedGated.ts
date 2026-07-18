@@ -3,7 +3,7 @@ import {
   type McpSdkServerConfigWithInstance,
   type SdkMcpToolDefinition
 } from "@anthropic-ai/claude-agent-sdk";
-import { STRATA_SERVER_NAME, type StrataSessionContext } from "@strata/agent";
+import { STRATA_SERVER_NAME, type StrataSessionContext } from "@strata-code/agent";
 import { buildEquippedToolServer } from "./equippedToolServer";
 import type { LabExperiment } from "../experiment";
 import { HD_DIRECTIVE_PROMPT } from "./directivePrompt";

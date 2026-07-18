@@ -6,7 +6,7 @@ import {
   isVecAvailable,
   openDb,
   type EmbeddingProvider
-} from "@strata/store";
+} from "@strata-code/store";
 import { describe, expect, it } from "vitest";
 import { createStrataTools } from "../src/tools";
 

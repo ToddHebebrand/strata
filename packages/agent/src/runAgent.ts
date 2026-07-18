@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
-import { behavioralFixturesForTask } from "@strata/verify";
+import { ingestBatch } from "@strata-code/ingest";
+import { behavioralFixturesForTask } from "@strata-code/verify";
 import {
   embedDeclarations,
   insertNodes,
@@ -15,7 +15,7 @@ import {
   type EmbeddingProvider,
   type PastTaskHit,
   type TxHandle
-} from "@strata/store";
+} from "@strata-code/store";
 import { SessionLog } from "./log";
 import { buildModuleIndex } from "./moduleIndex";
 import {

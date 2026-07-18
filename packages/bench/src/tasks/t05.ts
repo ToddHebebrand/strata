@@ -1,4 +1,4 @@
-import { T05_PROMPT } from "@strata/agent";
+import { T05_PROMPT } from "@strata-code/agent";
 import { runBaselineTaskTrial } from "../configs/baseline";
 import { runSubstrateTaskTrial } from "../configs/substrate";
 import type { BenchTask } from "./index";

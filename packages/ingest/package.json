@@ -1,5 +1,5 @@
 {
-  "name": "@strata/ingest",
+  "name": "@strata-code/ingest",
   "version": "0.1.0",
   "description": "TypeScript source to Strata node graph, via the TypeScript Compiler API",
   "keywords": [
@@ -46,7 +46,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@strata/store": "workspace:*",
+    "@strata-code/store": "workspace:*",
     "typescript": "^5.8.3"
   },
   "devDependencies": {

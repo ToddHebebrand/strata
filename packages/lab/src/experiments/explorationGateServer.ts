@@ -7,7 +7,7 @@ import {
   createStrataTools,
   STRATA_SERVER_NAME,
   type StrataSessionContext
-} from "@strata/agent";
+} from "@strata-code/agent";
 import { buildVariantToolServer } from "./perScopeAddParameter";
 
 /**

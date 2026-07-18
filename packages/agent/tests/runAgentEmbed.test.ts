@@ -1,4 +1,4 @@
-import { EMBEDDING_DIM, type EmbeddingProvider } from "@strata/store";
+import { EMBEDDING_DIM, type EmbeddingProvider } from "@strata-code/store";
 import {
   mkdirSync,
   mkdtempSync,

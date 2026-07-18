@@ -40,7 +40,7 @@ fn bridge_worker() -> PathBuf {
     let worker = repo_root().join("packages/kernel-bridge/dist/worker.js");
     if !worker.exists() {
         let status = Command::new("pnpm")
-            .args(["--filter", "@strata/kernel-bridge", "build"])
+            .args(["--filter", "@strata-code/kernel-bridge", "build"])
             .current_dir(repo_root())
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("CLAUDE_CODE_OAUTH_TOKEN")

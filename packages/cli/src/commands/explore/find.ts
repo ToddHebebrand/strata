@@ -1,4 +1,4 @@
-import { findDeclarations, type Db, type DeclarationKind } from "@strata/store";
+import { findDeclarations, type Db, type DeclarationKind } from "@strata-code/store";
 import {
   fail,
   kindLabel,

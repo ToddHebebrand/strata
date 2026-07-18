@@ -1,5 +1,5 @@
 {
-  "name": "@strata/verify",
+  "name": "@strata-code/verify",
   "version": "0.1.0",
   "description": "Type-checks and tests rendered Strata output in-process; diagnostics map back to nodes",
   "keywords": [
@@ -45,12 +45,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@strata/render": "workspace:*",
-    "@strata/store": "workspace:*",
+    "@strata-code/render": "workspace:*",
+    "@strata-code/store": "workspace:*",
     "typescript": "^5.8.3"
   },
   "devDependencies": {
-    "@strata/ingest": "workspace:*",
+    "@strata-code/ingest": "workspace:*",
     "@types/node": "^22.15.29",
     "vitest": "^3.2.4"
   }

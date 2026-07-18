@@ -8,9 +8,9 @@ import {
   type AgentResult,
   type BaselineResult,
   type SessionLogEvent
-} from "@strata/agent";
-import { openDb, listModules, loadModule } from "@strata/store";
-import { render } from "@strata/render";
+} from "@strata-code/agent";
+import { openDb, listModules, loadModule } from "@strata-code/store";
+import { render } from "@strata-code/render";
 
 /**
  * Natural-language task (no tool leak) used for BOTH arms. Moves the

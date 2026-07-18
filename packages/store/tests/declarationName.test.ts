@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ingest } from "@strata/ingest";
+import { ingest } from "@strata-code/ingest";
 import { insertNodes } from "../src/nodes";
 import { openDb } from "../src/schema";
 import { resolveDeclarationNameIdentifier } from "../src/declarationName";

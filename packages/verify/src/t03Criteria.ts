@@ -1,6 +1,6 @@
 import path from "node:path";
-import { renderWithSourceMap } from "@strata/render";
-import { loadModule, type Db } from "@strata/store";
+import { renderWithSourceMap } from "@strata-code/render";
+import { loadModule, type Db } from "@strata-code/store";
 
 export interface T03Criteria {
   commitReturnedOk: boolean;

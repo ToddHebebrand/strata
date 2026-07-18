@@ -56,7 +56,7 @@ function experimentManifest() {
     fixtureDigests: manifest.packets.D.fixtureDigests,
     excludedInputs: manifest.excludedInputs,
     boundary: manifest.boundary,
-    packageVersions: { "@strata/live-compare": "0.0.0" },
+    packageVersions: { "@strata-code/live-compare": "0.0.0" },
     machine: { platform: "darwin", arch: "arm64" },
     approval: { approvedBy: "operator", messageReference: "2026-07-16" }
   };

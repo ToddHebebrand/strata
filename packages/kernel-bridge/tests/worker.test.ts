@@ -7,7 +7,7 @@ import {
   parseCanonicalU64,
   toKernelSnapshot,
   type KernelSnapshotV1
-} from "@strata/ingest";
+} from "@strata-code/ingest";
 import { describe, expect, it } from "vitest";
 import {
   bridgeResponseSchema,

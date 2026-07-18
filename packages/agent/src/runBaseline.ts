@@ -1,6 +1,6 @@
 import { rmSync } from "node:fs";
 import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
-import { tscNoEmit, vitestRun } from "@strata/verify";
+import { tscNoEmit, vitestRun } from "@strata-code/verify";
 import { SessionLog } from "./log";
 import {
   BASELINE_TOOLS,

@@ -1,5 +1,5 @@
 {
-  "name": "@strata/bench",
+  "name": "@strata-code/bench",
   "version": "0.0.0",
   "private": true,
   "main": "dist/index.js",
@@ -24,11 +24,11 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.118",
-    "@strata/agent": "workspace:*",
-    "@strata/ingest": "workspace:*",
-    "@strata/render": "workspace:*",
-    "@strata/store": "workspace:*",
-    "@strata/verify": "workspace:*",
+    "@strata-code/agent": "workspace:*",
+    "@strata-code/ingest": "workspace:*",
+    "@strata-code/render": "workspace:*",
+    "@strata-code/store": "workspace:*",
+    "@strata-code/verify": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {

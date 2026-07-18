@@ -1,11 +1,11 @@
-# @strata/cli
+# @strata-code/cli
 
 The Strata command line: explore and mutate a TypeScript codebase as a structural node graph, and run the no-filesystem agent.
 
 Strata is an agent-native structural code substrate — a queryable, transactional code graph that replaces files as an AI agent's interface to a codebase. Files exist only as transient artifacts for the type-checker; the graph is canonical.
 
 ```bash
-npm i -g @strata/cli
+npm i -g @strata-code/cli
 
 strata modules ./my-ts-project          # list module nodes
 strata find ./my-ts-project User        # find declarations by name

@@ -2,7 +2,7 @@
  *  op produce tsc-clean, test-passing output? (no API key) */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   openDb,
   insertNodes,
@@ -10,8 +10,8 @@ import {
   begin,
   commitWithoutValidate,
   find_declarations
-} from "@strata/store";
-import { runCorpusAcceptance } from "@strata/verify";
+} from "@strata-code/store";
+import { runCorpusAcceptance } from "@strata-code/verify";
 import { applyPerScopeAddParameter } from "./experiments/perScopeAddParameter";
 import { renderCommittedSrc } from "./experiment";
 

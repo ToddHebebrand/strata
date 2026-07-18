@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ingestBatch } from "@strata/ingest";
-import { renderWithSourceMap } from "@strata/render";
+import { ingestBatch } from "@strata-code/ingest";
+import { renderWithSourceMap } from "@strata-code/render";
 import { insertNodes, loadModule } from "../src/nodes";
 import { find_declarations } from "../src/queries";
 import { insertReferences } from "../src/references";

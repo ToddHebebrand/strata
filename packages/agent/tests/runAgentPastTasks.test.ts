@@ -9,7 +9,7 @@ import {
   insertReferences,
   isVecAvailable,
   type EmbeddingProvider
-} from "@strata/store";
+} from "@strata-code/store";
 import {
   mkdirSync,
   mkdtempSync,

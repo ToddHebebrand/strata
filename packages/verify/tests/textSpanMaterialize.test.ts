@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ingest } from "@strata/ingest";
+import { ingest } from "@strata-code/ingest";
 import {
   begin,
   insertNodes,
@@ -8,7 +8,7 @@ import {
   queueIdentifierUpdate,
   queuePendingOp,
   queueTextSpanEdit
-} from "@strata/store";
+} from "@strata-code/store";
 import { describe, expect, it } from "vitest";
 import { commit } from "../src/validate";
 

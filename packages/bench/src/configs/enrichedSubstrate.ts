@@ -4,7 +4,7 @@
  * here" (name-fishing) or something deeper.
  *
  * NON-AUTHORITATIVE — this is a bench-layer experiment that DOES NOT modify
- * @strata/agent. It routes through the canonical hermetic loop unchanged.
+ * @strata-code/agent. It routes through the canonical hermetic loop unchanged.
  * The single intervention: PREFIX the task prompt with a generated corpus map
  * (modules, exports, key imports). The tool surface is byte-identical to the
  * canonical 11 Strata tools — no new tool names, no hermetic-guard change.
@@ -23,11 +23,11 @@
  * the bench's canonical tasks. The toolServerFactory is left at its default
  * so the canonical `createStrataToolServer` runs — no tool surface change.
  *
- * Sandbox discipline: does NOT touch @strata/agent, @strata/store,
- * @strata/render, @strata/verify, examples/. Lives in packages/bench.
+ * Sandbox discipline: does NOT touch @strata-code/agent, @strata-code/store,
+ * @strata-code/render, @strata-code/verify, examples/. Lives in packages/bench.
  */
 
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   openDb,
   insertNodes,
@@ -36,19 +36,19 @@ import {
   listModules,
   type Db,
   type NodeRow
-} from "@strata/store";
+} from "@strata-code/store";
 import {
   evaluateT01Criteria,
   evaluateT05Criteria,
   evaluateT08Criteria
-} from "@strata/verify";
+} from "@strata-code/verify";
 import {
   runAgentLab,
   TASK_PROMPTS,
   type AgentLabResult,
   type SessionLogEvent,
   type LabCriteria
-} from "@strata/agent";
+} from "@strata-code/agent";
 import {
   cpSync,
   existsSync,
@@ -274,7 +274,7 @@ function toPosix(value: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Corpus collector — mirrors what @strata/agent's runAgentForPrompt does
+// Corpus collector — mirrors what @strata-code/agent's runAgentForPrompt does
 // internally, so the prefix we generate sees the same module set as the
 // agent will see when its own ingest runs.
 // ---------------------------------------------------------------------------
@@ -325,7 +325,7 @@ export function buildCorpusPrefixFromRoot(corpusRoot: string): string {
 // For T05/T08 (the read-heavy tasks the bench showed substrate losing on):
 //   1. Build the corpus map prefix.
 //   2. Call runAgentLab with prompt = <prefix>\n\n<canonical task prompt>.
-//   3. Use the canonical T05/T08 scorer from @strata/verify.
+//   3. Use the canonical T05/T08 scorer from @strata-code/verify.
 //   4. Extract TrialMetrics in the same shape as the existing
 //      runSubstrateTaskTrial so the report harness can consume both.
 //
@@ -350,7 +350,7 @@ function repoRootFromHere(): string {
 function emptyTaskLabCriteria(taskId: BenchTaskId): LabCriteria & {
   [key: string]: boolean;
 } {
-  // Mirrors @strata/agent's internal emptyTaskCriteria (which is not
+  // Mirrors @strata-code/agent's internal emptyTaskCriteria (which is not
   // exported). The scorer overwrites these fields; defaults must be false
   // so a non-passing run reports failure cleanly. LabCriteria requires
   // commitReturnedOk / validateAfterCommitClean / operationRowAppended /

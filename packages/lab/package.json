@@ -1,5 +1,5 @@
 {
-  "name": "@strata/lab",
+  "name": "@strata-code/lab",
   "version": "0.0.0",
   "private": true,
   "main": "dist/index.js",
@@ -13,17 +13,17 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "test": "echo '[@strata/lab] NON-AUTHORITATIVE sandbox. Run: pnpm --filter @strata/lab test:lab'",
+    "test": "echo '[@strata-code/lab] NON-AUTHORITATIVE sandbox. Run: pnpm --filter @strata-code/lab test:lab'",
     "test:lab": "vitest run",
     "lab": "node dist/run.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.118",
-    "@strata/agent": "workspace:*",
-    "@strata/ingest": "workspace:*",
-    "@strata/render": "workspace:*",
-    "@strata/store": "workspace:*",
-    "@strata/verify": "workspace:*",
+    "@strata-code/agent": "workspace:*",
+    "@strata-code/ingest": "workspace:*",
+    "@strata-code/render": "workspace:*",
+    "@strata-code/store": "workspace:*",
+    "@strata-code/verify": "workspace:*",
     "typescript": "^5.8.3",
     "zod": "4.4.3"
   },

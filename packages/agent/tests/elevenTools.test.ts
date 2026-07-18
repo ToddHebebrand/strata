@@ -1,4 +1,4 @@
-import { openDb } from "@strata/store";
+import { openDb } from "@strata-code/store";
 import { describe, expect, it } from "vitest";
 import { STRATA_SYSTEM_PROMPT } from "../src/prompt";
 import {

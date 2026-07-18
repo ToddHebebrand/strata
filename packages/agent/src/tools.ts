@@ -29,7 +29,7 @@ import {
   type DiscoveryKind,
   type EmbeddingProvider,
   type TxHandle
-} from "@strata/store";
+} from "@strata-code/store";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
@@ -38,7 +38,7 @@ import {
   commitWithBehavioralGate,
   validate,
   type AcceptanceContext
-} from "@strata/verify";
+} from "@strata-code/verify";
 import { z } from "zod/v4";
 import { type SessionLog } from "./log";
 
@@ -51,7 +51,7 @@ export const nodeIdSchema = z
 /**
  * The handle returned by begin_transaction. The agent must hold this and
  * pass it back to rename_symbol / validate / commit_transaction /
- * rollback_transaction. Shape mirrors @strata/store's TxHandle
+ * rollback_transaction. Shape mirrors @strata-code/store's TxHandle
  * ({ id, actor }) and packages/cli/src/commands/sdkSmoke.ts.
  */
 export const txHandleSchema = z
@@ -61,7 +61,7 @@ export const txHandleSchema = z
   })
   .describe("Strata transaction handle from begin_transaction.");
 
-/** A verify diagnostic, mirroring @strata/verify's Diagnostic. */
+/** A verify diagnostic, mirroring @strata-code/verify's Diagnostic. */
 export const diagnosticSchema = z.object({
   nodeId: nodeIdSchema.nullable(),
   modulePath: z.string().nullable(),

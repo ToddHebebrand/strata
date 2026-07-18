@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   begin,
   find_declarations,
@@ -9,7 +9,7 @@ import {
   openDb,
   rename_symbol,
   rollback
-} from "@strata/store";
+} from "@strata-code/store";
 import {
   commit,
   emptyT03Criteria,
@@ -17,7 +17,7 @@ import {
   validate,
   type Diagnostic,
   type T03Criteria
-} from "@strata/verify";
+} from "@strata-code/verify";
 
 export interface RunT03Input {
   corpusRoot: string;

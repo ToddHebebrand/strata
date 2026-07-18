@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { parseCanonicalU64, type KernelSnapshotV1 } from "@strata/ingest";
+import { parseCanonicalU64, type KernelSnapshotV1 } from "@strata-code/ingest";
 import {
   add_parameter,
   begin,
@@ -11,8 +11,8 @@ import {
   rollback,
   type Db,
   type TxHandle
-} from "@strata/store";
-import { commit, commitWithBehavioralGate, type Diagnostic } from "@strata/verify";
+} from "@strata-code/store";
+import { commit, commitWithBehavioralGate, type Diagnostic } from "@strata-code/verify";
 import {
   type BridgeDiagnostic,
   type BridgeErrorPayload,

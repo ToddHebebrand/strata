@@ -2,8 +2,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ingestBatch } from "@strata/ingest";
-import { begin, insertNodes, insertReferences, openDb } from "@strata/store";
+import { ingestBatch } from "@strata-code/ingest";
+import { begin, insertNodes, insertReferences, openDb } from "@strata-code/store";
 import { commitWithBehavioralGate } from "../src/index";
 
 const created: string[] = [];

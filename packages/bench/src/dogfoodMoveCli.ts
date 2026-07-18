@@ -45,7 +45,7 @@ function parseArgs(argv: string[]): ParsedArgs | null {
 }
 
 const USAGE =
-  "Usage: pnpm --filter @strata/bench dogfood:move -- <corpusRoot> " +
+  "Usage: pnpm --filter @strata-code/bench dogfood:move -- <corpusRoot> " +
   "[--prompt <text>] [--model <id>] [--max-turns N] [--wall-ms N] [--out-dir <dir>] [--json-out <file>]\n" +
   "\n" +
   "  Paired dogfood for move_declaration on <corpusRoot> (default examples/medium):\n" +

@@ -1,13 +1,13 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   begin,
   commitWithoutValidate,
   insertNodes,
   openDb,
   queuePendingOp
-} from "@strata/store";
+} from "@strata-code/store";
 import { evaluateT08Criteria, evaluateT08TextCriteria } from "../src/index";
 
 const SRC_ROOT = path.resolve("/corpus/src");

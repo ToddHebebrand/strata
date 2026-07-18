@@ -1,5 +1,5 @@
 /**
- * The corpus runner was lowered into @strata/verify so the agent commit gate
+ * The corpus runner was lowered into @strata-code/verify so the agent commit gate
  * and this benchmark scorer share one finish line by construction (see
  * docs/specs/2026-05-16-behavioral-commit-gate-design.md and the matching
  * decisions.md entry). This module is a thin re-export to keep every existing
@@ -17,4 +17,4 @@ export {
   behavioralFixturesForTask,
   type QualityResult,
   type CorpusAcceptanceResult
-} from "@strata/verify";
+} from "@strata-code/verify";

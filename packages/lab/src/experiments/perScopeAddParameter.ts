@@ -10,7 +10,7 @@ import {
   createStrataTools,
   STRATA_SERVER_NAME,
   type StrataSessionContext
-} from "@strata/agent";
+} from "@strata-code/agent";
 import {
   findNodeById,
   listChildren,
@@ -21,7 +21,7 @@ import {
   resolveCallsites,
   type Db,
   type TxHandle
-} from "@strata/store";
+} from "@strata-code/store";
 import type { LabExperiment } from "../experiment";
 
 const IDENT_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
@@ -113,7 +113,7 @@ function moduleNodeOf(db: Db, nodeId: string): { id: string } {
 }
 
 /**
- * Faithful reimplementation of the canonical @strata/store add_parameter
+ * Faithful reimplementation of the canonical @strata-code/store add_parameter
  * algorithm (packages/store/src/addParameter.ts) composed ENTIRELY from
  * exported store primitives (resolveCallsites / queueTextSpanEdit /
  * queuePendingOp / modulePathOf / findNodeById / locateSpan), with ONE
@@ -122,7 +122,7 @@ function moduleNodeOf(db: Db, nodeId: string): { id: string } {
  *
  * Why a lab-local copy and not the canonical op: the canonical op hardcodes
  * `const slotValue = defaultValue ?? "undefined"` with NO per-callsite hook,
- * so per-scope expressiveness cannot be obtained by calling it. @strata/store
+ * so per-scope expressiveness cannot be obtained by calling it. @strata-code/store
  * is NOT modified (a store change is graduation-class, out of sandbox scope);
  * the sandbox composes store transaction primitives directly, which is the
  * sanctioned fallback when the canonical op is too rigid.
@@ -133,7 +133,7 @@ function moduleNodeOf(db: Db, nodeId: string): { id: string } {
  * silently diverges and the mechanics test would still pass on the fixed corpus.
  * The faithfulness-pin test (see perScopeAddParameter.test.ts) mechanically
  * guards the no-per_scope path against canonical; the corpus assertions guard
- * behavior. Any graduation re-implements per-scope INSIDE @strata/store via the
+ * behavior. Any graduation re-implements per-scope INSIDE @strata-code/store via the
  * rigid pipeline — this copy is sandbox-only and never graduates as-is.
  *
  * CRITICAL INVARIANT (the lever's entire thesis): the declaration parameter
@@ -385,7 +385,7 @@ export function applyPerScopeAddParameter(
   };
 }
 
-/** A Strata transaction handle, mirroring @strata/store's TxHandle. */
+/** A Strata transaction handle, mirroring @strata-code/store's TxHandle. */
 const txHandleSchema = z.object({
   id: z.string().min(1),
   actor: z.string().min(1)

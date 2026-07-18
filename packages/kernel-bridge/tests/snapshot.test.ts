@@ -8,8 +8,8 @@ import {
   type KernelNodeV1,
   type KernelReferenceV1,
   type KernelSnapshotV1
-} from "@strata/ingest";
-import { insertNodes, insertReferences, openDb } from "@strata/store";
+} from "@strata-code/ingest";
+import { insertNodes, insertReferences, openDb } from "@strata-code/store";
 import { describe, expect, it } from "vitest";
 import {
   applyDelta,

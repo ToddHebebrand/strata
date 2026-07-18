@@ -3,7 +3,7 @@ import {
   resolveDeclarationNameIdentifier,
   type Db,
   type NodeRow
-} from "@strata/store";
+} from "@strata-code/store";
 
 /** Uniform result shape for every explore command; the dispatcher prints it. */
 export interface CommandResult {

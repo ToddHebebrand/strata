@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import ts from "typescript";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   openDb,
   insertNodes,
@@ -14,8 +14,8 @@ import {
   get_references,
   loadModule,
   listModules
-} from "@strata/store";
-import { render } from "@strata/render";
+} from "@strata-code/store";
+import { render } from "@strata-code/render";
 import { buildAnalysisContext, commit } from "../src/validate";
 
 function seed(path: string, text: string) {

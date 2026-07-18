@@ -4,7 +4,7 @@ import {
   type AgentTaskResult,
   type AgentT03Result,
   type SessionLogEvent
-} from "@strata/agent";
+} from "@strata-code/agent";
 import {
   cpSync,
   existsSync,
@@ -81,7 +81,7 @@ export interface ExtractSubstrateInput {
 
 /**
  * Pure metric extraction from a real or synthetic AgentT03Result. This reads
- * the public @strata/agent log and criteria only; runAgentT03 itself is reused
+ * the public @strata-code/agent log and criteria only; runAgentT03 itself is reused
  * as-is by runSubstrateTrial.
  */
 export function extractSubstrateMetrics(

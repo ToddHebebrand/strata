@@ -1,6 +1,6 @@
-import type { TextSpanEdit } from "@strata/store";
+import type { TextSpanEdit } from "@strata-code/store";
 
-export type { TextSpanEdit } from "@strata/store";
+export type { TextSpanEdit } from "@strata-code/store";
 
 export interface IdentifierMutation {
   offset: number;

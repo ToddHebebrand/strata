@@ -3,7 +3,7 @@ import {
   insertReferences,
   openDb,
   type Db
-} from "@strata/store";
+} from "@strata-code/store";
 import { describe, expect, it } from "vitest";
 import {
   createStrataTools,

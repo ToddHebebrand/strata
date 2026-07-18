@@ -1,4 +1,4 @@
-import { SessionLog, type AgentT03Result } from "@strata/agent";
+import { SessionLog, type AgentT03Result } from "@strata-code/agent";
 import { describe, expect, it } from "vitest";
 import { extractSubstrateMetrics } from "../src/configs/substrate";
 

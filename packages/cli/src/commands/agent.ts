@@ -1,5 +1,5 @@
 import path from "node:path";
-import { runAgent, type AgentResult } from "@strata/agent";
+import { runAgent, type AgentResult } from "@strata-code/agent";
 
 export interface RunAgentCliInput {
   corpusRoot: string;

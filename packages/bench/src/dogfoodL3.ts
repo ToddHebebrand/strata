@@ -5,7 +5,7 @@ import {
   runAgent,
   type AgentResult,
   type SessionLogEvent
-} from "@strata/agent";
+} from "@strata-code/agent";
 
 export const L3_TASK_A_PROMPT =
   "Rename the exported interface `User` (defined in `src/types/user.ts`) to " +

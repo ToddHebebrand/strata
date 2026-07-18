@@ -1,5 +1,5 @@
 import path from "node:path";
-import { runBaseline, type BaselineResult } from "@strata/agent";
+import { runBaseline, type BaselineResult } from "@strata-code/agent";
 
 export interface RunBaselineCliInput {
   corpusRoot: string;

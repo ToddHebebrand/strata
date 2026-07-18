@@ -7,8 +7,8 @@ import {
   createStrataTools,
   STRATA_SERVER_NAME,
   type StrataSessionContext
-} from "@strata/agent";
-import { modulePathOf, listChildren, type Db } from "@strata/store";
+} from "@strata-code/agent";
+import { modulePathOf, listChildren, type Db } from "@strata-code/store";
 import { buildVariantToolServer } from "./perScopeAddParameter";
 
 /**

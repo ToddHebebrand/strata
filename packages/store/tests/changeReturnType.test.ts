@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ingest } from "@strata/ingest";
-import { renderWithSourceMap } from "@strata/render";
+import { ingest } from "@strata-code/ingest";
+import { renderWithSourceMap } from "@strata-code/render";
 import { openDb } from "../src/schema";
 import { insertNodes, loadModule } from "../src/nodes";
 import { begin, getOverlay } from "../src/transactions";

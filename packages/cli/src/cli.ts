@@ -2,9 +2,9 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { ingest } from "@strata/ingest";
-import { render } from "@strata/render";
-import { insertNodes, loadModule, openDb } from "@strata/store";
+import { ingest } from "@strata-code/ingest";
+import { render } from "@strata-code/render";
+import { insertNodes, loadModule, openDb } from "@strata-code/store";
 import ts from "typescript";
 import { runAgentCommand } from "./commands/agent";
 import { runBaselineCommand } from "./commands/baseline";

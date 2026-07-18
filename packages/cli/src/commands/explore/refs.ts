@@ -3,7 +3,7 @@ import {
   getReferences,
   modulePathOf,
   type Db
-} from "@strata/store";
+} from "@strata-code/store";
 import {
   fail,
   firstLine,

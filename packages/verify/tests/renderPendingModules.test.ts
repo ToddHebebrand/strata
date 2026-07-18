@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ingestBatch } from "@strata/ingest";
-import { begin, insertNodes, insertReferences, openDb } from "@strata/store";
+import { ingestBatch } from "@strata-code/ingest";
+import { begin, insertNodes, insertReferences, openDb } from "@strata-code/store";
 import { renderPendingModules } from "../src/validate";
 
 describe("renderPendingModules", () => {

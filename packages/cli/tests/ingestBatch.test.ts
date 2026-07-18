@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { openDb } from "@strata/store";
+import { openDb } from "@strata-code/store";
 import { describe, expect, it } from "vitest";
 import { runIngestBatch } from "../src/commands/ingestBatch";
 

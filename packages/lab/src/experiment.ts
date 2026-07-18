@@ -1,6 +1,6 @@
 import path from "node:path";
-import { renderWithSourceMap } from "@strata/render";
-import { listModules, loadModule, type Db } from "@strata/store";
+import { renderWithSourceMap } from "@strata-code/render";
+import { listModules, loadModule, type Db } from "@strata-code/store";
 import type { LabCriteria, RunAgentLabParams } from "./seam";
 import { scoreHonestDerivable } from "./tasks/honestDerivable";
 import { scoreTrapped } from "./tasks/trappedControl";

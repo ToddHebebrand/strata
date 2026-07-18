@@ -53,7 +53,7 @@ function parseArgs(argv: string[]): ParsedArgs | null {
 }
 
 const USAGE =
-  "Usage: pnpm --filter @strata/bench dogfood:l1 -- <corpusRoot> " +
+  "Usage: pnpm --filter @strata-code/bench dogfood:l1 -- <corpusRoot> " +
   "[--model <id>] [--max-turns N] [--wall-ms N] [--out-dir <dir>] [--json-out <file>]\n" +
   "\n" +
   "  Runs the freeform agent twice on <corpusRoot> with the T05 prompt:\n" +

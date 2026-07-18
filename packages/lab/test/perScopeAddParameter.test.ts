@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   add_parameter,
   begin,
@@ -15,8 +15,8 @@ import {
   modulePathOf,
   openDb,
   resolveCallsites
-} from "@strata/store";
-import { renderWithSourceMap } from "@strata/render";
+} from "@strata-code/store";
+import { renderWithSourceMap } from "@strata-code/render";
 import {
   applyPerScopeAddParameter,
   buildVariantToolServer,
@@ -260,7 +260,7 @@ describe("per-scope add_parameter mechanics (model-free)", () => {
 
   it(
     "faithfulness pin: empty per_scope == canonical add_parameter " +
-      "(guards applyPerScopeAddParameter against silent drift from @strata/store)",
+      "(guards applyPerScopeAddParameter against silent drift from @strata-code/store)",
     () => {
       // Two INDEPENDENT in-memory stores from the SAME corpus. Store A uses
       // the canonical exported add_parameter op; store B uses
@@ -269,7 +269,7 @@ describe("per-scope add_parameter mechanics (model-free)", () => {
       // exactly ONE AddParameter op row. This test FAILS if the lab copy
       // drifts from canonical on the no-per_scope path.
       //
-      // Canonical add_parameter IS exported from @strata/store (confirmed in
+      // Canonical add_parameter IS exported from @strata-code/store (confirmed in
       // packages/store/src/index.ts) — pin test is feasible without any deep
       // import or canonical modification.
       const dbA = buildCorpusStore();

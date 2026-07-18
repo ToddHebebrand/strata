@@ -1,5 +1,5 @@
 /**
- * Trapped control (graduation-only contamination alarm) for @strata/lab.
+ * Trapped control (graduation-only contamination alarm) for @strata-code/lab.
  *
  * NON-AUTHORITATIVE sandbox — see README.md.
  *

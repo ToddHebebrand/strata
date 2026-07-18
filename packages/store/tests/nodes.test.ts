@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import { insertNodes, listChildren, modulePathOf } from "../src/nodes";
 import { find_declarations } from "../src/queries";
 import { openDb } from "../src/schema";

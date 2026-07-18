@@ -14,9 +14,9 @@
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
-import { openDb, insertNodes, insertReferences } from "@strata/store";
-import { createStrataTools, type StrataSessionContext } from "@strata/agent";
+import { ingestBatch } from "@strata-code/ingest";
+import { openDb, insertNodes, insertReferences } from "@strata-code/store";
+import { createStrataTools, type StrataSessionContext } from "@strata-code/agent";
 
 const SRC_ROOT = path.join(__dirname, "..", "corpus", "src");
 

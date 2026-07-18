@@ -5,7 +5,7 @@ import {
   T05_PROMPT,
   type AgentResult,
   type SessionLogEvent
-} from "@strata/agent";
+} from "@strata-code/agent";
 
 export interface DogfoodArmCost {
   totalTokens: number;

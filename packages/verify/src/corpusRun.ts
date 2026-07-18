@@ -15,8 +15,8 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import ts from "typescript";
-import { renderWithSourceMap } from "@strata/render";
-import { loadModule, type Db } from "@strata/store";
+import { renderWithSourceMap } from "@strata-code/render";
+import { loadModule, type Db } from "@strata-code/store";
 
 interface RenderBatch {
   modules: { path: string; moduleId: string }[];

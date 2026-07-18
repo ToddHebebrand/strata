@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { render, renderWithSourceMap } from "../src";
-import type { NodeRow } from "@strata/store";
+import type { NodeRow } from "@strata-code/store";
 
 describe("render", () => {
   it("concatenates child payloads in child_index order", () => {

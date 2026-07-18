@@ -5,7 +5,7 @@
  * The bug this fixes: `find_declarations` (and sibling functions) previously
  * used a SQL subquery that picked the *lowest-offset* Identifier child of a
  * declaration to identify "the declaration's name." But `emitIdentifiers` in
- * `@strata/ingest` uses `getChildren()`, which includes JSDoc nodes. For any
+ * `@strata-code/ingest` uses `getChildren()`, which includes JSDoc nodes. For any
  * JSDoc'd declaration, the lowest-offset Identifier is a `@param`/`@returns`
  * tag word, not the declaration name itself.
  *
@@ -72,7 +72,7 @@ export function resolveDeclarationNameIdentifier(
   }
 
   // Extract the name identifier from the statement using the same logic as
-  // pickDeclarationIdentifier in @strata/ingest/src/batch.ts, plus the
+  // pickDeclarationIdentifier in @strata-code/ingest/src/batch.ts, plus the
   // FirstStatement (VariableStatement) case that batch.ts doesn't need to
   // handle because it works through the TypeChecker, not structural matching.
   const nameIdent = pickNameIdentifier(syntheticSrc, stmt);
@@ -126,10 +126,10 @@ export function resolveDeclarationNameIdentifier(
 
 /**
  * Extracts the name Identifier from a top-level statement node.
- * Mirrors the logic in @strata/ingest/src/batch.ts pickDeclarationIdentifier,
+ * Mirrors the logic in @strata-code/ingest/src/batch.ts pickDeclarationIdentifier,
  * extended with the VariableStatement/FirstStatement case.
  *
- * We do NOT import from @strata/ingest to avoid a circular dependency
+ * We do NOT import from @strata-code/ingest to avoid a circular dependency
  * (ingest depends on store).
  */
 function pickNameIdentifier(

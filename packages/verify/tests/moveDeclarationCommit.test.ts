@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   openDb, insertNodes, insertReferences, begin,
   move_declaration, find_declarations, get_references, listModules, loadModule, nodeId
-} from "@strata/store";
-import { render } from "@strata/render";
+} from "@strata-code/store";
+import { render } from "@strata-code/render";
 import { buildAnalysisContext, commit } from "../src/validate";
 
 function seed(inputs: { path: string; text: string }[]) {

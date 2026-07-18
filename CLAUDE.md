@@ -44,11 +44,11 @@ The monorepo uses pnpm workspaces with package-local TypeScript builds and Vites
 - Install dependencies: `pnpm install`
 - Build all packages: `pnpm -r build`
 - Test all packages: `pnpm -r test`
-- Test one package: `pnpm --filter @strata/<package> test`
+- Test one package: `pnpm --filter @strata-code/<package> test`
 
 Phase 0 round-trip CLI:
 ```bash
-pnpm --filter @strata/cli build
+pnpm --filter @strata-code/cli build
 node packages/cli/dist/cli.js roundtrip examples/phase0-sample.ts
 ```
 
@@ -57,7 +57,7 @@ Phase 1 batch ingest, which populates a Strata DB from a directory tree:
 node packages/cli/dist/cli.js ingest-batch <rootDir> <dbPath>
 ```
 
-Phase 1 rename smoke, which validates and commits through `@strata/verify`:
+Phase 1 rename smoke, which validates and commits through `@strata-code/verify`:
 ```bash
 node packages/cli/dist/cli.js rename <dbPath> <declarationId> <newName>
 ```
@@ -74,30 +74,30 @@ node packages/cli/dist/cli.js sdk-smoke
 
 **Phase 3 agent (key-free deterministic replay of T03):**
 ```bash
-pnpm --filter @strata/agent test -- replay
+pnpm --filter @strata-code/agent test -- replay
 ```
 
 **Phase 3 agent (live T03 run — requires ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN):**
 ```bash
-ANTHROPIC_API_KEY=... pnpm --filter @strata/agent test -- agentT03
+ANTHROPIC_API_KEY=... pnpm --filter @strata-code/agent test -- agentT03
 ```
 
 **Phase 3 agent (regenerate replay fixture from a keyed live run):**
 ```bash
-pnpm --filter @strata/agent build
-ANTHROPIC_API_KEY=... pnpm --filter @strata/agent record:t03-fixture
+pnpm --filter @strata-code/agent build
+ANTHROPIC_API_KEY=... pnpm --filter @strata-code/agent record:t03-fixture
 ```
 
 **Phase 4 T03 benchmark (operator-only, key-gated, NOT a CI test):**
 ```bash
-ANTHROPIC_API_KEY=... pnpm --filter @strata/bench bench:t03 -- --trials=3
+ANTHROPIC_API_KEY=... pnpm --filter @strata-code/bench bench:t03 -- --trials=3
 ```
 
 Defaults: N=3, model `claude-sonnet-4-6`, maxTurns 25, wall-time 240s. A round is `2 * N` live model runs and writes JSON + Markdown under `packages/bench/results/`. Use `--trials=0` for a dry-run that prints projected spend and writes nothing; use `--trials=5` only as an explicit budgeted operator choice; use `--keep-artifacts` to keep baseline temp trees for post-mortem. `pnpm -r test` never runs this and needs no key.
 
 **Phase 1.5R four-task re-validation (operator-only, key-gated, per-task budget form):**
 ```bash
-ANTHROPIC_API_KEY=... pnpm --filter @strata/bench bench -- --trials=1 --task-budget=T01:maxTurns=40,wallMs=420000;T05:maxTurns=40,wallMs=300000
+ANTHROPIC_API_KEY=... pnpm --filter @strata-code/bench bench -- --trials=1 --task-budget=T01:maxTurns=40,wallMs=420000;T05:maxTurns=40,wallMs=300000
 ```
 
 Omit `--task-budget` to use the artifact-derived defaults (`T01` 40t/420000ms, `T05` 40t/300000ms); `T03` and `T08` stay at the global 25t/240000ms unless explicitly overridden.
@@ -110,7 +110,7 @@ replaces it with a successful keyed live recording.
 The benchmark harness lives in `packages/bench` as a leaf package. It compares
 the existing Strata substrate (`runAgentT03`, reused as-is) against a
 file-tools Claude Code baseline on a temp copy of `examples/medium`, scores
-both through the shared `@strata/verify` T03 text criteria, and reports
+both through the shared `@strata-code/verify` T03 text criteria, and reports
 distributions rather than bare means.
 
 ## Current orientation: product, not measurement

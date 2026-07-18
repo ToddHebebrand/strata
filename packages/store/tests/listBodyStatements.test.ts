@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { listBodyStatements } from "../src/extractAnalysis";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import { openDb } from "../src/schema";
 import { insertNodes } from "../src/nodes";
 import { read_node } from "../src/read_node";

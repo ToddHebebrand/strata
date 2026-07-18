@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import ts from "typescript";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import { openDb } from "../src/schema";
 import { insertNodes, findNodeById, listChildren } from "../src/nodes";
 import { insertReferences } from "../src/references";

@@ -17,7 +17,7 @@
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   openDb,
   insertNodes,
@@ -25,7 +25,7 @@ import {
   begin,
   commitWithoutValidate,
   find_declarations
-} from "@strata/store";
+} from "@strata-code/store";
 import { applyPerScopeAddParameter } from "./experiments/perScopeAddParameter";
 import { renderCommittedSrc } from "./experiment";
 import { scoreHonestDerivable } from "./tasks/honestDerivable";

@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   begin,
   insertNodes,
@@ -11,8 +11,8 @@ import {
   queueIdentifierUpdate,
   queuePendingOp,
   rollback
-} from "@strata/store";
-import { render } from "@strata/render";
+} from "@strata-code/store";
+import { render } from "@strata-code/render";
 import { describe, expect, it } from "vitest";
 import { commit, validate } from "../src/validate";
 

@@ -3,7 +3,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildValidateCandidate } from "@strata/kernel-bridge";
+import { buildValidateCandidate } from "@strata-code/kernel-bridge";
 import {
   APPROVED_CORPUS_VARIANT,
   assertApprovedTaskManifest,

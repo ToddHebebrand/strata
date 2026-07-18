@@ -5,4 +5,4 @@ export {
   type AgentLabResult,
   type LabCriteria,
   type StrataSessionContext
-} from "@strata/agent";
+} from "@strata-code/agent";

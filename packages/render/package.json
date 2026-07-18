@@ -1,5 +1,5 @@
 {
-  "name": "@strata/render",
+  "name": "@strata-code/render",
   "version": "0.1.0",
   "description": "Strata node graph to canonical TypeScript text, with a source map back to node IDs",
   "keywords": [
@@ -45,7 +45,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@strata/store": "workspace:*"
+    "@strata-code/store": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.15.29",

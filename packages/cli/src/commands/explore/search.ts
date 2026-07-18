@@ -3,7 +3,7 @@ import {
   OpenAIEmbeddingProvider,
   semanticSearch,
   type Db
-} from "@strata/store";
+} from "@strata-code/store";
 import {
   fail,
   kindLabel,

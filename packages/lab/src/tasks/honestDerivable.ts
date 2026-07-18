@@ -1,5 +1,5 @@
 /**
- * Honest-derivable (HD) task for @strata/lab.
+ * Honest-derivable (HD) task for @strata-code/lab.
  *
  * NON-AUTHORITATIVE sandbox — see README.md.
  *

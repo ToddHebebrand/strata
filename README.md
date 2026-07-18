@@ -27,14 +27,14 @@ Disjoint distributions, ~3.5× fewer tokens, ~2.2× faster, both 3/3 success wit
 ## Architecture
 
 ```
-agent  (@strata/agent)   headless Claude Agent SDK, structural tools only, no fs
+agent  (@strata-code/agent)   headless Claude Agent SDK, structural tools only, no fs
   └─ tools (20)          query · transaction · structural mutation · validate · semantic_search
-store  (@strata/store)   SQLite node graph + edges + operation log + transactions
+store  (@strata-code/store)   SQLite node graph + edges + operation log + transactions
   └─ vector index        sqlite-vec; declaration + commit-pattern embeddings (optional)
-ingest (@strata/ingest)  TypeScript → nodes (TS Compiler API)
-render (@strata/render)  nodes → canonical TypeScript (+ source map)
-verify (@strata/verify)  in-process tsc over rendered output; commit gate
-bench  (@strata/bench)   substrate vs. file-baseline harness, distributions
+ingest (@strata-code/ingest)  TypeScript → nodes (TS Compiler API)
+render (@strata-code/render)  nodes → canonical TypeScript (+ source map)
+verify (@strata-code/verify)  in-process tsc over rendered output; commit gate
+bench  (@strata-code/bench)   substrate vs. file-baseline harness, distributions
 ```
 
 Files are not first-class: they exist only as transient render artifacts for `tsc`. The operation log is canonical history (no git-style commits inside the store). See [`strata-design.md`](strata-design.md) for the full design and [`decisions.md`](decisions.md) for the append-only record of every build-time decision and divergence.
@@ -133,7 +133,7 @@ ANTHROPIC_API_KEY=... node packages/cli/dist/cli.js baseline examples/medium \
 A keyed micro-experiment: run the same T05-style task twice on the same corpus, once with L1 off (`--no-index`) and once with L1 on. Prints a comparison table with token deltas:
 
 ```bash
-ANTHROPIC_API_KEY=... pnpm --filter @strata/bench dogfood:l1 -- examples/medium
+ANTHROPIC_API_KEY=... pnpm --filter @strata-code/bench dogfood:l1 -- examples/medium
 ```
 
 Honest read: N=1. Plan acceptance is `index-on tokens ≤ 80% of index-off tokens` on this single run.

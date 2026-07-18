@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { ingestBatch } from "@strata/ingest";
-import { insertNodes, insertReferences, openDb, type Db } from "@strata/store";
+import { ingestBatch } from "@strata-code/ingest";
+import { insertNodes, insertReferences, openDb, type Db } from "@strata-code/store";
 import path from "node:path";
 
 export interface OpenedSource {

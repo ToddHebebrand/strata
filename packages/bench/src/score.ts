@@ -7,7 +7,7 @@ import {
   evaluateT08TextCriteria,
   T05_TEST_KEY,
   type T03TextCriteria
-} from "@strata/verify";
+} from "@strata-code/verify";
 import type { BenchTaskId } from "./tasks";
 
 /**

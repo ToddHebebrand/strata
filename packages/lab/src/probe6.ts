@@ -24,7 +24,7 @@
 import { readFileSync, readdirSync, statSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   openDb,
   insertNodes,
@@ -32,8 +32,8 @@ import {
   begin,
   commitWithoutValidate,
   find_declarations
-} from "@strata/store";
-import { runCorpusAcceptance } from "@strata/verify";
+} from "@strata-code/store";
+import { runCorpusAcceptance } from "@strata-code/verify";
 import { applyPerScopeAddParameter } from "./experiments/perScopeAddParameter";
 import { renderCommittedSrc } from "./experiment";
 import { scoreHonestDerivable, deriveOracle } from "./tasks/honestDerivable";

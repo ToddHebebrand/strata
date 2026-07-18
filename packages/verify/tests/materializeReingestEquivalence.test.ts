@@ -14,8 +14,8 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
-import { render } from "@strata/render";
+import { ingestBatch } from "@strata-code/ingest";
+import { render } from "@strata-code/render";
 import {
   openDb,
   insertNodes,
@@ -29,7 +29,7 @@ import {
   find_declarations,
   nodeId,
   type Db
-} from "@strata/store";
+} from "@strata-code/store";
 import { commit } from "../src/validate";
 
 type Snapshot = {

@@ -15,8 +15,8 @@ import {
   parseCanonicalU64,
   toKernelSnapshot,
   type KernelSnapshotV1
-} from "@strata/ingest";
-import { resolveCallsites } from "@strata/store";
+} from "@strata-code/ingest";
+import { resolveCallsites } from "@strata-code/store";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   applyDelta,

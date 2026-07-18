@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import {
   embedDeclarations,
   insertNodes,
@@ -10,7 +10,7 @@ import {
   list_module_exports,
   OpenAIEmbeddingProvider,
   openDb
-} from "@strata/store";
+} from "@strata-code/store";
 
 export interface RunEmbedInput {
   rootDir: string;

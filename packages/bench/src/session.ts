@@ -3,4 +3,4 @@ export {
   type BaselineResultCapture,
   type BaselineSession,
   type BaselineToolEvent
-} from "@strata/agent";
+} from "@strata-code/agent";

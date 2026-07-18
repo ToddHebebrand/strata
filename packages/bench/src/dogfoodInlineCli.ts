@@ -45,7 +45,7 @@ function parseArgs(argv: string[]): ParsedArgs | null {
 }
 
 const USAGE =
-  "Usage: pnpm --filter @strata/bench dogfood:inline -- <corpusRoot> " +
+  "Usage: pnpm --filter @strata-code/bench dogfood:inline -- <corpusRoot> " +
   "[--prompt <text>] [--model <id>] [--max-turns N] [--wall-ms N] [--out-dir <dir>] [--json-out <file>]\n" +
   "\n" +
   "  Paired dogfood for inline_function on <corpusRoot> (default examples/medium):\n" +

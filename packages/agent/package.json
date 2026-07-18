@@ -1,5 +1,5 @@
 {
-  "name": "@strata/agent",
+  "name": "@strata-code/agent",
   "version": "0.1.0",
   "description": "Claude Agent SDK agent that works a codebase through Strata's structural tools only — no filesystem tools",
   "keywords": [
@@ -47,9 +47,9 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.118",
-    "@strata/ingest": "workspace:*",
-    "@strata/store": "workspace:*",
-    "@strata/verify": "workspace:*",
+    "@strata-code/ingest": "workspace:*",
+    "@strata-code/store": "workspace:*",
+    "@strata-code/verify": "workspace:*",
     "zod": "4.4.3"
   },
   "devDependencies": {

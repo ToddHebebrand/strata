@@ -2,7 +2,7 @@ import {
   findDeclarationsInModule,
   listModules,
   type Db
-} from "@strata/store";
+} from "@strata-code/store";
 import { ok, okJson, printTable, type CommandResult } from "./format";
 
 export function runModules(db: Db, json: boolean): CommandResult {

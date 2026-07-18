@@ -1,4 +1,4 @@
-import { compareCodeUnits, type KernelReferenceV1 } from "@strata/ingest";
+import { compareCodeUnits, type KernelReferenceV1 } from "@strata-code/ingest";
 import {
   findNodeById,
   getReferencesByTo,
@@ -9,7 +9,7 @@ import {
   resolveDeclarationNameIdentifier,
   type Db,
   type NodeRow
-} from "@strata/store";
+} from "@strata-code/store";
 import { posix } from "node:path";
 import ts from "typescript";
 import {

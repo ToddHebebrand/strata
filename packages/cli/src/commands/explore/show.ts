@@ -1,4 +1,4 @@
-import { modulePathOf, readNode, type Db } from "@strata/store";
+import { modulePathOf, readNode, type Db } from "@strata-code/store";
 import { fail, ok, okJson, type CommandResult } from "./format";
 
 const UNKNOWN_ID_HINT =

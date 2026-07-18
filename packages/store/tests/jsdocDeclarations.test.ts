@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { ingestBatch } from "@strata/ingest";
+import { ingestBatch } from "@strata-code/ingest";
 import { find_declarations, get_references } from "../src/queries";
 import {
   list_module_exports,

@@ -5,7 +5,7 @@ import {
   listModules,
   type Db,
   type ModuleExport
-} from "@strata/store";
+} from "@strata-code/store";
 
 /**
  * Map TS-style declaration kinds (as stored on NodeRow.kind) to the short

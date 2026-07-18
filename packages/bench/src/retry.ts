@@ -8,7 +8,7 @@
 export {
   countBaselineRetries,
   type BaselineToolEvent
-} from "@strata/agent";
+} from "@strata-code/agent";
 
 export interface SubstrateToolEvent {
   tool: string;

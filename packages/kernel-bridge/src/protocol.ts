@@ -3,7 +3,7 @@ import {
   parseCanonicalU64,
   type CanonicalU64,
   type KernelSnapshotV1
-} from "@strata/ingest";
+} from "@strata-code/ingest";
 import { z } from "zod";
 
 export const MAX_PROTOCOL_ARRAY_ITEMS = 1_000_000;

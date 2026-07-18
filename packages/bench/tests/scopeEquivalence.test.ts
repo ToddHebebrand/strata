@@ -15,7 +15,7 @@ import {
   evaluateT05TextCriteria,
   evaluateT08TextCriteria,
   T05_TEST_KEY
-} from "@strata/verify";
+} from "@strata-code/verify";
 import { describe, expect, it } from "vitest";
 import {
   assertSrcOnlyScope,

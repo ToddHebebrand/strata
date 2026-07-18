@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import { ingestBatch, toKernelSnapshot } from "@strata/ingest";
+import { ingestBatch, toKernelSnapshot } from "@strata-code/ingest";
 import type { CoordinationIntent } from "./client.js";
 
 export const APPROVED_CORPUS_VARIANT = "x-namespace-enriched-v1" as const;

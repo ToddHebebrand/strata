@@ -5,14 +5,14 @@ import {
   type KernelNodeV1,
   type KernelReferenceV1,
   type KernelSnapshotV1
-} from "@strata/ingest";
+} from "@strata-code/ingest";
 import {
   insertNodes,
   insertReferences,
   openDb,
   type Db,
   type Reference
-} from "@strata/store";
+} from "@strata-code/store";
 import {
   kernelGraphDeltaV1Schema,
   kernelSnapshotV1Schema,
