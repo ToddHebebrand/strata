@@ -425,6 +425,21 @@ function runTsc(outputPath: string): { ok: boolean; output: string } {
 
 function loadCompilerOptions(): ts.CompilerOptions {
   const configPath = path.resolve(__dirname, "../../..", "tsconfig.base.json");
+  if (!ts.sys.fileExists(configPath)) {
+    // Installed via npm: the monorepo's tsconfig.base.json is not in the
+    // tarball. Round-trip verification only needs a strict check of the
+    // rendered file itself, so fall back to equivalent options.
+    return {
+      strict: true,
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.CommonJS,
+      moduleResolution: ts.ModuleResolutionKind.Node10,
+      esModuleInterop: true,
+      forceConsistentCasingInFileNames: true,
+      skipLibCheck: true,
+      noEmit: true
+    };
+  }
   const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
 
   if (configFile.error) {
