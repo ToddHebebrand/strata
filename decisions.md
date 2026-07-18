@@ -7,6 +7,66 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-18 — Independent convergence review received and verified: converge-eventually endorsed, solo-bypass refuted, staged gates defined
+
+**Context:** The provisional-split decision below recorded the operator's
+leaning (eventual Rust-core convergence) as pending an independent review.
+That review ran the same day: Codex `gpt-5.6-sol` at `xhigh`, read-only,
+against the brief in
+`docs/superpowers/specs/2026-07-18-kernel-convergence-review-brief.md`.
+Verbatim output + in-session verification of its four pivotal claims:
+`docs/superpowers/specs/2026-07-18-kernel-convergence-review-codex.md`.
+
+**Result (accepted after verification, decision still the operator's):**
+
+- **Verdict: converge the canonical graph, lifecycle, and history on the
+  kernel eventually; the split is honest staging, not the durable end
+  state.** SQLite may survive only as an ephemeral worker substrate or a
+  generation-stamped rebuildable index — never as a second canonical
+  mutation engine.
+- **The "solo fast-path bypass" framing is refuted.** N=1 is not a stable
+  property (a second client can arrive mid-validation) and the kernel
+  rejects empty reservation scopes by design. Optimization must come from
+  transport coalescing and immediate-ready scheduling, never from
+  skipping scope inference, fresh checks, fencing, or atomic publication.
+  Notably, model-visible ceremony is already at parity: both paths are
+  four calls for a one-intent mutation.
+- **The real N=1 risk is hidden mechanics, not tool calls:** every
+  analysis/candidate serializes and rehydrates the full graph snapshot,
+  every bridge invocation spawns a fresh Node process, every tool request
+  opens a fresh socket. Unmeasured; must be profiled before any keyed
+  comparison.
+- **Stable-ID prerequisite re-estimated: core representation weeks, full
+  convergence prerequisite quarters** (reconciliation, structural ops,
+  history continuity, DB migration). Content-addressing stays rejected;
+  the workable model is immutable opaque identity + separate position
+  field + legacy 16-hex IDs retained verbatim.
+- **Six unnamed sequencing risks surfaced**, the sharpest: the daemon's
+  validation gate is weaker than the shipped product's (hard-coded
+  `tsc_only` vs. tsc+vitest — verified), and the kernel has no discovery
+  worldview (coordination tools forbid ID discovery), so Phase-6 evidence
+  does not show an arbitrary task can orient on the kernel.
+- **Smallest honest first slice:** fresh-store rename-only N=1
+  compatibility slice with full coordination semantics and five ordered
+  measurement gates (semantic parity → observability → unkeyed
+  noninferiority at p95 ≤1.25× → clean-room product gate → keyed N=3
+  noninferiority at cost ratio ≤1.10). Published T03 numbers may not be
+  re-quoted for a kernel store without gate 5.
+- **Falsifiers registered** (any one kills "converge" rather than
+  delaying it): parity requires a semantic bypass; logical identity
+  requires forbidden provenance; history cannot migrate losslessly;
+  derived indexes cannot stay derived; fixing bridge costs violates the
+  semantic boundary; a real product surface still needs the SQLite
+  authority.
+
+**Design-doc impact:** none yet — no convergence work is authorized. The
+re-convergence triggers in the entry below stand unchanged; when one
+fires, the review's first slice + gates are the starting plan and its
+falsifiers are the stop conditions.
+
+**Revisit when:** a trigger fires, or the operator green-lights the first
+slice.
+
 ## 2026-07-18 — SQLite and kernel paths both stay: the split is provisional, with named re-convergence triggers
 
 **Context:** The Phase-6 orientation clause "the existing SQLite path
