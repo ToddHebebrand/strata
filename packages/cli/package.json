@@ -1,7 +1,36 @@
 {
   "name": "@strata/cli",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Strata CLI — explore and mutate a TypeScript codebase as a structural node graph, and run the no-filesystem agent",
+  "keywords": [
+    "ai-agents",
+    "code-graph",
+    "structural-refactoring",
+    "typescript",
+    "refactoring",
+    "developer-tools",
+    "code-substrate"
+  ],
+  "license": "MIT",
+  "author": "Todd Hebebrand",
+  "homepage": "https://github.com/ToddHebebrand/strata#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ToddHebebrand/strata.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/ToddHebebrand/strata/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
   "main": "dist/cli.js",
   "types": "dist/cli.d.ts",
   "bin": {

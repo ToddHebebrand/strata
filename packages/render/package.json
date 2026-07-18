@@ -1,7 +1,36 @@
 {
   "name": "@strata/render",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "Strata node graph to canonical TypeScript text, with a source map back to node IDs",
+  "keywords": [
+    "ai-agents",
+    "code-graph",
+    "structural-refactoring",
+    "typescript",
+    "refactoring",
+    "developer-tools",
+    "code-substrate"
+  ],
+  "license": "MIT",
+  "author": "Todd Hebebrand",
+  "homepage": "https://github.com/ToddHebebrand/strata#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ToddHebebrand/strata.git",
+    "directory": "packages/render"
+  },
+  "bugs": {
+    "url": "https://github.com/ToddHebebrand/strata/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
