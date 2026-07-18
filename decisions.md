@@ -7,6 +7,57 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-17 — Live-compare qualification is bound to the checkout's absolute path; X/M retry approval drafted against the worktree
+
+**Context:** After merging the validation-circle iteration into main
+(`feature/phase6-live-comparison-design` at e236895, clean `--no-ff` merge)
+and re-running the canonical `pnpm kernel:full-key-free:test` gate on the
+merged tree (green, exit 0), drafting the queued X/M-retry approval file
+required a key-free `dry-run` from main. It failed:
+`pre-enrichment stable ID churned: ImportDeclaration #0 in src/cli.ts`, and
+`pnpm --filter @strata/live-compare test` on main fails 30 tests — every one
+with that same root cause.
+
+**Root cause:** `nodeId()` (`packages/store/src/ids.ts`) hashes the module
+*path string* it is given, and `createQualifiedTaskManifest`
+(`packages/live-compare/src/tasks.ts`) feeds it **absolute** paths. The
+frozen fixture `tests/fixtures/tasks/pre-enrichment-statement-ids.json` and
+the in-source `APPROVED_TASK_REGISTRATION_DIGEST` were both recorded from
+ingests rooted at `.worktrees/phase6-live-comparison`, so the qualification
+guard, the live-compare test suite, and the registration digest only
+reproduce from that exact directory. The test name ("fresh stable-root
+ingest") shows location-independence was the intent; the implementation
+never delivered it. Every prior session ran from the worktree, which masked
+it — including the previous session's "pnpm -r test at the accepted
+baseline" claim, which is true only from the worktree path.
+
+**Decided (this entry):**
+1. The merge stands — content is identical to the branch that passed the
+   full gate, and the kernel gate is independently green on main. The
+   live-compare failures on main are a harness-portability defect, not a
+   kernel or corpus regression.
+2. The X/M retry approval is drafted against the worktree, where every
+   guard reproduces: sourceCommit e236895, file at
+   `.worktrees/phase6-live-comparison/packages/live-compare/results/approval-2026-07-17-xm-retry.json`
+   (gitignored). Validated key-free end-to-end: the live guard chain
+   accepts every field and stops only at the unset credential. Operator
+   runs it from the worktree root.
+3. The portability fix — ingesting the manifest with corpus-relative paths
+   ("stable root" for real) and regenerating the fixture plus
+   `APPROVED_TASK_REGISTRATION_DIGEST` from pre-enrichment content — is a
+   follow-on change. It touches digest-pinned approval-gate code, so it
+   gets its own reviewed change, not a drive-by edit during approval
+   drafting. Until it lands, live-compare qualification must run from the
+   worktree.
+
+**Also fixed en route (environment, not code):** main's `better-sqlite3`
+native binary was built against Node 22 (MODULE_VERSION 127) while the
+toolchain runs Homebrew Node v26 (147); `pnpm -r rebuild better-sqlite3`
+fixed it. Root-level `pnpm rebuild` does *not* reach it (it is a
+`packages/store` dependency), and a bare `node -e "require(...)"` probe from
+the repo root is not a valid check — module resolution can walk up and load
+a sibling project's copy.
+
 ## 2026-07-17 — Validation-circle narrowing: statement-granular coordination lands
 
 **Problem:** the operator-amended M (entry of 2026-07-16) deferred
