@@ -19,6 +19,7 @@ const MAX_TEXT_BYTES: usize = 16_384;
 const MAX_ARRAY_ITEMS: usize = 256;
 const MAX_DIAGNOSTICS: usize = 64;
 const MAX_EVENT_LIMIT: u32 = 256;
+const MAX_OPERATION_INTENTS: usize = 16;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct WireU64(u64);
@@ -130,6 +131,9 @@ pub(super) enum RequestAction {
     },
     CancelChangeSet {
         change_set_id: String,
+    },
+    ReadOperation {
+        operation_id: String,
     },
 }
 
@@ -270,6 +274,18 @@ pub(super) enum ResponseResult {
         change_set_id: String,
         state: CancelledState,
     },
+    Operation {
+        graph_generation: WireU64,
+        operation_id: String,
+        change_set_id: String,
+        actor: String,
+        kind: String,
+        reasoning: String,
+        affected_node_ids: Vec<String>,
+        renames: Vec<OperationRenameTransition>,
+        intents: Vec<OperationIntentSummary>,
+        publication_digest: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -321,6 +337,21 @@ pub(super) enum ServiceEventKind {
     IntentFailed,
     LeaseExpired,
     ScopeExpanded,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct OperationRenameTransition {
+    pub(super) node_id: String,
+    pub(super) from_name: String,
+    pub(super) to_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct OperationIntentSummary {
+    pub(super) kind: String,
+    pub(super) parameters_json: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -491,6 +522,7 @@ impl RequestAction {
             Self::ReadEvents { .. } => "read_events",
             Self::AckEvents { .. } => "ack_events",
             Self::CancelChangeSet { .. } => "cancel_change_set",
+            Self::ReadOperation { .. } => "read_operation",
         }
     }
 
@@ -530,6 +562,9 @@ impl RequestAction {
                 }
             }
             Self::AckEvents { .. } => {}
+            Self::ReadOperation { operation_id } => {
+                validate_string(operation_id, MAX_ID_BYTES, false, "operationId")?;
+            }
         }
         Ok(())
     }
@@ -691,7 +726,12 @@ impl ResponseResult {
                 validate_optional_digest(publication_digest)?;
                 bounded_items(renamed_symbols.len(), 0, MAX_ARRAY_ITEMS, "renamedSymbols")?;
                 for renamed in renamed_symbols {
-                    validate_string(&renamed.node_id, MAX_ID_BYTES, false, "renamedSymbol nodeId")?;
+                    validate_string(
+                        &renamed.node_id,
+                        MAX_ID_BYTES,
+                        false,
+                        "renamedSymbol nodeId",
+                    )?;
                     validate_string(
                         &renamed.previous_name,
                         MAX_ID_BYTES,
@@ -716,8 +756,56 @@ impl ResponseResult {
             Self::Cancelled { change_set_id, .. } => {
                 validate_string(change_set_id, MAX_ID_BYTES, false, "changeSetId")?;
             }
+            Self::Operation {
+                operation_id,
+                change_set_id,
+                actor,
+                kind,
+                reasoning,
+                affected_node_ids,
+                renames,
+                intents,
+                publication_digest,
+                ..
+            } => {
+                validate_string(operation_id, MAX_ID_BYTES, false, "operationId")?;
+                validate_string(change_set_id, MAX_ID_BYTES, false, "changeSetId")?;
+                validate_string(actor, MAX_ID_BYTES, false, "actor")?;
+                validate_string(kind, MAX_ID_BYTES, false, "kind")?;
+                validate_string(reasoning, MAX_REASONING_BYTES, true, "reasoning")?;
+                validate_ids(affected_node_ids, "affectedNodeIds")?;
+                bounded_items(renames.len(), 0, MAX_ARRAY_ITEMS, "renames")?;
+                for rename in renames {
+                    rename.validate()?;
+                }
+                bounded_items(intents.len(), 0, MAX_OPERATION_INTENTS, "intents")?;
+                for intent in intents {
+                    intent.validate()?;
+                }
+                validate_digest(publication_digest)?;
+            }
         }
         Ok(())
+    }
+}
+
+impl OperationRenameTransition {
+    fn validate(&self) -> Result<()> {
+        validate_string(&self.node_id, MAX_ID_BYTES, false, "rename nodeId")?;
+        validate_string(&self.from_name, MAX_ID_BYTES, false, "rename fromName")?;
+        validate_string(&self.to_name, MAX_ID_BYTES, false, "rename toName")
+    }
+}
+
+impl OperationIntentSummary {
+    fn validate(&self) -> Result<()> {
+        validate_string(&self.kind, MAX_ID_BYTES, false, "intent kind")?;
+        validate_string(
+            &self.parameters_json,
+            MAX_TEXT_BYTES,
+            false,
+            "parametersJson",
+        )
     }
 }
 
@@ -883,11 +971,17 @@ fn validate_diagnostics(diagnostics: &[Diagnostic]) -> Result<()> {
 }
 
 fn validate_optional_digest(value: &Option<String>) -> Result<()> {
-    if let Some(value) = value
-        && (value.len() != 64
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+    if let Some(value) = value {
+        validate_digest(value)?;
+    }
+    Ok(())
+}
+
+fn validate_digest(value: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         bail!("publicationDigest must be 64 lowercase hexadecimal characters");
     }

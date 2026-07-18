@@ -19,8 +19,8 @@ use super::audit::{
 use super::protocol::{
     CancelledState, ChangeSetState, DeclarationSummary, Diagnostic, InspectedNode, Intent,
     LocalServiceProtocolContext, LocalServiceRequest, LocalServiceResponse, NodeRelationship,
-    RenamedSymbol, RequestAction, ResponseResult, ServiceEvent, ServiceEventKind, TicketState,
-    WireU64, parse_request_frame,
+    OperationIntentSummary, OperationRenameTransition, RenamedSymbol, RequestAction,
+    ResponseResult, ServiceEvent, ServiceEventKind, TicketState, WireU64, parse_request_frame,
 };
 
 const MAX_INTENTS: usize = 256;
@@ -556,7 +556,8 @@ impl ServiceSession {
             RequestAction::Hello { .. }
             | RequestAction::InspectNodes { .. }
             | RequestAction::FindDeclarations { .. }
-            | RequestAction::ReadEvents { .. } => {
+            | RequestAction::ReadEvents { .. }
+            | RequestAction::ReadOperation { .. } => {
                 bail!("read-only action cannot be in the mutation journal")
             }
         };
@@ -703,6 +704,39 @@ impl ServiceSession {
                         .into_iter()
                         .map(|event| self.safe_event(event))
                         .collect::<Result<Vec<_>>>()?,
+                })
+            }
+            RequestAction::ReadOperation { operation_id } => {
+                let Some((generation, record)) = self.kernel.operation_by_id(operation_id)? else {
+                    bail!("operation {operation_id} does not exist");
+                };
+                let digest = self.kernel.generation_digest(generation)?;
+                Ok(ResponseResult::Operation {
+                    graph_generation: WireU64::new(generation),
+                    operation_id: record.operation_id,
+                    change_set_id: record.change_set_id,
+                    actor: record.actor,
+                    kind: record.kind,
+                    reasoning: record.reasoning,
+                    affected_node_ids: record.affected_node_ids,
+                    renames: record
+                        .renames
+                        .into_iter()
+                        .map(|rename| OperationRenameTransition {
+                            node_id: rename.node_id,
+                            from_name: rename.from_name,
+                            to_name: rename.to_name,
+                        })
+                        .collect(),
+                    intents: record
+                        .intents
+                        .into_iter()
+                        .map(|intent| OperationIntentSummary {
+                            kind: intent.kind,
+                            parameters_json: intent.parameters_json,
+                        })
+                        .collect(),
+                    publication_digest: digest,
                 })
             }
             _ => bail!("mutating action cannot use the read path"),

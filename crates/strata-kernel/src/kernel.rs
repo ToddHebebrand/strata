@@ -17,6 +17,7 @@ use crate::coordination::{
 #[cfg(feature = "coordination-test-api")]
 use crate::coordination::{TestSemanticAdapter, TestSemanticProvider};
 use crate::model::NodeRecord;
+use crate::model::OperationRecord;
 #[cfg(feature = "redb-spike-api")]
 use crate::model::{FenceClaim, Publication};
 use crate::storage::DurableStore;
@@ -417,6 +418,12 @@ impl Kernel {
     /// Reads the retained canonical digest for one exact graph generation.
     pub fn generation_digest(&self, generation: u64) -> Result<String> {
         self.store.generation_digest(generation)
+    }
+
+    /// Finds one committed operation's canonical audit record by its opaque
+    /// operation ID, alongside the graph generation it was published at.
+    pub fn operation_by_id(&self, operation_id: &str) -> Result<Option<(u64, OperationRecord)>> {
+        self.store.operation_by_id(operation_id)
     }
 
     pub(crate) fn resource_clock_snapshot(&self) -> Arc<ResourceClockSnapshot> {

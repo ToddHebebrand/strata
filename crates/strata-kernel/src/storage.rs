@@ -824,6 +824,29 @@ impl DurableStore {
         self.read_structured(OPERATIONS, generation, "operation")
     }
 
+    /// Finds one committed operation by its opaque operation ID, scanning the
+    /// durable operations table from earliest to latest generation and
+    /// returning the first match with its generation key. Linear in history:
+    /// acceptable because operation lookups are an infrequent audit read, not
+    /// a hot coordination path.
+    pub fn operation_by_id(&self, operation_id: &str) -> Result<Option<(u64, OperationRecord)>> {
+        let read = self
+            .database
+            .begin_read()
+            .context("begin operation lookup transaction")?;
+        let table = read
+            .open_table(OPERATIONS)
+            .context("open operations table")?;
+        for entry in table.iter().context("iterate operations")? {
+            let (key, value) = entry.context("read operation entry")?;
+            let record: OperationRecord = decode(value.value(), "operation")?;
+            if record.operation_id == operation_id {
+                return Ok(Some((key.value(), record)));
+            }
+        }
+        Ok(None)
+    }
+
     #[cfg(feature = "coordination-test-api")]
     pub(crate) fn test_canonical_graph_digest(&self) -> Result<String> {
         let read = self

@@ -63,7 +63,8 @@ function isMutating(action: LocalServiceRequest["action"]): boolean {
     "hello",
     "inspect_nodes",
     "find_declarations",
-    "read_events"
+    "read_events",
+    "read_operation"
   ].includes(action.type);
 }
 
@@ -318,6 +319,13 @@ export class CoordinationClient {
     deadlineMs = DEFAULT_REQUEST_DEADLINE_MS
   ): Promise<CoordinationResult> {
     return this.request({ type: "cancel_change_set", changeSetId }, deadlineMs);
+  }
+
+  readOperation(
+    operationId: string,
+    deadlineMs = DEFAULT_REQUEST_DEADLINE_MS
+  ): Promise<CoordinationResult> {
+    return this.request({ type: "read_operation", operationId }, deadlineMs);
   }
 }
 

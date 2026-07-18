@@ -177,6 +177,51 @@ describe("local service protocol v1", () => {
     expect(result.type).toBe("declarations");
   });
 
+  it("round-trips read_operation request and operation result", () => {
+    const action = requestActionSchema.parse({
+      type: "read_operation",
+      operationId: "operation:1"
+    });
+    expect(action).toEqual({ type: "read_operation", operationId: "operation:1" });
+    const result = responseResultSchema.parse({
+      type: "operation",
+      graphGeneration: "4",
+      operationId: "operation:1",
+      changeSetId: "change:1",
+      actor: "client:alpha",
+      kind: "RenameSymbol",
+      reasoning: "rename User to Account",
+      affectedNodeIds: ["a", "b"],
+      renames: [{ nodeId: "a", fromName: "User", toName: "Account" }],
+      intents: [
+        {
+          kind: "RenameSymbol",
+          parametersJson: '{"type":"renameSymbol","declarationId":"a","newName":"Account"}'
+        }
+      ],
+      publicationDigest: "a".repeat(64)
+    });
+    expect(result.type).toBe("operation");
+  });
+
+  it("rejects a read_operation result whose publicationDigest is not 64 lowercase hex characters", () => {
+    expect(() =>
+      responseResultSchema.parse({
+        type: "operation",
+        graphGeneration: "4",
+        operationId: "operation:1",
+        changeSetId: "change:1",
+        actor: "client:alpha",
+        kind: "RenameSymbol",
+        reasoning: "rename User to Account",
+        affectedNodeIds: [],
+        renames: [],
+        intents: [],
+        publicationDigest: "not-a-digest"
+      })
+    ).toThrow();
+  });
+
   it("validates change-set and client IDs before retaining ownership", () => {
     const context = new LocalServiceProtocolContext(1, 1);
     const oversized = "x".repeat(513);

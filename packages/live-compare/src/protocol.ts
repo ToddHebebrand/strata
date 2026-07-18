@@ -13,6 +13,7 @@ const MAX_ARRAY_ITEMS = 256;
 const MAX_DIAGNOSTICS = 64;
 const MAX_EVENT_LIMIT = 256;
 const MAX_DECLARATION_MATCHES = 64;
+const MAX_OPERATION_INTENTS = 16;
 const U64_MAX = 18_446_744_073_709_551_615n;
 
 const utf8 = new TextEncoder();
@@ -141,7 +142,8 @@ export const requestActionSchema = z.discriminatedUnion("type", [
     })
     .strict(),
   z.object({ type: z.literal("ack_events"), throughSequence: canonicalU64Schema }).strict(),
-  z.object({ type: z.literal("cancel_change_set"), changeSetId: opaqueIdSchema }).strict()
+  z.object({ type: z.literal("cancel_change_set"), changeSetId: opaqueIdSchema }).strict(),
+  z.object({ type: z.literal("read_operation"), operationId: opaqueIdSchema }).strict()
 ]);
 
 const MUTATING_ACTIONS = new Set([
@@ -208,6 +210,21 @@ const renamedSymbolSchema = z
     nodeId: opaqueIdSchema,
     previousName: boundedString(MAX_ID_BYTES),
     currentName: boundedString(MAX_ID_BYTES)
+  })
+  .strict();
+
+const operationRenameTransitionSchema = z
+  .object({
+    nodeId: opaqueIdSchema,
+    fromName: boundedString(MAX_ID_BYTES),
+    toName: boundedString(MAX_ID_BYTES)
+  })
+  .strict();
+
+const operationIntentSummarySchema = z
+  .object({
+    kind: boundedString(MAX_ID_BYTES),
+    parametersJson: boundedString(MAX_TEXT_BYTES)
   })
   .strict();
 
@@ -295,6 +312,21 @@ export const responseResultSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("events_acked"), throughSequence: canonicalU64Schema }).strict(),
   z
     .object({ type: z.literal("cancelled"), changeSetId: opaqueIdSchema, state: z.literal("cancelled") })
+    .strict(),
+  z
+    .object({
+      type: z.literal("operation"),
+      graphGeneration: canonicalU64Schema,
+      operationId: opaqueIdSchema,
+      changeSetId: opaqueIdSchema,
+      actor: opaqueIdSchema,
+      kind: boundedString(MAX_ID_BYTES),
+      reasoning: reasoningSchema,
+      affectedNodeIds: z.array(opaqueIdSchema).max(MAX_ARRAY_ITEMS),
+      renames: z.array(operationRenameTransitionSchema).max(MAX_ARRAY_ITEMS),
+      intents: z.array(operationIntentSummarySchema).max(MAX_OPERATION_INTENTS),
+      publicationDigest: digestSchema
+    })
     .strict()
 ]);
 

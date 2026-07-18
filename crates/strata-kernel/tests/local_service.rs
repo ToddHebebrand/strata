@@ -682,6 +682,75 @@ fn find_declarations_returns_named_interface_and_rejects_unknown_kind() {
 }
 
 #[test]
+fn read_operation_returns_canonical_audit_record_and_rejects_unknown_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = start_service(&directory, "read-operation-token");
+
+    let change_set_id = begin(&service, "client:alpha", "read-op");
+    let published = mutate_rename(
+        &service,
+        "client:alpha",
+        "read-op",
+        &change_set_id,
+        USER_ID,
+        "Account",
+    );
+    assert_eq!(published["result"]["state"], "published", "{published}");
+    let operation_id = published["result"]["operationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let read = request(
+        &service,
+        "request:read-op:read",
+        "client:alpha",
+        None,
+        json!({"type":"read_operation","operationId":operation_id}),
+    );
+    assert_eq!(read["ok"], true, "{read}");
+    let result = &read["result"];
+    assert_eq!(result["type"], "operation");
+    assert!(result["graphGeneration"].is_string(), "{read}");
+    assert_eq!(result["operationId"], operation_id);
+    assert_eq!(result["changeSetId"], change_set_id);
+    assert_eq!(result["actor"], "client:alpha");
+    assert_eq!(result["kind"], "RenameSymbol");
+    assert_eq!(result["reasoning"], "reason:read-op");
+    let affected = result["affectedNodeIds"].as_array().unwrap();
+    assert!(affected.len() > 1, "{read}");
+    assert_eq!(
+        result["renames"],
+        json!([{"nodeId": USER_ID, "fromName": "User", "toName": "Account"}])
+    );
+    let intents = result["intents"].as_array().unwrap();
+    assert_eq!(intents.len(), 1, "{read}");
+    assert_eq!(intents[0]["kind"], "RenameSymbol");
+    let parameters: Value =
+        serde_json::from_str(intents[0]["parametersJson"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        parameters,
+        json!({"type":"renameSymbol","declarationId":USER_ID,"newName":"Account"})
+    );
+    let digest = result["publicationDigest"].as_str().unwrap();
+    assert_eq!(digest.len(), 64, "{read}");
+    assert!(
+        digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{read}"
+    );
+    assert_no_authority_fields(&read);
+
+    let unknown = request(
+        &service,
+        "request:read-op:unknown",
+        "client:alpha",
+        None,
+        json!({"type":"read_operation","operationId":"operation:does-not-exist"}),
+    );
+    assert_eq!(unknown["ok"], false, "{unknown}");
+}
+
+#[test]
 fn daemon_rejects_unsafe_or_overlong_socket_paths_before_bind() {
     let overlong = format!("/tmp/strata-lc/{}.sock", "a".repeat(100));
     let output = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))

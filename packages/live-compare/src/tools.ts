@@ -64,7 +64,8 @@ export const COORDINATION_TOOL_INPUT_SCHEMAS = {
     })
     .strict(),
   ack_events: z.object({ through_sequence: canonicalSequence }).strict(),
-  cancel_change_set: z.object({ change_set_id: stableId }).strict()
+  cancel_change_set: z.object({ change_set_id: stableId }).strict(),
+  read_operation: z.object({ operation_id: stableId }).strict()
 } as const;
 
 export interface CoordinationClientApi {
@@ -77,6 +78,7 @@ export interface CoordinationClientApi {
   readEvents(afterSequence: string, limit: number): Promise<CoordinationResult>;
   ackEvents(throughSequence: string): Promise<CoordinationResult>;
   cancelChangeSet(changeSetId: string): Promise<CoordinationResult>;
+  readOperation(operationId: string): Promise<CoordinationResult>;
 }
 
 function textResult(value: unknown) {
@@ -165,7 +167,7 @@ export function createCoordinationTools(
     ),
     strictTool(
       "advance_change_set",
-      "Ask the service to advance submitted work from current state. It may publish, queue, report validation failure, or require a fresh decision. On needs_decision, inspect only bounded known stable IDs, cancel_change_set for obsolete work, and create and submit a new typed change set.",
+      "Ask the service to advance submitted work from current state. It may publish, queue, report validation failure, or require a fresh decision. On needs_decision, inspect only bounded known stable IDs, cancel_change_set for obsolete work, and create and submit a new typed change set. Once published, use read_operation on the returned operation ID to read its canonical audit record.",
       COORDINATION_TOOL_INPUT_SCHEMAS.advance_change_set,
       async ({ change_set_id }) =>
         textResult(withFreshDecisionGuidance(await client.advanceChangeSet(change_set_id)))
@@ -176,6 +178,12 @@ export function createCoordinationTools(
       COORDINATION_TOOL_INPUT_SCHEMAS.read_events,
       async ({ after_sequence, limit }) =>
         textResult(await client.readEvents(after_sequence, limit))
+    ),
+    strictTool(
+      "read_operation",
+      "Read the canonical audit record of one committed operation by its operation ID: actor, the original task reasoning, typed intent parameters, affected node IDs, and rename transitions. Use the operation ID returned by advance_change_set or read_events.",
+      COORDINATION_TOOL_INPUT_SCHEMAS.read_operation,
+      async ({ operation_id }) => textResult(await client.readOperation(operation_id))
     ),
     strictTool(
       "ack_events",
@@ -200,6 +208,7 @@ export const COORDINATION_TOOL_NAMES = [
   "submit_change_set",
   "advance_change_set",
   "read_events",
+  "read_operation",
   "ack_events",
   "cancel_change_set"
 ] as const;

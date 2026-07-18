@@ -32,6 +32,24 @@ function fakeClient(overrides: Partial<CoordinationClientApi> = {}): Coordinatio
     readEvents: async () => ({ type: "events", events: [] }),
     ackEvents: async () => ({ type: "events_acked", throughSequence: "0" }),
     cancelChangeSet: async () => ({ type: "cancelled", changeSetId: "change:1", state: "cancelled" }),
+    readOperation: async () => ({
+      type: "operation",
+      graphGeneration: "1",
+      operationId: "operation:1",
+      changeSetId: "change:1",
+      actor: "client:alpha",
+      kind: "RenameSymbol",
+      reasoning: "reason",
+      affectedNodeIds: ["node:decl"],
+      renames: [{ nodeId: "node:decl", fromName: "User", toName: "Account" }],
+      intents: [
+        {
+          kind: "RenameSymbol",
+          parametersJson: '{"type":"renameSymbol","declarationId":"node:decl","newName":"Account"}'
+        }
+      ],
+      publicationDigest: "a".repeat(64)
+    }),
     ...overrides
   };
 }
@@ -45,7 +63,7 @@ function textPayload(result: { content: Array<{ type: string; text?: string }> }
 }
 
 describe("coordination-only MCP surface", () => {
-  it("exports exactly the nine design operations and qualified allowlist", () => {
+  it("exports exactly the ten design operations and qualified allowlist", () => {
     expect(COORDINATION_TOOL_NAMES).toEqual([
       "find_declarations",
       "inspect_nodes",
@@ -54,6 +72,7 @@ describe("coordination-only MCP surface", () => {
       "submit_change_set",
       "advance_change_set",
       "read_events",
+      "read_operation",
       "ack_events",
       "cancel_change_set"
     ]);
@@ -77,6 +96,7 @@ describe("coordination-only MCP surface", () => {
       "submit_change_set",
       "advance_change_set",
       "read_events",
+      "read_operation",
       "ack_events",
       "cancel_change_set",
       "fresh decision"
@@ -183,6 +203,7 @@ describe("coordination-only MCP surface", () => {
       submit_change_set: { change_set_id: "change:1" },
       advance_change_set: { change_set_id: "change:1" },
       read_events: { after_sequence: "0", limit: 10 },
+      read_operation: { operation_id: "operation:1" },
       ack_events: { through_sequence: "0" },
       cancel_change_set: { change_set_id: "change:1" }
     };
