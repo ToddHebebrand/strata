@@ -820,6 +820,19 @@ If the deterministic gate and live trials pass, the evidence may support:
   successor converges via a mechanical fresh decision whose stable-ID typed
   intent is resubmitted unchanged.
 
+**Observed live (2026-07-18 retry, post-narrowing, N=1):** the retry round
+(`docs/spikes/2026-07-18-phase-6-live-xm-retry-results.md`, run
+`run-2026-07-18T03-57-27-079Z`, decisions.md 2026-07-18) supports every
+claim above at N=1: six of six Strata arms green; M published same-module
+operations concurrently under its restored original clause (superseding the
+serialize-and-fresh-decision form of the amended M bullet); and X completed
+the content-rewriting fresh-decision path live — X2 published the exact
+registered delta at generation 2 after X1's rename — so
+`dynamic_scope_observed` is supported and the pilot's X liveness gap is
+closed by the `needs_decision`+`renamedSymbols` protocol change. The X
+baseline arm failed again (elaboration-class over-delivery), so X still
+supports no paired cost/time ratio, only the Strata-side liveness claim.
+
 ## Claims this experiment cannot support
 
 It cannot establish:
