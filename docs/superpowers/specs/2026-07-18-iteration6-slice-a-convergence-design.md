@@ -135,28 +135,28 @@ coordination-table retention and gives L3-class consumers the "different join
 semantics" problem the review flagged. Parameters are tiny; embedding them at
 publication is the honest canonical history.
 
-### D4. The daemon's validation profile becomes configurable; the T03 slice runs the behavioral (tsc+vitest) gate
+### D4. Gate 1 runs the task-registered validation profile — tsc-only in both arms (revised after review)
 
-Add `NodeBridgeConfig::behavioral(...)` and daemon flags
-(`--validation-profile tsc_only|behavioral` plus behavioral fixture
-specification). Default stays `tsc_only` (existing tests unchanged). The slice-A
-T03 path runs `behavioral`, matching the SQLite product commit gate
-(tsc+vitest), so:
+**Premise correction (independent review, verified):** the shipped T03 product
+gate is tsc-only *by registration* — `packages/verify/src/taskBehavioralFixtures.ts`
+maps `T03: []` ("no behavioral-only failure mode; tsc + text criteria fully
+constrain it", per the BG-4 decision), `vitestRun(tree, [])` short-circuits to
+pass, and the bridge worker *rejects* behavioral mode with an empty fixture
+list. Running a behavioral gate in either arm would therefore test a **new**
+gate profile, not parity with the shipped product.
 
-- gate 1's "equivalent tsc/Vitest results" is produced by the *product path*,
-  not only by an external harness check;
-- gate 5's noninferiority comparison is not skewed by the kernel arm doing
-  strictly less validation work than the SQLite arm.
+Decided: both arms run T03's registered profile. The SQLite arm uses the
+existing product `commit` gate; the kernel daemon stays `tsc_only` (already the
+hard-coded configuration). The gate-1 harness *additionally* runs tsc **and**
+vitest externally, identically, on both arms' rendered corpora — that is a
+harness equivalence check satisfying gate 1's "equivalent tsc/Vitest results",
+not a commit gate, and no whole-suite autodiscovery enters any commit gate.
 
-The bridge protocol and worker already implement behavioral end-to-end; the
-change is Rust-side plumbing. This narrowly advances one slice-B item
-(generalizing the behavioral gate and its fixture discovery for arbitrary tasks
-remains slice B).
-
-*Alternative rejected:* keep the daemon tsc-only and check vitest parity
-harness-side. Cheaper, but it makes "only-green-together" mean less on the
-kernel arm than on the product it must be compared against, and gate 5 would
-compare arms doing different work.
+The behavioral-profile daemon plumbing (`NodeBridgeConfig::behavioral` +
+flags) moves out of slice A back to slice B, where the general behavioral gate
+belongs. Gate 5's comparability concern is resolved the same way: both arms
+run the registered T03 profile, so neither does more validation work than the
+product actually ships.
 
 ### D5. Canonical export is an offline subcommand, not an agent surface
 
@@ -174,13 +174,20 @@ verification helpers. Add a key-free vitest suite (gate-1 parity) plus a root
 script `kernel:gate1:test`, folded into `pnpm kernel:full-key-free:test` (the
 canonical green gate per repo convention). Both arms run on `examples/medium`:
 
+Both arms ingest the **same corpus-relative module-path inputs** (one shared
+builder; node IDs hash the module path, so a mixed absolute/relative domain
+would silently break "same ingest, same IDs" — review-verified against the
+CLI T03 flow's absolute paths):
+
 - **SQLite control arm (product path, scripted):** ingest → `find_declarations`
-  (`User`/interface, exactly one) → `begin` → `rename_symbol` → validate →
-  tsc+vitest commit gate → render.
+  (`User`/interface, exactly one) → `begin` → `rename_symbol` → product
+  `commit` gate (T03-registered profile, tsc-only) → post-commit validate →
+  render.
 - **Kernel arm (product path, scripted):** seed fresh store → spawn daemon
-  (behavioral profile) → `find_declarations` → `begin_change_set` →
-  `add_intent` (rename → `Account`) → `submit_change_set` →
-  `advance_change_set` → `read_operation` → shutdown → `export-snapshot`.
+  (tsc_only, the same registered profile) → `find_declarations` →
+  `begin_change_set` → `add_intent` (rename → `Account`) →
+  `submit_change_set` → `advance_change_set` → `read_operation` → shutdown
+  preserving the database → `export-snapshot`.
 
 Parity assertions, all deterministic:
 
@@ -190,42 +197,62 @@ Parity assertions, all deterministic:
    exports).
 4. tsc `--noEmit` and vitest green on both rendered corpora.
 5. `evaluateT03TextCriteria` pass on both.
-6. Audit equivalence: the kernel `read_operation` record carries actor,
-   change-set reasoning, `rename_symbol` parameters
-   (declaration ID, `newName: "Account"`), affected IDs (>1), rename
-   `User→Account`; field-for-field equivalent to the SQLite `operations` row
-   semantics scored by `operationRowAppended`.
+6. Audit equivalence via a **normalized projection** (revised after review —
+   the raw records are legitimately different shapes: the SQLite operations
+   row stores snake_case params, semantic Identifier affected IDs, and
+   `reasoning: null` with task context on the transaction; the kernel's
+   `affected_node_ids` is delta-derived and intentionally broader). Both arms
+   project to `{actor, taskContext, operationClass, declarationId, oldName,
+   newName, renamedIdentifierIds}` and the projections must match; the
+   kernel's broader affected set must contain every projected identifier and
+   is documented as a superset, never asserted "equal".
 
 *Alternative rejected:* a new leaf package — duplicates spawn/client machinery
 for no isolation gain. *Alternative rejected:* Rust-only harness — the SQLite
 control arm and render/tsc/vitest live in TypeScript; the comparison naturally
 sits on the TS side, with Rust tests keeping their existing coverage.
 
-### D7. Crash injection runs through the T03 product surface
+### D7. Crash injection runs through the T03 product surface (choreography revised after review)
 
-Reuse the existing failpoints, driven end-to-end through the new surface:
-`PublishFailpoint` at all four durable boundaries and `ServiceFailpoint` at all
-five request-journal stages (`--test-failpoint`). After each kill: restart the
-daemon against the same `--db`, then `export-snapshot` and assert the store is
-**exactly** the complete old generation or the complete new generation (byte
-compare against pre-computed old/new exports), digests verified, and the
-request journal replays idempotently. No new failpoint machinery is expected;
-new coverage is that the injection now crosses `find_declarations`,
-`read_operation`, and the behavioral validation profile.
+The failpoints are global per-mutating-request (`ServiceFailpoint` trips on
+*every* mutation, so enabled-from-start it would abort at `begin_change_set`,
+never reaching publication), and the coordinated `PublishFailpoint` path
+exists only under `redb-spike-api` (`execute_claimed_with_failpoint`,
+camelCase boundary names). The choreography is therefore staged: run the T03
+prep (begin/add/submit) against a failpoint-free daemon, stop cleanly
+preserving the redb, restart the same database with the failpoint armed, and
+issue **only** `advance_change_set`. After the abort, restart clean and apply
+the oracle.
+
+The oracle is stronger than a graph export (review: graph-only old/new is too
+weak — gate 1 could pass with duplicated or missing history/events/tickets):
+`export-snapshot` gains a `redb-spike-api`-gated atomic-state projection
+(sharing the row-8 `CanonicalFinalState` capture) covering operations, deltas,
+events, tickets, change sets, idempotency records, publication attempts,
+fences, resource clocks, and scheduler revisions; the crash suite asserts the
+projection equals the prep-only or the completed reference state exactly, and
+replays the **same** request identity (same idempotency key), asserting the
+journal's cached response — a fresh T03 run with new IDs is not an idempotency
+test.
 
 ### D8. Second-client intrusion at every nominal "solo" stage
 
 At each externally observable stage of client A's T03 flow — after discovery,
 after `begin_change_set`, after `add_intent`, after `submit_change_set`, and
 concurrently with `advance_change_set` — a second client B performs (i) a
-disjoint rename (must commit independently) and (ii) an overlapping rename of
-the same symbol (must be ordered; the loser gets fresh state /
-`needs_decision`, never a silent overwrite). The concurrent-advance case
-asserts the invariant set over both legal interleavings (A-then-B or B-then-A):
-final export equals one of the two serial outcomes, digests valid, no partial
-state, fencing holds, actor ownership enforced. This is the review's "a second
-client introduced at every nominal solo stage must not change correctness,"
-and it is precisely why no solo bypass exists to test.
+disjoint rename (must commit independently; the target is pre-registered in
+the test, not discovered ad hoc) and (ii) an overlapping rename of the same
+symbol. Expectations are **stage-specific**, because FIFO is the kernel's
+contract and an "either serial order" oracle would mask fairness bugs
+(review-verified: the scheduler's older-overlap rule forbids a later
+overlapping B from passing a submitted A): before A submits, B may commit
+first and A must get `needs_decision` with the rename transitions named;
+after A submits, A must win and B gets ordered/fresh-decision behind it; in
+the concurrent-advance case the required winner is derived from durable queue
+order, never "either". Silent overwrite anywhere is a hard failure; actor
+ownership is asserted (B cannot advance or cancel A's change set). This is
+the review's "a second client introduced at every nominal solo stage must not
+change correctness," and it is precisely why no solo bypass exists to test.
 
 ### D9. Deadlines and environment
 

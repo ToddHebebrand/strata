@@ -7,6 +7,57 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-18 — Slice A gate-1 plan reviewed (Codex gpt-5.6-sol xhigh): 5 blockers verified and incorporated; behavioral-gate premise corrected
+
+**Context:** Iteration 6 slice A's design
+(`docs/superpowers/specs/2026-07-18-iteration6-slice-a-convergence-design.md`)
+and gate-1 plan
+(`docs/superpowers/plans/2026-07-18-iteration6-slice-a-gate1.md`) got the
+repo-standard independent review before implementation (brief:
+`2026-07-18-slice-a-gate1-review-brief.md`; read-only, repo-grounded).
+Verdict: **proceed with changes** — no convergence falsifier, no second
+canonical store, but five blockers that would have made gate 1 "fail
+mechanically or pass while proving weaker/different claims."
+
+**Pivotal claims verified in-session before acceptance (all held):**
+1. **The shipped T03 gate is tsc-only by registration** —
+   `packages/verify/src/taskBehavioralFixtures.ts` maps `T03: []` (BG-4
+   decision), `vitestRun(tree, [])` short-circuits to pass, and
+   `candidate.ts` rejects behavioral mode with empty fixtures. The design's
+   D4 (run a behavioral tsc+vitest gate in both arms "to match the product")
+   was therefore wrong-premised: it would have tested a *new* gate profile,
+   not the shipped product. **D4 rewritten:** both arms run the registered
+   tsc-only profile; the harness runs tsc+vitest externally on both rendered
+   corpora; the behavioral daemon plumbing returns to slice B.
+2. **ServiceFailpoint is global per-mutating-request** (`session.rs`
+   `handle_mutation`) — armed from process start it aborts at
+   `begin_change_set`, never reaching publication. Crash choreography is now
+   staged: prep failpoint-free → stop preserving redb → restart with the
+   failpoint → advance only. The coordinated `PublishFailpoint` threading
+   exists only under `redb-spike-api` (`execute_claimed_with_failpoint`,
+   camelCase boundary names) — the crash suite uses that build.
+3. **The scheduler's older-overlap rule forbids a later overlapping client
+   from passing a submitted one** (`scheduler.rs` FIFO contract). The
+   intrusion oracle is now stage-specific; "either serial order" is banned
+   because it would mask fairness bugs.
+4. Also confirmed and incorporated: `startKernelService.stop()` deleted the
+   redb before export (lifecycle split added); the two arms ingested
+   different module-path domains — absolute (CLI T03) vs corpus-relative
+   (kernel qualification) — so node IDs would never have matched (one shared
+   corpus-input builder now feeds both arms); the SQLite audit row is
+   `reasoning:null` + snake_case params + semantic-Identifier affected set,
+   so cross-arm audit equality is a normalized projection, not
+   field-for-field; a graph-only crash oracle is far weaker than the row-8
+   atomic-state capture (export-snapshot gains a feature-gated atomic-state
+   projection sharing that capture).
+
+**Decided:** plan v2 committed with all findings incorporated; gate-1
+implementation proceeds on it. The removed behavioral plumbing shrinks slice
+A — the review pushed scope *out*, which is the correct direction.
+
+**Revisit when:** gate-1 execution contradicts any incorporated finding, or a
+falsifier fires (stop, not delay, per the convergence review).
+
 ## 2026-07-18 — The kernel protocol is the canonical agent surface; MCP and CLI are adapters only
 
 **Context:** With npm live, the question "how does a user's own agent use

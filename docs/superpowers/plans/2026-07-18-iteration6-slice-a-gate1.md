@@ -1,24 +1,41 @@
-# Iteration 6 slice A — gate 1 (key-free semantic parity) Implementation Plan
+# Iteration 6 slice A — gate 1 (key-free semantic parity) Implementation Plan — v2
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Land gate 1 of the convergence slice: a fresh-store, rename-only, N=1 T03 flow on the Rust kernel (redb sole durable authority, full coordination semantics) that is semantically parity-checked against the SQLite product arm, survives crash injection at every durable boundary, and is unperturbed by a second client at every nominal "solo" stage.
+**v2 (2026-07-18):** revised after the independent Codex review (gpt-5.6-sol,
+xhigh; output in the session artifact, findings logged in decisions.md). All
+five blockers, both majors, and the minor are incorporated. The behavioral-
+profile task was **removed** (the shipped T03 gate is tsc-only by registration
+— `packages/verify/src/taskBehavioralFixtures.ts` maps `T03: []`); crash
+choreography, parity conventions, audit comparison, and intrusion oracles were
+rewritten per the review.
 
-**Architecture:** Extend the daemon's wire protocol with the minimal T03 product surface (`find_declarations`, `read_operation`), make the canonical `OperationRecord` self-contained (per-intent typed parameters), unlock the already-built behavioral (tsc+vitest) validation profile, add an offline `export-snapshot` oracle, then drive both arms from a key-free vitest parity/crash/intrusion suite in `packages/live-compare`.
+**Goal:** Land gate 1 of the convergence slice: a fresh-store, rename-only, N=1 T03 flow on the Rust kernel (redb sole durable authority, full coordination semantics) that is semantically parity-checked against the SQLite product arm, survives crash injection at every reachable durable boundary with a full atomic-state oracle, and honors FIFO under second-client intrusion at every nominal "solo" stage.
+
+**Architecture:** Extend the daemon's wire protocol with the minimal T03 product surface (`find_declarations`, `read_operation`), make the canonical `OperationRecord` self-contained (per-intent typed parameters), add an offline `export-snapshot` oracle with an atomic-state projection, then drive both arms from a key-free vitest parity/crash/intrusion suite in `packages/live-compare`. Both arms run the task-registered T03 validation profile (tsc-only); the harness additionally runs tsc **and** vitest externally on both rendered corpora.
 
 **Tech Stack:** Rust (redb, serde), TypeScript (pnpm workspaces, vitest, zod, better-sqlite3 in-memory only), existing `@strata-code/{ingest,store,render,verify}` packages.
 
-**Design:** `docs/superpowers/specs/2026-07-18-iteration6-slice-a-convergence-design.md` (D1–D9). Acceptance frame: gate 1 of `docs/superpowers/specs/2026-07-18-kernel-convergence-review-codex.md` §4.
+**Design:** `docs/superpowers/specs/2026-07-18-iteration6-slice-a-convergence-design.md` (D1–D9, as amended for v2). Acceptance frame: gate 1 of `docs/superpowers/specs/2026-07-18-kernel-convergence-review-codex.md` §4.
 
 ## Global Constraints
 
 - **No solo bypass:** no change may skip scope inference, fresh analysis, validation binding, reservations, or fenced publication. If a task cannot pass otherwise, STOP and log a decision (falsifier 1).
 - **No persisted SQLite in the kernel arm:** better-sqlite3 only via `openDb(":memory:")`.
 - **Key-free:** no model calls, no API keys anywhere in this plan.
-- **Green claims** only via `PATH=/opt/homebrew/bin:$PATH pnpm kernel:full-key-free:test` plus `pnpm -r test` (repo memory: Homebrew node ABI; bare `cargo test` skips feature-gated suites).
+- **No new digest updates:** graph, source, task-registration, delta, and event digests must not be "updated to pass" — a digest change is a finding, not a fixture refresh. Only expectations that hash newly *written* `OperationRecord` bytes may change (Task 1), and each such change must be named in the commit message.
+- **Validation profile:** gate 1 uses T03's registered profile — tsc-only — in BOTH arms (`taskBehavioralFixtures.ts` `T03: []`). No whole-suite vitest autodiscovery inside any commit gate. The daemon stays `tsc_only`.
+- **Green claims** only via `PATH=/opt/homebrew/bin:$PATH pnpm kernel:full-key-free:test` plus `pnpm -r test` (Homebrew node ABI; bare `cargo test` skips feature-gated suites).
+- **Feature matrix for Rust changes:** run `cargo test -p strata-kernel`, `--features coordination-test-api`, AND `--features redb-spike-api` (OperationRecord literals exist outside the first two).
 - **Deadlines:** harness requests must budget ≥30.1 s remaining for `submit_change_set`, ≥60.1 s for `advance_change_set` (`session.rs:27-29`).
-- **Long commands:** this environment's supervisor can kill background tasks; run test suites foreground with explicit generous timeouts, not detached, except where a step says otherwise.
+- **Long commands:** run test suites foreground with explicit generous timeouts (the supervisor kills detached harness background tasks).
 - Commit after every task; push after every 2–3 tasks.
+
+## Shared conventions (referenced by Tasks 6–9)
+
+- **One corpus-input builder for both arms** (review blocker 2): module paths are corpus-relative POSIX (`src/...`), exactly like `createQualifiedKernelSnapshot` (`packages/live-compare/src/tasks.ts:495-506`). The SQLite arm ingests the SAME relative-path inputs — never `packages/cli/src/commands/t03.ts`'s absolute-path `collectTsFiles`. Node IDs hash the module path (`packages/store/src/ids.ts:9`), so this is what makes "same ingest, same IDs" true.
+- **Generation normalization:** Rust `GraphSnapshot.generation` serializes as a JSON number; `KernelSnapshotV1` uses a canonical decimal string. The harness parses the Rust export with a lenient schema and converts generation via one helper (`canonicalGenerationString(value: number): string`, the inverse of Task 6's `boundedGenerationNumber`). Node/reference parity never involves the generation field.
+- **Normalized audit projection** (review major 5): the cross-arm audit comparison compares exactly `{ actor, taskContext, operationClass: "RenameSymbol", declarationId, oldName, newName, renamedIdentifierIds: string[] }`. SQLite source: `operations` row (`params_json` snake_case `declaration_id/old_name/new_name`, `affected` = semantic Identifier IDs, `reasoning` null) joined with its transaction's prompt (`packages/store/src/rename.ts:61-80`, `transactions.ts:59-78`). Kernel source: `read_operation` (actor, change-set reasoning as taskContext, `parametersJson`, `renames`) with `renamedIdentifierIds` = the Identifier-kind subset of `affectedNodeIds`. The kernel's full delta-derived `affectedNodeIds` (superset incl. statement nodes) is asserted separately as non-empty and containing every projected identifier — it is documented as intentionally broader, never "equal".
 
 ---
 
@@ -27,10 +44,10 @@
 **Files:**
 - Modify: `crates/strata-kernel/src/model.rs` (after `OperationRename`, ~line 76)
 - Modify: `crates/strata-kernel/src/coordination/publication.rs:575-587` (operation construction)
-- Test: `crates/strata-kernel/src/model.rs` (new `#[cfg(test)] mod tests`)
+- Test: `crates/strata-kernel/src/model.rs` (new `#[cfg(test)] mod tests`); one old-record recovery fixture test (below)
 
 **Interfaces:**
-- Produces: `pub struct OperationIntentRecord { pub kind: String, pub parameters_json: String }`; `OperationRecord` gains `#[serde(default)] pub intents: Vec<OperationIntentRecord>`. Tasks 3 and 7 rely on these exact names.
+- Produces: `pub struct OperationIntentRecord { pub kind: String, pub parameters_json: String }`; `OperationRecord` gains `#[serde(default)] pub intents: Vec<OperationIntentRecord>`. Tasks 3 and 6 rely on these exact names.
 
 - [ ] **Step 1: Write the failing serde-compat test** in `model.rs`:
 
@@ -89,7 +106,7 @@ and on `OperationRecord` (below `renames`):
 
 Export `OperationIntentRecord` from `lib.rs` next to `OperationRecord`'s existing re-export.
 
-- [ ] **Step 4: Populate at publication.** In `publication.rs`, the `OperationRecord` literal at ~line 575 sits in `publish_claimed_inner`, which already holds the change set's `intents` (used by `intent_kind(&intents[0])` and `operation_renames(&graph, &intents)`). Confirm the element type at that call site (it exposes the typed parameters used by `intent_kind`) and add, before the literal:
+- [ ] **Step 4: Populate at publication.** In `publication.rs`, the `OperationRecord` literal at ~line 575 sits in `publish_claimed_inner`, which already holds the change set's `intents` (used by `intent_kind(&intents[0])` and `operation_renames(&graph, &intents)`). Confirm the element type at that call site and add, before the literal:
 
 ```rust
         let operation_intents = intents
@@ -103,14 +120,16 @@ Export `OperationIntentRecord` from `lib.rs` next to `OperationRecord`'s existin
             .collect::<Result<Vec<_>>>()?;
 ```
 
-where `intent_parameters` is whatever accessor yields the `IntentParameters` value on that element type (if the elements *are* `IntentParameters`, it is the identity — inline it). Then set `intents: operation_intents` in the literal. Fix every other `OperationRecord` literal the compiler reports (tests/fixtures) with `intents: Vec::new()`.
+where `intent_parameters` is whatever accessor yields the `IntentParameters` value on that element type (identity if the elements are `IntentParameters` — inline it). Then set `intents: operation_intents` in the literal. Fix every other `OperationRecord` literal the compiler reports with `intents: Vec::new()`.
 
-- [ ] **Step 5: Run tests**
+- [ ] **Step 5: Old-record recovery fixture.** Add a test (in the file that owns storage round-trip tests, e.g. next to the existing recovery tests) that writes an `operations`-table value using the LEGACY JSON (no `intents` key, as in Step 1) through the storage layer's raw table API or a serialized fixture, reopens the store, and asserts recovery succeeds and `operation(generation)` returns the record with empty `intents`. This pins "old redb records stay readable" as a test, not an assumption.
 
-Run: `cargo test -p strata-kernel && cargo test -p strata-kernel --features coordination-test-api`
-Expected: PASS (existing digest tests may fail if any fixture hashes serialized `OperationRecord` JSON — if a digest test fails, that is the serde `default` field changing *serialization* output; verify old records still deserialize, update only fixture expectations that encode the new canonical serialization, and say so in the commit message).
+- [ ] **Step 6: Run the full feature matrix**
 
-- [ ] **Step 6: Commit**
+Run: `cargo test -p strata-kernel && cargo test -p strata-kernel --features coordination-test-api && cargo test -p strata-kernel --features redb-spike-api`
+Expected: PASS. Graph/source/delta/event digest expectations must be UNTOUCHED. If a test hashes newly-written serialized `OperationRecord` bytes (e.g. a whole-table digest), updating that expectation is legitimate — name each one in the commit message. Any other digest change: STOP, investigate.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add -A crates/strata-kernel && git commit -m "feat(kernel): embed typed intent parameters in canonical OperationRecord"
@@ -122,48 +141,47 @@ git add -A crates/strata-kernel && git commit -m "feat(kernel): embed typed inte
 
 **Files:**
 - Modify: `crates/strata-kernel/src/kernel.rs` (new public method near `snapshot()`, ~line 319)
-- Modify: `crates/strata-kernel/src/bridge/provider.rs` (make one helper `pub(crate)`; it already exposes `declaration_name` via `bridge/mod.rs:13`)
 - Modify: `crates/strata-kernel/src/bin/strata_kernel_service/protocol.rs` (RequestAction ~line 100, ResponseResult ~line 233)
 - Modify: `crates/strata-kernel/src/bin/strata_kernel_service/session.rs` (`execute_read` ~line 665)
-- Modify: `packages/live-compare/src/protocol.ts` (requestActionSchema ~line 102, responseResultSchema ~line 234)
-- Modify: `packages/live-compare/src/client.ts` (read-only classification ~line 60, method ~line 255)
-- Modify: `packages/live-compare/src/tools.ts` (schema + tool + name lists)
-- Test: `crates/strata-kernel/tests/local_service.rs` (new test alongside existing spawn tests); `packages/live-compare/test/` (schema round-trip, colocated with existing protocol tests — follow the existing test file layout in that package)
+- Modify: `packages/live-compare/src/protocol.ts`, `client.ts`, `tools.ts`
+- Test: `crates/strata-kernel/tests/local_service.rs`; live-compare protocol test file
 
 **Interfaces:**
-- Consumes: `bridge::declaration_name(graph, node)` (`provider.rs:667`), `is_declaration` semantics (kind ends with `Declaration` or is `FirstStatement`/`VariableStatement`).
+- Consumes: `bridge::declaration_name` internals — but NOT per-candidate (see Step 3); `declaration_name_token(declaration)` (`provider.rs:719`) is the payload-only name derivation.
 - Produces:
-  - Rust: `Kernel::find_declarations(&self, name: &str, kind: Option<&str>) -> Result<Vec<DeclarationMatch>>` with `pub struct DeclarationMatch { pub node_id: String, pub kind: String, pub name: String, pub module_id: String }`, result capped at `MAX_DECLARATION_MATCHES = 64` (error, fail-closed, if exceeded).
-  - Wire: request `{"type":"find_declarations","name":...,"kind":...?}`, kind ∈ `interface|type-alias|class|function|variable` (reject others); result `{"type":"declarations","graphGeneration":...,"declarations":[{nodeId,kind,name,moduleId}]}` where `kind` echoes the product vocabulary.
-  - TS: `client.findDeclarations(name: string, kind?: DeclarationKindFilter)`; tool `find_declarations`.
+  - Rust: `Kernel::find_declarations(&self, name: &str, kind: Option<&str>) -> Result<Vec<DeclarationMatch>>` with `pub struct DeclarationMatch { pub node_id: String, pub kind: String, pub name: String, pub module_id: String }`, capped at `MAX_DECLARATION_MATCHES = 64` (error, fail-closed, if exceeded).
+  - Wire: request `{"type":"find_declarations","name":...,"kind":...?}`, kind ∈ `interface|type-alias|class|function|variable`; result `{"type":"declarations","graphGeneration":...,"declarations":[{nodeId,kind,name,moduleId}]}`.
+  - TS: `client.findDeclarations(name, kind?)`; tool `find_declarations`.
 - Kind mapping (same as `packages/store/src/queries.ts:28-34`): interface→InterfaceDeclaration, type-alias→TypeAliasDeclaration, class→ClassDeclaration, function→FunctionDeclaration, variable→FirstStatement.
+- **Failure semantics (review major 4):** a candidate whose name cannot be derived (malformed payload, missing/ambiguous name identifier) is SKIPPED, exactly like the SQLite `find_declarations` filter (`queries.ts:44-56` returns false on parse failure) — never an error for the whole query.
+- **Complexity bound (review major 4):** ONE graph pass total. Take one snapshot; build one `parent_id → Vec<&NodeRecord (Identifier)>` map; then for each kind-matching candidate derive `declaration_name_token` from its payload and confirm against the prebuilt identifier map (text + offset, unique). Do NOT call `declaration_name`/`declaration_name_identifier` per candidate (each clones the full node set — O(declarations × nodes)). This needs a small `pub(crate)` refactor in `provider.rs` to expose `declaration_name_token` and the identifier-confirmation logic against a caller-supplied map; keep `declaration_name`'s existing behavior for its current callers.
 
-- [ ] **Step 1: Write the failing Rust service test** in `crates/strata-kernel/tests/local_service.rs`, following that file's existing spawn/request helpers (same fixture corpus the neighboring tests use):
+- [ ] **Step 1: Write the failing Rust service test** in `crates/strata-kernel/tests/local_service.rs`, following that file's existing spawn/request helpers and fixture corpus:
 
 ```rust
 #[test]
 fn find_declarations_returns_named_interface_and_rejects_unknown_kind() {
     // spawn service exactly as the sibling tests do, then:
-    let found = request_json(&socket, json!({
-        "type": "find_declarations", "name": "User", "kind": "interface"
-    }));
-    // exactly one match; fields nodeId/kind/name/moduleId present; kind == "interface"
-    // name mismatch returns an empty list, not an error:
-    let none = request_json(&socket, json!({
-        "type": "find_declarations", "name": "NoSuchSymbol"
-    }));
-    // and kind "enum" (unsupported vocabulary) is a protocol error response
+    // 1) {"type":"find_declarations","name":"User","kind":"interface"}
+    //    -> exactly one match with nodeId/kind=="interface"/name=="User"/moduleId
+    // 2) {"type":"find_declarations","name":"NoSuchSymbol"} -> empty list, ok
+    // 3) kind "enum" -> protocol error response
+    // 4) JSDoc regression: a fixture module whose declaration has a JSDoc
+    //    @param tag identifier BEFORE the declaration name must still return
+    //    the declaration name, not the JSDoc identifier (mirror the pitfall
+    //    guarded in packages/store/src/queries.ts:38-56). Use a real corpus
+    //    module containing JSDoc (examples/medium has JSDoc-bearing modules —
+    //    the T03 criteria include jsdocReferencesRenamed) or add one to the
+    //    test fixture the way the file builds snapshots.
 }
 ```
-
-(Adapt to the file's actual helper names — it already builds `LocalServiceRequest` frames; assert on the `declarations` result shape defined above. The fixture must contain an interface named `User`; if the file's standing fixture does not, add a minimal two-module fixture the way its helpers construct snapshots.)
 
 - [ ] **Step 2: Run to verify failure**
 
 Run: `cargo test -p strata-kernel --test local_service find_declarations`
-Expected: FAIL (unknown request type / schema rejection).
+Expected: FAIL (unknown request type).
 
-- [ ] **Step 3: Implement kernel method** in `kernel.rs`:
+- [ ] **Step 3: Implement kernel method** in `kernel.rs` (one pass, skip-on-unnameable):
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -182,24 +200,35 @@ pub fn find_declarations(
     kind: Option<&str>,
 ) -> Result<Vec<DeclarationMatch>> {
     let graph = self.snapshot();
+    let snapshot = graph.snapshot(); // ONE clone for the whole query
     let statement_kinds: Vec<(&str, &str)> = match kind {
         Some(k) => vec![(k, product_kind_to_statement_kind(k)?)],
         None => PRODUCT_KINDS.to_vec(),
     };
+    // one pass: identifier children grouped by parent
+    let mut identifiers: BTreeMap<&str, Vec<&NodeRecord>> = BTreeMap::new();
+    for node in &snapshot.nodes {
+        if node.kind == "Identifier" {
+            if let Some(parent) = node.parent_id.as_deref() {
+                identifiers.entry(parent).or_default().push(node);
+            }
+        }
+    }
     let mut matches = Vec::new();
-    for node in graph.snapshot().nodes {
+    for node in &snapshot.nodes {
         let Some((product_kind, _)) = statement_kinds
             .iter()
             .find(|(_, statement)| *statement == node.kind)
         else { continue };
-        if crate::bridge::declaration_name(&graph, &node)?.as_deref() != Some(name) {
-            continue;
-        }
-        let module_id = node.parent_id.clone()
-            .with_context(|| format!("declaration {} has no parent module", node.id))?;
+        // payload-only token; SKIP candidates that cannot be named
+        let Ok(Some(candidate_name)) =
+            crate::bridge::confirmed_declaration_name(node, &identifiers)
+        else { continue };
+        if candidate_name != name { continue; }
+        let Some(module_id) = node.parent_id.clone() else { continue };
         matches.push(DeclarationMatch {
-            node_id: node.id, kind: (*product_kind).to_string(),
-            name: name.to_owned(), module_id,
+            node_id: node.id.clone(), kind: (*product_kind).to_string(),
+            name: candidate_name, module_id,
         });
         ensure!(matches.len() <= MAX_DECLARATION_MATCHES,
             "declaration matches exceed {MAX_DECLARATION_MATCHES} bound");
@@ -208,25 +237,9 @@ pub fn find_declarations(
 }
 ```
 
-with module-level:
-
-```rust
-const PRODUCT_KINDS: [(&str, &str); 5] = [
-    ("interface", "InterfaceDeclaration"),
-    ("type-alias", "TypeAliasDeclaration"),
-    ("class", "ClassDeclaration"),
-    ("function", "FunctionDeclaration"),
-    ("variable", "FirstStatement"),
-];
-
-fn product_kind_to_statement_kind(kind: &str) -> Result<&'static str> {
-    PRODUCT_KINDS.iter().find(|(product, _)| *product == kind)
-        .map(|(_, statement)| *statement)
-        .with_context(|| format!("unsupported declaration kind {kind}"))
-}
-```
-
-Note: `declaration_name` needs `pub(crate)` visibility from the bin — it is a separate binary, so it must go through the *public* kernel API; that is exactly why the scan lives on `Kernel`, not in `session.rs`. `crate::bridge::declaration_name` is already `pub(crate) use`d in `bridge/mod.rs:13`. `graph.snapshot()` clones the node set — acceptable at gate-1 scale; gate 2 measures it (do NOT add an index now, YAGNI).
+with `PRODUCT_KINDS`/`product_kind_to_statement_kind` as module-level items (the five-pair table above), and in `provider.rs` a new
+`pub(crate) fn confirmed_declaration_name(declaration: &NodeRecord, identifiers_by_parent: &BTreeMap<&str, Vec<&NodeRecord>>) -> Result<Option<String>>`
+that: calls `declaration_name_token(declaration)` (returns `Ok(None)` on any token-derivation error — skip semantics), then confirms exactly one Identifier child in `identifiers_by_parent[&declaration.id]` matches text+offset (`Ok(None)` if zero or ambiguous). Re-export via `bridge/mod.rs` beside `declaration_name`.
 
 - [ ] **Step 4: Wire protocol + session.** `protocol.rs`: add to `RequestAction`:
 
@@ -258,11 +271,11 @@ pub(super) struct DeclarationSummary {
 }
 ```
 
-`session.rs` `execute_read` (read-only path — this action must ALSO be added to the read classification wherever the session routes reads vs. the mutation journal; mirror exactly how `InspectNodes` is classified):
+`session.rs` `execute_read` (classified read-only exactly like `InspectNodes`, including the client-side `isMutating` list):
 
 ```rust
             RequestAction::FindDeclarations { name, kind } => {
-                validate_bounded_text(name, "name")?; // reuse the session's existing input bounds helper
+                // enforce the same 512-char bound the tool schema uses
                 let matches = self.kernel.find_declarations(name, kind.as_deref())?;
                 Ok(ResponseResult::Declarations {
                     graph_generation: WireU64::new(self.kernel.snapshot().generation()),
@@ -273,14 +286,12 @@ pub(super) struct DeclarationSummary {
             }
 ```
 
-(If the session has no shared text-bound helper, enforce the same 512-char bound `tools.ts` uses.)
+- [ ] **Step 5: Run Rust tests**
 
-- [ ] **Step 5: Run Rust test to verify pass**
-
-Run: `cargo build -p strata-kernel && cargo test -p strata-kernel --test local_service find_declarations`
+Run: `cargo build -p strata-kernel && cargo test -p strata-kernel --test local_service find_declarations && cargo test -p strata-kernel`
 Expected: PASS.
 
-- [ ] **Step 6: TS protocol + client + tool (failing test first).** In live-compare's existing protocol test file add:
+- [ ] **Step 6: TS protocol + client + tool (failing test first).** Protocol test:
 
 ```typescript
 it("round-trips find_declarations request and declarations result", () => {
@@ -296,7 +307,7 @@ it("round-trips find_declarations request and declarations result", () => {
 });
 ```
 
-Run: `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test` → FAIL. Then implement — `protocol.ts`:
+Run live-compare tests → FAIL. Then `protocol.ts`:
 
 ```typescript
 export const declarationKindFilterSchema = z.enum([
@@ -305,7 +316,7 @@ export const declarationKindFilterSchema = z.enum([
 // requestActionSchema union gains:
 z.object({
   type: z.literal("find_declarations"),
-  name: boundedText(MAX_ID_CHARS_EQUIVALENT), // reuse the file's existing bounded-string helper
+  name: boundedText(512), // reuse the file's existing bounded-string helper/limit
   kind: declarationKindFilterSchema.optional()
 }).strict(),
 // responseResultSchema union gains:
@@ -331,7 +342,7 @@ z.object({
   }
 ```
 
-`tools.ts`: add to `COORDINATION_TOOL_INPUT_SCHEMAS`:
+`tools.ts`: schema + tool + `CoordinationClientApi.findDeclarations` + name lists (first position):
 
 ```typescript
   find_declarations: z.object({
@@ -339,8 +350,6 @@ z.object({
     kind: z.enum(["interface", "type-alias", "class", "function", "variable"]).optional()
   }).strict(),
 ```
-
-tool definition (description mirrors the SQLite product's `find_declarations` role as the discovery entry point):
 
 ```typescript
     strictTool(
@@ -350,8 +359,6 @@ tool definition (description mirrors the SQLite product's `find_declarations` ro
       async ({ name, kind }) => textResult(await client.findDeclarations(name, kind))
     ),
 ```
-
-extend `CoordinationClientApi` with `findDeclarations(name: string, kind?: string): Promise<CoordinationResult>` and add `"find_declarations"` to `COORDINATION_TOOL_NAMES` (first position — discovery precedes inspection).
 
 - [ ] **Step 7: Run TS tests**
 
@@ -369,16 +376,15 @@ git add -A crates/strata-kernel packages/live-compare && git commit -m "feat(ker
 ### Task 3: `read_operation` — auditable canonical history over the wire
 
 **Files:**
-- Modify: `crates/strata-kernel/src/storage.rs` (operation lookup by ID, near the existing `operation(generation)` read used by `Kernel::operation`)
-- Modify: `crates/strata-kernel/src/kernel.rs` (public `operation_by_id`)
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/protocol.rs`, `session.rs` (request/result + read path)
+- Modify: `crates/strata-kernel/src/storage.rs` (operation lookup by ID), `crates/strata-kernel/src/kernel.rs` (`operation_by_id`)
+- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/protocol.rs`, `session.rs`
 - Modify: `packages/live-compare/src/protocol.ts`, `client.ts`, `tools.ts`
 - Test: `crates/strata-kernel/tests/local_service.rs`; live-compare protocol test file
 
 **Interfaces:**
-- Consumes: Task 1's `OperationRecord.intents` (`kind`, `parameters_json`); `Kernel::generation_digest(u64)` (`kernel.rs:327`); change-set reasoning already ON the record (`reasoning`).
+- Consumes: Task 1's `OperationRecord.intents`; `Kernel::generation_digest(u64)` (`kernel.rs:327`).
 - Produces:
-  - Rust: `Kernel::operation_by_id(&self, operation_id: &str) -> Result<Option<(u64, OperationRecord)>>` (generation + record).
+  - Rust: `Kernel::operation_by_id(&self, operation_id: &str) -> Result<Option<(u64, OperationRecord)>>`.
   - Wire: request `{"type":"read_operation","operationId":...}`; result:
 
 ```json
@@ -391,21 +397,11 @@ git add -A crates/strata-kernel packages/live-compare && git commit -m "feat(ker
 
   - TS: `client.readOperation(operationId)`; tool `read_operation`.
 
-- [ ] **Step 1: Failing Rust test** in `local_service.rs`: run one full rename lifecycle through the daemon (begin → add_intent → submit → advance, using the file's existing helpers), capture `operationId` from the `change_set` result, then:
-
-```rust
-    let audit = request_json(&socket, json!({ "type": "read_operation", "operationId": operation_id }));
-    // assert: actor == the requesting clientId's actor, reasoning == the begin_change_set reasoning,
-    // kind == "RenameSymbol", affectedNodeIds.len() > 1,
-    // renames == [{fromName:"User", toName:"Account", ...}],
-    // intents.len() == 1 && intents[0].kind == "RenameSymbol"
-    //   && intents[0].parametersJson parses to {declarationId, newName:"Account"} (camelCase tag form),
-    // publicationDigest is a 64-hex string; unknown operationId -> error response
-```
+- [ ] **Step 1: Failing Rust test** in `local_service.rs`: full rename lifecycle through the daemon, capture `operationId` from the `change_set` result, then `read_operation` and assert: actor, reasoning == the `begin_change_set` reasoning, kind `RenameSymbol`, `affectedNodeIds.len() > 1`, renames `[{fromName:"User",toName:"Account",..}]`, `intents == [{kind:"RenameSymbol", parametersJson parsing to {declarationId,newName:"Account"} in the camelCase tagged form}]`, `publicationDigest` 64-hex; unknown operationId → error response.
 
 Run: `cargo test -p strata-kernel --test local_service read_operation` → FAIL.
 
-- [ ] **Step 2: Storage + kernel lookup.** In `storage.rs`, add a method beside the existing per-generation operation read that iterates the `operations` table (redb range over all generations), deserializes each `OperationRecord`, and returns the first with matching `operation_id`, together with its generation key. Linear in history length — acceptable at gate-1; gate 2 measures. In `kernel.rs`:
+- [ ] **Step 2: Storage + kernel lookup.** In `storage.rs`, beside the per-generation operation read: iterate the `operations` table range, deserialize, return first record whose `operation_id` matches, with its generation key. Linear in history; gate 2 measures. `kernel.rs`:
 
 ```rust
 pub fn operation_by_id(&self, operation_id: &str) -> Result<Option<(u64, OperationRecord)>> {
@@ -413,7 +409,7 @@ pub fn operation_by_id(&self, operation_id: &str) -> Result<Option<(u64, Operati
 }
 ```
 
-- [ ] **Step 3: Wire + session (read path).** `protocol.rs`: `ReadOperation { operation_id: String }` in `RequestAction`; `ResponseResult::Operation { ... }` with the exact fields shown in Interfaces (renames/intents as camelCase structs mirroring `OperationRename`/`OperationIntentRecord`). `session.rs` `execute_read`:
+- [ ] **Step 3: Wire + session (read path).** `RequestAction::ReadOperation { operation_id: String }`; `ResponseResult::Operation { ... }` with the exact fields above (renames/intents as camelCase structs mirroring `OperationRename`/`OperationIntentRecord`). `execute_read` arm:
 
 ```rust
             RequestAction::ReadOperation { operation_id } => {
@@ -425,19 +421,11 @@ pub fn operation_by_id(&self, operation_id: &str) -> Result<Option<(u64, Operati
             }
 ```
 
-Classify `read_operation` as read-only wherever `InspectNodes` is.
+Classify `read_operation` read-only in both Rust routing and the TS `isMutating` list.
 
 - [ ] **Step 4: Run Rust test** → PASS.
 
-- [ ] **Step 5: TS side (failing schema test first, then implement).** Mirror Task 2 exactly: `responseResultSchema` gains the `operation` variant (validate `parametersJson` is a string; `intents` max 16), `requestActionSchema` gains `read_operation`; `isMutating` read list gains `"read_operation"`; client method:
-
-```typescript
-  readOperation(operationId: string, deadlineMs = DEFAULT_REQUEST_DEADLINE_MS): Promise<CoordinationResult> {
-    return this.request({ type: "read_operation", operationId }, deadlineMs);
-  }
-```
-
-tool:
+- [ ] **Step 5: TS side** (failing schema test → implement, mirroring Task 2): `operation` result variant (`intents` max 16, `parametersJson` string), `read_operation` request, client method `readOperation(operationId)`, tool:
 
 ```typescript
     strictTool(
@@ -448,7 +436,7 @@ tool:
     ),
 ```
 
-Run: `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare build && PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test` → PASS.
+Run live-compare build+test → PASS.
 
 - [ ] **Step 6: Commit**
 
@@ -458,73 +446,24 @@ git add -A crates/strata-kernel packages/live-compare && git commit -m "feat(ker
 
 ---
 
-### Task 4: Behavioral (tsc+vitest) validation profile reaches the daemon
-
-**Files:**
-- Modify: `crates/strata-kernel/src/bridge/process.rs` (new constructor beside `tsc_only`, ~line 32)
-- Modify: `crates/strata-kernel/src/bridge/protocol.rs` (a `behavioral(...)` constructor beside `ValidationProfile::tsc_only`, ~line 465)
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/main.rs` (flags, ~line 44-95)
-- Modify: `packages/live-compare/src/service.ts` (`startKernelService` options)
-- Test: `crates/strata-kernel/src/bridge/protocol.rs` mod tests (serialization); `crates/strata-kernel/src/bin/` arg parsing via `tests/local_service.rs` (daemon rejects behavioral without fixtures)
-
-**Interfaces:**
-- Produces: `NodeBridgeConfig::behavioral(executable, arguments, deadline, source_root, corpus_root, behavioral_fixtures: Vec<String>, strict_src_only_tsc_scope: bool) -> Self`; daemon flags `--validation-profile tsc_only|behavioral` (optional, default `tsc_only`) and `--behavioral-fixtures <comma-separated relative paths>` (required iff behavioral); TS `startKernelService(corpusRoot, { validation?: { profile: "behavioral"; fixtures: string[] } })`.
-- Consumes: `ValidationProfile::Behavioral` (`bridge/protocol.rs:457-462`) and `candidate.ts`'s existing `commitWithBehavioralGate` path — no TS worker changes.
-
-- [ ] **Step 1: Failing tests.** (a) In `bridge/protocol.rs` tests: `ValidationProfile::behavioral("src","corpus",vec!["test/app.test.ts".into()],true)` serializes with `"mode":"behavioral"` (match the existing wire tag naming used by `tscOnly` tests in that file) and `validate()` accepts it, while empty fixtures still validate (worker-side rules govern content). (b) In `local_service.rs`: spawning with `--validation-profile behavioral` and no `--behavioral-fixtures` exits with an argument error.
-
-Run: `cargo test -p strata-kernel behavioral` → FAIL.
-
-- [ ] **Step 2: Implement.** `ValidationProfile::behavioral(...)` mirrors `tsc_only(...)` but builds `Self::Behavioral` with the fixture list. `NodeBridgeConfig::behavioral(...)` mirrors `tsc_only` byte-for-byte except the profile. `main.rs`:
-
-```rust
-    let allowed = [ /* existing */ "--validation-profile", "--behavioral-fixtures" ];
-    // after parsing existing args:
-    let bridge_config = match values.get("--validation-profile").and_then(|v| v.to_str()) {
-        None | Some("tsc_only") => NodeBridgeConfig::tsc_only(
-            "node", vec![worker.into_os_string()], Duration::from_secs(30),
-            source_root, corpus_root, true),
-        Some("behavioral") => {
-            let fixtures = required_text(&values, "--behavioral-fixtures")?
-                .split(',').map(str::to_owned).collect::<Vec<_>>();
-            NodeBridgeConfig::behavioral(
-                "node", vec![worker.into_os_string()], Duration::from_secs(120),
-                source_root, corpus_root, fixtures, true)
-        }
-        Some(other) => bail!("invalid --validation-profile {other}"),
-    };
-```
-
-(120 s bridge deadline for behavioral: vitest on `examples/medium` runs well inside it; tsc_only stays at 30 s.) `service.ts`: append the two flags when `options.validation?.profile === "behavioral"`.
-
-- [ ] **Step 3: Run tests**
-
-Run: `cargo test -p strata-kernel behavioral && cargo test -p strata-kernel --test local_service`
-Expected: PASS.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add -A crates/strata-kernel packages/live-compare && git commit -m "feat(kernel): configurable validation profile — behavioral tsc+vitest gate reaches the daemon"
-```
-
----
-
-### Task 5: `export-snapshot` offline oracle subcommand
+### Task 4: `export-snapshot` offline oracle with atomic-state projection
 
 **Files:**
 - Modify: `crates/strata-kernel/src/bin/strata_kernel_service/main.rs` (new subcommand)
-- Test: `crates/strata-kernel/tests/local_service_recovery.rs` (or a new `tests/export_snapshot.rs` if recovery helpers don't fit)
+- Modify: `crates/strata-kernel/src/kernel.rs` / `storage.rs` only if a needed read accessor is missing (prefer existing `test_*` accessors gated `redb-spike-api`)
+- Test: `crates/strata-kernel/tests/local_service_recovery.rs` (or new `tests/export_snapshot.rs`)
 
 **Interfaces:**
-- Produces: `strata-kernel-service export-snapshot --db PATH --out PATH` — opens the store on the normal recovery path (snapshot + delta replay + digest verification), writes the canonical `GraphSnapshot` JSON (camelCase, BTreeMap-ordered nodes/references — same shape `KernelSnapshotV1` seeds with), prints `{"generation":"<u64>","digest":"<64-hex>"}` on stdout. Task 7's harness shells out to this.
-- Consumes: `Kernel::open(path)` (`kernel.rs:183`) and `GraphGeneration::snapshot()`/`digest()`.
+- Produces: `strata-kernel-service export-snapshot --db PATH --out PATH [--state-out PATH]`.
+  - `--out`: canonical `GraphSnapshot` JSON (camelCase; generation is a JSON number — the harness normalizes, see Shared conventions). Stdout: `{"generation":"<u64>","digest":"<64-hex>"}`.
+  - `--state-out` (compiled only under `redb-spike-api`): the **atomic-state projection** used as the crash oracle (review blocker 8) — a canonical JSON object containing, at minimum: ordered operation records, delta count and per-generation digests, graph event records, ticket records, change-set records (id/state/actor/reasoning/intent ids), intent records, idempotency keys with their generations, publication attempts, fence/resource-clock state, scheduler revisions, and table counts. Reuse the SAME accessors row 8's `CanonicalFinalState::capture` uses (`tests/support/full_key_free.rs`, `full_key_free_acceptance.rs:309-389`) — move/share that capture logic into a `redb-spike-api`-gated library function (e.g. `Kernel::test_atomic_state_projection()`) rather than duplicating it, then have BOTH row 8 and this subcommand call it.
+- Consumes: `Kernel::open(path)` (`kernel.rs:183`) — the normal recovery path (digest-verified).
 
-- [ ] **Step 1: Failing test:** seed a service (existing recovery-test helpers), run one rename, stop the daemon, run `export-snapshot`, assert: exit 0; the out-file parses as a snapshot whose node payloads contain `Account` where the fixture had `User`; stdout digest equals the digest a fresh `Kernel::open` reports; running it against a *nonexistent* db path exits non-zero.
+- [ ] **Step 1: Failing test:** seed a service, run one rename, stop the daemon, run `export-snapshot`: exit 0; out-file parses; payloads contain `Account`; stdout digest equals a fresh `Kernel::open`'s digest; with `--state-out` (feature build) the projection file contains exactly one operation with kind `RenameSymbol` and one committed change set; nonexistent db → non-zero exit.
 
-Run: `cargo test -p strata-kernel --test local_service_recovery export_snapshot` → FAIL.
+Run: `cargo test -p strata-kernel --features redb-spike-api --test local_service_recovery export_snapshot` → FAIL.
 
-- [ ] **Step 2: Implement** in `main.rs`:
+- [ ] **Step 2: Implement** the subcommand (open via the same no-bridge open the recovery tests use; export performs no validation):
 
 ```rust
         Some("export-snapshot") => export_snapshot(&remaining),
@@ -533,14 +472,23 @@ Run: `cargo test -p strata-kernel --test local_service_recovery export_snapshot`
 ```rust
 fn export_snapshot(arguments: &[OsString]) -> Result<()> {
     let values = parse_named(arguments)?;
-    reject_unknown(&values, &["--db", "--out"])?;
+    reject_unknown(&values, &["--db", "--out", "--state-out"])?;
     let db_path = required_path(&values, "--db")?;
     let out_path = required_path(&values, "--out")?;
     anyhow::ensure!(db_path.exists(), "database {} does not exist", db_path.display());
     let (kernel, _report) = strata_kernel::Kernel::open(&db_path)?;
     let graph = kernel.snapshot();
-    let snapshot = graph.snapshot();
-    std::fs::write(&out_path, serde_json::to_vec_pretty(&snapshot)?)?;
+    std::fs::write(&out_path, serde_json::to_vec_pretty(&graph.snapshot())?)?;
+    #[cfg(feature = "redb-spike-api")]
+    if let Some(state_out) = values.get("--state-out") {
+        std::fs::write(
+            std::path::PathBuf::from(state_out),
+            serde_json::to_vec_pretty(&kernel.test_atomic_state_projection()?)?,
+        )?;
+    }
+    #[cfg(not(feature = "redb-spike-api"))]
+    anyhow::ensure!(values.get("--state-out").is_none(),
+        "--state-out requires a redb-spike-api build");
     println!("{}", serde_json::json!({
         "generation": graph.generation().to_string(),
         "digest": graph.digest(),
@@ -549,26 +497,32 @@ fn export_snapshot(arguments: &[OsString]) -> Result<()> {
 }
 ```
 
-(If `Kernel::open` requires a node bridge for coordination reconciliation, use the same no-bridge open the recovery tests use; the export path performs no validation.) Update `print_help`.
+The `test_atomic_state_projection` extraction refactors row 8's capture into the library under `redb-spike-api`; row 8's tests keep passing against the shared function. Update `print_help`.
 
-- [ ] **Step 3: Run test** → PASS. **Step 4: Commit**
+- [ ] **Step 3: Run** the feature matrix (all three combos) → PASS. **Step 4: Commit**
 
 ```bash
-git add -A crates/strata-kernel && git commit -m "feat(kernel): export-snapshot offline oracle subcommand"
+git add -A crates/strata-kernel && git commit -m "feat(kernel): export-snapshot oracle with redb-spike-api atomic-state projection"
 ```
 
 ---
 
-### Task 6: Fail-closed seed bound + design-doc amendment
+### Task 5: Service harness lifecycle — preserve/reuse the redb, seed bound
 
 **Files:**
-- Modify: `packages/live-compare/src/tasks.ts:495-506` (`createQualifiedKernelSnapshot`)
-- Modify: `docs/superpowers/specs/2026-07-18-iteration6-slice-a-convergence-design.md` (D1 hardening paragraph)
-- Test: live-compare's existing tasks test file
+- Modify: `packages/live-compare/src/service.ts` (`startKernelService`, `stop`)
+- Modify: `packages/live-compare/src/tasks.ts:495-506` + design doc D1 wording
+- Modify: `packages/live-compare/src/client.ts` (optional idempotency-key override for the crash suite)
+- Test: live-compare test files (service lifecycle + conversion helpers)
 
-- [ ] **Step 1: Failing test:** `createQualifiedKernelSnapshot` on a corpus whose snapshot generation is `"0"` returns `generation: 0`; a synthetic snapshot object with generation `"9007199254740993"` (> `Number.MAX_SAFE_INTEGER`) makes the conversion helper throw rather than silently round. (Extract the conversion into `boundedGenerationNumber(generation: string): number` so it is testable without a corpus.)
+**Interfaces (review blocker 1):**
+- `startKernelService(corpusRoot, options?)` gains: `directory?: string` (reuse an existing service directory — when its `kernel.redb` exists the daemon takes the recovery branch and `--snapshot` is ignored), `binaryPath?`, `extraArgs?: string[]` (for Task 7's failpoint flags), and `stop(options?: { preserveDirectory?: boolean })`. Default behavior unchanged (fresh tmpdir, full cleanup).
+- `boundedGenerationNumber(generation: string): number` (fail-closed safe-integer parse) used by `createQualifiedKernelSnapshot`; `canonicalGenerationString(value: number): string` (inverse, rejects unsafe integers) for parsing Rust exports.
+- `CoordinationClient.request(action, deadlineMs, options?: { idempotencyKey?: string })` — exposes the key so the crash suite can REPLAY the exact request identity and assert the cached journal response (review blocker 8). Mutating retries keep generating a fresh random key by default.
 
-- [ ] **Step 2: Implement:**
+- [ ] **Step 1: Failing tests:** (a) `stop({ preserveDirectory: true })` leaves `kernel.redb` on disk; a second `startKernelService(corpus, { directory })` against it reaches readiness (recovery branch) and `inspect_nodes` serves the previous generation; (b) `boundedGenerationNumber("9007199254740993")` throws; `boundedGenerationNumber("0")` → 0; `canonicalGenerationString(3)` → `"3"`; (c) a mutating request with an explicit `idempotencyKey` sent twice returns byte-identical results.
+
+- [ ] **Step 2: Implement.**
 
 ```typescript
 export function boundedGenerationNumber(generation: string): number {
@@ -578,90 +532,119 @@ export function boundedGenerationNumber(generation: string): number {
   }
   return value;
 }
+export function canonicalGenerationString(value: number): string {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`generation ${value} is not a canonical unsigned safe integer`);
+  }
+  return String(value);
+}
 ```
 
-use it in `createQualifiedKernelSnapshot`. Amend the design doc's D1 hardening sentence to describe this fail-closed bound (the wire format keeps its numeric generation; a string protocol change buys nothing for a fresh store seeded at generation 0).
+`service.ts`: honor `options.directory` (skip snapshot write + seed when `kernel.redb` already exists — still pass `--snapshot` pointing at the existing file, the daemon ignores it on the recovery branch; write it only when absent), append `options.extraArgs` to the spawn argv, and:
 
-- [ ] **Step 3: Run** `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test` → PASS. **Commit:**
+```typescript
+    async stop(stopOptions?: { preserveDirectory?: boolean }) {
+      if (child.exitCode === null) child.kill("SIGTERM");
+      await new Promise<void>((resolveStop) => child.once("exit", () => resolveStop()));
+      if (!stopOptions?.preserveDirectory) rmSync(directory, { recursive: true, force: true });
+    }
+```
+
+`client.ts`: thread `options?.idempotencyKey` through `request` for mutating actions (default stays `randomUUID()`), and amend the design doc's D1 hardening sentence (fail-closed bound instead of string wire format).
+
+- [ ] **Step 3: Run** live-compare build+test → PASS. **Commit:**
 
 ```bash
-git add -A packages/live-compare docs/superpowers/specs && git commit -m "fix(live-compare): fail-closed generation bound at kernel seed; design D1 amended"
+git add -A packages/live-compare docs/superpowers/specs && git commit -m "feat(live-compare): service dir reuse + preserve, fail-closed generation bounds, idempotency-key override"
 ```
 
 ---
 
-### Task 7: Gate-1 parity harness (both arms, six assertions)
+### Task 6: Gate-1 parity harness (both arms, six assertions)
 
 **Files:**
-- Create: `packages/live-compare/src/gate1.ts` (arm drivers + comparison helpers)
-- Test: `packages/live-compare/test/gate1Parity.test.ts` (or the package's existing test dir convention)
-- Modify: `package.json` (root): add `kernel:gate1:test`; fold into `kernel:full-key-free:test`
+- Create: `packages/live-compare/src/gate1.ts`
+- Test: `packages/live-compare/test/gate1Parity.test.ts` (follow the package's test layout)
+- Modify: root `package.json` (`kernel:gate1:test`, folded into `kernel:full-key-free:test`)
 
 **Interfaces:**
-- Consumes: Tasks 2–5 surfaces; `runT03`-style SQLite flow (`packages/cli/src/commands/t03.ts` — but the parity arm uses the *behavioral* product gate: `commitWithBehavioralGate` from `@strata-code/verify`, invoked exactly as `packages/kernel-bridge/src/candidate.ts:115` does); `exportSnapshot` (`packages/kernel-bridge/src/snapshot.ts`); `startKernelService` with behavioral profile; `CoordinationClient`.
-- Produces (for Tasks 8–9): 
+- Consumes: Tasks 2–5; `@strata-code/store` product flow (`openDb(":memory:")`, `insertNodes`, `insertReferences`, `find_declarations`, `begin`, `rename_symbol`); `commit` + `validate` from `@strata-code/verify` (the T03-registered gate — tsc-only, exactly the `packages/cli/src/commands/t03.ts` product flow); `exportSnapshot` from `packages/kernel-bridge/src/snapshot.ts`; the Shared conventions block (corpus builder, generation normalization, audit projection).
+- Produces (for Tasks 7–8):
 
 ```typescript
-export interface SqliteArmOutcome { snapshot: KernelSnapshotV1; operationRow: OperationRowAudit; renderedRoot: string; }
-export interface KernelArmOutcome { exportPath: string; snapshot: KernelSnapshotV1; audit: OperationAudit; renderedRoot: string; service: RunningKernelService; }
-export function runSqliteArm(corpusRoot: string, workDir: string): Promise<SqliteArmOutcome>;
-export function runKernelArmT03(corpusRoot: string, workDir: string, options?: { testFailpoint?: string; publishFailpoint?: string; onStage?: (stage: Gate1Stage) => Promise<void> }): Promise<KernelArmOutcome>;
 export type Gate1Stage = "after_discovery" | "after_begin" | "after_add_intent" | "after_submit";
-export function renderSnapshotToTree(snapshot: KernelSnapshotV1, corpusRoot: string, outDir: string): string; // hydrate :memory: + @strata-code/render per module, same renderer both arms
-export function behavioralFixturesFor(corpusRoot: string): string[]; // test files under the corpus, same filter candidate.ts validates
+export interface SqliteArmOutcome { snapshot: KernelSnapshotV1; audit: NormalizedAudit; renderedRoot: string; }
+export interface KernelArmOutcome {
+  snapshot: KernelSnapshotV1; audit: NormalizedAudit; rawAffectedNodeIds: string[];
+  renderedRoot: string; directory: string; operationId: string; changeSetId: string;
+}
+export interface NormalizedAudit {
+  actor: string; taskContext: string; operationClass: "RenameSymbol";
+  declarationId: string; oldName: string; newName: string; renamedIdentifierIds: string[];
+}
+export function buildCorpusInputs(corpusRoot: string): { path: string; text: string }[]; // corpus-relative POSIX paths, same walk as createQualifiedKernelSnapshot
+export function runSqliteArm(corpusRoot: string): Promise<SqliteArmOutcome>;
+export function runKernelArmT03(corpusRoot: string, options?: {
+  directory?: string; extraArgs?: string[];
+  onStage?: (stage: Gate1Stage, ctx: { client: CoordinationClient; changeSetId?: string; declarationId?: string }) => Promise<void>;
+  stopAfterSubmit?: boolean;   // Task 7 crash choreography: prep only, clean stop, no advance
+  preserveDirectory?: boolean;
+}): Promise<KernelArmOutcome>;
+export function renderSnapshotToTree(snapshot: KernelSnapshotV1, corpusRoot: string, outDir: string): string;
+export function exportKernelSnapshot(directory: string, options?: { stateOut?: string }): { snapshot: KernelSnapshotV1; generation: string; digest: string };
+export function tscAndVitestGreen(treeRoot: string): Promise<boolean>; // reuse @strata-code/verify's corpusRun runner (export it if not exported); vitest runs the corpus's own test files identically on both trees — a HARNESS check, not a commit gate
 ```
 
-- [ ] **Step 1: Write the failing parity test** (this IS gate 1's acceptance shape — write all six assertions up front):
+- [ ] **Step 1: Write the failing parity test** (gate 1's acceptance shape, all six assertions):
 
 ```typescript
 describe("gate 1: key-free semantic parity (kernel vs SQLite product arm)", () => {
   it("produces equivalent nodes, references, rendered TS, tsc+vitest, criteria, and audit", async () => {
     const corpus = resolve(repoRoot, "examples/medium");
-    const sqlite = await runSqliteArm(corpus, mkWork());
-    const kernel = await runKernelArmT03(corpus, mkWork());
-    // 1+2: canonical node/reference byte equality
+    const sqlite = await runSqliteArm(corpus);
+    const kernel = await runKernelArmT03(corpus);
+    // 1+2: canonical node/reference byte equality (same corpus-relative ingest => same IDs;
+    //      compare Module records explicitly too — payloads must be identical, no blanking on either side)
     expect(canonicalJson(kernel.snapshot.nodes)).toBe(canonicalJson(sqlite.snapshot.nodes));
     expect(canonicalJson(kernel.snapshot.references)).toBe(canonicalJson(sqlite.snapshot.references));
     // 3: rendered corpus byte equality, module by module
     expect(treeDigest(kernel.renderedRoot)).toBe(treeDigest(sqlite.renderedRoot));
-    // 4: tsc --noEmit + vitest green on BOTH rendered corpora (run both, literal gate text)
+    // 4: tsc --noEmit + vitest green on BOTH rendered corpora (harness check, identical invocation)
     expect(await tscAndVitestGreen(kernel.renderedRoot)).toBe(true);
     expect(await tscAndVitestGreen(sqlite.renderedRoot)).toBe(true);
     // 5: T03 text criteria pass on both
     expect(evaluateT03TextCriteriaOnTree(kernel.renderedRoot)).toMatchObject(ALL_TRUE);
     expect(evaluateT03TextCriteriaOnTree(sqlite.renderedRoot)).toMatchObject(ALL_TRUE);
-    // 6: audit equivalence
-    expect(kernel.audit.actor).toBeTruthy();
-    expect(kernel.audit.reasoning).toContain("Rename the User interface"); // the task context passed to begin_change_set
-    expect(JSON.parse(kernel.audit.intents[0].parametersJson)).toMatchObject({ newName: "Account" });
-    expect(kernel.audit.affectedNodeIds.length).toBeGreaterThan(1);
-    expect(kernel.audit.renames).toEqual([expect.objectContaining({ fromName: "User", toName: "Account" })]);
-    expect(sqlite.operationRow).toMatchObject({ kind: "RenameSymbol", oldName: "User", newName: "Account" });
-    expect(sqlite.operationRow.affected.length).toBeGreaterThan(1);
+    // 6: normalized audit projection equality (Shared conventions) + kernel superset property
+    expect(kernel.audit).toEqual({ ...sqlite.audit, actor: kernel.audit.actor });
+    expect(kernel.audit.renamedIdentifierIds).toEqual(sqlite.audit.renamedIdentifierIds);
+    for (const id of kernel.audit.renamedIdentifierIds) {
+      expect(kernel.rawAffectedNodeIds).toContain(id);
+    }
   }, 600_000);
 });
 ```
 
-Helper notes for the implementer:
-- `runSqliteArm`: ingest → `openDb(":memory:")` → insert → `find_declarations({name:"User",kind:"interface"})` (assert exactly 1) → `begin` → `rename_symbol` → `commitWithBehavioralGate(db, tx, { srcRoot, corpusRoot, behavioralFixtures: behavioralFixturesFor(corpus), strictSrcOnlyTscScope: true })` (assert ok) → `exportSnapshot(db)` → render tree. The `operations` row audit reads the same fields `operationRowAppended` scores (`packages/verify/src/t03Criteria.ts:181-201`).
-- `runKernelArmT03`: `startKernelService(corpus, { validation: { profile: "behavioral", fixtures: behavioralFixturesFor(corpus) } })` → client `findDeclarations("User","interface")` (assert exactly 1, and assert the nodeId equals the SQLite arm's declaration id — same ingest, same IDs) → `beginChangeSet("Rename the User interface to Account across the codebase")` → `addIntent(rename)` → `submitChangeSet` → `advanceChangeSet` (assert state `committed`, capture `operationId`) → `readOperation` → `service.stop()` → shell out to `strata-kernel-service export-snapshot --db <dir>/kernel.redb --out ...` → parse.
-- `canonicalJson`: the sorted-array canonical form `diffSnapshots`/`exportSnapshot` already use — reuse `packages/kernel-bridge/src/snapshot.ts` exports, do not reimplement.
-- `tscAndVitestGreen`: reuse the exact runner `@strata-code/verify` uses for its behavioral gate (`corpusRun.ts`) rather than spawning tsc ad hoc. Follow its API as found; if it is not exported, export it from verify (one-line index change) rather than duplicating.
-- Deadlines: pass `deadlineMs` ≥ 120_000 for submit and ≥ 180_000 for advance.
+(`actor` differs by construction — SQLite arm's transaction actor vs kernel clientId; assert both are non-empty and record the mapping in the harness. `taskContext` must be the same string: pass the same task prompt to `begin(db, prompt)` and `beginChangeSet(prompt)`.)
 
-- [ ] **Step 2: Run to verify failure** (drivers missing): `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test -- gate1` → FAIL.
+- [ ] **Step 2: Run to verify failure**: `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test -- gate1` → FAIL (drivers missing).
 
-- [ ] **Step 3: Implement `gate1.ts`** per the helper notes. Build order: `pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel`.
+- [ ] **Step 3: Implement `gate1.ts`.**
+- `buildCorpusInputs`: the exact walk `createQualifiedKernelSnapshot` uses (corpus-relative POSIX paths) — refactor that function to call this builder so there is literally one input domain.
+- `runSqliteArm`: `ingestBatch(buildCorpusInputs(corpus))` → `openDb(":memory:")` → insert → `find_declarations({name:"User",kind:"interface"})` (assert exactly 1) → `begin(db, TASK_PROMPT)` → `rename_symbol` → `commit(db, tx)` (assert ok) → post-commit `validate` on a throwaway tx (assert clean) → `exportSnapshot(db)` → audit: read the `operations` row (snake_case params, affected Identifier IDs) + transaction prompt → `NormalizedAudit` → render tree.
+- `runKernelArmT03`: `startKernelService(corpus, {...})` (daemon stays tsc_only — the T03-registered profile) → `findDeclarations("User","interface")` (assert exactly 1; assert nodeId === the SQLite arm's declaration id) → `beginChangeSet(TASK_PROMPT)` → `addIntent(rename→"Account")` → `submitChangeSet` → `advanceChangeSet` (assert `committed`, capture operationId) → `readOperation` → `NormalizedAudit` (renamedIdentifierIds = Identifier-kind members of affectedNodeIds, resolved against the export) → `stop({ preserveDirectory: true })` → `exportKernelSnapshot(directory)` (normalize generation via `canonicalGenerationString`) → render tree → cleanup respecting `preserveDirectory`.
+- Deadlines: ≥120 s submit, ≥180 s advance.
+- Build order: `pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel`.
 
-- [ ] **Step 4: Run to verify pass** (same command, 600 s timeout). Expected: PASS. If parity fails on payload bytes, STOP and diagnose before touching either arm's semantics — a parity failure that can only be fixed by weakening kernel semantics is falsifier 1 (log a decision instead of patching).
+- [ ] **Step 4: Run to verify pass** (600 s). If parity fails on payload bytes: STOP and diagnose; a fix that weakens kernel semantics is falsifier 1 — log a decision instead.
 
 - [ ] **Step 5: Wire scripts.** Root `package.json`:
 
 ```json
-"kernel:gate1:test": "pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel --features coordination-test-api && pnpm --filter @strata-code/live-compare test -- gate1",
+"kernel:gate1:test": "pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel && cargo build -p strata-kernel --features redb-spike-api && pnpm --filter @strata-code/live-compare test -- gate1",
 ```
 
-and append `&& pnpm kernel:gate1:test` to `kernel:full-key-free:test`. (The gate-1 daemon binary needs `coordination-test-api` only for Task 8's failpoints; the parity test itself must ALSO pass against a default-features binary — parameterize the binary path via env `STRATA_KERNEL_SERVICE_BIN` and let Task 8's crash suite set the feature-built one.)
+append `&& pnpm kernel:gate1:test` to `kernel:full-key-free:test`. The parity test runs against the DEFAULT-features binary; only the crash suite (Task 7) uses the `redb-spike-api` binary — parameterize via env `STRATA_KERNEL_SERVICE_BIN` with the default binary as fallback.
 
 - [ ] **Step 6: Commit**
 
@@ -671,116 +654,108 @@ git add -A packages/live-compare package.json && git commit -m "test(gate1): key
 
 ---
 
-### Task 8: Crash injection across the T03 surface
+### Task 7: Crash injection reaching the advance publication, full-state oracle
 
 **Files:**
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/main.rs` + `session.rs` (accept `--test-publish-failpoint <boundary>` under `coordination-test-api`, mapping `PublishFailpoint::from_boundary_name` (`kernel.rs:79`) into the advance/publication path)
+- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/main.rs` + `session.rs` (accept `--test-publish-failpoint <camelCase boundary>` under `redb-spike-api`; when set, the advance path publishes via `execute_claimed_with_failpoint` (`coordination/publication.rs:118`) instead of `execute_claimed` — same claim, same arguments, failpoint only)
 - Create: `packages/live-compare/test/gate1Crash.test.ts`
-- Test: both of the above
 
 **Interfaces:**
-- Consumes: Task 7's `runKernelArmT03(corpus, work, { failpoint })`, `export-snapshot`.
-- Produces: daemon flag `--test-publish-failpoint before_redb_transaction|inside_redb_transaction|after_redb_commit_before_memory_publish|after_memory_publish` (exact names from `PublishFailpoint::from_boundary_name` — verify and use its accepted strings).
+- Consumes: Task 6's `runKernelArmT03(corpus, { stopAfterSubmit: true, preserveDirectory: true })`, `startKernelService(corpus, { directory, extraArgs })`, `exportKernelSnapshot(dir, { stateOut })`, client `advanceChangeSet` with explicit `idempotencyKey`.
+- Produces: daemon flag `--test-publish-failpoint beforeRedbTransaction|insideRedbTransaction|afterRedbCommitBeforeMemoryPublish|afterMemoryPublish` (exact `PublishFailpoint::boundary_name` strings, `kernel.rs:69-81`); `--test-failpoint` (existing five journal stages, `coordination-test-api`) reused unchanged.
 
-- [ ] **Step 1: Discovery step (bounded).** Read how `tests/support/full_key_free.rs::run_row_8_crash_child` injects `PublishFailpoint` into the *coordinated* publication path (row 8 of the acceptance suite). Two known possibilities: (a) a kernel/test API that threads the failpoint into `publish_claimed_inner`; (b) only `publish_with_failpoint` on the storage layer. Wire the daemon flag through the same mechanism (a) if it exists; if only (b), add the failpoint parameter to the coordinator's publication entry under `#[cfg(feature = "coordination-test-api")]` exactly parallel to how `ServiceFailpoint` is threaded into `handle_mutation`. Do not add any new abort sites — reuse the four existing boundaries.
+**Choreography (review blocker 7):** the failpoints are global per-mutating-request, so the T03 prep must happen WITHOUT them:
 
-- [ ] **Step 2: Failing TS test** — for each of the nine failpoints (5 × `--test-failpoint` journal stages, 4 × `--test-publish-failpoint` boundaries):
+1. `runKernelArmT03(corpus, { stopAfterSubmit: true, preserveDirectory: true })` — begin/add/submit committed to durable state, daemon stopped cleanly, redb preserved. Record `changeSetId` and the declaration id.
+2. Restart the SAME directory with the failpoint flag (`startKernelService(corpus, { directory, extraArgs: [flag, value] })`, `redb-spike-api` binary via `STRATA_KERNEL_SERVICE_BIN`).
+3. Issue ONLY `advance_change_set` with a recorded `idempotencyKey`; expect the daemon to abort (client sees `connection_lost`/`request_timeout`; assert the child exited abnormally).
+4. Restart the same directory WITHOUT failpoints; run the oracle.
 
-```typescript
-for (const failpoint of JOURNAL_STAGES) test(`journal ${failpoint}`, () => runCrashCase({ testFailpoint: failpoint }), 600_000);
-for (const boundary of PUBLISH_BOUNDARIES) test(`publish ${boundary}`, () => runCrashCase({ publishFailpoint: boundary }), 600_000);
-
-async function runCrashCase(inject: Inject) {
-  const corpus = resolve(repoRoot, "examples/medium");
-  const oldExport = await exportFreshSeed(corpus);          // seed-only export (generation 0)
-  const attempt = await runKernelArmT03UntilCrash(corpus, inject); // daemon aborts mid-flow
-  const reopened = await reopenAndExport(attempt.directory); // restart daemon against same --db, then export
-  // exactly complete-old XOR complete-new:
-  expect([canonicalJson(oldExport), canonicalJson(attempt.expectedNewSnapshot)])
-    .toContain(canonicalJson(reopened.snapshot));
-  // digest recovery invariant: reopen reported a verified digest (export-snapshot succeeded)
-  if (canonicalJson(reopened.snapshot) === canonicalJson(oldExport)) {
-    // old generation: re-running the full T03 flow now must succeed and land the new generation
-    const completed = await runKernelArmT03(corpus, attempt.directoryAsWork());
-    expect(canonicalJson(completed.snapshot)).toBe(canonicalJson(attempt.expectedNewSnapshot));
-  } else {
-    // new generation: rendered corpus is green
-    expect(await tscAndVitestGreen(renderSnapshotToTree(reopened.snapshot, corpus, mkWork()))).toBe(true);
-  }
-}
-```
-
-`expectedNewSnapshot` = the Task-7 kernel-arm result on an uninjected run of the same corpus (compute once per suite, reuse). `runKernelArmT03UntilCrash` tolerates the client seeing `connection_lost`/`request_timeout` at the injected stage and asserts the child process exited abnormally. Restart uses the SAME `--db` path and the existing recovery branch (`--snapshot` is ignored when the db exists).
-
-- [ ] **Step 3: Run** → FAIL (flag unknown). **Step 4: implement the flag threading** from Step 1. **Step 5: run** → PASS (long: ~9 daemon lifecycles; keep within the 600 s per-case vitest timeout; the suite runs serially).
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add -A crates/strata-kernel packages/live-compare && git commit -m "test(gate1): crash injection at all nine durable boundaries through the T03 surface"
-```
-
----
-
-### Task 9: Second-client intrusion at every nominal solo stage
-
-**Files:**
-- Create: `packages/live-compare/test/gate1Intrusion.test.ts`
-- Modify (only if needed): `packages/live-compare/src/gate1.ts` (stage-pause hooks: the arm driver accepts an async `onStage(stage)` callback fired after discovery, after begin, after add_intent, after submit, before advance)
-
-**Interfaces:**
-- Consumes: Task 7 drivers; a second `CoordinationClient` with a distinct `clientId`.
-- Produces: none downstream — this is the closing gate-1 suite.
-
-- [ ] **Step 1: Failing test.** Stages: `["after_discovery","after_begin","after_add_intent","after_submit"]` plus the concurrent case. For each stage × two intrusion shapes:
+- [ ] **Step 1: Failing TS test** — for each of the nine injection points (5 journal stages × the advance request only, 4 publish boundaries):
 
 ```typescript
-// (i) disjoint: client B renames a different declaration (discovered via find_declarations
-//     at runtime, assert different moduleId than User's) through its own full lifecycle -> committed.
-//     Then client A continues to completion -> committed.
-//     Assert: final export contains BOTH renames; tsc+vitest green; A's audit and B's audit both intact.
-// (ii) overlapping: client B renames the SAME "User" declaration to "Client" and completes
-//     BEFORE A advances. A's advance must NOT silently overwrite: expect A's change_set result
-//     state to be needs_decision (with renamedSymbols naming User->Client) or an ordered
-//     commit consistent with fresh re-analysis — assert the final export equals ONE of the two
-//     serial outcomes and NEVER a blend; if A got needs_decision, cancel and resubmit against
-//     fresh state, then assert the resubmitted rename lands on the current name.
-// Concurrent case: fire A.advanceChangeSet and B.advanceChangeSet (overlapping scopes) with
-//     Promise.allSettled; assert exactly the serial-outcome invariant set: final export equals
-//     A-then-B or B-then-A; every committed operation has a verifiable read_operation record;
-//     export digest matches export-snapshot stdout digest; no request left the store unreadable.
+for (const stage of ["after_pending","after_effect","after_prepared","after_follow_up","after_completed"])
+  test(`journal ${stage} at advance`, () => runCrashCase({ flag: "--test-failpoint", value: stage }), 600_000);
+for (const boundary of ["beforeRedbTransaction","insideRedbTransaction","afterRedbCommitBeforeMemoryPublish","afterMemoryPublish"])
+  test(`publish ${boundary}`, () => runCrashCase({ flag: "--test-publish-failpoint", value: boundary }), 600_000);
 ```
 
-Also assert actor ownership throughout: B calling `advance_change_set` on A's change-set id gets an authorization error (existing `authorize_actor` behavior — this pins it into gate 1).
+`runCrashCase` implements the choreography, then the oracle:
 
-- [ ] **Step 2: Run** → FAIL (hooks missing). **Step 3: implement `onStage` hooks + the suite.** **Step 4: run** → PASS. Timeout 600 s per case; the overlapping cases include two full behavioral validations each.
+```typescript
+  const after = await reopenAndExport(directory, { stateOut: true });
+  // graph: exactly complete-old XOR complete-new
+  expect([canonicalJson(preAdvanceExport), canonicalJson(referenceNewExport)])
+    .toContain(canonicalJson(after.snapshot));
+  // atomic-state projection: equals the reference projection for whichever side the graph landed on
+  // (reference projections captured once per suite from an uninjected prep-only run and an
+  //  uninjected completed run on separate directories)
+  expect(normalizeProjection(after.state)).toEqual(
+    landedOld ? normalizeProjection(prepOnlyState) : normalizeProjection(completedState));
+  // exact idempotent replay: re-send advance_change_set with the SAME idempotencyKey;
+  // if landedNew, the journal must return the cached committed response (same operationId);
+  // if landedOld, the advance completes now and the graph must equal referenceNewExport byte-for-byte.
+```
+
+`normalizeProjection` strips only fields that legitimately differ across runs (service epoch, wall-clock-free tick counters if present, socket-scoped ids) — every stripped field must be listed in one place with a comment; history, tickets, change sets, events, idempotency records, attempts, clocks, and counts all compare.
+
+- [ ] **Step 2: Run** → FAIL (flag unknown). **Step 3: implement the flag** (feature-gated arg in `main.rs` mirroring the existing `--test-failpoint` block, threading a `PublishFailpoint` into `ServiceConfig` and into the advance path's publish call). **Step 4: run** → PASS (nine daemon lifecycles ×2 restarts; serial).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add -A packages/live-compare && git commit -m "test(gate1): second-client intrusion at every nominal solo stage"
+git add -A crates/strata-kernel packages/live-compare && git commit -m "test(gate1): crash injection reaching advance publication, full atomic-state oracle"
 ```
 
 ---
 
-### Task 10: Full green run, decision log, roadmap check-off, push
+### Task 8: Second-client intrusion — stage-specific FIFO oracles
 
 **Files:**
-- Modify: `decisions.md` (new top entry), `docs/product-roadmap.md` (slice A: gate 1 checked with evidence pointer)
+- Create: `packages/live-compare/test/gate1Intrusion.test.ts`
+- Modify (only if needed): `packages/live-compare/src/gate1.ts` (the `onStage` hook from Task 6)
+
+**Interfaces:**
+- Consumes: Task 6 drivers; a second `CoordinationClient` (distinct `clientId`).
+- **Pre-registered disjoint target (review blocker 9):** the disjoint intrusion renames the `formatTimestamp` function declaration (present in `examples/medium`; used by the Phase-6 D/G scenarios) to `formatTimestampAudit` — discovered via `find_declarations("formatTimestamp","function")`, asserted to live in a different module than `User`. If that name is absent from the current corpus, pick at plan-execution time ONE named function declaration in a different module, record it in the test as a constant with a comment, and never discover it dynamically.
+
+**Stage-specific expectations (review blocker 9 — FIFO is the contract, either-order is a bug):**
+
+- **after_discovery / after_begin / after_add_intent** (A holds no submitted scope): overlapping B (rename `User`→`Client`) may submit, advance, and commit FIRST. A then submits/advances and MUST receive `needs_decision` with `renamedSymbols` naming `User`→`Client` (never a silent overwrite); A cancels, re-begins from fresh state, renames `Client`→`Account`, commits. Final: rendered tree green, text criteria pass with the final name.
+- **after_submit** (A is queued/ready): B's overlapping submission must NOT pass A (`scheduler.rs:277` older-overlap rule). A's advance commits; B's advance then yields `needs_decision` (fresh state naming `User`→`Account`) or a fresh re-analysis ordering B strictly after A. Assert A's operation is the earlier generation and B never silently overwrote.
+- **disjoint at every stage:** B's disjoint rename commits independently regardless of A's stage; both land; final export contains both renames; tree green.
+- **concurrent advances** (A and B overlapping, both submitted, fired with `Promise.allSettled`): derive the REQUIRED winner from the durable queue order (B submitted after A ⇒ A must win; assert via each arm's result states and `read_operation` generations). Do not accept "either serial outcome".
+- **ownership:** B calling `advance_change_set`/`cancel_change_set` on A's change-set id gets an authorization error.
+- **every terminal state auditable:** each committed operation has a `read_operation` record whose projection matches its arm's intent; final `export-snapshot` digest equals the stdout digest.
+
+- [ ] **Step 1: Write the failing suite** with the exact cases above (each case ≤600 s; suite serial). **Step 2: Run** → FAIL (hook wiring). **Step 3: implement.** **Step 4: run** → PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A packages/live-compare && git commit -m "test(gate1): second-client intrusion with stage-specific FIFO oracles"
+```
+
+---
+
+### Task 9: Full green run, decision log, roadmap check-off, push
+
+**Files:**
+- Modify: `decisions.md` (new top entry), `docs/product-roadmap.md` (slice A: gate 1 status), design doc (any execution-forced amendments, each named)
 
 - [ ] **Step 1: Full verification (foreground, chunked):**
 
 ```bash
 PATH=/opt/homebrew/bin:$PATH pnpm -r build
-PATH=/opt/homebrew/bin:$PATH pnpm kernel:full-key-free:test   # includes kernel:gate1:test after Task 7
+PATH=/opt/homebrew/bin:$PATH pnpm kernel:full-key-free:test   # includes kernel:gate1:test
 PATH=/opt/homebrew/bin:$PATH pnpm -r test
 ```
 
 Expected: all PASS. Any failure: fix before logging anything as done. If a fix would require weakening coordination semantics — STOP, decisions.md entry, falsifier 1.
 
-- [ ] **Step 2: decisions.md entry** (top): what landed (gate 1 pass + the five surface additions), what diverged from the design (list every adaptation the tasks forced, e.g. the Task 8 discovery outcome, any digest-fixture updates from Task 1), and what stays open (gates 2–5, with gate 2 next).
+- [ ] **Step 2: decisions.md entry** (top): gate 1 result; the five surface additions; every adaptation execution forced (Task 1 digest-expectation changes, Task 7 threading outcome, Task 8 disjoint-target choice); what stays open (gates 2–5, gate 2 next).
 
-- [ ] **Step 3: Roadmap:** under Iteration 6 slice A, record "gate 1 PASS (key-free) — evidence: `packages/live-compare/test/gate1*.test.ts`, decisions.md <date>" without checking the slice-A box (gates 2–5 remain).
+- [ ] **Step 3: Roadmap:** under Iteration 6 slice A, record "gate 1 PASS (key-free) — evidence: `packages/live-compare/test/gate1*.test.ts`, decisions.md <date>" without checking the slice-A box.
 
 - [ ] **Step 4: Commit + push**
 
