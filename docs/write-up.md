@@ -1,6 +1,6 @@
 # When does a structural substrate beat files? Measuring an agent-native alternative to the file abstraction
 
-*Todd Hebebrand · July 2026 · [github.com/ToddHebebrand/strata](https://github.com/ToddHebebrand/strata) · MIT. Every number below is sourced from [`RESULTS.md`](RESULTS.md) and the append-only decision log ([`decisions.md`](../decisions.md)); N is stated everywhere because most of it is small.*
+*Todd Hebebrand · July 2026 · [github.com/ToddHebebrand/strata](https://github.com/ToddHebebrand/strata) · MIT. Every number below is sourced from [`RESULTS.md`](RESULTS.md), the append-only decision log ([`decisions.md`](../decisions.md)), and the Phase-6 evidence docs under [`docs/spikes/`](spikes/); N is stated everywhere because most of it is small.*
 
 ## The bet
 
@@ -10,7 +10,7 @@ Strata is the experiment: replace files entirely. A TypeScript codebase becomes 
 
 The hypothesis was simple: same model, same task, same success bar — the structural substrate should reach the right answer with materially less work.
 
-The answer turned out to be more interesting than yes or no. **The substrate wins big on exactly one class of task, loses on its complement, and the boundary between them is sharp enough to state as a rule.**
+The answer turned out to be more interesting than yes or no. **The substrate wins big on exactly one class of task, loses on its complement, and the boundary between them is sharp enough to state as a rule.** And once the single-agent boundary was drawn, the substrate's original justification — letting *multiple* agents share one canonical codebase without branches, worktrees, or merges — turned out to be where the largest margins live.
 
 ## The headline win: bulk propagation
 
@@ -54,6 +54,30 @@ One benchmark task (add a parameter whose *value differs per call site*) failed 
 
 A fifth lever (per-call-site expressiveness in the tool signature) was designed and then terminated on integrity grounds: the task's success criterion requires a literal that exists *only in the prompt*, so any "win" would be the agent transcribing a prompt-supplied map into a tool slot — scripting, not structure. That termination sharpened the taxonomy rather than weakening it: the substrate wins when it owns the resolution and the agent owns one decision. It structurally cannot win when the task embeds a per-site decision that lives nowhere in the graph.
 
+## The multi-agent extension: one shared green codebase
+
+Everything above is a single agent against a single baseline. But the original motivation for a canonical structural store was always **coordination**: if the codebase is a graph with typed operations, multiple agents should be able to work in it *simultaneously* — no branches, no worktrees, no integration agent merging text — because the substrate can infer what each operation touches and schedule around conflicts. Phase 6 tested that directly.
+
+The mechanism is a Rust coordination kernel (redb-backed, memory-native, a sealed single-owner daemon) in front of the existing TypeScript ingest/render/verify pipeline, which stays authoritative. Agents submit **typed operations** (rename, add-parameter, …); the kernel infers each operation's reservation scope from the reference graph — agents never enumerate lock keys — grants deterministic leases, validates candidates against a fresh view, and publishes with fencing. Grouped changes commit only-green-together. If a concurrent publication invalidates the scope an agent decided under, the agent gets a `needs_decision` naming every renamed symbol and re-decides against the fresh view rather than merging text.
+
+Before any model spend, the whole thing passed a **deterministic, key-free acceptance gate**: twelve pre-named rows covering independent clients, inferred overlap and dynamic scope expansion, logical-tick fairness, restart/fencing/event resumption, only-green-together publication, real process-crash joins, and byte-exact replay. Only then came the live comparison: two concurrent agents, same model, same orchestrator, same corpus, same final tsc + test acceptance, against the strongest practical baseline — **git worktrees plus an integration agent**, with the integration agent's time and tokens counted in the baseline arm. Six pre-registered scenarios: disjoint modules (D), grouped only-green-together (G), same-module (M), reference-mediated overlap (R), same-node overlap (S), and dynamic scope expansion (X). The pre-registered falsification criterion: any silent overwrite, dirty read, partial commit, or rollback that changes another session's committed state falsifies the proof regardless of speed.
+
+Across a pilot, a retry round, and an N=3 directional round (total scored spend ≈ USD 24), none of those falsifiers ever occurred, and the direction never wavered. In the N=3 round, **all five evaluable scenarios came out `+++` on both cost and makespan** — every one of the 30 evaluable scenario×metric×trial cells favored Strata strictly, no reversal, no tie — with Strata arms 18/18 green:
+
+| Scenario (N=3) | Cost margin (baseline/Strata) | Makespan margin |
+|---|---|---|
+| D — disjoint modules | 6.5–10.6× | 9.6–9.7× |
+| G — grouped, only-green-together | 4.7–7.1× | 17.3–25.6× |
+| M — same module, concurrent publish | 2.5–8.1× | 7.6–22.9× |
+| R — reference-mediated overlap | 3.8–10.7× | 5.2–14.5× |
+| S — same-node overlap | 4.7–6.1× | 4.6–5.4× |
+
+The sixth scenario, X (dynamic scope expansion), produced the round's most interesting asymmetry: the Strata arm completed it live 4 times out of 4 attempts under the final protocol — including the fresh-decision content rewrite after a concurrent rename invalidated its scope — while the worktree baseline **never completed it once** (seven failures across all rounds, every one the same class: the integration-side agent over-delivering beyond the registered spec). X therefore contributes zero paired comparisons by design; the baseline's failure mode is itself the registered observation.
+
+Why the margins are larger than the single-agent ones: the worktree baseline pays twice. Each worker still does the file-agent's reconstruct-references-with-grep work, *and then* an integration agent (budgeted at up to 40 turns / 420 s per round in the registered bounds) re-derives both changes to merge them. The kernel arm has no integration step at all — the graph already knows the overlap, so conflicting work serializes behind an inferred lease instead of being merged after the fact. The makespan margins on G (17–26×) are the purest expression: a grouped change that must land atomically is one fenced kernel publication, versus a worktree merge-and-revalidate cycle.
+
+The claims are deliberately narrow: **directional consistency at N=3** under one model, one corpus, one seed, one machine — no effect sizes, no significance, no generality claim. One provenance caveat is disclosed in the evidence doc: the scored round was the third launch, after two byte-identical attempts were killed mid-round by the operator's terminal supervisor (~USD 13, disclosed); the killed partials' 13 evaluable pairs were all `+`/`+` too, so the aborted attempts corroborate rather than complicate the direction. Full chain: [design](superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md) → [deterministic acceptance](spikes/2026-07-15-deterministic-full-key-free-acceptance.md) → [pilot](spikes/2026-07-17-phase-6-live-pilot-results.md) → [retry](spikes/2026-07-18-phase-6-live-xm-retry-results.md) → [N=3 round](spikes/2026-07-18-phase-6-n3-directional-results.md).
+
 ## Why you can believe these numbers
 
 The methodology is the credibility, so it gets its own section:
@@ -61,6 +85,7 @@ The methodology is the credibility, so it gets its own section:
 - **The harness was attacked, not flattered.** It caught its own scorer contamination (a shared fixture made the gate unsatisfiable and silently coupled tasks), its own scorer artifact (a criterion that failed a valid answer and passed a wrong-reason one — root-caused, corrected, independently audited), and three installed-SDK-vs-docs gaps, including ambient MCP tools leaking into the "no tools" agent. Each was stopped on and fixed, never papered over.
 - **Keyed rounds were pre-registered.** Bail-signal criteria were written down tamper-evidently *before* spending, and outcomes were classified from full transcripts, not aggregate metrics.
 - **Negatives were published with the same rigor as positives.** The decision log records every falsified hypothesis, including the ones that would have made a better story.
+- **The multi-agent proof was gated before it was measured.** Deterministic, key-free acceptance (twelve named rows, including crash-recovery and byte-exact replay) had to pass before any live spend; the live rounds ran under a frozen task manifest, a seeded counterbalanced schedule, a pre-registered sign taxonomy and failure accounting, and an approval-locked budget guard. Deviations (two environmentally killed relaunches) are disclosed in the evidence doc rather than absorbed.
 
 ## Where this sits in prior art
 
@@ -76,7 +101,7 @@ The methodology is the credibility, so it gets its own section:
 
 ## Limitations
 
-N is small everywhere (1–3 per configuration); everything above is reported as observed separation, not significance. One corpus family (~3–5k LOC) plus two external dogfoods; one language (TypeScript, leaning on the TS compiler API); primarily one model family. The substrate is research-grade: persistence works, incremental re-ingest doesn't yet; the tool surface is 20 operations, not 200.
+N is small everywhere (1–3 per configuration); everything above is reported as observed separation or directional consistency, not significance. One corpus family (~3–5k LOC) plus two external dogfoods; one language (TypeScript, leaning on the TS compiler API); primarily one model family. The multi-agent result is additionally bounded to two concurrent agents, six scenario shapes, one seed, and one machine, with candidate validation scoped to the corpus's `src/**` projection. The substrate is research-grade: persistence works, incremental re-ingest doesn't yet; the tool surface is 20 operations, not 200.
 
 ## What this implies (the part we'd want builders to take away)
 
@@ -87,6 +112,7 @@ For tool builders, three transferable findings:
 1. **Give the agent operations that own their blast radius.** `rename_symbol` wins because the tool, not the model, resolves every affected site. Tools that leave resolution to the model forfeit the advantage.
 2. **A validating commit gate turns "confidently wrong" into "blocked with a reason."** Gating commits on type-check plus the task's own tests converted one failing task class into a 3/3 pass — as a correctness mechanism, not an efficiency one.
 3. **Agents distrust tools whose effects they can't see — and evidence alone doesn't fix it.** Our agent repeatedly hand-patched call sites a tool had already updated, even when handed an itemized manifest of the tool's edits. Interface legibility is necessary but not sufficient; this looks like a training-distribution prior, and it bounds what tool design alone can achieve today.
+4. **Concurrency belongs in the substrate, not in git.** When operations are typed, their blast radius is inferable — which means conflict handling can move from *merge-after-the-fact* (worktrees plus an integration agent re-deriving both changes) to *schedule-before-the-fact* (leases inferred from the reference graph, fresh-decision on invalidation). In our rounds that eliminated the entire integration step, and it eliminated the merge-conflict failure class by construction rather than by model skill.
 
 ## Try it
 

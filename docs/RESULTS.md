@@ -14,6 +14,19 @@ The body of this document is the research-phase record as it stood on 2026-05-17
 
 Test-count references in this document ("206 passing") reflect the 2026-05-17 snapshot; the suite has grown since — `pnpm -r test` is authoritative.
 
+## Addendum (2026-07-18): the multi-agent coordination proof (Phase 6)
+
+The original multi-client motivation was tested directly in a second research iteration: a Rust/redb coordination kernel (sealed single-owner daemon; typed operations with graph-inferred reservation scopes; deterministic leases; fenced, only-green-together publication; fresh-decision on scope invalidation) in front of the existing TypeScript ingest/render/verify pipeline, compared live against git worktrees plus an integration agent — same model, orchestrator, corpus, and tsc+test acceptance, integration cost counted in the baseline arm.
+
+Outcome, in evidence order:
+
+- **Deterministic key-free acceptance** (2026-07-15): all twelve named rows green — independent clients, inferred overlap and dynamic expansion, logical-tick fairness, restart/fencing/event resumption, only-green-together publication, real process-crash joins, byte-exact replay — before any live spend. [`docs/spikes/2026-07-15-deterministic-full-key-free-acceptance.md`](spikes/2026-07-15-deterministic-full-key-free-acceptance.md)
+- **Live pilot, N=1 per scenario** (2026-07-17, USD 9.40): five of six matched pairs green in both arms, Strata 4–14× on cost and 4–8× on makespan, zero Strata-arm correctness/authority failures. [`docs/spikes/2026-07-17-phase-6-live-pilot-results.md`](spikes/2026-07-17-phase-6-live-pilot-results.md)
+- **X/M retry after the validation-circle narrowing** (2026-07-18, USD 4.73): first 6/6 Strata sweep; X's fresh-decision content rewrite completed live. [`docs/spikes/2026-07-18-phase-6-live-xm-retry-results.md`](spikes/2026-07-18-phase-6-live-xm-retry-results.md)
+- **N=3 directional round** (2026-07-18, USD 9.99 scored): all five evaluable scenarios exactly `+++` on both cost and makespan — 30/30 evaluable cells favored Strata strictly, margins 2.5–10.7× (cost) and 4.6–25.6× (makespan); Strata arms 18/18 green; baseline never completed X (elaboration-class over-delivery, seven occurrences across rounds), so X contributes zero pairs by design. Two byte-identical attempts environmentally killed mid-round are disclosed (~USD 13; their 13 evaluable partial pairs were all `+`/`+`). [`docs/spikes/2026-07-18-phase-6-n3-directional-results.md`](spikes/2026-07-18-phase-6-n3-directional-results.md)
+
+The pre-registered falsifiers — silent overwrite, dirty read, partial commit, cross-session rollback — never occurred in any live arm. Claims are directional consistency at N=3 under one model/corpus/seed/machine; no effect-size, significance, or generality claim is made.
+
 ## The thesis
 
 AI coding agents are bottlenecked by the file abstraction. They consume context loading whole files to change one function, emit fragile text diffs, and re-derive structure a parser already knows. Strata replaces files with a persistent, queryable node graph: agents address functions/declarations/identifiers by stable ID, mutate through structural operations inside transactions, and never see a filesystem. The bet: same model, same task — materially less work to the right answer.

@@ -7,9 +7,9 @@ Living document. Update as iterations land. Source of truth for "what we're buil
 Strata's MVP success, per `strata-design.md` § "What success looks like":
 
 1. End-to-end working substrate ✓
-2. Benchmark shows measurable improvement on enough tasks that the architectural argument lands — T03 (rename) clearly wins; T01/T05/T08 are mixed or losses, and that's the honest current surface.
-3. Write-up — not started.
-4. Open source release with README — not started.
+2. Benchmark shows measurable improvement on enough tasks that the architectural argument lands — T03 (rename) clearly wins single-agent; the Phase-6 multi-agent rounds add the largest margins (see Iteration 5).
+3. Write-up — draft in review; multi-agent results folded in 2026-07-18.
+4. Open source release — repo public under MIT at `github.com/ToddHebebrand/strata`; README/demo polish still open (Iteration 3).
 
 We have #1 in the bench-task sense. We don't have it in the "can we actually use this thing" sense — the agent can only run the four hardcoded bench prompts (T01/T03/T05/T08) on the bench corpora, and every session re-ingests into `:memory:` so the operation log dies with the process. **That's the next gap.** Polish for outside users (CLI surface, README, demo) is later.
 
@@ -87,10 +87,11 @@ Remaining polish happens here — not before. Premature polish on an empty produ
 Goal: the architectural argument is publishable.
 
 - [x] **Results-post draft** — [`docs/write-up.md`](write-up.md) (2026-07-03). Framing: "when does a structural substrate beat files" — the bulk-propagation/single-site-synthesis taxonomy as the contribution, the T01 negative as a sharpened boundary, methodology as credibility, and the hybrid-agent implication stated explicitly. Awaiting operator review/edit before publication.
+- [x] **Multi-agent section folded in** (2026-07-18) — "The multi-agent extension: one shared green codebase" added to the draft with the Phase-6 evidence chain (deterministic gate → pilot → retry → N=3), the per-scenario margin table, the X asymmetry, and the disclosed relaunch caveat; `RESULTS.md` gained a matching 2026-07-18 addendum. Draft remains in operator review.
 - [ ] Demo capture (see Iteration 3).
 - [ ] Publication venue + final edit pass (operator).
 
-### Iteration 5 — Multi-agent coordination kernel (in progress)
+### Iteration 5 — Multi-agent coordination kernel (done 2026-07-18)
 
 Goal: test Strata's original motivation directly — multiple agents sharing one canonical structural codebase without Git branches, worktrees, or manual text merges.
 
@@ -106,7 +107,12 @@ Approved design: [`docs/superpowers/specs/2026-07-13-multi-agent-coordination-ke
 - [x] **Live X/M retry (post-narrowing, N=1).** COMPLETE (2026-07-18, one approved round, USD 4.73): six of six Strata arms green — the first clean sweep — with M publishing same-module operations concurrently under its restored original clause and paired margins of 5.3–16.6× cost / 3.9–11.1× makespan across the five completed comparisons; the X baseline failed again on elaboration-class over-delivery (fourth occurrence). Also landed the same day: stable-root ingest (qualification is location-independent; registration digest `628bd6da…`; decisions.md 2026-07-17).
 - [x] **N=3 directional extension.** COMPLETE (2026-07-18, one approved round, USD 9.99 scored): all five evaluable scenarios (D, G, M, R, S) scored the exact `+++` pattern on both cost and makespan under the pre-registered sign taxonomy — no reversal, no tie, anywhere in the round — with Strata arms 18/18 green and X liveness replicated 3/3 (baseline X 0/3, elaboration-class, so X contributes zero pairs by design). Provenance caveat disclosed in the evidence doc: two byte-identical attempts were killed mid-round by the operator's terminal supervisor (~USD 13 additional spend); their 13 evaluable partial pairs were all `+`/`+` and the scored round is the completed third launch. Evidence: [`docs/spikes/2026-07-18-phase-6-n3-directional-results.md`](spikes/2026-07-18-phase-6-n3-directional-results.md).
 
-The current SQLite product path remains supported until this proof passes. This iteration coordinates code activity only; task decomposition and assignment stay outside Strata.
+This iteration coordinates code activity only; task decomposition and assignment stay outside Strata.
+
+**Iteration closed 2026-07-18.** The full evidence chain (deterministic acceptance → pilot → retry → N=3 directional round) is committed; the write-up (`docs/write-up.md` § "The multi-agent extension") and `RESULTS.md` (2026-07-18 addendum) now carry the result. Two follow-ups fall out of closure:
+
+- **The "SQLite path supported until the proof passes" clause has now triggered.** The proof passed. Whether to keep dual paths, converge on the kernel, or keep SQLite as the single-agent product path is an **operator decision** — log it in `decisions.md` when made; nothing forces it immediately.
+- **Structural insert/delete/move concurrency** remains explicitly out of scope until stable logical IDs independent of sibling position exist (per the orientation's hard boundaries) — that is the natural next research question if this direction continues.
 
 ## What not to do
 
