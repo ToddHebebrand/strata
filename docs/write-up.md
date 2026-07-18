@@ -6,11 +6,13 @@
 
 AI coding agents inherit an interface designed for humans: files. To change one function, an agent reads a whole file. To express a structural change — rename this symbol, add this parameter everywhere — it emits text diffs and hopes they apply. To find every use of a declaration, it greps and reasons about false positives. The file abstraction exists because humans read linearly; agents don't have that constraint.
 
+And the cost compounds the moment there is more than one agent. Because files are opaque text, concurrent work on them means branches, worktrees, and merge conflicts — coordination by diff, resolved after the fact by whoever (or whatever) does the merge. That multi-agent problem is what Strata was built to attack: if the codebase is a canonical graph and every change is a typed operation, the substrate itself can see what each change touches — and many agents should be able to share one codebase directly, with no merge step to exist.
+
 Strata is the experiment: replace files entirely. A TypeScript codebase becomes a SQLite-backed graph of nodes — modules, declarations, statements, identifiers — with stable IDs and resolved reference edges. An agent (Claude Agent SDK, **no filesystem tools at all**) queries and mutates that graph through ~20 structural tools inside transactions. A commit gate renders the pending graph to text, type-checks it in-process, and optionally runs the task's tests; commits that fail are refused. Files exist only as transient compiler artifacts the agent never sees.
 
-The hypothesis was simple: same model, same task, same success bar — the structural substrate should reach the right answer with materially less work.
+The investigation ran in two stages, deliberately. First the single-agent question — same model, same task, same success bar, does the substrate reach the right answer with materially less work? — because it isolates the interface variable and proves the substrate is real before any coordination claim can mean anything. Then the question the project was pointed at from the start: multiple agents, one shared, always-green codebase.
 
-The answer turned out to be more interesting than yes or no. **The substrate wins big on exactly one class of task, loses on its complement, and the boundary between them is sharp enough to state as a rule.** And once the single-agent boundary was drawn, the substrate's original justification — letting *multiple* agents share one canonical codebase without branches, worktrees, or merges — turned out to be where the largest margins live.
+The single-agent answer turned out to be more interesting than yes or no. **The substrate wins big on exactly one class of task, loses on its complement, and the boundary between them is sharp enough to state as a rule.** And the multi-agent answer is where the largest margins in this write-up live.
 
 ## The headline win: bulk propagation
 
@@ -54,9 +56,9 @@ One benchmark task (add a parameter whose *value differs per call site*) failed 
 
 A fifth lever (per-call-site expressiveness in the tool signature) was designed and then terminated on integrity grounds: the task's success criterion requires a literal that exists *only in the prompt*, so any "win" would be the agent transcribing a prompt-supplied map into a tool slot — scripting, not structure. That termination sharpened the taxonomy rather than weakening it: the substrate wins when it owns the resolution and the agent owns one decision. It structurally cannot win when the task embeds a per-site decision that lives nowhere in the graph.
 
-## The multi-agent extension: one shared green codebase
+## The original question: many agents, one shared green codebase
 
-Everything above is a single agent against a single baseline. But the original motivation for a canonical structural store was always **coordination**: if the codebase is a graph with typed operations, multiple agents should be able to work in it *simultaneously* — no branches, no worktrees, no integration agent merging text — because the substrate can infer what each operation touches and schedule around conflicts. Phase 6 tested that directly.
+Everything above was staging — necessary, but staging. Strata was never primarily a bet about making one agent cheaper; the reason to make the codebase a canonical graph with typed operations was always **coordination**: multiple agents working in one codebase *simultaneously* — no branches, no worktrees, no integration agent merging text — because the substrate can infer what each operation touches and schedule around conflicts. The single-agent rounds had to come first: they proved the substrate works end-to-end and mapped where structure actually pays. With that established, Phase 6 asked the original question directly.
 
 The mechanism is a Rust coordination kernel (redb-backed, memory-native, a sealed single-owner daemon) in front of the existing TypeScript ingest/render/verify pipeline, which stays authoritative. Agents submit **typed operations** (rename, add-parameter, …); the kernel infers each operation's reservation scope from the reference graph — agents never enumerate lock keys — grants deterministic leases, validates candidates against a fresh view, and publishes with fencing. Grouped changes commit only-green-together. If a concurrent publication invalidates the scope an agent decided under, the agent gets a `needs_decision` naming every renamed symbol and re-decides against the fresh view rather than merging text.
 

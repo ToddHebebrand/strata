@@ -87,7 +87,7 @@ Remaining polish happens here — not before. Premature polish on an empty produ
 Goal: the architectural argument is publishable.
 
 - [x] **Results-post draft** — [`docs/write-up.md`](write-up.md) (2026-07-03). Framing: "when does a structural substrate beat files" — the bulk-propagation/single-site-synthesis taxonomy as the contribution, the T01 negative as a sharpened boundary, methodology as credibility, and the hybrid-agent implication stated explicitly. Awaiting operator review/edit before publication.
-- [x] **Multi-agent section folded in** (2026-07-18) — "The multi-agent extension: one shared green codebase" added to the draft with the Phase-6 evidence chain (deterministic gate → pilot → retry → N=3), the per-scenario margin table, the X asymmetry, and the disclosed relaunch caveat; `RESULTS.md` gained a matching 2026-07-18 addendum. Draft remains in operator review.
+- [x] **Multi-agent section folded in** (2026-07-18) — "The original question: many agents, one shared green codebase" added to the draft (reframed 2026-07-18: multi-agent is the original thesis reached last by method, not an extension) with the Phase-6 evidence chain (deterministic gate → pilot → retry → N=3), the per-scenario margin table, the X asymmetry, and the disclosed relaunch caveat; `RESULTS.md` gained a matching 2026-07-18 addendum. Draft remains in operator review.
 - [ ] Demo capture (see Iteration 3).
 - [ ] Publication venue + final edit pass (operator).
 
@@ -109,7 +109,7 @@ Approved design: [`docs/superpowers/specs/2026-07-13-multi-agent-coordination-ke
 
 This iteration coordinates code activity only; task decomposition and assignment stay outside Strata.
 
-**Iteration closed 2026-07-18.** The full evidence chain (deterministic acceptance → pilot → retry → N=3 directional round) is committed; the write-up (`docs/write-up.md` § "The multi-agent extension") and `RESULTS.md` (2026-07-18 addendum) now carry the result. Two follow-ups fall out of closure:
+**Iteration closed 2026-07-18.** The full evidence chain (deterministic acceptance → pilot → retry → N=3 directional round) is committed; the write-up (`docs/write-up.md` § "The original question: many agents, one shared green codebase") and `RESULTS.md` (2026-07-18 addendum) now carry the result. Two follow-ups fall out of closure:
 
 - **The "SQLite path supported until the proof passes" clause triggered and is resolved** (decisions.md 2026-07-18, "SQLite and kernel paths both stay"): both paths stay, the split is declared provisional, and three named triggers (stable logical IDs, a third bridged operation, a real multi-agent product use) force the re-convergence decision. Product/packaging/publication work proceeds on the SQLite path; kernel work is research-only until a trigger fires.
 - **Structural insert/delete/move concurrency** remains explicitly out of scope until stable logical IDs independent of sibling position exist (per the orientation's hard boundaries) — that is the natural next research question if this direction continues.
