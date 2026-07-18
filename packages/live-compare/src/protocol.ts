@@ -12,6 +12,7 @@ const MAX_TEXT_BYTES = 16_384;
 const MAX_ARRAY_ITEMS = 256;
 const MAX_DIAGNOSTICS = 64;
 const MAX_EVENT_LIMIT = 256;
+const MAX_DECLARATION_MATCHES = 64;
 const U64_MAX = 18_446_744_073_709_551_615n;
 
 const utf8 = new TextEncoder();
@@ -99,12 +100,27 @@ export const intentSchema = z.discriminatedUnion("type", [
   addParameterIntentSchema
 ]);
 
+export const declarationKindFilterSchema = z.enum([
+  "interface",
+  "type-alias",
+  "class",
+  "function",
+  "variable"
+]);
+
 export const requestActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello") }).strict(),
   z
     .object({
       type: z.literal("inspect_nodes"),
       nodeIds: z.array(opaqueIdSchema).min(1).max(MAX_ARRAY_ITEMS)
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("find_declarations"),
+      name: boundedString(MAX_ID_BYTES),
+      kind: declarationKindFilterSchema.optional()
     })
     .strict(),
   z.object({ type: z.literal("begin_change_set"), reasoning: reasoningSchema }).strict(),
@@ -178,6 +194,15 @@ const inspectedNodeSchema = z
   })
   .strict();
 
+const declarationSummarySchema = z
+  .object({
+    nodeId: opaqueIdSchema,
+    kind: declarationKindFilterSchema,
+    name: z.string().min(1),
+    moduleId: opaqueIdSchema
+  })
+  .strict();
+
 const renamedSymbolSchema = z
   .object({
     nodeId: opaqueIdSchema,
@@ -238,6 +263,13 @@ export const responseResultSchema = z.discriminatedUnion("type", [
       type: z.literal("nodes"),
       graphGeneration: canonicalU64Schema,
       nodes: z.array(inspectedNodeSchema).max(MAX_ARRAY_ITEMS)
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("declarations"),
+      graphGeneration: canonicalU64Schema,
+      declarations: z.array(declarationSummarySchema).max(MAX_DECLARATION_MATCHES)
     })
     .strict(),
   z

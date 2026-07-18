@@ -23,6 +23,7 @@ const changeSet = {
 
 function fakeClient(overrides: Partial<CoordinationClientApi> = {}): CoordinationClientApi {
   return {
+    findDeclarations: async () => ({ type: "declarations", graphGeneration: "0", declarations: [] }),
     inspectNodes: async () => ({ type: "nodes", graphGeneration: "0", nodes: [] }),
     beginChangeSet: async () => changeSet,
     addIntent: async () => changeSet,
@@ -44,8 +45,9 @@ function textPayload(result: { content: Array<{ type: string; text?: string }> }
 }
 
 describe("coordination-only MCP surface", () => {
-  it("exports exactly the eight design operations and qualified allowlist", () => {
+  it("exports exactly the nine design operations and qualified allowlist", () => {
     expect(COORDINATION_TOOL_NAMES).toEqual([
+      "find_declarations",
       "inspect_nodes",
       "begin_change_set",
       "add_intent",
@@ -167,6 +169,7 @@ describe("coordination-only MCP surface", () => {
       };
     };
     const valid: Record<string, Record<string, unknown>> = {
+      find_declarations: { name: "Account" },
       inspect_nodes: { node_ids: ["node:1"] },
       begin_change_set: { reasoning: "reason" },
       add_intent: {

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -674,6 +674,42 @@ pub(crate) fn declaration_name(
     Ok(Some(
         identifier_payload(declaration_name_identifier(graph, declaration)?)?.text,
     ))
+}
+
+/// Payload-only declaration-name confirmation against a caller-supplied
+/// `parent_id -> Identifier children` map, for callers (such as
+/// `Kernel::find_declarations`) that already hold one full-graph-pass map and
+/// must not re-clone the whole node set per candidate the way
+/// `declaration_name`/`declaration_name_identifier` do. Mirrors
+/// `declaration_name_identifier`'s exact-match confirmation (text + offset,
+/// unique) but returns `Ok(None)` — never an error — for any candidate whose
+/// name cannot be confirmed: unsupported kind, malformed/unparseable payload,
+/// or a missing/ambiguous name identifier. This SKIP semantics matches the
+/// SQLite `find_declarations` filter in `packages/store/src/queries.ts`.
+pub(crate) fn confirmed_declaration_name(
+    declaration: &NodeRecord,
+    identifiers_by_parent: &BTreeMap<&str, Vec<&NodeRecord>>,
+) -> Result<Option<String>> {
+    if !is_supported_named_declaration_kind(&declaration.kind) {
+        return Ok(None);
+    }
+    let Ok((expected_text, expected_offset)) = declaration_name_token(declaration) else {
+        return Ok(None);
+    };
+    let Some(candidates) = identifiers_by_parent.get(declaration.id.as_str()) else {
+        return Ok(None);
+    };
+    let mut matches = candidates.iter().filter_map(|node| {
+        let payload = identifier_payload(node).ok()?;
+        (payload.text == expected_text && payload.offset == expected_offset).then_some(payload.text)
+    });
+    let Some(first) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Ok(None);
+    }
+    Ok(Some(first))
 }
 
 #[derive(Deserialize)]

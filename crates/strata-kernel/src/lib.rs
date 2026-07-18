@@ -35,7 +35,9 @@ pub use coordination::{
 pub use graph::GraphGeneration;
 #[cfg(feature = "redb-spike-api")]
 pub use kernel::PublishFailpoint;
-pub use kernel::{Kernel, PublicationReport, RecoveryReport};
+pub use kernel::{
+    DeclarationMatch, Kernel, MAX_DECLARATION_MATCHES, PublicationReport, RecoveryReport,
+};
 pub use model::{
     EventRecord, GraphChange, GraphDelta, GraphSnapshot, NodeRecord, OperationIntentRecord,
     OperationRecord, OperationRename, ReferenceRecord, SCHEMA_VERSION, TicketRecord,

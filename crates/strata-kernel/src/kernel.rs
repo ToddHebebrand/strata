@@ -1,4 +1,3 @@
-#[cfg(feature = "coordination-test-api")]
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -6,17 +5,18 @@ use std::sync::{Arc, Mutex, RwLock};
 #[cfg(feature = "redb-spike-api")]
 use std::time::Instant;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 
 use crate::bridge::{
     CandidateExecutor, NodeBridgeClient, NodeBridgeConfig, NodeCandidateExecutor,
-    NodeSemanticProvider,
+    NodeSemanticProvider, confirmed_declaration_name,
 };
 use crate::coordination::{
     CoordinationError, DependencyVersion, ResourceClockSnapshot, SemanticProvider,
 };
 #[cfg(feature = "coordination-test-api")]
 use crate::coordination::{TestSemanticAdapter, TestSemanticProvider};
+use crate::model::NodeRecord;
 #[cfg(feature = "redb-spike-api")]
 use crate::model::{FenceClaim, Publication};
 use crate::storage::DurableStore;
@@ -86,6 +86,37 @@ impl PublishFailpoint {
             Self::AfterRedbCommitBeforeMemoryPublish | Self::AfterMemoryPublish
         )
     }
+}
+
+/// Product-facing declaration kind vocabulary mapped to the persisted node kind
+/// it corresponds to. This is the discovery-surface kind mapping mirrored from
+/// `packages/store/src/queries.ts`.
+const PRODUCT_KINDS: [(&str, &str); 5] = [
+    ("interface", "InterfaceDeclaration"),
+    ("type-alias", "TypeAliasDeclaration"),
+    ("class", "ClassDeclaration"),
+    ("function", "FunctionDeclaration"),
+    ("variable", "FirstStatement"),
+];
+
+/// Fail-closed cap on `find_declarations` results.
+pub const MAX_DECLARATION_MATCHES: usize = 64;
+
+fn product_kind_to_statement_kind(kind: &str) -> Result<&'static str> {
+    PRODUCT_KINDS
+        .iter()
+        .find(|(product, _)| *product == kind)
+        .map(|(_, statement)| *statement)
+        .with_context(|| format!("unsupported declaration kind {kind}"))
+}
+
+/// One named-declaration discovery match returned by `Kernel::find_declarations`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeclarationMatch {
+    pub node_id: String,
+    pub kind: String,
+    pub name: String,
+    pub module_id: String,
 }
 
 pub struct Kernel {
@@ -321,6 +352,66 @@ impl Kernel {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Finds named declarations by exact name, optionally narrowed to one product
+    /// kind. This is the minimal discovery surface: clients otherwise only have
+    /// node IDs they already know. One full-graph pass: a single snapshot clone
+    /// plus a single prebuilt parent -> Identifier-children map, so cost is
+    /// O(nodes), not O(declarations * nodes). Candidates whose name cannot be
+    /// confirmed (malformed payload, missing/ambiguous name identifier) are
+    /// skipped rather than failing the whole query, mirroring the SQLite
+    /// `find_declarations` filter behavior in `packages/store/src/queries.ts`.
+    pub fn find_declarations(
+        &self,
+        name: &str,
+        kind: Option<&str>,
+    ) -> Result<Vec<DeclarationMatch>> {
+        let graph = self.snapshot();
+        let snapshot = graph.snapshot(); // ONE clone for the whole query
+        let statement_kinds: Vec<(&str, &str)> = match kind {
+            Some(k) => vec![(k, product_kind_to_statement_kind(k)?)],
+            None => PRODUCT_KINDS.to_vec(),
+        };
+        // one pass: identifier children grouped by parent
+        let mut identifiers: BTreeMap<&str, Vec<&NodeRecord>> = BTreeMap::new();
+        for node in &snapshot.nodes {
+            if node.kind == "Identifier"
+                && let Some(parent) = node.parent_id.as_deref()
+            {
+                identifiers.entry(parent).or_default().push(node);
+            }
+        }
+        let mut matches = Vec::new();
+        for node in &snapshot.nodes {
+            let Some((product_kind, _)) = statement_kinds
+                .iter()
+                .find(|(_, statement)| *statement == node.kind)
+            else {
+                continue;
+            };
+            // payload-only token; SKIP candidates that cannot be named
+            let Ok(Some(candidate_name)) = confirmed_declaration_name(node, &identifiers) else {
+                continue;
+            };
+            if candidate_name != name {
+                continue;
+            }
+            let Some(module_id) = node.parent_id.clone() else {
+                continue;
+            };
+            matches.push(DeclarationMatch {
+                node_id: node.id.clone(),
+                kind: (*product_kind).to_string(),
+                name: candidate_name,
+                module_id,
+            });
+            ensure!(
+                matches.len() <= MAX_DECLARATION_MATCHES,
+                "declaration matches exceed {MAX_DECLARATION_MATCHES} bound"
+            );
+        }
+        Ok(matches)
     }
 
     /// Reads the retained canonical digest for one exact graph generation.

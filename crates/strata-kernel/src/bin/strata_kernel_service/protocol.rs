@@ -5,6 +5,7 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::fmt;
+use strata_kernel::MAX_DECLARATION_MATCHES;
 
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
@@ -101,6 +102,11 @@ pub(super) enum RequestAction {
     Hello {},
     InspectNodes {
         node_ids: Vec<String>,
+    },
+    FindDeclarations {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
     },
     BeginChangeSet {
         reasoning: String,
@@ -236,6 +242,10 @@ pub(super) enum ResponseResult {
         graph_generation: WireU64,
         nodes: Vec<InspectedNode>,
     },
+    Declarations {
+        graph_generation: WireU64,
+        declarations: Vec<DeclarationSummary>,
+    },
     ChangeSet {
         change_set_id: String,
         state: ChangeSetState,
@@ -269,6 +279,15 @@ pub(super) struct InspectedNode {
     pub(super) kind: String,
     pub(super) payload: String,
     pub(super) relationships: Vec<NodeRelationship>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct DeclarationSummary {
+    pub(super) node_id: String,
+    pub(super) kind: String,
+    pub(super) name: String,
+    pub(super) module_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -464,6 +483,7 @@ impl RequestAction {
         match self {
             Self::Hello { .. } => "hello",
             Self::InspectNodes { .. } => "inspect_nodes",
+            Self::FindDeclarations { .. } => "find_declarations",
             Self::BeginChangeSet { .. } => "begin_change_set",
             Self::AddIntent { .. } => "add_intent",
             Self::SubmitChangeSet { .. } => "submit_change_set",
@@ -481,6 +501,12 @@ impl RequestAction {
                 bounded_items(node_ids.len(), 1, MAX_ARRAY_ITEMS, "nodeIds")?;
                 for node_id in node_ids {
                     validate_string(node_id, MAX_ID_BYTES, false, "nodeId")?;
+                }
+            }
+            Self::FindDeclarations { name, kind } => {
+                validate_string(name, MAX_ID_BYTES, false, "name")?;
+                if let Some(kind) = kind {
+                    validate_string(kind, MAX_ID_BYTES, false, "kind")?;
                 }
             }
             Self::BeginChangeSet { reasoning } => {
@@ -638,6 +664,17 @@ impl ResponseResult {
                     node.validate()?;
                 }
             }
+            Self::Declarations { declarations, .. } => {
+                bounded_items(
+                    declarations.len(),
+                    0,
+                    MAX_DECLARATION_MATCHES,
+                    "declarations",
+                )?;
+                for declaration in declarations {
+                    declaration.validate()?;
+                }
+            }
             Self::ChangeSet {
                 change_set_id,
                 operation_id,
@@ -681,6 +718,15 @@ impl ResponseResult {
             }
         }
         Ok(())
+    }
+}
+
+impl DeclarationSummary {
+    fn validate(&self) -> Result<()> {
+        validate_string(&self.node_id, MAX_ID_BYTES, false, "nodeId")?;
+        validate_string(&self.kind, MAX_ID_BYTES, false, "kind")?;
+        validate_string(&self.name, MAX_ID_BYTES, false, "name")?;
+        validate_string(&self.module_id, MAX_ID_BYTES, false, "moduleId")
     }
 }
 

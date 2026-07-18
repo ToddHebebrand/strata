@@ -41,6 +41,12 @@ const addParameterIntent = z
   .strict();
 
 export const COORDINATION_TOOL_INPUT_SCHEMAS = {
+  find_declarations: z
+    .object({
+      name: z.string().min(1).max(MAX_ID_CHARS),
+      kind: z.enum(["interface", "type-alias", "class", "function", "variable"]).optional()
+    })
+    .strict(),
   inspect_nodes: z.object({ node_ids: z.array(stableId).min(1).max(MAX_NODE_IDS) }).strict(),
   begin_change_set: z.object({ reasoning: z.string().max(MAX_REASONING_CHARS) }).strict(),
   add_intent: z
@@ -62,6 +68,7 @@ export const COORDINATION_TOOL_INPUT_SCHEMAS = {
 } as const;
 
 export interface CoordinationClientApi {
+  findDeclarations(name: string, kind?: string): Promise<CoordinationResult>;
   inspectNodes(nodeIds: string[]): Promise<CoordinationResult>;
   beginChangeSet(reasoning: string): Promise<CoordinationResult>;
   addIntent(changeSetId: string, intent: CoordinationIntent): Promise<CoordinationResult>;
@@ -126,6 +133,12 @@ export function createCoordinationTools(
 ): SdkMcpToolDefinition<any>[] {
   return [
     strictTool(
+      "find_declarations",
+      "Find declarations by exact name, optionally narrowed by kind (interface, type-alias, class, function, variable). Returns stable node IDs with their module. This is your discovery entry point: use it to locate the declaration to change, then inspect_nodes on the returned IDs before mutating.",
+      COORDINATION_TOOL_INPUT_SCHEMAS.find_declarations,
+      async ({ name, kind }) => textResult(await client.findDeclarations(name, kind))
+    ),
+    strictTool(
       "inspect_nodes",
       "Inspect a bounded caller-supplied set of stable node IDs and their immediate safe relationships. Read-only. Use stable node IDs from the prompt or prior safe results; do not guess IDs. This is the bounded inspection step before begin_change_set or after a fresh decision.",
       COORDINATION_TOOL_INPUT_SCHEMAS.inspect_nodes,
@@ -180,6 +193,7 @@ export function createCoordinationTools(
 }
 
 export const COORDINATION_TOOL_NAMES = [
+  "find_declarations",
   "inspect_nodes",
   "begin_change_set",
   "add_intent",

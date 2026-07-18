@@ -10,4 +10,5 @@ pub(crate) use executor::{CandidateExecutor, NodeCandidateExecutor};
 pub(crate) use process::NodeBridgeClient;
 pub use process::NodeBridgeConfig;
 pub(crate) use provider::NodeSemanticProvider;
+pub(crate) use provider::confirmed_declaration_name;
 pub(crate) use provider::declaration_name;

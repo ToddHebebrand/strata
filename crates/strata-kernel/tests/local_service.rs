@@ -591,6 +591,97 @@ fn daemon_hosts_two_actor_bound_clients_and_one_safe_canonical_graph() {
 }
 
 #[test]
+fn find_declarations_returns_named_interface_and_rejects_unknown_kind() {
+    // The `User` interface (renamed to `Account` in the mutation test above) and
+    // the `greet` function (with a JSDoc `@param {User} user` block ahead of its
+    // declaration name in source) both live in the localized examples/medium
+    // fixture snapshot every test in this file shares.
+    const GREET_FUNCTION_ID: &str = "603b2ae524ee3c70";
+
+    let directory = tempfile::tempdir().unwrap();
+    let service = start_service(&directory, "find-declarations-token");
+
+    // 1) exact name + kind match returns exactly one declaration.
+    let found = request(
+        &service,
+        "request:find:user",
+        "client:alpha",
+        None,
+        json!({"type":"find_declarations","name":"User","kind":"interface"}),
+    );
+    assert_eq!(found["ok"], true, "{found}");
+    let declarations = found["result"]["declarations"].as_array().unwrap();
+    assert_eq!(declarations.len(), 1, "{found}");
+    assert_eq!(declarations[0]["nodeId"], USER_ID);
+    assert_eq!(declarations[0]["kind"], "interface");
+    assert_eq!(declarations[0]["name"], "User");
+    assert!(declarations[0]["moduleId"].is_string());
+    assert!(found["result"]["graphGeneration"].is_string());
+
+    // 2) unmatched name returns an empty (still-ok) result.
+    let missing = request(
+        &service,
+        "request:find:missing",
+        "client:alpha",
+        None,
+        json!({"type":"find_declarations","name":"NoSuchSymbol"}),
+    );
+    assert_eq!(missing["ok"], true, "{missing}");
+    assert_eq!(
+        missing["result"]["declarations"].as_array().unwrap().len(),
+        0
+    );
+
+    // 3) an unknown kind is a protocol error, not a partial/empty result.
+    let bad_kind = request(
+        &service,
+        "request:find:bad-kind",
+        "client:alpha",
+        None,
+        json!({"type":"find_declarations","name":"User","kind":"enum"}),
+    );
+    assert_eq!(bad_kind["ok"], false, "{bad_kind}");
+
+    // 4) JSDoc regression: `greet`'s declaration payload carries a leading
+    // `/** ... @param {User} user */` block whose `param`/`User`/`user`
+    // identifiers are children of the FunctionDeclaration node at lower
+    // source offsets than the real declaration name `greet`. Discovery must
+    // resolve the canonical declaration name (token-derived, comment-aware),
+    // not the lowest-offset Identifier child.
+    let greet = request(
+        &service,
+        "request:find:greet",
+        "client:alpha",
+        None,
+        json!({"type":"find_declarations","name":"greet","kind":"function"}),
+    );
+    assert_eq!(greet["ok"], true, "{greet}");
+    let greet_matches = greet["result"]["declarations"].as_array().unwrap();
+    assert_eq!(greet_matches.len(), 1, "{greet}");
+    assert_eq!(greet_matches[0]["nodeId"], GREET_FUNCTION_ID);
+    assert_eq!(greet_matches[0]["name"], "greet");
+
+    // The JSDoc `@param` tag name must never surface as a discoverable
+    // declaration name for the function it annotates.
+    let jsdoc_trap = request(
+        &service,
+        "request:find:param",
+        "client:alpha",
+        None,
+        json!({"type":"find_declarations","name":"param","kind":"function"}),
+    );
+    assert_eq!(jsdoc_trap["ok"], true, "{jsdoc_trap}");
+    assert_eq!(
+        jsdoc_trap["result"]["declarations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "{jsdoc_trap}"
+    );
+}
+
+#[test]
 fn daemon_rejects_unsafe_or_overlong_socket_paths_before_bind() {
     let overlong = format!("/tmp/strata-lc/{}.sock", "a".repeat(100));
     let output = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))

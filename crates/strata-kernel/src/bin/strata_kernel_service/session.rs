@@ -17,9 +17,10 @@ use super::audit::{
     action_body_hash, client_hash, request_identity,
 };
 use super::protocol::{
-    CancelledState, ChangeSetState, Diagnostic, InspectedNode, Intent, LocalServiceProtocolContext,
-    LocalServiceRequest, LocalServiceResponse, NodeRelationship, RenamedSymbol, RequestAction,
-    ResponseResult, ServiceEvent, ServiceEventKind, TicketState, WireU64, parse_request_frame,
+    CancelledState, ChangeSetState, DeclarationSummary, Diagnostic, InspectedNode, Intent,
+    LocalServiceProtocolContext, LocalServiceRequest, LocalServiceResponse, NodeRelationship,
+    RenamedSymbol, RequestAction, ResponseResult, ServiceEvent, ServiceEventKind, TicketState,
+    WireU64, parse_request_frame,
 };
 
 const MAX_INTENTS: usize = 256;
@@ -554,6 +555,7 @@ impl ServiceSession {
             }
             RequestAction::Hello { .. }
             | RequestAction::InspectNodes { .. }
+            | RequestAction::FindDeclarations { .. }
             | RequestAction::ReadEvents { .. } => {
                 bail!("read-only action cannot be in the mutation journal")
             }
@@ -666,6 +668,21 @@ impl ServiceSession {
         match action {
             RequestAction::Hello { .. } => Ok(ResponseResult::Ready {}),
             RequestAction::InspectNodes { node_ids } => self.inspect_nodes(node_ids),
+            RequestAction::FindDeclarations { name, kind } => {
+                let matches = self.kernel.find_declarations(name, kind.as_deref())?;
+                Ok(ResponseResult::Declarations {
+                    graph_generation: WireU64::new(self.kernel.snapshot().generation()),
+                    declarations: matches
+                        .into_iter()
+                        .map(|declaration| DeclarationSummary {
+                            node_id: declaration.node_id,
+                            kind: declaration.kind,
+                            name: declaration.name,
+                            module_id: declaration.module_id,
+                        })
+                        .collect(),
+                })
+            }
             RequestAction::ReadEvents {
                 after_sequence,
                 limit,

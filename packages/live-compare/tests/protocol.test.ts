@@ -7,6 +7,8 @@ import {
   MAX_RESPONSE_FRAME_BYTES,
   parseRequestFrame,
   parseResponseFrame,
+  requestActionSchema,
+  responseResultSchema,
   serializeRequestFrame,
   serializeResponseFrame
 } from "../src/index";
@@ -158,6 +160,21 @@ describe("local service protocol v1", () => {
     const second = accepted.cases.find((entry) => entry.name === "inspect-nodes-request")!.value;
     parseRequestFrame(frame(first), context);
     expect(() => parseRequestFrame(frame(second), context)).toThrow(/context capacity/);
+  });
+
+  it("round-trips find_declarations request and declarations result", () => {
+    const action = requestActionSchema.parse({
+      type: "find_declarations",
+      name: "User",
+      kind: "interface"
+    });
+    expect(action).toEqual({ type: "find_declarations", name: "User", kind: "interface" });
+    const result = responseResultSchema.parse({
+      type: "declarations",
+      graphGeneration: "3",
+      declarations: [{ nodeId: "a", kind: "interface", name: "User", moduleId: "m" }]
+    });
+    expect(result.type).toBe("declarations");
   });
 
   it("validates change-set and client IDs before retaining ownership", () => {
