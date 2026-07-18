@@ -413,8 +413,17 @@ fn normalize_crash_state(
                 }
             }
             serde_json::Value::Object(fields) => {
-                for value in fields.values_mut() {
-                    visit(value, replacements);
+                // Rekey, not just revalue: maps keyed by a random ID (e.g.
+                // `graphTickets`'s ticket_id keys) need the same
+                // ID-normalization the values already get, or two
+                // independently-generated crash-boundary captures compare
+                // unequal on key identity alone even when every value
+                // matches.
+                let original = std::mem::take(fields);
+                for (key, mut nested) in original {
+                    visit(&mut nested, replacements);
+                    let key = replacements.get(&key).cloned().unwrap_or(key);
+                    fields.insert(key, nested);
                 }
             }
             _ => {}

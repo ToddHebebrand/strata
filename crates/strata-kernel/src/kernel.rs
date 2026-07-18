@@ -827,6 +827,19 @@ impl Kernel {
             }
         }
 
+        // Durable per-ticket `TicketRecord` (the `{ticket_id, state,
+        // scope_fingerprint}` written into the committed Publication),
+        // discovered generically from every ticket found above rather than
+        // one known ticket ID, matching how `idempotencyGenerations` is
+        // captured generically over `change_set_ids`. `None` when a
+        // discovered ticket has no durable record (e.g. mid-flight before
+        // its publication commits).
+        let mut graph_tickets = BTreeMap::new();
+        for ticket in &all_tickets {
+            let graph_ticket = self.test_graph_ticket(&ticket.ticket_id)?;
+            graph_tickets.insert(ticket.ticket_id.clone(), graph_ticket);
+        }
+
         let mut reservation_keys: BTreeSet<String> = BTreeSet::new();
         for ticket in &all_tickets {
             reservation_keys.extend(ticket.reservation_keys.iter().cloned());
@@ -873,6 +886,7 @@ impl Kernel {
             "intentsByChangeSet": intents_by_change_set,
             "idempotencyGenerations": idempotency_generations,
             "tickets": all_tickets,
+            "graphTickets": graph_tickets,
             "readyOffers": ready_offers,
             "activeClaims": active_claims,
             "publicationAttempts": publication_attempts,
