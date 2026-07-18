@@ -7,6 +7,66 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-18 — SQLite and kernel paths both stay: the split is provisional, with named re-convergence triggers
+
+**Context:** The Phase-6 orientation clause "the existing SQLite path
+remains supported until the Rust/redb proof passes" triggered when the
+N=3 directional round closed Iteration 5 (roadmap, 2026-07-18). The
+clause never said what happens after the proof passes; the operator asked
+for the decision to be laid out and then chose.
+
+**Considered:**
+- Converge on the kernel now: port the 20-tool surface, persistence,
+  explore CLI, and index layers onto redb; sunset SQLite.
+- Keep both paths indefinitely as unnamed parallel architecture.
+- Keep both paths with the split declared provisional and explicit
+  triggers that force the convergence decision (chosen).
+- Sunset the kernel as a completed proof. Rejected outright — it discards
+  the project's strongest result the week it landed.
+
+**Decided:** Both paths stay. The SQLite path remains the canonical
+single-agent product path (all 20 tools, persistence, explore CLI,
+three-layer index, packaging/publication work). The kernel remains the
+multi-agent coordination path, research-grade. The split is explicitly
+**provisional, not architecture** — it exists because the two bodies of
+evidence were produced on different substrates, not because two stores is
+a desirable end state. Re-convergence must be decided (not necessarily
+executed) when any of these fires:
+
+1. **Stable logical IDs land** — the prerequisite for structural
+   insert/delete/move concurrency, and the honest prerequisite for any
+   port (current IDs hash sibling position).
+2. **A third typed operation needs bridging** into the kernel.
+3. **A real multi-agent product use appears** (someone actually wants to
+   run coordinated agents, not benchmark them).
+
+**Why:** Convergence now is a large lift with a known regression risk:
+the kernel's draft→submit→schedule→claim→validate→publish lifecycle is
+more per-op ceremony than the SQLite path's open-transaction model, and
+per-op ceremony is the *measured* reason the substrate loses single-site
+tasks — a solo fast-path would be required, and every published
+single-agent number would need keyed re-validation on the new store.
+Meanwhile every near-term milestone (write-up publication, npm packaging,
+demo) sits on the SQLite path, and the write-up's framing — TypeScript
+ingest/render/verify authoritative, kernel coordinates — is exactly the
+current architecture. A fully-Rust product is not attainable in any case
+(tsc stays the semantic oracle); the maximal end state is a Rust kernel
+core with TypeScript workers, which remains available later.
+
+**Leaning, not decided:** the operator's instinct — a converged
+Rust-core product as the eventual end state, for coherence and adoption
+optics — is recorded as the favored direction, pending better
+understanding and an independent Codex review of the convergence design
+(solo fast-path economics and the ID scheme are the claims to attack).
+No sweeping changes until then.
+
+**Design-doc impact:** none to `strata-design.md`. The roadmap's
+Iteration-5 closure note now points here instead of listing the question
+as open.
+
+**Revisit when:** any of the three triggers above fires, or the operator
+initiates the convergence review.
+
 ## 2026-07-18 — Live X/M retry: six for six; X's dynamic expansion observed live; X liveness gap closed
 
 **Context:** The operator delegated the two queued follow-ons (live X/M

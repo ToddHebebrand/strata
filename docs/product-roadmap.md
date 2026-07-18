@@ -111,7 +111,7 @@ This iteration coordinates code activity only; task decomposition and assignment
 
 **Iteration closed 2026-07-18.** The full evidence chain (deterministic acceptance → pilot → retry → N=3 directional round) is committed; the write-up (`docs/write-up.md` § "The multi-agent extension") and `RESULTS.md` (2026-07-18 addendum) now carry the result. Two follow-ups fall out of closure:
 
-- **The "SQLite path supported until the proof passes" clause has now triggered.** The proof passed. Whether to keep dual paths, converge on the kernel, or keep SQLite as the single-agent product path is an **operator decision** — log it in `decisions.md` when made; nothing forces it immediately.
+- **The "SQLite path supported until the proof passes" clause triggered and is resolved** (decisions.md 2026-07-18, "SQLite and kernel paths both stay"): both paths stay, the split is declared provisional, and three named triggers (stable logical IDs, a third bridged operation, a real multi-agent product use) force the re-convergence decision. Product/packaging/publication work proceeds on the SQLite path; kernel work is research-only until a trigger fires.
 - **Structural insert/delete/move concurrency** remains explicitly out of scope until stable logical IDs independent of sibling position exist (per the orientation's hard boundaries) — that is the natural next research question if this direction continues.
 
 ## What not to do
