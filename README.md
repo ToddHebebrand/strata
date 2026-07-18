@@ -1,6 +1,8 @@
 # Strata
 
-**A structural code substrate for AI agents.** Strata replaces the file abstraction with a persistent, queryable node graph. An AI agent addresses functions, declarations, and identifiers by stable ID; mutates them through structural operations inside transactions; verifies against a real type-checker; and never sees a filesystem.
+**A structural code substrate for AI agents — built to replace git worktrees as the way multiple coding agents share a codebase.** Strata replaces the file abstraction with a persistent, queryable node graph. An AI agent addresses functions, declarations, and identifiers by stable ID; mutates them through structural operations inside transactions; verifies against a real type-checker; and never sees a filesystem.
+
+Not a git replacement — git keeps history, review, and distribution. What Strata replaces is the **concurrency layer**: today, running N coding agents means one git worktree per agent and a merge/integration step afterward, resolving conflicts by diff after they've happened. In Strata, agents work in one canonical graph, the substrate infers what each typed operation touches, and conflicts are scheduled away *before* they happen — the merge step doesn't exist.
 
 The hypothesis: AI coding agents are bottlenecked by files. Same model, same task — a structural substrate should get to the right answer with materially less work. And because the substrate can see what every change touches, multiple agents should be able to share one canonical codebase directly — no branches, no worktrees, no merge step. That multi-agent question is what Strata was built to answer.
 
@@ -14,7 +16,7 @@ The hypothesis: AI coding agents are bottlenecked by files. Same model, same tas
 
 ## Headline results
 
-**Multi-agent — the original question.** Two concurrent agents sharing one canonical codebase through Strata's Rust coordination kernel — no branches, no worktrees, no merge step — against the strongest practical baseline, git worktrees plus an integration agent, with the same model, corpus, and final tsc+tests acceptance:
+**Multi-agent — the original question.** The baseline is today's actual practice: one git worktree per agent plus an integration agent that merges the results. The Strata arm replaces that layer — two concurrent agents in one canonical codebase through the Rust coordination kernel, no branches, no worktrees, no merge step — with the same model, corpus, and final tsc+tests acceptance on both sides:
 
 | N=3 directional round (5 evaluable scenarios) | Result |
 |---|---|
