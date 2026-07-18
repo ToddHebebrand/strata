@@ -53,12 +53,20 @@ All three layers preserve the canonical invariants: stable node IDs, files-not-f
 
 ## Quick start
 
-For a hands-on walkthrough that takes you from clone to "I see L1 working" with real commands and real output, see [`docs/quickstart.md`](docs/quickstart.md). The reference commands are below.
+Install from npm (the `strata` command):
+
+```bash
+npm i -g @strata-code/cli
+
+strata modules ./my-ts-project      # then: find, show, refs, exports, search — see below
+```
+
+Or work from source — for a hands-on walkthrough that takes you from clone to "I see L1 working" with real commands and real output, see [`docs/quickstart.md`](docs/quickstart.md). The reference commands are below.
 
 ```bash
 pnpm install
 pnpm -r build
-pnpm -r test                                          # ~400 passing, 2 key-gated skipped
+pnpm -r test                                          # ~470 passing, key-gated tests skipped
 ```
 
 Round-trip a single TypeScript file through the substrate (no key, no network):
