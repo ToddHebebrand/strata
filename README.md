@@ -4,6 +4,10 @@
 
 The hypothesis: AI coding agents are bottlenecked by files. Same model, same task — a structural substrate should get to the right answer with materially less work.
 
+![Strata explore demo: modules → find → show → refs on a real corpus](docs/demo/strata-explore.gif)
+
+*The key-free explore chain on `examples/medium`: list modules, find a declaration, inspect its node, then ask the thing files can't answer — every resolved reference. Recorded with [vhs](https://github.com/charmbracelet/vhs) from [`docs/demo/strata-explore.tape`](docs/demo/strata-explore.tape); the keyed agent-rename sequel is staged in [`docs/demo/strata-agent.tape`](docs/demo/strata-agent.tape).*
+
 ## Headline result
 
 On a reference-aware **rename** across a real multi-module TypeScript codebase — same model (`claude-sonnet-4-6`), same prompt, same success bar, one shared scoring core — a Strata agent (no filesystem tools) vs. a file-editing baseline agent:

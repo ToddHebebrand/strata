@@ -76,7 +76,7 @@ Known follow-up hardening (deferred from PR review, none state-corrupting): L2 i
 Goal: someone who isn't us can clone the repo, follow a README, and use Strata.
 
 - [x] **Exploration CLI** (spec: [`docs/superpowers/specs/2026-05-31-strata-explore-cli-design.md`](superpowers/specs/2026-05-31-strata-explore-cli-design.md), shipped 2026-07-03). Six read-only commands — `modules`/`ls`, `exports`, `find`, `show`, `refs`, `search` — over corpus dirs (ephemeral ingest) or persisted `.db`s, all with `--json`, plus a grouped `strata help`. `refs` (the resolved reference graph) is the flagship output. Zero new store logic; key-free tests in `packages/cli/tests/explore.test.ts`; README "Explore the graph" section + quickstart § 2.5.
-- [ ] **Demo recording** — the one remaining Phase-5 human deliverable. The explore chain (`modules → find → show → refs`) then an agent rename is the natural 5-minute arc.
+- [x] **Demo recording** — key-free half shipped 2026-07-18: `docs/demo/strata-explore.gif` (explore chain `modules → find → show → refs` on `examples/medium`, scripted and reproducible via `vhs docs/demo/strata-explore.tape`), embedded at the top of the README. The keyed agent-rename sequel is staged as `docs/demo/strata-agent.tape` (~$0.05 live spend, operator-run: set `ANTHROPIC_API_KEY`, then `vhs docs/demo/strata-agent.tape`).
 - [ ] **Packaging / global binary / npm publish** (separate gap, deliberately after the demo).
 - [x] **License chosen: MIT** (2026-07-04, `LICENSE`); repo published at `github.com/ToddHebebrand/strata`.
 
