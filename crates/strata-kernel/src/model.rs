@@ -65,6 +65,10 @@ pub struct OperationRecord {
     /// historic graph state. Absent on records written before this field.
     #[serde(default)]
     pub renames: Vec<OperationRename>,
+    /// Typed per-intent parameters embedded at publication. Absent on records
+    /// written before this field.
+    #[serde(default)]
+    pub intents: Vec<OperationIntentRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +77,16 @@ pub struct OperationRename {
     pub node_id: String,
     pub from_name: String,
     pub to_name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationIntentRecord {
+    /// Intent kind, e.g. "RenameSymbol".
+    pub kind: String,
+    /// Canonical JSON of the typed intent parameters, embedded at publication
+    /// so canonical history stays auditable without joining coordination tables.
+    pub parameters_json: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,4 +124,30 @@ pub struct Publication {
     pub ticket: TicketRecord,
     pub event: EventRecord,
     pub fence: FenceClaim,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_record_without_intents_field_deserializes_with_empty_intents() {
+        let legacy = r#"{"operationId":"op-1","changeSetId":"cs-1","actor":"a",
+            "kind":"RenameSymbol","reasoning":"r","affectedNodeIds":[],"renames":[]}"#;
+        let record: OperationRecord = serde_json::from_str(legacy).unwrap();
+        assert!(record.intents.is_empty());
+    }
+
+    #[test]
+    fn operation_intent_record_round_trips_parameters_json() {
+        let record = OperationIntentRecord {
+            kind: "RenameSymbol".into(),
+            parameters_json: r#"{"type":"renameSymbol","declarationId":"d","newName":"n"}"#.into(),
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        assert_eq!(
+            serde_json::from_str::<OperationIntentRecord>(&json).unwrap(),
+            record
+        );
+    }
 }

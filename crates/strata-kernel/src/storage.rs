@@ -1111,6 +1111,7 @@ mod tests {
                 reasoning: "exercise atomic rejection".into(),
                 affected_node_ids: vec!["node:clock".into()],
                 renames: Vec::new(),
+                intents: Vec::new(),
             },
             ticket: TicketRecord {
                 ticket_id: "ticket:invalid".into(),
@@ -1185,5 +1186,38 @@ mod tests {
         assert!(error.to_string().contains("event sequence"));
         assert_eq!(store.test_current_generation().unwrap(), generation_before);
         assert_eq!(store.table_counts().unwrap(), counts_before);
+    }
+
+    /// Canonical history predates the `intents` field on `OperationRecord`.
+    /// A durable operations-table entry written before this field existed
+    /// must still recover as a valid record with empty `intents`, not a
+    /// decode failure, once the store is reopened.
+    #[test]
+    fn old_operation_record_without_intents_field_recovers_with_empty_intents() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("kernel.redb");
+        let legacy_operation_json = br#"{"operationId":"op-1","changeSetId":"cs-1","actor":"a",
+            "kind":"RenameSymbol","reasoning":"r","affectedNodeIds":[],"renames":[]}"#;
+
+        {
+            let store = DurableStore::create(&path).unwrap();
+            store.seed(&empty_snapshot()).unwrap();
+            let write = store.database.begin_write().unwrap();
+            {
+                let mut operations = write.open_table(OPERATIONS).unwrap();
+                operations
+                    .insert(1_u64, legacy_operation_json.as_slice())
+                    .unwrap();
+            }
+            write.commit().unwrap();
+        }
+
+        let reopened = DurableStore::open(&path).unwrap();
+        let record = reopened
+            .operation(1)
+            .unwrap()
+            .expect("legacy operation record recovers");
+        assert!(record.intents.is_empty());
+        assert_eq!(record.operation_id, "op-1");
     }
 }

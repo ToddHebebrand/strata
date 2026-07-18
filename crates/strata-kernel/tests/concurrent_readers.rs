@@ -72,6 +72,7 @@ fn publication(generation: u64, changed_node: NodeRecord) -> Publication {
             reasoning: "prove immutable readers during publication".into(),
             affected_node_ids: vec![changed_node.id],
             renames: Vec::new(),
+            intents: Vec::new(),
         },
         ticket: TicketRecord {
             ticket_id: format!("ticket:reader-proof:{next_generation}"),

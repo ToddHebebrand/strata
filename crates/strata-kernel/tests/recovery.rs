@@ -64,6 +64,7 @@ fn publication(generation: u64, payload: &str, fence: FenceClaim) -> Publication
             reasoning: "exercise recovery".into(),
             affected_node_ids: vec!["node:clock".into()],
             renames: Vec::new(),
+            intents: Vec::new(),
         },
         ticket: TicketRecord {
             ticket_id: format!("ticket:{next_generation}"),

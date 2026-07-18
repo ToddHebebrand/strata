@@ -572,6 +572,15 @@ impl Kernel {
         lifecycle = combine_release_and_readiness(lifecycle, readiness_lifecycle)?;
         next_scheduler = readiness_plan.next_scheduler;
         next_scheduler.set_revision(lifecycle.next_metadata.scheduler_revision);
+        let operation_intents = intents
+            .iter()
+            .map(|intent| {
+                Ok(crate::OperationIntentRecord {
+                    kind: intent_kind(intent).to_owned(),
+                    parameters_json: serde_json::to_string(&intent.parameters)?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let operation = OperationRecord {
             operation_id: operation_id.clone(),
             change_set_id: claim.change_set_id.clone(),
@@ -584,6 +593,7 @@ impl Kernel {
             reasoning: before_change_set.reasoning.clone(),
             affected_node_ids: affected_node_ids.clone(),
             renames: operation_renames(&graph, &intents)?,
+            intents: operation_intents,
         };
         let publication = Publication {
             schema_version: SCHEMA_VERSION,

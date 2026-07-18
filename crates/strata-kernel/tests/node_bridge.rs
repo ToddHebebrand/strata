@@ -356,6 +356,7 @@ fn inject_validated_g1(kernel: &Kernel, g0: &GraphSnapshot, g1: &GraphSnapshot) 
                     })
                     .collect(),
                 renames: Vec::new(),
+                intents: Vec::new(),
             },
             ticket: TicketRecord {
                 ticket_id: "fixture-ticket:add-parameter-g1".into(),

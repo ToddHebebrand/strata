@@ -61,6 +61,7 @@ fn publication_at(
             reasoning: "exercise fenced publication".into(),
             affected_node_ids: vec!["node:clock".into()],
             renames: Vec::new(),
+            intents: Vec::new(),
         },
         ticket: TicketRecord {
             ticket_id: format!("ticket:{idempotency_key}"),

@@ -265,6 +265,7 @@ fn publication_after_blocked_submissions(kernel: &Kernel) -> Publication {
             reasoning: "advance the graph while readiness planning is blocked".to_owned(),
             affected_node_ids: vec!["node:clock".to_owned()],
             renames: Vec::new(),
+            intents: Vec::new(),
         },
         ticket: TicketRecord {
             ticket_id: "ticket:publication".to_owned(),

@@ -75,6 +75,7 @@ fn operation_records_round_trip_renames_and_accept_legacy_records_without_them()
             from_name: "displayUser".into(),
             to_name: "formatUser".into(),
         }],
+        intents: Vec::new(),
     };
     let encoded = serde_json::to_string(&operation).unwrap();
     assert!(encoded.contains("\"renames\":[{\"nodeId\":\"node:display-user\""));
@@ -102,6 +103,7 @@ fn folding_operation_renames_nets_chains_and_drops_round_trips() {
         reasoning: String::new(),
         affected_node_ids: vec![],
         renames,
+        intents: Vec::new(),
     };
     let rename = |node_id: &str, from: &str, to: &str| OperationRename {
         node_id: node_id.into(),
