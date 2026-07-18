@@ -66,6 +66,24 @@ function repoRootFromHere(): string {
   return path.resolve(__dirname, "../../..");
 }
 
+// When this package is npm-installed, repoRootFromHere() escapes into the
+// consumer's node_modules directory and the repo-relative joins below point
+// at paths that don't exist. The nearest enclosing node_modules is then the
+// dependency root that can resolve vitest/@types for the gate's scratch tree.
+function hostNodeModulesFromHere(): string | undefined {
+  let dir = __dirname;
+  while (true) {
+    if (path.basename(dir) === "node_modules") {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      return undefined;
+    }
+    dir = parent;
+  }
+}
+
 export function tscNoEmit(treeRoot: string): {
   tscClean: boolean;
   output: string;
@@ -89,7 +107,12 @@ export function tscNoEmit(treeRoot: string): {
   const tscBin = existsSync(corpusTsc)
     ? corpusTsc
     : require.resolve("typescript/bin/tsc");
-  const typeRoots = path.join(repoRootFromHere(), "node_modules", "@types");
+  const repoTypeRoots = path.join(repoRootFromHere(), "node_modules", "@types");
+  const hostNm = hostNodeModulesFromHere();
+  const typeRoots =
+    !existsSync(repoTypeRoots) && hostNm && existsSync(path.join(hostNm, "@types"))
+      ? path.join(hostNm, "@types")
+      : repoTypeRoots;
   const result = spawnSync(
     process.execPath,
     [tscBin, "--noEmit", "-p", tsconfig, "--typeRoots", typeRoots],
@@ -274,10 +297,13 @@ export function runCorpusAcceptance(
     const corpusNodeModules = path.join(corpusRoot, "node_modules");
     const repoNodeModules = path.join(repoRootFromHere(), "node_modules");
     const tmpNodeModules = path.join(outRoot, "node_modules");
+    const hostNodeModules = hostNodeModulesFromHere();
     if (existsSync(corpusNodeModules)) {
       symlinkSync(corpusNodeModules, tmpNodeModules, "dir");
     } else if (existsSync(repoNodeModules)) {
       symlinkSync(repoNodeModules, tmpNodeModules, "dir");
+    } else if (hostNodeModules && existsSync(hostNodeModules)) {
+      symlinkSync(hostNodeModules, tmpNodeModules, "dir");
     }
 
     const tsc = strictSrcOnlyTscScope
