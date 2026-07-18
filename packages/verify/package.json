@@ -1,6 +1,6 @@
 {
   "name": "@strata-code/verify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Type-checks and tests rendered Strata output in-process; diagnostics map back to nodes",
   "keywords": [
     "ai-agents",

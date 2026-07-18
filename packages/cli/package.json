@@ -1,6 +1,6 @@
 {
   "name": "@strata-code/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Strata CLI — explore and mutate a TypeScript codebase as a structural node graph, and run the no-filesystem agent",
   "keywords": [
     "ai-agents",

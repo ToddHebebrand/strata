@@ -6,7 +6,11 @@ The hypothesis: AI coding agents are bottlenecked by files. Same model, same tas
 
 ![Strata explore demo: modules → find → show → refs on a real corpus](docs/demo/strata-explore.gif)
 
-*The key-free explore chain on `examples/medium`: list modules, find a declaration, inspect its node, then ask the thing files can't answer — every resolved reference. Recorded with [vhs](https://github.com/charmbracelet/vhs) from [`docs/demo/strata-explore.tape`](docs/demo/strata-explore.tape); the keyed agent-rename sequel is staged in [`docs/demo/strata-agent.tape`](docs/demo/strata-agent.tape).*
+*The key-free explore chain on `examples/medium`: list modules, find a declaration, inspect its node, then ask the thing files can't answer — every resolved reference. Recorded with [vhs](https://github.com/charmbracelet/vhs) from [`docs/demo/strata-explore.tape`](docs/demo/strata-explore.tape).*
+
+![Strata agent demo: a no-filesystem agent renames User to Account through the graph](docs/demo/strata-agent.gif)
+
+*The sequel: an agent with no filesystem tools renames the interface across all 16 reference sites in one transaction — validated by tsc plus the project's tests before the commit gate lets it through. 6 tool calls, ~$0.05, ~25 s ([`docs/demo/strata-agent.tape`](docs/demo/strata-agent.tape)).*
 
 ## Headline result
 

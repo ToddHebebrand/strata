@@ -1,6 +1,6 @@
 {
   "name": "@strata-code/agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Claude Agent SDK agent that works a codebase through Strata's structural tools only — no filesystem tools",
   "keywords": [
     "ai-agents",
