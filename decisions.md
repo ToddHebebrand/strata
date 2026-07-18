@@ -7,6 +7,35 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-18 — Live X/M retry: six for six; X's dynamic expansion observed live; X liveness gap closed
+
+**Context:** The operator delegated the two queued follow-ons (live X/M
+retry, stable-root fix) to discretion. The retry ran first, from the frozen
+worktree at e236895 under approval `approval-2026-07-17-xm-retry.json`
+(guard-validated key-free before launch), `claude-sonnet-5`, seed
+`pilot-seed-1`, N=1, USD 55 ceiling. Run `run-2026-07-18T03-57-27-079Z`,
+total spend USD 4.73. Full results:
+`docs/spikes/2026-07-18-phase-6-live-xm-retry-results.md`.
+
+**Result:** every Strata arm succeeded and verified green — the first
+six-for-six round. M ran under its recovered pre-amendment clause and
+published both same-module operations concurrently (17s, $0.073): the live
+confirmation of the validation-circle narrowing. X succeeded live for the
+first time: X2 completed the content-rewriting fresh-decision path after
+X1's rename and published at generation 2 with the exact registered
+delta — `dynamic_scope_observed` is now supported at N=1, and the pilot's
+isolated liveness gap is closed by the `needs_decision`+`renamedSymbols`
+protocol change. The X baseline failed again with the documented
+elaboration-class over-delivery (`invalid_final_code`, out-of-delta change
+in serializer.ts — fourth occurrence). Paired ratios across the five
+completed comparisons: 5.3–16.6× cost, 3.9–11.1× makespan, Strata ahead in
+all.
+
+**Still open (operator decisions):** the N=3 directional extension — its
+design should now take the six-for-six retry as input; and whether to fold
+the X liveness result into the Phase-6 spec's claims section as the
+dispositive close of the pilot's X follow-on.
+
 ## 2026-07-17 — Stable-root ingest lands: live-compare qualification is location-independent
 
 **Context:** Supersedes the deferral in the entry below — the operator
