@@ -7,6 +7,52 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-18 — Iteration 6 approved: kernel convergence first slice + real-world race scenario design
+
+**Context:** With the write-up reframed around the worktree-replacement
+thesis and the Codex convergence review verified (entry below), the
+operator approved the next research iteration in two parts: (a) the
+convergence work the review staged, and (b) designing a more real-world
+race scenario — "a small app with ~10 agents or something" — beyond the
+two-agent, six-scenario, handed-IDs form the Phase-6 proof used. The
+operator then refined (b): the scenario arc is **scratch to release** —
+the agent fleet builds the app from empty to a releasable, green state,
+rather than racing on an existing corpus. That refinement promotes stable
+logical IDs into this iteration's critical path (from-scratch building is
+insert/create-dominated — precisely the class gated on
+position-independent identity) and fixes the claim under test: a
+synthesis-heavy build is *not* expected to win on token cost (measured
+single-site-synthesis economics), so the pre-registered claim is
+**coordination** — makespan, continuous greenness, and zero merge
+machinery — not cost.
+
+**Decided (operator, 2026-07-18):** Iteration 6 proceeds. Sequencing and
+scope live in `docs/product-roadmap.md` § Iteration 6. The Codex review's
+five ordered measurement gates and six falsifiers are adopted as the
+convergence slice's acceptance frame; the race scenario gets a design
+spec (with its own independent review and pre-registered budget approval)
+before any implementation or spend.
+
+**Constraints carried forward, restated so the design can't drift:**
+- Strata coordinates code activity only — the scenario harness assigns
+  tasks to agents; Strata never decomposes or assigns work.
+- Deterministic, key-free gates pass before any live model spend; live
+  rounds are pre-registered with budget ceilings and approval locks, per
+  the Phase-6 protocol.
+- Structural insert/delete/move concurrency stays gated on stable logical
+  IDs. The scenario spec must either confine its task mix to bridgeable
+  operation classes or explicitly pull stable-ID work into scope as its
+  own gated deliverable — not slide into it.
+- Published claims stay substrate-bound: no Phase-6 or T03 number is
+  re-quoted for a converged store without the review's gate-5
+  re-measurement.
+
+**Design-doc impact:** none yet — the kernel design spec still governs;
+the race scenario will get its own spec under `docs/superpowers/specs/`.
+
+**Revisit when:** the convergence slice hits a review falsifier, or the
+race-scenario spec surfaces a conflict with the hard boundaries above.
+
 ## 2026-07-18 — Independent convergence review received and verified: converge-eventually endorsed, solo-bypass refuted, staged gates defined
 
 **Context:** The provisional-split decision below recorded the operator's
