@@ -82,10 +82,13 @@ describe("vitestRun scoping (additive)", () => {
   function tmpTree(): string {
     const root = mkdtempSync(path.join(tmpdir(), "strata-vrun-"));
     mkdirSync(path.join(root, "tests"), { recursive: true });
+    // Import-free config: the temp tree has no node_modules, so an
+    // `import "vitest/config"` here only resolves when the surrounding
+    // runner happens to leak a NODE_PATH — making the test pass or fail by
+    // invocation context. A plain object export loads under any loader.
     writeFileSync(
       path.join(root, "vitest.config.ts"),
-      'import { defineConfig } from "vitest/config";\n' +
-        'export default defineConfig({ test: { include: ["tests/**/*.test.ts"] } });\n'
+      'export default { test: { include: ["tests/**/*.test.ts"] } };\n'
     );
     writeFileSync(
       path.join(root, "tests", "pass.test.ts"),
