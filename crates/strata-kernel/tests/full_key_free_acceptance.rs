@@ -307,12 +307,27 @@ struct CrashAtomicState {
 }
 
 impl CrashAtomicState {
+    /// Reads the shared, library-expressible atomic-state projection
+    /// (`Kernel::test_atomic_state_projection`, the same accessors the
+    /// `export-snapshot --state-out` CLI oracle uses — see
+    /// `crates/strata-kernel/src/kernel.rs`) and layers the claim-scoped bits
+    /// that only make sense inside this crash test on top: the specific claim
+    /// under test, its own publication-attempt outcome, and a deterministic
+    /// ID-normalization pass so states captured from separate crash-boundary
+    /// child processes compare equal when they reflect the same logical
+    /// outcome. Those bits have no offline-export equivalent (there is no
+    /// "the claim under test" for a static `export-snapshot` run), so they
+    /// stay here rather than moving into the shared projection.
     fn read(kernel: &Kernel, original_claim: &ClaimHandle) -> anyhow::Result<Self> {
-        let graph = kernel.snapshot();
-        let snapshot = graph.snapshot();
+        let projection = kernel.test_atomic_state_projection()?;
+
         let change_set = kernel
             .change_set(ROW_8_CHANGE_SET_ID)?
             .expect("row-8 change set after recovery");
+        change_set
+            .inferred_scope
+            .as_ref()
+            .expect("row-8 inferred scope after recovery");
         let ticket = kernel
             .ticket_for_change_set(ROW_8_CHANGE_SET_ID)?
             .expect("row-8 ticket after recovery");
@@ -320,34 +335,12 @@ impl CrashAtomicState {
         let claims = kernel.test_active_claims()?;
         let coordination_events = kernel.events_after("events:row-8-audit", 0, 1_000)?;
         let publication_attempt = kernel.publication_attempt(&original_claim.attempt_id)?;
-        let operations = (1..=graph.generation())
+        let operations = (1..=kernel.snapshot().generation())
             .filter_map(|generation| kernel.operation(generation).transpose())
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let deltas = (1..=graph.generation())
-            .filter_map(|generation| kernel.test_graph_delta(generation).transpose())
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let graph_events = (1..=graph.generation())
+        let graph_events = (1..=kernel.snapshot().generation())
             .filter_map(|generation| kernel.test_graph_event(generation).transpose())
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let graph_ticket = kernel.test_graph_ticket(&ticket.ticket_id)?;
-        let graph_idempotency = kernel.test_graph_idempotency_generation(&format!(
-            "coordination-commit:{ROW_8_CHANGE_SET_ID}"
-        ))?;
-        let mut fence_states = BTreeMap::new();
-        for resource_key in change_set
-            .inferred_scope
-            .as_ref()
-            .expect("row-8 inferred scope after recovery")
-            .reservation_keys
-            .iter()
-        {
-            fence_states.insert(resource_key.clone(), kernel.test_fence_state(resource_key)?);
-        }
-        let (live_resource_clocks, durable_resource_clocks) = kernel.test_all_resource_clocks()?;
-        let graph_counts = kernel.test_graph_table_counts()?;
-        let coordination_counts = kernel.test_coordination_table_counts()?;
-        let metadata = kernel.test_recovery_metadata()?;
-        let scheduler_revisions = kernel.test_scheduler_revisions()?;
 
         let mut replacements = BTreeMap::from([
             (ticket.ticket_id.clone(), "<ticket-id>".to_owned()),
@@ -387,51 +380,12 @@ impl CrashAtomicState {
         }
 
         let state = serde_json::json!({
-            "graph": snapshot,
-            "graphDigest": graph.digest(),
-            "graphCounts": {
-                "generation": graph_counts.0,
-                "digest": graph_counts.1,
-                "operations": graph_counts.2,
-                "events": graph_counts.3,
-            },
-            "operations": operations,
-            "deltas": deltas,
-            "graphEvents": graph_events,
-            "graphTicket": graph_ticket,
-            "graphIdempotency": graph_idempotency,
-            "changeSet": change_set,
-            "ticket": ticket,
-            "offer": offer,
-            "claims": claims,
-            "coordinationEvents": coordination_events,
-            "publicationAttempt": publication_attempt,
-            "fenceStates": fence_states,
-            "liveResourceClocks": live_resource_clocks,
-            "durableResourceClocks": durable_resource_clocks,
-            "schedulerRevisions": scheduler_revisions,
-            "coordinationCounts": {
-                "changeSets": coordination_counts.change_sets,
-                "intents": coordination_counts.intents,
-                "tickets": coordination_counts.tickets,
-                "readyOffers": coordination_counts.ready_offers,
-                "activeClaims": coordination_counts.active_claims,
-                "events": coordination_counts.events,
-                "eventIds": coordination_counts.event_ids,
-                "eventCursors": coordination_counts.event_cursors,
-                "submissionIdempotency": coordination_counts.submission_idempotency,
-                "publicationAttempts": coordination_counts.publication_attempts,
-                "metadata": coordination_counts.metadata,
-            },
-            "recoveryMetadata": {
-                "nextQueueSequence": metadata.next_queue_sequence,
-                "currentEventSequence": metadata.current_event_sequence,
-                "schedulerRevision": metadata.scheduler_revision,
-                "latestLifecycleRevision": metadata.latest_lifecycle_revision,
-                "clockedPublicationGeneration": metadata.clocked_publication_generation,
-                "recoveryValidationVersion": metadata.recovery_validation_version,
-            },
-            "serviceEpoch": kernel.service_epoch(),
+            "projection": projection,
+            "rowEightChangeSet": change_set,
+            "rowEightTicket": ticket,
+            "rowEightOffer": offer,
+            "rowEightPublicationAttempt": publication_attempt,
+            "rowEightCoordinationEvents": coordination_events,
         });
         Ok(Self {
             normalized: normalize_crash_state(state, &replacements),

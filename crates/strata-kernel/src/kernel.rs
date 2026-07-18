@@ -749,6 +749,165 @@ impl Kernel {
         self.store.fence_state(resource)
     }
 
+    /// A canonical, offline-safe projection of every durable atomic-state
+    /// primitive this kernel tracks: the committed graph, its per-generation
+    /// history (operations, deltas, digests, graph events), every discoverable
+    /// change set with its intents, in-flight coordination artifacts (tickets,
+    /// ready offers, active claims), the graph-level idempotency record for
+    /// each discovered change set, fence and resource-clock state for every
+    /// reservation key those artifacts reference, scheduler revisions, and
+    /// table counts.
+    ///
+    /// This is the shared library core behind two callers: the row-8 crash
+    /// acceptance test (`CrashAtomicState` in
+    /// `tests/full_key_free_acceptance.rs`), which layers claim-scoped,
+    /// test-only bits on top (the specific claim under test, its publication
+    /// attempt, and the ID-normalization used to compare crash boundaries),
+    /// and the `export-snapshot --state-out` CLI subcommand, which writes this
+    /// projection verbatim as the crash-harness oracle. Change sets, tickets,
+    /// ready offers, and claims are discovered generically (from committed
+    /// operations plus every live ticket/offer/claim) rather than assumed from
+    /// a single known change-set ID, since an offline export has no such
+    /// context.
+    #[doc(hidden)]
+    #[cfg(feature = "redb-spike-api")]
+    pub fn test_atomic_state_projection(&self) -> Result<serde_json::Value> {
+        let graph = self.snapshot();
+        let snapshot = graph.snapshot();
+        let generation = graph.generation();
+
+        let operations = (1..=generation)
+            .filter_map(|g| self.operation(g).transpose())
+            .collect::<Result<Vec<_>>>()?;
+        let deltas = (1..=generation)
+            .filter_map(|g| self.test_graph_delta(g).transpose())
+            .collect::<Result<Vec<_>>>()?;
+        let generation_digests = (1..=generation)
+            .map(|g| Ok((g.to_string(), self.store.generation_digest(g)?)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        let graph_events = (1..=generation)
+            .filter_map(|g| self.test_graph_event(g).transpose())
+            .collect::<Result<Vec<_>>>()?;
+
+        // `all_tickets` (not `active_tickets`) so terminal tickets for
+        // committed change sets stay in the projection; ready offers and
+        // active claims have no durable "all" history by design (they are
+        // consumed once claimed/published), so their live enumeration is
+        // already the maximal library-expressible surface.
+        let all_tickets = self.store.coordination().all_tickets()?;
+        let ready_offers = self.store.coordination().ready_offers()?;
+        let active_claims = self.store.coordination().active_claims()?;
+
+        let mut change_set_ids: BTreeSet<String> = BTreeSet::new();
+        for operation in &operations {
+            change_set_ids.insert(operation.change_set_id.clone());
+        }
+        for ticket in &all_tickets {
+            change_set_ids.insert(ticket.change_set_id.clone());
+        }
+        for offer in &ready_offers {
+            change_set_ids.insert(offer.change_set_id.clone());
+        }
+        for claim in &active_claims {
+            change_set_ids.insert(claim.change_set_id.clone());
+        }
+
+        let mut change_sets = Vec::new();
+        let mut intents_by_change_set = BTreeMap::new();
+        let mut idempotency_generations = BTreeMap::new();
+        for change_set_id in &change_set_ids {
+            if let Some(change_set) = self.change_set(change_set_id)? {
+                let intents = self.intents_for_change_set_bounded(change_set_id, 256)?;
+                intents_by_change_set.insert(change_set_id.clone(), intents);
+                change_sets.push(change_set);
+            }
+            let commit_key = crate::coordination::coordination_commit_key(change_set_id);
+            if let Some(commit_generation) = self.test_graph_idempotency_generation(&commit_key)? {
+                idempotency_generations.insert(commit_key, commit_generation);
+            }
+        }
+
+        let mut reservation_keys: BTreeSet<String> = BTreeSet::new();
+        for ticket in &all_tickets {
+            reservation_keys.extend(ticket.reservation_keys.iter().cloned());
+        }
+        for claim in &active_claims {
+            reservation_keys.extend(claim.reservation_keys.iter().cloned());
+        }
+        let mut fence_states = BTreeMap::new();
+        for key in reservation_keys {
+            let state = self.test_fence_state(&key)?;
+            fence_states.insert(key, state);
+        }
+
+        let mut publication_attempts = BTreeMap::new();
+        for claim in &active_claims {
+            if claim.attempt_id.is_empty() {
+                continue;
+            }
+            if let Some(attempt) = self.publication_attempt(&claim.attempt_id)? {
+                publication_attempts.insert(claim.attempt_id.clone(), attempt);
+            }
+        }
+
+        let (live_resource_clocks, durable_resource_clocks) = self.test_all_resource_clocks()?;
+        let graph_table_counts = self.test_graph_table_counts()?;
+        let coordination_table_counts = self.test_coordination_table_counts()?;
+        let recovery_metadata = self.test_recovery_metadata()?;
+        let scheduler_revisions = self.test_scheduler_revisions()?;
+
+        Ok(serde_json::json!({
+            "graph": snapshot,
+            "graphDigest": graph.digest(),
+            "graphCounts": {
+                "generation": graph_table_counts.0,
+                "digest": graph_table_counts.1,
+                "operations": graph_table_counts.2,
+                "events": graph_table_counts.3,
+            },
+            "operations": operations,
+            "deltas": deltas,
+            "generationDigests": generation_digests,
+            "graphEvents": graph_events,
+            "changeSets": change_sets,
+            "intentsByChangeSet": intents_by_change_set,
+            "idempotencyGenerations": idempotency_generations,
+            "tickets": all_tickets,
+            "readyOffers": ready_offers,
+            "activeClaims": active_claims,
+            "publicationAttempts": publication_attempts,
+            "fenceStates": fence_states,
+            "liveResourceClocks": live_resource_clocks,
+            "durableResourceClocks": durable_resource_clocks,
+            "schedulerRevisions": {
+                "inMemory": scheduler_revisions.0,
+                "durable": scheduler_revisions.1,
+            },
+            "coordinationCounts": {
+                "changeSets": coordination_table_counts.change_sets,
+                "intents": coordination_table_counts.intents,
+                "tickets": coordination_table_counts.tickets,
+                "readyOffers": coordination_table_counts.ready_offers,
+                "activeClaims": coordination_table_counts.active_claims,
+                "events": coordination_table_counts.events,
+                "eventIds": coordination_table_counts.event_ids,
+                "eventCursors": coordination_table_counts.event_cursors,
+                "submissionIdempotency": coordination_table_counts.submission_idempotency,
+                "publicationAttempts": coordination_table_counts.publication_attempts,
+                "metadata": coordination_table_counts.metadata,
+            },
+            "recoveryMetadata": {
+                "nextQueueSequence": recovery_metadata.next_queue_sequence,
+                "currentEventSequence": recovery_metadata.current_event_sequence,
+                "schedulerRevision": recovery_metadata.scheduler_revision,
+                "latestLifecycleRevision": recovery_metadata.latest_lifecycle_revision,
+                "clockedPublicationGeneration": recovery_metadata.clocked_publication_generation,
+                "recoveryValidationVersion": recovery_metadata.recovery_validation_version,
+            },
+            "serviceEpoch": self.service_epoch(),
+        }))
+    }
+
     fn from_parts(
         store: DurableStore,
         graph: Arc<GraphGeneration>,

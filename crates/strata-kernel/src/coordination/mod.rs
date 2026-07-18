@@ -27,6 +27,8 @@ pub use authority::{
 #[cfg(not(feature = "coordination-test-api"))]
 pub(crate) use authority::{CandidateEnvelope, PreparedCandidate};
 pub(crate) use authority::{SemanticProvider, canonical_candidate_digest};
+#[cfg(feature = "redb-spike-api")]
+pub(crate) use coordinator::coordination_commit_key;
 pub use coordinator::{
     BeginChangeSet, CLAIM_TTL_TICKS, CancellationOutcome, DRAFT_TTL_TICKS, MAX_RENAMED_SYMBOLS,
     MAX_WAKE_AFFECTED_NODE_IDS, READY_OFFER_TTL_TICKS, fold_operation_renames,

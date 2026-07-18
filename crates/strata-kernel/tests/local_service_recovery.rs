@@ -11,9 +11,10 @@ use tempfile::TempDir;
 
 #[cfg(feature = "coordination-test-api")]
 use strata_kernel::{
-    BeginChangeSet, ClaimOutcome, IntentParameters, Kernel, NodeBridgeConfig, PublishClaimOutcome,
+    BeginChangeSet, ClaimOutcome, IntentParameters, NodeBridgeConfig, PublishClaimOutcome,
     SubmissionOutcome,
 };
+use strata_kernel::{GraphSnapshot, Kernel};
 
 const USER_ID: &str = "fc98295bca9efc3e";
 #[cfg(feature = "coordination-test-api")]
@@ -929,4 +930,157 @@ fn validation_failure_recovery_preserves_the_exact_diagnostic() {
     assert_validation_failure_recovery("after_effect");
     assert_validation_failure_recovery("after_prepared");
     assert_validation_failure_recovery("after_follow_up");
+}
+
+/// `export-snapshot` is the offline oracle for the parity/crash harness: seed
+/// a service, publish one rename, stop the daemon, and prove the CLI
+/// reproduces exactly what a fresh `Kernel::open` sees. `--state-out` is
+/// checked only when this test binary was built with `redb-spike-api` (the
+/// flag itself is rejected on other builds, exercised below by the same
+/// invocation), so this single test runs unmodified across the whole feature
+/// matrix.
+#[test]
+fn export_snapshot_matches_a_fresh_open_and_rejects_a_missing_database() {
+    let directory = tempfile::tempdir().unwrap();
+    let worker = bridge_worker();
+    let service = start(&directory, "export-snapshot-setup", &worker);
+    let change = send(
+        &service,
+        "begin",
+        "client:export",
+        Some("begin"),
+        json!({"type":"begin_change_set","reasoning":"export snapshot rename"}),
+    )["result"]["changeSetId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        send(
+            &service,
+            "add",
+            "client:export",
+            Some("add"),
+            json!({"type":"add_intent","changeSetId":change,"intent":{"type":"rename_symbol","declarationId":USER_ID,"newName":"Account"}}),
+        )["ok"],
+        true
+    );
+    assert_eq!(
+        send(
+            &service,
+            "submit",
+            "client:export",
+            Some("submit"),
+            json!({"type":"submit_change_set","changeSetId":change}),
+        )["ok"],
+        true
+    );
+    let advanced = send(
+        &service,
+        "advance",
+        "client:export",
+        Some("advance"),
+        json!({"type":"advance_change_set","changeSetId":change}),
+    );
+    assert_eq!(advanced["result"]["state"], "published", "{advanced}");
+    let db_path = directory.path().join("kernel.redb");
+    drop(service);
+
+    let out_path = directory.path().join("snapshot-out.json");
+    let state_out_path = directory.path().join("state-out.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
+        .args([
+            "export-snapshot",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--out",
+            out_path.to_str().unwrap(),
+            "--state-out",
+            state_out_path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    if cfg!(feature = "redb-spike-api") {
+        assert!(
+            output.status.success(),
+            "export-snapshot failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let snapshot: GraphSnapshot = serde_json::from_slice(&fs::read(&out_path).unwrap())
+            .expect("--out must parse as a canonical GraphSnapshot");
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.payload.contains("Account")),
+            "exported snapshot must contain the renamed payload"
+        );
+
+        let stdout: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let (fresh, _) = Kernel::open(&db_path).unwrap();
+        let fresh_graph = fresh.snapshot();
+        assert_eq!(
+            stdout["generation"].as_str().unwrap(),
+            fresh_graph.generation().to_string()
+        );
+        assert_eq!(stdout["digest"].as_str().unwrap(), fresh_graph.digest());
+
+        let state: Value = serde_json::from_slice(&fs::read(&state_out_path).unwrap())
+            .expect("--state-out must parse as JSON");
+        let operations = state["operations"].as_array().unwrap();
+        assert_eq!(
+            operations
+                .iter()
+                .filter(|operation| operation["kind"] == "RenameSymbol")
+                .count(),
+            1,
+            "state projection: {state}"
+        );
+        let change_sets = state["changeSets"].as_array().unwrap();
+        assert_eq!(
+            change_sets
+                .iter()
+                .filter(|change_set| change_set["state"] == "committed")
+                .count(),
+            1,
+            "state projection: {state}"
+        );
+    } else {
+        assert!(
+            !output.status.success(),
+            "--state-out must be rejected on a non-redb-spike-api build"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("redb-spike-api"),
+            "expected a redb-spike-api error, got: {stderr}"
+        );
+        assert!(
+            !state_out_path.exists(),
+            "a rejected --state-out must not write a file"
+        );
+    }
+
+    let missing_db = directory.path().join("does-not-exist.redb");
+    let missing_out = directory.path().join("missing-out.json");
+    let missing = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
+        .args([
+            "export-snapshot",
+            "--db",
+            missing_db.to_str().unwrap(),
+            "--out",
+            missing_out.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !missing.status.success(),
+        "export-snapshot against a nonexistent database must fail"
+    );
+    assert!(
+        !missing_out.exists(),
+        "a nonexistent database must not write an out file"
+    );
 }

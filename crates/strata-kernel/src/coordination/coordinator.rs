@@ -1001,7 +1001,13 @@ impl Kernel {
         ))
     }
 }
-pub(super) fn coordination_commit_key(change_set_id: &str) -> String {
+/// The graph-level idempotency key a committed change set's publication is
+/// recorded under. `pub(crate)` (not `pub(super)`) because the atomic-state
+/// projection (`Kernel::test_atomic_state_projection`, `redb-spike-api`) reads
+/// it from `kernel.rs` at the crate root to recover idempotency generations
+/// for every change set it discovers, alongside its normal use inside this
+/// module's commit path.
+pub(crate) fn coordination_commit_key(change_set_id: &str) -> String {
     format!("coordination-commit:{change_set_id}")
 }
 

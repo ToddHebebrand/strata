@@ -34,6 +34,7 @@ fn run() -> Result<()> {
     match command.to_str() {
         Some("serve") => serve(&remaining),
         Some("validate-socket") => validate_socket(&remaining),
+        Some("export-snapshot") => export_snapshot(&remaining),
         _ => bail!("unknown command; run with --help"),
     }
 }
@@ -112,6 +113,47 @@ fn validate_socket(arguments: &[OsString]) -> Result<()> {
     server::validate_socket_path(&path)
 }
 
+/// Offline oracle for the parity/crash harness: opens the redb store through
+/// the normal digest-verified recovery path (`Kernel::open`, no node bridge,
+/// no validation) and writes the canonical graph snapshot. Under
+/// `redb-spike-api`, `--state-out` additionally writes the atomic-state
+/// projection (`Kernel::test_atomic_state_projection`) — the same capture the
+/// row-8 crash acceptance test uses — as the crash oracle.
+fn export_snapshot(arguments: &[OsString]) -> Result<()> {
+    let values = parse_named(arguments)?;
+    reject_unknown(&values, &["--db", "--out", "--state-out"])?;
+    let db_path = required_path(&values, "--db")?;
+    let out_path = required_path(&values, "--out")?;
+    anyhow::ensure!(
+        db_path.exists(),
+        "database {} does not exist",
+        db_path.display()
+    );
+    let (kernel, _report) = strata_kernel::Kernel::open(&db_path)?;
+    let graph = kernel.snapshot();
+    std::fs::write(&out_path, serde_json::to_vec_pretty(&graph.snapshot())?)?;
+    #[cfg(feature = "redb-spike-api")]
+    if let Some(state_out) = values.get("--state-out") {
+        std::fs::write(
+            std::path::PathBuf::from(state_out),
+            serde_json::to_vec_pretty(&kernel.test_atomic_state_projection()?)?,
+        )?;
+    }
+    #[cfg(not(feature = "redb-spike-api"))]
+    anyhow::ensure!(
+        !values.contains_key("--state-out"),
+        "--state-out requires a redb-spike-api build"
+    );
+    println!(
+        "{}",
+        serde_json::json!({
+            "generation": graph.generation().to_string(),
+            "digest": graph.digest(),
+        })
+    );
+    Ok(())
+}
+
 fn reject_unknown(
     values: &std::collections::BTreeMap<String, OsString>,
     allowed: &[&str],
@@ -163,6 +205,6 @@ fn required_text(
 
 fn print_help() {
     println!(
-        "strata-kernel-service\n\nCommands:\n  serve --db PATH --snapshot PATH --bridge-worker PATH --source-root PATH --corpus-root PATH --socket-token TOKEN --audit PATH\n  validate-socket --socket PATH"
+        "strata-kernel-service\n\nCommands:\n  serve --db PATH --snapshot PATH --bridge-worker PATH --source-root PATH --corpus-root PATH --socket-token TOKEN --audit PATH\n  validate-socket --socket PATH\n  export-snapshot --db PATH --out PATH [--state-out PATH]"
     );
 }
