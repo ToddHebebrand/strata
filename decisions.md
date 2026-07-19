@@ -7,6 +7,49 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-19 — Gate 1 (key-free semantic parity) PASSED; slice A continues at gate 2
+
+**Result:** the convergence slice's first measurement gate is green end-to-end,
+key-free, on `examples/medium`: byte-level node/reference/rendered-tree parity
+between the kernel arm (redb sole durable authority, full coordination
+semantics, product-path scripted T03) and the SQLite product arm; external
+tsc+vitest equivalence on both rendered corpora; normalized audit-projection
+equality; crash injection at every reachable durable boundary with a full
+atomic-state + coordination-event oracle and exact idempotent replay; and
+second-client intrusion at every nominal solo stage with stage-specific FIFO
+oracles. Verification: `pnpm kernel:full-key-free:test` (bridge 16+3,
+acceptance 13, cargo matrix 112/191/266, api_sealing 2, gate-1 21/21) plus
+`pnpm -r test`, all green; final whole-branch review (41391e1..HEAD): "ready
+to merge", no Critical findings.
+
+**Surface additions landed (D1–D9 as amended):** `find_declarations` and
+`read_operation` wire requests + tools; self-contained canonical
+`OperationRecord` (embedded per-intent typed parameters, `#[serde(default)]`
+back-compat); `export-snapshot` offline oracle with `redb-spike-api`-gated
+atomic-state projection; fail-closed generation bounds
+(`boundedGenerationNumber`/`canonicalGenerationString`).
+
+**Execution-forced adaptations (each logged in its own entry or the plan):**
+Task 1 OperationRecord byte-hash expectations (newly written bytes only);
+Task 6 `renamedIdentifierIds` narrowing documented as an audit-projection
+choice with the raw superset asserted separately; Task 7 companion-intentReady
+positional drop (narrowest defensible); Task 8 disjoint target
+`formatTimestamp`; the two oracle adjudications (pre-submit direct-publish,
+2026-07-18; concurrent-advance kernel FIFO fix `502a43e`, below); two corpus
+contamination interludes (`4fe5d4b`, `a499717` — node_modules/.vite excluded
+from scans and scratch copies).
+
+**Logged follow-ups (final review, none gate-blocking):** `read_operation`
+intents wire bound aligned to session `MAX_INTENTS` (fixed in the cleanup
+commit alongside the `find_declarations` single-snapshot generation fix);
+daemon-layer coverage for the `OptimisticRetryExhausted` arm (coordinator-layer
+characterization accepted, shares `publish_claimed_inner`); the
+whole-scheduler-equality liveness residual (entry below); crash-suite env-var
+binary override plumbing; temp-dir crumbs.
+
+**What stays open:** gates 2–5 in order — per-stage observability next; no
+keyed spend before gate 5 and its explicit operator approval.
+
 ## 2026-07-19 — Concurrent-advance FIFO violation is a kernel defect (poll-driven starvation), fix approved; daemon error mislabeling fixed with it
 
 **Context:** Gate-1 Task 8's concurrent-advance case (both clients

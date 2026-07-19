@@ -96,8 +96,9 @@ rejected outright rather than silently truncated into an incorrect number.
 Add a read-only wire request and matching tool
 `find_declarations { name, kind? }` → bounded list of
 `{ nodeId, kind, name, moduleId }`, capped (fail-closed) at a small result
-limit, served from the in-memory declaration index against the current
-generation. This is the *minimal* discovery T03 needs — the exact capability
+limit, served by a per-query scan of the in-memory graph against the current
+generation (as implemented — O(nodes) per query, fine at this scale; amended
+2026-07-19 from "declaration index" per the final whole-branch review). This is the *minimal* discovery T03 needs — the exact capability
 the SQLite arm's `find_declarations` provides — not slice B's discovery
 worldview (no semantic search, no module listing, no subtree reads).
 `inspect_nodes` remains the bounded inspection/reference read.
