@@ -200,13 +200,22 @@ importers:
       '@strata-code/ingest':
         specifier: workspace:*
         version: link:../ingest
+      '@strata-code/kernel-bridge':
+        specifier: workspace:*
+        version: link:../kernel-bridge
+      '@strata-code/render':
+        specifier: workspace:*
+        version: link:../render
+      '@strata-code/store':
+        specifier: workspace:*
+        version: link:../store
+      '@strata-code/verify':
+        specifier: workspace:*
+        version: link:../verify
       zod:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@strata-code/kernel-bridge':
-        specifier: workspace:*
-        version: link:../kernel-bridge
       '@types/node':
         specifier: ^22.15.29
         version: 22.19.19

@@ -3,6 +3,7 @@ export * from "./artifacts.js";
 export * from "./baseline.js";
 export * from "./cli.js";
 export * from "./client.js";
+export * from "./gate1.js";
 export * from "./orchestrator.js";
 export * from "./runner.js";
 export * from "./schedule.js";

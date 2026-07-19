@@ -13,7 +13,8 @@
     "kernel:test": "cargo test -p strata-kernel",
     "kernel:bridge:build": "pnpm --filter @strata-code/kernel-bridge build && cargo build -p strata-kernel",
     "kernel:bridge:test": "pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/kernel-bridge test && cargo test -p strata-kernel --test node_bridge -- --ignored --nocapture",
-    "kernel:full-key-free:test": "pnpm kernel:bridge:test && cargo test -p strata-kernel --features redb-spike-api --test full_key_free_acceptance -- --include-ignored --nocapture && cargo test -p strata-kernel && cargo test -p strata-kernel --features coordination-test-api && cargo test -p strata-kernel --features redb-spike-api && cargo test -p strata-kernel --test api_sealing -- --nocapture",
+    "kernel:full-key-free:test": "pnpm kernel:bridge:test && cargo test -p strata-kernel --features redb-spike-api --test full_key_free_acceptance -- --include-ignored --nocapture && cargo test -p strata-kernel && cargo test -p strata-kernel --features coordination-test-api && cargo test -p strata-kernel --features redb-spike-api && cargo test -p strata-kernel --test api_sealing -- --nocapture && pnpm kernel:gate1:test",
+    "kernel:gate1:test": "pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel && cargo build -p strata-kernel --features redb-spike-api && pnpm --filter @strata-code/live-compare test gate1",
     "live-compare:test": "pnpm --filter @strata-code/live-compare test",
     "live-compare:dry-run": "pnpm --filter @strata-code/live-compare build && node packages/live-compare/dist/cli.js dry-run",
     "live-compare:run": "pnpm --filter @strata-code/live-compare build && node packages/live-compare/dist/cli.js run"

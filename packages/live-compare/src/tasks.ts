@@ -513,13 +513,25 @@ export function canonicalGenerationString(value: number): string {
   return String(value);
 }
 
-export function createQualifiedKernelSnapshot(corpusRootInput: string) {
+/**
+ * The single corpus-input domain shared by BOTH convergence arms (review
+ * blocker 2): every `src/**.ts` file, keyed by its corpus-relative POSIX path.
+ * Node IDs hash the module path (`packages/store/src/ids.ts`), so ingesting
+ * this exact input domain in the SQLite arm and seeding the kernel from it
+ * produces the same node IDs — the precondition for "same ingest, same IDs".
+ * `createQualifiedKernelSnapshot` and `gate1.ts`'s `runSqliteArm` both call
+ * this so there is literally one input domain.
+ */
+export function buildCorpusInputs(corpusRootInput: string): { path: string; text: string }[] {
   const corpusRoot = resolve(corpusRootInput);
-  const inputs = filesBelow(join(corpusRoot, "src"), (path) => path.endsWith(".ts")).map((absolute) => ({
+  return filesBelow(join(corpusRoot, "src"), (path) => path.endsWith(".ts")).map((absolute) => ({
     path: posix(relative(corpusRoot, absolute)),
     text: readFileSync(absolute, "utf8")
   }));
-  const snapshot = toKernelSnapshot(ingestBatch(inputs));
+}
+
+export function createQualifiedKernelSnapshot(corpusRootInput: string) {
+  const snapshot = toKernelSnapshot(ingestBatch(buildCorpusInputs(corpusRootInput)));
   return {
     ...snapshot,
     generation: boundedGenerationNumber(snapshot.generation)
