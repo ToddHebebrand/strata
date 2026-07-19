@@ -577,6 +577,12 @@ impl Kernel {
 
     #[doc(hidden)]
     #[cfg(feature = "coordination-test-api")]
+    pub fn test_coordination_event(&self, sequence: u64) -> Result<Option<crate::CoordinationEvent>> {
+        self.store.coordination().event(sequence)
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
     pub fn test_scheduler_revisions(&self) -> Result<(u64, u64)> {
         let scheduler = self
             .scheduler
@@ -869,6 +875,14 @@ impl Kernel {
         let recovery_metadata = self.test_recovery_metadata()?;
         let scheduler_revisions = self.test_scheduler_revisions()?;
 
+        // Full coordination-event records (not just the count), sequences are
+        // contiguous 1..=current_event_sequence (see `append_event`), so this
+        // mirrors `graph_events` above and lets the TS oracle compare the
+        // coordination-event stream record-by-record instead of dropping it.
+        let coordination_events = (1..=recovery_metadata.current_event_sequence)
+            .filter_map(|sequence| self.test_coordination_event(sequence).transpose())
+            .collect::<Result<Vec<_>>>()?;
+
         Ok(serde_json::json!({
             "graph": snapshot,
             "graphDigest": graph.digest(),
@@ -882,6 +896,7 @@ impl Kernel {
             "deltas": deltas,
             "generationDigests": generation_digests,
             "graphEvents": graph_events,
+            "coordinationEvents": coordination_events,
             "changeSets": change_sets,
             "intentsByChangeSet": intents_by_change_set,
             "idempotencyGenerations": idempotency_generations,

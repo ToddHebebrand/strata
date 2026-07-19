@@ -137,9 +137,10 @@ function reopenAndExport(directory: string): { graph: ExportedGraph; state: unkn
 //  (A) Strip the fields that legitimately vary with the recovery-cycle count.
 //      Everything NOT stripped compares byte-for-byte after ID mapping: graph,
 //      graphDigest, graphCounts, operations (full canonical history), deltas,
-//      generationDigests, graphEvents, changeSets (incl. state), intents,
-//      idempotencyGenerations, tickets, graphTickets, publicationAttempts,
-//      fenceStates, resource clocks, and the stable coordinationCounts.
+//      generationDigests, graphEvents, coordinationEvents (minus the recovery
+//      kinds below), changeSets (incl. state), intents, idempotencyGenerations,
+//      tickets, graphTickets, publicationAttempts, fenceStates, resource
+//      clocks, and the stable coordinationCounts.
 //
 //        serviceEpoch        — monotonic per-open recovery counter; reference
 //                              and crashed store are reopened a different number
@@ -149,18 +150,113 @@ function reopenAndExport(directory: string): { graph: ExportedGraph; state: unkn
 //                              same recovery cycles (nextQueueSequence,
 //                              currentEventSequence, schedulerRevision,
 //                              latestLifecycleRevision, ...).
-//        coordinationCounts.events / eventIds / eventCursors — each recovery
-//                              emits a service-epoch transition event, so the
-//                              coordination event COUNT tracks recovery cycles.
+//        coordinationCounts.events / eventIds / eventCursors — raw durable
+//                              table sizes, so (like recoveryMetadata) they
+//                              still track the recovery-cycle count even
+//                              though the events themselves are now compared
+//                              at the record level below; keeping these three
+//                              scalar counts would just re-encode the same
+//                              cycle-count noise the other STRIPPED_TOP_LEVEL
+//                              fields already account for.
+//        coordinationEvents kinds in STRIPPED_COORDINATION_EVENT_KINDS, plus
+//                              their recovery-replan companions — the actual
+//                              per-event RECORDS are compared (ID-mapped,
+//                              order-sensitive) so a duplicated or dropped
+//                              coordination event no longer escapes the
+//                              oracle; only the specific events that recovery
+//                              itself legitimately emits are filtered out
+//                              first, and only after asserting each one
+//                              really has the recovery shape (see
+//                              filterCoordinationEvents below) — a genuine,
+//                              non-recovery event is never silently dropped
+//                              by this filter. Each surviving event's own
+//                              `sequence` (a store-wide durable counter, not
+//                              business content) is also dropped — like
+//                              `recoveryMetadata.currentEventSequence`, its
+//                              absolute value mechanically shifts by however
+//                              many recovery events preceded it, and the
+//                              array's preserved append order already carries
+//                              the same ordering information.
 //
 //  (B) Map random IDs to ordinal placeholders (mirrors normalize_crash_state in
 //      tests/full_key_free_acceptance.rs): change-set / intent / ticket /
-//      operation / graph-event / ready-offer / claim / attempt IDs and the
-//      per-change-set idempotency commit key. Deterministic because our N=1
-//      scenario has at most one of each and history is generation-ordered.
+//      operation / graph-event / coordination-event / ready-offer / claim /
+//      attempt IDs and the per-change-set idempotency commit key.
+//      Deterministic because our N=1 scenario has at most one of each and
+//      history is generation-ordered.
 // ---------------------------------------------------------------------------
 const STRIPPED_TOP_LEVEL = ["serviceEpoch", "schedulerRevisions", "recoveryMetadata"] as const;
 const STRIPPED_COORDINATION_COUNTS = ["events", "eventIds", "eventCursors"] as const;
+
+// Coordination-event kinds that a clean-restart recovery cycle itself emits
+// (`begin_service_epoch_and_recover_coordination_inner` in
+// crates/strata-kernel/src/coordination/durable.rs resets every recoverable
+// Ready/Executing change set to Queued and appends one `LeaseExpired` event
+// per change set, carrying `{oldServiceEpoch, newServiceEpoch}`). The
+// reference and crash captures go through a different number of these cycles,
+// so events of this kind legitimately differ in count/content and are
+// filtered before the record-level compare. Note `LeaseExpired` is also the
+// real event kind for genuine claim/offer TTL expiry — this T03 rename suite
+// never drives a tick far enough to trigger one, and `filterCoordinationEvents`
+// asserts the epoch-transition payload shape on every event it drops so a
+// genuine (non-recovery) `leaseExpired` event would fail loudly instead of
+// silently vanishing.
+const STRIPPED_COORDINATION_EVENT_KINDS = ["leaseExpired"] as const;
+
+/**
+ * Drop recovery-emitted coordination events before the record-level compare.
+ *
+ * Two things happen on every real (node-bridge-backed) daemon open, back to
+ * back and only when recovery actually requeues something
+ * (`Kernel::open_with_node_bridge` in crates/strata-kernel/src/kernel.rs):
+ *   1. Recovery resets each recoverable Ready/Executing change set to Queued
+ *      and appends a `leaseExpired` event (see STRIPPED_COORDINATION_EVENT_KINDS).
+ *   2. `open_with_node_bridge` synchronously replans right after
+ *      (`plan_and_apply_readiness(0, TransitionCause::Restart, None)`), and
+ *      for a change set with nothing left blocking it that immediately
+ *      re-derives Ready and appends a companion `intentReady` event (empty
+ *      payload, same changeSetId) directly after the leaseExpired event.
+ * Both are byproducts of the SAME recovery pass the reference capture never
+ * goes through, so both are stripped — the leaseExpired unconditionally
+ * (after asserting its epoch-transition payload shape), the companion
+ * intentReady ONLY when it immediately follows a stripped leaseExpired for
+ * the same change set with the exact empty-payload shape, so a genuine
+ * (independently-submitted) intentReady is never dropped by this rule.
+ */
+function filterCoordinationEvents(events: any[]): any[] {
+  const dropped = new Set<number>();
+  events.forEach((event, index) => {
+    if (!(STRIPPED_COORDINATION_EVENT_KINDS as readonly string[]).includes(event.kind)) return;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(event.payloadJson);
+    } catch {
+      payload = undefined;
+    }
+    const isRecoveryShaped =
+      !!payload &&
+      typeof payload === "object" &&
+      typeof (payload as any).oldServiceEpoch === "number" &&
+      typeof (payload as any).newServiceEpoch === "number";
+    expect(
+      isRecoveryShaped,
+      `stripped coordination event of kind "${event.kind}" (id ${event.eventId}) must carry the ` +
+        "recovery epoch-transition payload {oldServiceEpoch, newServiceEpoch}; a genuinely-differing " +
+        "non-recovery event of this kind must NOT be dropped"
+    ).toBe(true);
+    dropped.add(index);
+    const companion = events[index + 1];
+    if (
+      companion &&
+      companion.kind === "intentReady" &&
+      companion.changeSetId === event.changeSetId &&
+      companion.payloadJson === "{}"
+    ) {
+      dropped.add(index + 1);
+    }
+  });
+  return events.filter((_, index) => !dropped.has(index)).map(({ sequence: _sequence, ...rest }) => rest);
+}
 
 function buildReplacements(projection: any): Map<string, string> {
   const replacements = new Map<string, string>();
@@ -188,6 +284,13 @@ function buildReplacements(projection: any): Map<string, string> {
   );
   (projection.graphEvents ?? []).forEach((event: any, index: number) =>
     add(event.eventId, `<graph-event:${index}>`)
+  );
+  // Ordinal indices here are assigned AFTER normalizeProjection has already
+  // filtered out the recovery-emitted events (see filterCoordinationEvents),
+  // so the surviving, business-meaningful events line up ordinally between
+  // the reference and crash captures the same way graphEvents/operations do.
+  (projection.coordinationEvents ?? []).forEach((event: any, index: number) =>
+    add(event.eventId, `<coordination-event:${index}>`)
   );
   (projection.readyOffers ?? []).forEach((offer: any, index: number) => {
     add(offer.offerId, `<offer:${index}>`);
@@ -240,6 +343,9 @@ function normalizeProjection(input: unknown): unknown {
   for (const field of STRIPPED_TOP_LEVEL) delete projection[field];
   if (projection.coordinationCounts) {
     for (const field of STRIPPED_COORDINATION_COUNTS) delete projection.coordinationCounts[field];
+  }
+  if (Array.isArray(projection.coordinationEvents)) {
+    projection.coordinationEvents = filterCoordinationEvents(projection.coordinationEvents);
   }
   return normalizeValue(projection, buildReplacements(projection));
 }
