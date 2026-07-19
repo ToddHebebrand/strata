@@ -182,13 +182,13 @@ function readModuleMap(treeRoot: string): Map<string, string> {
  */
 async function exportRenderVerify(
   directory: string
-): Promise<{ digest: string; green: boolean; criteria: Record<string, boolean>; modules: Map<string, string> }> {
+): Promise<{ digest: string; green: boolean; criteria: Record<string, boolean> }> {
   const { snapshot, digest } = exportKernelSnapshot(directory);
   const rendered = renderSnapshotToTree(snapshot, corpus, mkdtempSync(join(tmpdir(), "strata-gate1-intr-")));
   cleanup.push(rendered);
   const green = await tscAndVitestGreen(rendered);
   const criteria = evaluateT03TextCriteria(readModuleMap(rendered)) as unknown as Record<string, boolean>;
-  return { digest, green, criteria, modules: readModuleMap(rendered) };
+  return { digest, green, criteria };
 }
 
 // ===========================================================================
@@ -326,7 +326,8 @@ describe("gate 1: second-client intrusion — stage-specific FIFO oracles", () =
     test(
       `disjoint intrusion at ${stage}: both renames land independently, tree green`,
       async () => {
-        let intruderPublished = false;
+        let intruderOperationId: string | undefined;
+        let intruderGeneration: string | undefined;
         let userModuleId: string | undefined;
         let formatModuleId: string | undefined;
 
@@ -345,14 +346,18 @@ describe("gate 1: second-client intrusion — stage-specific FIFO oracles", () =
               DISJOINT_NEW,
               "B renames formatTimestamp to formatTimestampAudit"
             );
-            intruderPublished = committed.submitState !== undefined; // populated => published (commitIntruder asserts published)
+            intruderOperationId = committed.operationId;
+            intruderGeneration = committed.generation;
           }
         });
         cleanup.push(outcome.renderedRoot, outcome.directory);
 
         // A published (runKernelArmT03 returns only on a published commit), and
-        // B's disjoint rename committed against a DIFFERENT module.
-        expect(intruderPublished).toBe(true);
+        // B's disjoint rename committed against a DIFFERENT module — a real
+        // committed operation, not just a defined submit response.
+        expect(typeof intruderOperationId).toBe("string");
+        expect(intruderOperationId!.length).toBeGreaterThan(0);
+        expect(typeof intruderGeneration).toBe("string");
         expect(userModuleId).toBeDefined();
         expect(formatModuleId).toBeDefined();
         expect(userModuleId).not.toBe(formatModuleId);
@@ -375,23 +380,13 @@ describe("gate 1: second-client intrusion — stage-specific FIFO oracles", () =
   // first => older), then both advance via Promise.allSettled. The brief oracle
   // says the durable queue order REQUIRES A to win; B must yield needs_decision.
   //
-  // *** FALSIFIED (2026-07-19) — see task-8-report.md, status BLOCKED. ***
-  // Observed, DETERMINISTICALLY (reproduced with scratch scripts, 3-4/4 each and
-  // independent of Promise.allSettled array order): under a truly simultaneous
-  // advance dead-heat the YOUNGER ticket B wins (published @gen 1) and the OLDER
-  // ticket A loses via `validation_failed` (candidate_validation_failed) — the
-  // opposite of the brief's submit-order FIFO. Giving A a one-advance head start
-  // restores A-wins/B-needs_decision, proving the winner is claim-race order, not
-  // durable submit order. Mechanism: the daemon spawns a thread per connection
-  // (server.rs:53) and the scheduler's older-overlap rule (scheduler.rs:291) only
-  // coordinates tickets WITHIN one select_ready call — two racing connection
-  // threads defeat it, and A's gen-0 candidate is fenced out as a validation
-  // failure rather than routed to a clean needs_decision. Safety still holds
-  // (exactly one rename commits, no silent overwrite, final tree green), but
-  // "A must win" does not. This assertion is intentionally left as the brief
-  // specifies so the failure documents the contradiction pending an owner
-  // decision (correct the oracle, as the pre-submit oracle was, OR treat as a
-  // kernel FIFO defect). Do NOT weaken it to pass.
+  // The required winner derives from durable submit order: A submitted first
+  // (older), so A wins the claim and B yields needs_decision. This exact case
+  // used to expose a poll-driven starvation defect — blocked-ticket age bumps
+  // churned the scheduler revision until the older claim's optimistic
+  // publication retries exhausted, mislabeled as candidate_validation_failed —
+  // fixed in 502a43e (planner age-only reconsideration idempotence + daemon
+  // OptimisticRetryExhausted taxonomy). See decisions.md 2026-07-19.
   // -------------------------------------------------------------------------
   test(
     "concurrent advances: durable-queue order forces A to win, B yields needs_decision",
