@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildValidateCandidate } from "@strata-code/kernel-bridge";
 import {
   APPROVED_CORPUS_VARIANT,
+  APPROVED_TASK_REGISTRATION_DIGEST,
   assertApprovedTaskManifest,
   baselineTaskPrompt,
   boundedGenerationNumber,
@@ -190,6 +191,33 @@ describe("Phase-6 task qualification", () => {
       "utf8"
     );
     expect(() => createQualifiedTaskManifest(typeOnly)).toThrow(/value-capable|source digest/);
+  });
+
+  it("ignores a stray node_modules/.vite Vitest run-cache when computing the registration digest", () => {
+    const copy = mkdtempSync(join(tmpdir(), "strata-task-nodemodules-"));
+    temporary.push(copy);
+    cpSync(corpusRoot, copy, { recursive: true });
+    rmSync(join(copy, "node_modules"), { recursive: true, force: true });
+    const clean = createQualifiedTaskManifest(copy);
+    expect(clean.registrationDigest).toBe(APPROVED_TASK_REGISTRATION_DIGEST);
+
+    const cacheDir = join(copy, "node_modules/.vite/vitest/da39a3ee5e6b4b0d3255bfef95601890afd80709");
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(
+      join(cacheDir, "results.json"),
+      JSON.stringify({
+        version: "3.2.4",
+        results: [
+          [":tests/format.test.ts", { duration: Math.random() * 10, failed: false }],
+          [":tests/dateRange.test.ts", { duration: Math.random() * 10, failed: true }]
+        ]
+      }),
+      "utf8"
+    );
+    const polluted = createQualifiedTaskManifest(copy);
+    expect(polluted.registrationDigest).toBe(clean.registrationDigest);
+    expect(polluted.registrationDigest).toBe(APPROVED_TASK_REGISTRATION_DIGEST);
+    expect(Object.keys(polluted.frozenTreeFiles).some((path) => path.startsWith("node_modules/"))).toBe(false);
   });
 
   it("keeps every persisted statement ID derived from its unchanged physical Module path", () => {

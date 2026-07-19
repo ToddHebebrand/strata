@@ -123,10 +123,20 @@ function posix(value: string): string {
   return value.split(sep).join("/");
 }
 
+/**
+ * Well-known dependency/cache directory names excluded from every corpus
+ * tree walk, at any depth. Fail-closed and narrow on purpose: these are
+ * local, gitignored artifacts (installed packages, tool run-caches) that
+ * are never part of the registered/frozen corpus content, so their
+ * presence or absence must never perturb a computed digest.
+ */
+const EXCLUDED_DIRECTORY_NAMES = new Set(["node_modules", ".vite"]);
+
 function filesBelow(root: string, predicate: (path: string) => boolean): string[] {
   const result: string[] = [];
   const visit = (directory: string): void => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isDirectory() && EXCLUDED_DIRECTORY_NAMES.has(entry.name)) continue;
       const path = join(directory, entry.name);
       if (entry.isDirectory()) visit(path);
       else if (predicate(path)) result.push(path);
