@@ -191,7 +191,12 @@ function behavioralMedium(): {
 } {
   const root = mkdtempSync(path.join(tmpdir(), "strata-candidate-medium-"));
   temporaryRoots.push(root);
-  cpSync(corpusRoot, root, { recursive: true });
+  // A stale vitest cache (node_modules/.vite) in the shared corpus breaks the
+  // spawned behavioral run in the scratch copy — never copy install/cache dirs.
+  cpSync(corpusRoot, root, {
+    recursive: true,
+    filter: (source) => path.basename(source) !== "node_modules"
+  });
   writeFileSync(
     path.join(root, "tests", "bridge-passing.test.ts"),
     'import { expect, it } from "vitest";\n' +
