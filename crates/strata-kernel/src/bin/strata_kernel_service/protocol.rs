@@ -19,7 +19,13 @@ const MAX_TEXT_BYTES: usize = 16_384;
 const MAX_ARRAY_ITEMS: usize = 256;
 const MAX_DIAGNOSTICS: usize = 64;
 const MAX_EVENT_LIMIT: u32 = 256;
-const MAX_OPERATION_INTENTS: usize = 16;
+// Must stay >= session.rs's MAX_INTENTS (currently 256) cap on intents per
+// change set, or a legitimately committed change set at that cap would
+// produce a `read_operation` response that this validator rejects forever.
+// Not imported directly: `tests/local_service.rs` compiles this module
+// standalone via `#[path] mod protocol;` without a sibling `session` module,
+// so the two constants are kept in sync by hand instead.
+const MAX_OPERATION_INTENTS: usize = 256;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct WireU64(u64);
@@ -986,4 +992,54 @@ fn validate_digest(value: &str) -> Result<()> {
         bail!("publicationDigest must be 64 lowercase hexadecimal characters");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A legitimately committed change set may carry up to the session's
+    /// `MAX_INTENTS` (256) intents; the `read_operation` response validator
+    /// must accept exactly that many and reject one more. This pins the
+    /// finding that `MAX_OPERATION_INTENTS` must track `MAX_INTENTS`.
+    fn operation_result_with_intents(count: usize) -> ResponseResult {
+        ResponseResult::Operation {
+            graph_generation: WireU64::new(1),
+            operation_id: "operation:test".to_string(),
+            change_set_id: "changeset:test".to_string(),
+            actor: "actor:test".to_string(),
+            kind: "RenameSymbol".to_string(),
+            reasoning: "test".to_string(),
+            affected_node_ids: Vec::new(),
+            renames: Vec::new(),
+            intents: (0..count)
+                .map(|i| OperationIntentSummary {
+                    kind: format!("Intent{i}"),
+                    parameters_json: "{}".to_string(),
+                })
+                .collect(),
+            publication_digest: "a".repeat(64),
+        }
+    }
+
+    /// Mirrors session.rs's `MAX_INTENTS`; see the comment on
+    /// `MAX_OPERATION_INTENTS` for why this is a hand-kept literal rather
+    /// than a shared import.
+    const SESSION_MAX_INTENTS: usize = 256;
+
+    #[test]
+    fn read_operation_response_accepts_max_intents_boundary() {
+        assert_eq!(MAX_OPERATION_INTENTS, SESSION_MAX_INTENTS);
+        operation_result_with_intents(SESSION_MAX_INTENTS)
+            .validate()
+            .expect("response at the MAX_INTENTS boundary must validate");
+    }
+
+    #[test]
+    fn read_operation_response_rejects_one_past_max_intents() {
+        let error = operation_result_with_intents(SESSION_MAX_INTENTS + 1)
+            .validate()
+            .expect_err("response one past MAX_INTENTS must be rejected");
+        assert!(error.to_string().contains("intents"));
+    }
 }

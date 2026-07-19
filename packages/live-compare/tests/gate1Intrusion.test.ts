@@ -473,7 +473,14 @@ describe("gate 1: second-client intrusion — stage-specific FIFO oracles", () =
       });
       cleanup.push(outcome.renderedRoot, outcome.directory);
 
-      // Both foreign mutations were rejected (authorization error).
+      // Both foreign mutations were rejected (authorization error). The daemon
+      // redacts the specific rejection reason and reports the generic
+      // "request_failed" code by design — the wire deliberately does not leak
+      // why an unauthorized request was denied. "request_failed" is therefore
+      // the strongest signal assertable from this side; the positive control
+      // that ownership was actually enforced (rather than the request merely
+      // failing for some other reason) is that A's change set below still
+      // publishes and the tree comes out green.
       expect(advanceErrorCode).toBe("request_failed");
       expect(cancelErrorCode).toBe("request_failed");
 

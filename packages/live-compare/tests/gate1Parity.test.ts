@@ -10,7 +10,7 @@ import { join, relative, resolve } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { evaluateT03TextCriteria } from "@strata-code/verify";
-import { runKernelArmT03, runSqliteArm } from "../src/gate1.js";
+import { runKernelArmT03, runSqliteArm, tscAndVitestGreen } from "../src/gate1.js";
 import { ensureBuilt } from "./serviceHarness.js";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
@@ -99,8 +99,7 @@ describe("gate 1: key-free semantic parity (kernel vs SQLite product arm)", () =
     expect(treeDigest(kernel.renderedRoot)).toBe(treeDigest(sqlite.renderedRoot));
 
     // 4: tsc --noEmit + vitest green on BOTH rendered corpora (harness check,
-    // identical invocation — see runtimeTscAndVitest wiring in gate1.ts).
-    const { tscAndVitestGreen } = await import("../src/gate1.js");
+    // identical invocation — see tscAndVitestGreen wiring in gate1.ts).
     expect(await tscAndVitestGreen(kernel.renderedRoot)).toBe(true);
     expect(await tscAndVitestGreen(sqlite.renderedRoot)).toBe(true);
 

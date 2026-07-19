@@ -734,9 +734,10 @@ impl ServiceSession {
             RequestAction::Hello { .. } => Ok(ResponseResult::Ready {}),
             RequestAction::InspectNodes { node_ids } => self.inspect_nodes(node_ids),
             RequestAction::FindDeclarations { name, kind } => {
-                let matches = self.kernel.find_declarations(name, kind.as_deref())?;
+                let (generation, matches) =
+                    self.kernel.find_declarations(name, kind.as_deref())?;
                 Ok(ResponseResult::Declarations {
-                    graph_generation: WireU64::new(self.kernel.snapshot().generation()),
+                    graph_generation: WireU64::new(generation),
                     declarations: matches
                         .into_iter()
                         .map(|declaration| DeclarationSummary {

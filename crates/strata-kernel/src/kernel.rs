@@ -363,12 +363,18 @@ impl Kernel {
     /// confirmed (malformed payload, missing/ambiguous name identifier) are
     /// skipped rather than failing the whole query, mirroring the SQLite
     /// `find_declarations` filter behavior in `packages/store/src/queries.ts`.
+    ///
+    /// Returns the generation of the snapshot that was actually scanned
+    /// alongside the matches, so callers can report a generation that is
+    /// guaranteed to correspond to the returned results rather than
+    /// re-snapshotting afterward and risking a publication racing in between.
     pub fn find_declarations(
         &self,
         name: &str,
         kind: Option<&str>,
-    ) -> Result<Vec<DeclarationMatch>> {
+    ) -> Result<(u64, Vec<DeclarationMatch>)> {
         let graph = self.snapshot();
+        let generation = graph.generation();
         let snapshot = graph.snapshot(); // ONE clone for the whole query
         let statement_kinds: Vec<(&str, &str)> = match kind {
             Some(k) => vec![(k, product_kind_to_statement_kind(k)?)],
@@ -412,7 +418,7 @@ impl Kernel {
                 "declaration matches exceed {MAX_DECLARATION_MATCHES} bound"
             );
         }
-        Ok(matches)
+        Ok((generation, matches))
     }
 
     /// Reads the retained canonical digest for one exact graph generation.
