@@ -247,14 +247,35 @@ the test, not discovered ad hoc) and (ii) an overlapping rename of the same
 symbol. Expectations are **stage-specific**, because FIFO is the kernel's
 contract and an "either serial order" oracle would mask fairness bugs
 (review-verified: the scheduler's older-overlap rule forbids a later
-overlapping B from passing a submitted A): before A submits, B may commit
-first and A must get `needs_decision` with the rename transitions named;
-after A submits, A must win and B gets ordered/fresh-decision behind it; in
-the concurrent-advance case the required winner is derived from durable queue
-order, never "either". Silent overwrite anywhere is a hard failure; actor
-ownership is asserted (B cannot advance or cancel A's change set). This is
-the review's "a second client introduced at every nominal solo stage must not
-change correctness," and it is precisely why no solo bypass exists to test.
+overlapping B from passing a submitted A).
+
+**Corrected 2026-07-18 (Task 8 probe + source verification, decisions.md
+entry of the same date):** the review's pre-submit claim — B commits first
+and A must get `needs_decision` — is architecturally impossible. The kernel
+pins scope at **submit**, not at begin/discovery: `submit_change_set`
+analyzes intents against the current snapshot
+(`coordination/coordinator.rs:225-264`), and `needs_decision` fires only when
+claim-time re-analysis classifies that submitted scope as
+expanded/materially changed. A change set submitted *after* the conflicting
+commit re-analyzes fresh and publishes directly. The stage-specific contract
+is therefore:
+
+- **Before A submits** (after discovery / begin / add_intent): B may commit
+  first; A then publishes deterministically as a second sequential operation
+  (B `User`→`Client` at generation N, A `Client`→`Account` at N+1) with no
+  `needs_decision` round-trip and empty `renamedSymbols`. The oracle asserts
+  the two-operation auditable history, the correct final name, and a green
+  tree — never a silent overwrite.
+- **After A submits:** A must win (older-overlap FIFO holds B queued behind
+  it); B's advance yields `needs_decision` naming the fresh transitions —
+  exactly as the review stated, probe-confirmed.
+- **Concurrent advances:** the required winner is derived from durable queue
+  order, never "either".
+
+Silent overwrite anywhere is a hard failure; actor ownership is asserted (B
+cannot advance or cancel A's change set). This is the review's "a second
+client introduced at every nominal solo stage must not change correctness,"
+and it is precisely why no solo bypass exists to test.
 
 ### D9. Deadlines and environment
 

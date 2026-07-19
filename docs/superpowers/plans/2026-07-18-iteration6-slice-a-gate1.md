@@ -719,9 +719,9 @@ git add -A crates/strata-kernel packages/live-compare && git commit -m "test(gat
 - Consumes: Task 6 drivers; a second `CoordinationClient` (distinct `clientId`).
 - **Pre-registered disjoint target (review blocker 9):** the disjoint intrusion renames the `formatTimestamp` function declaration (present in `examples/medium`; used by the Phase-6 D/G scenarios) to `formatTimestampAudit` — discovered via `find_declarations("formatTimestamp","function")`, asserted to live in a different module than `User`. If that name is absent from the current corpus, pick at plan-execution time ONE named function declaration in a different module, record it in the test as a constant with a comment, and never discover it dynamically.
 
-**Stage-specific expectations (review blocker 9 — FIFO is the contract, either-order is a bug):**
+**Stage-specific expectations (review blocker 9 — FIFO is the contract, either-order is a bug; pre-submit oracle corrected 2026-07-18 after the probe falsified the review's mechanism claim — see decisions.md and design D8):**
 
-- **after_discovery / after_begin / after_add_intent** (A holds no submitted scope): overlapping B (rename `User`→`Client`) may submit, advance, and commit FIRST. A then submits/advances and MUST receive `needs_decision` with `renamedSymbols` naming `User`→`Client` (never a silent overwrite); A cancels, re-begins from fresh state, renames `Client`→`Account`, commits. Final: rendered tree green, text criteria pass with the final name.
+- **after_discovery / after_begin / after_add_intent** (A holds no submitted scope): overlapping B (rename `User`→`Client`) may submit, advance, and commit FIRST. A then submits/advances and MUST publish deterministically **without** a `needs_decision` round-trip (scope is pinned at submit — A's submit-time analysis already sees the post-B graph): assert A's terminal state is `published` with `renamedSymbols` empty, a two-operation sequential history (B `User`→`Client` at generation N, A `Client`→`Account` at N+1, both auditable via `read_operation`), never a silent overwrite. Final: rendered tree green, text criteria pass with the final name `Account`.
 - **after_submit** (A is queued/ready): B's overlapping submission must NOT pass A (`scheduler.rs:277` older-overlap rule). A's advance commits; B's advance then yields `needs_decision` (fresh state naming `User`→`Account`) or a fresh re-analysis ordering B strictly after A. Assert A's operation is the earlier generation and B never silently overwrote.
 - **disjoint at every stage:** B's disjoint rename commits independently regardless of A's stage; both land; final export contains both renames; tree green.
 - **concurrent advances** (A and B overlapping, both submitted, fired with `Promise.allSettled`): derive the REQUIRED winner from the durable queue order (B submitted after A ⇒ A must win; assert via each arm's result states and `read_operation` generations). Do not accept "either serial outcome".
@@ -734,6 +734,31 @@ git add -A crates/strata-kernel packages/live-compare && git commit -m "test(gat
 
 ```bash
 git add -A packages/live-compare && git commit -m "test(gate1): second-client intrusion with stage-specific FIFO oracles"
+```
+
+---
+
+### Task 8b: Kernel fix — poll-driven starvation of the older validating ticket (added 2026-07-19; see decisions.md entry of that date and `2026-07-19-concurrent-advance-fifo-review-codex.md`)
+
+**Defect (verified):** a queued `advance_change_set` runs `reconsider_tickets`; every blocked scheduling pass increments the skipped ticket's `age_rounds`; `CoordinationTicket` derives `PartialEq` including `age_rounds`, so the age-only diff is a ticket update that bumps the scheduler revision (`planner.rs:276-287`); the older claim's publication demands exact revision + whole-scheduler equality and exhausts its 3 optimistic attempts (`publication.rs:695-727`); the daemon's `Err(_)` catch-all then fabricates `candidate_validation_failed` and cancels the claim (`session.rs:652-682`), letting the younger overlapping ticket win. This violates the kernel spec's FIFO/anti-starvation contract (design spec lines 151-176).
+
+**Files:**
+- Modify: `crates/strata-kernel/src/coordination/planner.rs` (fix a)
+- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/session.rs` (fix b)
+- Test: `crates/strata-kernel/tests/coordination_optimistic.rs` (deterministic regression)
+
+**Fix (a) — age-only passes must be observationally idempotent:** a reconsideration pass whose lifecycle diff consists ONLY of `age_rounds`-only ticket updates (no offer, no scope, no state, no claim, no event, no change-set change) must not persist those diffs and must not advance the scheduler revision. `plan_readiness` already receives the transition cause (currently discarded, `let _ = snapshot.cause;`) — use it and/or classify the diff set. Aging MUST still occur on real scheduling transitions (submission, publication, cancellation, expiry, scope requeue) so anti-starvation priority ordering keeps working; do not remove aging wholesale.
+
+**Fix (b) — the daemon must not mislabel scheduler contention:** in the advance publication-outcome handling, match `CoordinationError::OptimisticRetryExhausted` (downcast) BEFORE the catch-all: no `validation_failed` audit event, no fabricated `candidate_validation_failed` diagnostic, no `CancelChangeSet` follow-up. The operation must remain completable — either retry publication internally against the fresh scheduler state or return the current non-terminal change-set state so the client's advance polling loop completes it. Investigate which is minimal and correct given how `advance` treats an already-claimed change set; genuine candidate/tsc validation failures keep the existing path.
+
+**Deterministic regression (TDD, feature `coordination-test-api`):** using the existing `before_final_check`-style test hooks (`tests/coordination_optimistic.rs:1392-1439` pattern): claim older A, queue overlapping younger B, invoke `reconsider_tickets` repeatedly from A's before-final-check hook (more times than `MAX_OPTIMISTIC_RETRIES`), then assert: (i) the age-only passes do not change the scheduler revision; (ii) A publishes successfully; (iii) B subsequently yields `NeedsDecision`, never a publication. Write it first, watch it fail via `OptimisticRetryExhausted`, then implement (a); extend the daemon-layer coverage for (b) at the session/protocol test layer if one exists, else document why the TS concurrent case is the (b) coverage.
+
+- [ ] **Step 1: failing regression test.** **Step 2: implement (a).** **Step 3: implement (b).** **Step 4: full feature matrix** — `cargo test -p strata-kernel`, `--features coordination-test-api`, `--features redb-spike-api` — all green, plus `PATH=/opt/homebrew/bin:$PATH pnpm kernel:full-key-free:test` (existing suites must stay green unmodified).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A crates/strata-kernel && git commit -m "fix(kernel): age-only reconsideration passes no longer starve older validating claims; OptimisticRetryExhausted is not a validation failure"
 ```
 
 ---

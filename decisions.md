@@ -7,6 +7,93 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-19 — Concurrent-advance FIFO violation is a kernel defect (poll-driven starvation), fix approved; daemon error mislabeling fixed with it
+
+**Context:** Gate-1 Task 8's concurrent-advance case (both clients
+`advance_change_set` in a dead-heat, A submitted first) deterministically
+produced the WRONG winner: younger B `published` @gen 1, older A
+`validation_failed` @gen 0 — violating the kernel spec's fairness contract
+("Each semantic resource has FIFO ordering"; "Newer work may pass an older
+ticket only when the complete scopes are disjoint"; validation "owns queue
+priority for its semantic scope",
+`2026-07-13-multi-agent-coordination-kernel-design.md:151-176`). Independent
+Codex review (gpt-5.6-sol xhigh, read-only; brief + full output:
+`2026-07-19-concurrent-advance-fifo-review-{brief,codex}.md`) confirmed
+**kernel defect** — and corrected the implementer's mechanism diagnosis.
+
+**Verified mechanism (all five pivotal claims checked in-session):** no
+scheduler-guard bypass exists — `offered_overlap`/`active_overlap` block the
+younger ticket throughout. The older ticket is starved: a queued
+`advance_change_set` runs `reconsider_tickets` (`session.rs:579-595`); every
+blocked pass increments the skipped ticket's `age_rounds`
+(`scheduler.rs` select_ready aging); `CoordinationTicket` derives `PartialEq`
+including `age_rounds`, so the age-only diff registers as a ticket update
+and bumps the scheduler revision (`planner.rs:276-287`); publication's final
+optimistic check demands exact revision + whole-scheduler equality and gives
+up after 3 attempts (`publication.rs:695-727`,
+`OptimisticRetryExhausted`); the daemon's `Err(_)` catch-all then fabricates
+`candidate_validation_failed` and cancels the claim (`session.rs:652-682`),
+finally unblocking the younger ticket. A 250 ms poll loop trivially burns
+all three retries during A's multi-second validation.
+
+**Decision (operator-approved):** fix the kernel, both parts — (a) a
+reconsideration pass whose only effect is aging blocked tickets must not
+persist age-only ticket diffs or advance the scheduler revision (aging stays
+transition-driven; anti-starvation ordering unaffected — age only orders
+FIFO-eligible tickets); (b) the daemon distinguishes
+`OptimisticRetryExhausted` from genuine candidate validation failure — no
+fabricated diagnostic, no claim cancellation; the operation must remain
+completable. Plus a deterministic Rust regression using the existing
+`before_final_check` test hooks. Task 8's concurrent oracle then stands as
+originally specified (older A must win; B → `needs_decision`).
+*Alternative rejected:* narrowing the spec to a snapshot-local guarantee —
+that would let any client abort an older validating change set by polling
+frequently, gutting the validation-priority and anti-starvation clauses.
+*Known residual (logged, deferred):* exact whole-scheduler equality means
+legitimate repeated disjoint churn can still exhaust publication retries;
+a claim-relevant fencing scope is a future liveness item, out of gate 1.
+
+## 2026-07-18 — Pre-submit intrusion oracle falsified: kernel pins scope at submit; direct-publish oracle adopted (Task 8, review blocker 9 corrected)
+
+**Context:** Gate-1 Task 8 (second-client intrusion) was specified from the
+Codex review's blocker 9: if client B commits an overlapping rename before A
+submits, A "must get `needs_decision` with the rename transitions named." The
+implementer probed the live daemon (probe preserved at
+`scratchpad/probe-source.ts` per the task-8 report) and observed A →
+`published`, `renamedSymbols: []` at all three pre-submit stages; the
+`after_submit` case matched the review exactly (B held `queued` behind A,
+then `needs_decision` naming `User`→`Account`).
+
+**Root cause (source-verified in-session, not just probed):**
+`submit_change_set` captures `inferred_scope` by running `analyze_change_set`
+against the **current** snapshot at submit time
+(`crates/strata-kernel/src/coordination/coordinator.rs:225-264`);
+`needs_decision` fires only when claim-time re-analysis classifies that
+submitted scope as `Expanded`/`MateriallyChanged`. A change set submitted
+*after* the conflicting commit has no stale scope to invalidate — it
+re-analyzes fresh and publishes directly, renaming the now-current name via
+the stable declaration id. The review's pre-submit expectation assumed scope
+is pinned at begin; the kernel pins it at submit. Architecturally
+impossible, not merely unobserved.
+
+**Why this is not falsifier 1:** nothing was weakened to pass. At the
+pre-submit stages the kernel still guarantees no silent overwrite (two
+sequential auditable operations), a single deterministic order, and the
+correct final state. The falsified claim is the reviewer's *mechanism* model
+(`needs_decision` vs. direct sequential publish), not scope inference, fresh
+analysis, validation binding, reservations, or fenced publication.
+
+**Decision (operator-approved, Option A):** the pre-submit oracle asserts
+the true contract — A publishes deterministically with empty
+`renamedSymbols`, two-operation history (B `User`→`Client` @gen N, A
+`Client`→`Account` @gen N+1), both auditable, final name correct, tree
+green. `needs_decision` is engaged only for a change set **submitted
+before** the conflicting commit. Design D8 and plan Task 8 amended in place
+with pointers here. *Alternative rejected:* re-choreographing A to submit
+before B to preserve the `needs_decision` expectation — that collapses the
+three pre-submit stages into the existing `after_submit` case and deletes
+real coverage of the fresh-re-analysis path.
+
 ## 2026-07-18 — Slice A gate-1 plan reviewed (Codex gpt-5.6-sol xhigh): 5 blockers verified and incorporated; behavioral-gate premise corrected
 
 **Context:** Iteration 6 slice A's design
