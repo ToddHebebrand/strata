@@ -140,6 +140,46 @@ describe("unprivileged coordination Unix-socket client", () => {
     expect(service.rawRequests[0]!.equals(service.rawRequests[1]!)).toBe(true);
   });
 
+  it("honors an explicit idempotencyKey override across replayed requests", async () => {
+    const service = await unixServer((socket, request) => {
+      socket.end(
+        success(request.requestId, {
+          type: "change_set",
+          changeSetId: "change:replay",
+          state: "draft",
+          ticketState: null,
+          graphGeneration: "0",
+          operationId: null,
+          affectedNodeIds: [],
+          diagnostics: [],
+          publicationDigest: null,
+          renamedSymbols: []
+        })
+      );
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:replay"
+    });
+
+    const first = await client.request(
+      { type: "begin_change_set", reasoning: "replay the exact request identity" },
+      1_000,
+      { idempotencyKey: "fixed-crash-replay-key" }
+    );
+    const second = await client.request(
+      { type: "begin_change_set", reasoning: "replay the exact request identity" },
+      1_000,
+      { idempotencyKey: "fixed-crash-replay-key" }
+    );
+
+    expect(service.requests).toHaveLength(2);
+    expect(service.requests[0]!.idempotencyKey).toBe("fixed-crash-replay-key");
+    expect(service.requests[1]!.idempotencyKey).toBe("fixed-crash-replay-key");
+    expect(service.requests[0]!.requestId).not.toBe(service.requests[1]!.requestId);
+    expect(second).toEqual(first);
+  });
+
   it("retries a mutation after a nonempty response is truncated before LF", async () => {
     const service = await unixServer((socket, request, connection) => {
       if (connection === 1) {

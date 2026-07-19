@@ -183,7 +183,8 @@ export class CoordinationClient {
 
   async request(
     action: LocalServiceRequest["action"],
-    deadlineMs: number
+    deadlineMs: number,
+    options?: { idempotencyKey?: string }
   ): Promise<CoordinationResult> {
     validateDeadline(deadlineMs);
     const mutating = isMutating(action);
@@ -193,7 +194,11 @@ export class CoordinationClient {
       requestId,
       clientId: this.#clientId,
       deadlineMs: String(deadlineMs),
-      ...(mutating ? { idempotencyKey: randomUUID() } : {}),
+      // A caller-supplied key is reused verbatim (the crash suite replays the
+      // exact request identity to assert the cached journal response); the
+      // default stays a fresh random key per top-level request() call, and
+      // retries within one call keep reusing whichever key was chosen here.
+      ...(mutating ? { idempotencyKey: options?.idempotencyKey ?? randomUUID() } : {}),
       action
     } as LocalServiceRequest;
     const frame = serializeRequestFrame(request);

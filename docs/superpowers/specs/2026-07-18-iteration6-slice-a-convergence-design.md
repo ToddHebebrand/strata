@@ -86,8 +86,10 @@ a Rust→Node orchestration path for zero semantic gain in this slice; gate 4
 (clean-room) wraps the two steps in one product command instead.
 
 *Hardening folded in:* `createQualifiedKernelSnapshot`'s generation coercion
-(canonical-u64 string → JS number) is replaced with the canonical string form
-end-to-end, so seeding does not pass through a lossy numeric type.
+(canonical-u64 string → JS number) goes through `boundedGenerationNumber`, a
+fail-closed safe-integer parse at the seed boundary: any generation string
+that would lose precision, or fails to round-trip back to the same string, is
+rejected outright rather than silently truncated into an incorrect number.
 
 ### D2. One new discovery request: `find_declarations`
 

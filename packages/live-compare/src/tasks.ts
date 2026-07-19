@@ -492,6 +492,27 @@ export function assertApprovedTaskManifest(manifest: QualifiedTaskManifest): voi
   }
 }
 
+/**
+ * Fail-closed generation coercion at the seed boundary: reject any
+ * canonical-u64 generation string that would lose precision (or fail to
+ * round-trip) through JS's `number` type instead of silently truncating it.
+ */
+export function boundedGenerationNumber(generation: string): number {
+  const value = Number(generation);
+  if (!Number.isSafeInteger(value) || String(value) !== generation) {
+    throw new Error(`snapshot generation ${generation} exceeds the safe seeding bound`);
+  }
+  return value;
+}
+
+/** Inverse of `boundedGenerationNumber`, for parsing Rust-exported generations. */
+export function canonicalGenerationString(value: number): string {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`generation ${value} is not a canonical unsigned safe integer`);
+  }
+  return String(value);
+}
+
 export function createQualifiedKernelSnapshot(corpusRootInput: string) {
   const corpusRoot = resolve(corpusRootInput);
   const inputs = filesBelow(join(corpusRoot, "src"), (path) => path.endsWith(".ts")).map((absolute) => ({
@@ -501,6 +522,6 @@ export function createQualifiedKernelSnapshot(corpusRootInput: string) {
   const snapshot = toKernelSnapshot(ingestBatch(inputs));
   return {
     ...snapshot,
-    generation: Number(snapshot.generation)
+    generation: boundedGenerationNumber(snapshot.generation)
   };
 }

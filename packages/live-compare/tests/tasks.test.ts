@@ -8,6 +8,8 @@ import {
   APPROVED_CORPUS_VARIANT,
   assertApprovedTaskManifest,
   baselineTaskPrompt,
+  boundedGenerationNumber,
+  canonicalGenerationString,
   createQualifiedKernelSnapshot,
   createQualifiedTaskManifest,
   strataTaskPrompt,
@@ -244,5 +246,27 @@ describe("Phase-6 task qualification", () => {
       }
     });
     expect(result).toHaveProperty("delta");
+  });
+});
+
+describe("fail-closed generation bound", () => {
+  it("boundedGenerationNumber rejects a generation string above the safe-integer bound", () => {
+    expect(() => boundedGenerationNumber("9007199254740993")).toThrow(
+      /exceeds the safe seeding bound/
+    );
+  });
+
+  it("boundedGenerationNumber parses a canonical zero generation", () => {
+    expect(boundedGenerationNumber("0")).toBe(0);
+  });
+
+  it("canonicalGenerationString renders a canonical unsigned integer", () => {
+    expect(canonicalGenerationString(3)).toBe("3");
+  });
+
+  it("canonicalGenerationString rejects a negative value", () => {
+    expect(() => canonicalGenerationString(-1)).toThrow(
+      /not a canonical unsigned safe integer/
+    );
   });
 });

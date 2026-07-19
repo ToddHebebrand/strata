@@ -13,14 +13,14 @@ import { verifyPhase6Tree } from "../src/verify.js";
 const repoRoot = resolve(import.meta.dirname, "../../..");
 let built = false;
 
-function credentialFreeEnv(): NodeJS.ProcessEnv {
+export function credentialFreeEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
   return env;
 }
 
-function ensureBuilt(): void {
+export function ensureBuilt(): void {
   if (built) return;
   for (const [command, args] of [
     ["pnpm", ["--filter", "@strata-code/kernel-bridge", "build"]],
@@ -37,7 +37,7 @@ async function startService(corpusRoot: string): Promise<RunningKernelService> {
   return startKernelService(corpusRoot, { env: credentialFreeEnv() });
 }
 
-async function beginAndSubmit(client: CoordinationClient, assignment: TaskAssignment, reasoning: string) {
+export async function beginAndSubmit(client: CoordinationClient, assignment: TaskAssignment, reasoning: string) {
   const begun = await client.request({ type: "begin_change_set", reasoning }, 120_000) as any;
   for (const intent of assignment.intents) {
     await client.request({ type: "add_intent", changeSetId: begun.changeSetId, intent }, 120_000);
@@ -45,7 +45,7 @@ async function beginAndSubmit(client: CoordinationClient, assignment: TaskAssign
   return client.request({ type: "submit_change_set", changeSetId: begun.changeSetId }, 120_000) as Promise<any>;
 }
 
-async function advanceUntilTerminal(client: CoordinationClient, changeSetId: string): Promise<{ result: any; advances: number }> {
+export async function advanceUntilTerminal(client: CoordinationClient, changeSetId: string): Promise<{ result: any; advances: number }> {
   let result: any;
   for (let advances = 1; advances <= 8; advances += 1) {
     result = await client.request({ type: "advance_change_set", changeSetId }, 120_000);
