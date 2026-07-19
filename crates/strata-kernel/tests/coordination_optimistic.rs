@@ -1439,6 +1439,117 @@ fn three_unrelated_final_state_losses_exhaust_once_without_rebuilding() {
     assert_eq!(kernel.test_active_claims().unwrap(), vec![claim]);
 }
 
+// Coverage for the daemon advance handler's fix-(b) match arm
+// (`bin/strata_kernel_service/session.rs`). When the advance path's publication
+// returns `CoordinationError::OptimisticRetryExhausted`, that is scheduler
+// contention, NOT a candidate/tsc validation failure: the handler must report a
+// non-terminal state (never `validation_failed`), fabricate no
+// `candidate_validation_failed` diagnostic, and run no `CancelChangeSet`
+// follow-up — the claim stays intact.
+//
+// After fix (a), the only natural trigger left is legitimate DISJOINT scheduler
+// churn during the older claim's publication window (a younger *overlapping*
+// ticket can no longer churn the revision — it only ages, and those age-only
+// passes are suppressed). This drives exactly that residual: three renames on an
+// UNRELATED symbol, each submitted inside the older claim's final-check window,
+// are real submission transitions that advance the scheduler revision and
+// out-race the older claim's whole-scheduler-equality check on every attempt,
+// exhausting its optimistic budget.
+//
+// This asserts the taxonomy at the coordinator layer because that is where it is
+// deterministically forceable. The daemon's advance drives publication through
+// `execute_claimed`, which needs the real node-bridge candidate executor the
+// coordination-test-api kernel does not wire, and forcing exhaustion needs the
+// `before_final_check` publication hook the daemon does not expose — so no
+// daemon-spawning harness can force this arm deterministically. `execute_claimed`
+// and the hooked `publish_claimed_with_test_hooks` used here share
+// `publish_claimed_inner`, so the exhaustion error and the post-error
+// claim/change-set intactness are byte-for-byte the contract the session arm maps.
+//
+// Pre-fix-(b), the daemon's `Err(_)` catch-all would instead have appended a
+// `validation_failed` audit event, returned `ChangeSetState::ValidationFailed`
+// with a fabricated `candidate_validation_failed` diagnostic, and scheduled a
+// `CancelChangeSet` follow-up that cancelled this very claim. The assertions below
+// pin the opposite outcome at every observable the session response is built from.
+#[test]
+fn optimistic_retry_exhaustion_from_disjoint_churn_keeps_claim_non_terminal() {
+    let fixture = MediumCoordinationFixture::load();
+    let user = fixture.declaration_named("User").clone();
+    let format = fixture.declaration_named("formatTimestamp").clone();
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(GraphDerivedAnalyzer::new()),
+    )
+    .unwrap();
+    let kernel = Arc::new(kernel);
+
+    // Older claim: rename User. This is the advance whose publication we drive.
+    begin_with_intents(&kernel, "older-a", [rename(&user.id, "Account")]).unwrap();
+    let offer = ready(kernel.submit_change_set("older-a", 0).unwrap());
+    let claim = claimed(
+        kernel
+            .claim_ready(&offer.offer_id, &offer.claim_token, 1)
+            .unwrap(),
+    );
+
+    // Pre-begin the disjoint contenders; each is submitted from the final-check
+    // hook so a distinct submission transition lands on every optimistic attempt.
+    for attempt in 0..3 {
+        begin_with_intents(
+            &kernel,
+            &format!("disjoint-{attempt}"),
+            [rename(&format.id, &format!("formatRevision{attempt}"))],
+        )
+        .unwrap();
+    }
+    let builder = NodePatchBuilder::new(vec![(user.id.clone(), "\n// Account".into())]);
+    let before_final_check = |attempt: u32| {
+        kernel
+            .submit_change_set(&format!("disjoint-{attempt}"), 10 + attempt as u64)
+            .unwrap();
+    };
+
+    let error = kernel
+        .publish_claimed_with_test_hooks(&claim, &builder, 20, &before_final_check, &|| {})
+        .unwrap_err();
+
+    // (0) The advance-path publication exhausted the optimistic budget — the exact
+    // error the session's `execute_claimed` returns into the fix-(b) match arm.
+    assert_eq!(
+        error.downcast_ref::<CoordinationError>(),
+        Some(&CoordinationError::OptimisticRetryExhausted { attempts: 3 })
+    );
+
+    // (1) Non-terminal: the change-set state is still `Executing` (which the daemon
+    // maps to wire `claimed`, never wire `validation_failed`). The old catch-all's
+    // `CancelChangeSet` follow-up would have driven this to `Cancelled`; it must not
+    // be any terminal state here. No fabricated diagnostic exists at this layer
+    // because the state was never advanced to a failure.
+    let state = kernel.change_set("older-a").unwrap().unwrap().state;
+    assert_eq!(state, ChangeSetState::Executing);
+    assert_ne!(state, ChangeSetState::Cancelled);
+    assert_ne!(state, ChangeSetState::Failed);
+
+    // (2) No `CancelChangeSet` follow-up ran: the ticket is still `Claimed` and the
+    // active claim is unchanged (byte-for-byte the handle we still hold).
+    assert_eq!(
+        kernel
+            .ticket_for_change_set("older-a")
+            .unwrap()
+            .unwrap()
+            .state,
+        TicketState::Claimed
+    );
+    assert_eq!(kernel.test_active_claims().unwrap(), vec![claim.clone()]);
+
+    // (3) The change set still exists — it was neither cancelled nor removed, so the
+    // existing lease machinery can still carry it to completion.
+    assert!(kernel.change_set("older-a").unwrap().is_some());
+}
+
 #[test]
 fn final_lifecycle_commit_holds_publication_then_scheduler_before_redb() {
     let fixture = MediumCoordinationFixture::load();

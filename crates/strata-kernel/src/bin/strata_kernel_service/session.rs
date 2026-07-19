@@ -663,10 +663,24 @@ impl ServiceSession {
                         // validation failure. The claim is intact and the change set
                         // is still executing; the older validating client was merely
                         // out-raced on the whole-scheduler-equality check. Report the
-                        // current non-terminal state so the client's advance polling
-                        // loop keeps driving it to completion, and do NOT fabricate a
+                        // current non-terminal (`claimed`) state and do NOT fabricate a
                         // `candidate_validation_failed` diagnostic or cancel the claim
                         // (which is exactly what let younger overlapping work win).
+                        // This response does NOT itself complete the operation: the
+                        // change set stays claimed, so a subsequent advance early-returns
+                        // the same non-terminal state (its state is no longer `Ready`).
+                        // Completion happens later via claim-lease expiry re-offering the
+                        // work, then a further advance re-claiming and republishing.
+                        // This arm's taxonomy — exhaustion => non-terminal state, an
+                        // uncancelled/intact claim, and no fabricated diagnostic — is not
+                        // deterministically forceable through a spawned daemon (advance
+                        // publishes via `execute_claimed`, which needs the real
+                        // node-bridge executor, and forcing exhaustion needs the
+                        // `before_final_check` publication hook the daemon does not
+                        // expose). It is covered at the coordinator layer, which shares
+                        // `publish_claimed_inner` with `execute_claimed`, by
+                        // `optimistic_retry_exhaustion_from_disjoint_churn_keeps_claim_non_terminal`
+                        // in tests/coordination_optimistic.rs.
                         Ok(ExecutedEffect::response(LocalServiceResponse::success(
                             request_id,
                             self.change_set_result(change_set_id, None, None)?,
