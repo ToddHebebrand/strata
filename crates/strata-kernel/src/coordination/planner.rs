@@ -272,6 +272,33 @@ pub(crate) fn plan_readiness(
             snapshot.graph.generation(),
         )?;
     }
+
+    // Poll-driven aging must not advance the scheduler revision. A queued ticket
+    // blocked by an older ticket's offer or active claim is skipped every
+    // `Reconsideration` pass, and each skip bumps its `age_rounds`. Because ticket
+    // equality includes `age_rounds`, those age-only diffs would otherwise register
+    // as lifecycle changes and advance the revision — letting a younger client
+    // starve an older validating claim (whose publication demands whole-scheduler
+    // equality) simply by polling. A reconsideration whose ONLY effect is aging
+    // blocked tickets is observationally idempotent: drop the age-only diffs and
+    // leave the scheduler untouched. Aging still occurs on every real scheduling
+    // transition (submission, publication, cancellation, expiry, scope requeue),
+    // because those produce non-age ticket, change-set, offer, or claim changes and
+    // so are never classified age-only here.
+    if snapshot.cause == TransitionCause::Reconsideration
+        && lifecycle.change_sets.is_empty()
+        && lifecycle.offers.is_empty()
+        && lifecycle.claims.is_empty()
+        && lifecycle.events.is_empty()
+        && lifecycle
+            .tickets
+            .iter()
+            .all(|(before, after)| is_age_only_ticket_diff(before.as_ref(), after.as_ref()))
+    {
+        lifecycle.tickets.clear();
+        next_scheduler = before_scheduler;
+    }
+
     let lifecycle_changed = !lifecycle.change_sets.is_empty()
         || !lifecycle.tickets.is_empty()
         || !lifecycle.offers.is_empty()
@@ -285,7 +312,6 @@ pub(crate) fn plan_readiness(
         next_scheduler.set_revision(lifecycle.next_metadata.scheduler_revision);
     }
 
-    let _ = snapshot.cause;
     Ok(ReadinessPlan {
         expected_graph_generation: snapshot.graph.generation(),
         expected_scheduler_revision: snapshot.scheduler_revision,
@@ -295,6 +321,23 @@ pub(crate) fn plan_readiness(
         needs_decision,
         lifecycle,
     })
+}
+
+/// True when a ticket diff changes nothing but `age_rounds`. `scheduler_ticket_updates`
+/// only emits a pair when the tickets differ, so a present-on-both-sides pair that is
+/// equal once ages are aligned differed solely in age.
+fn is_age_only_ticket_diff(
+    before: Option<&CoordinationTicket>,
+    after: Option<&CoordinationTicket>,
+) -> bool {
+    match (before, after) {
+        (Some(before), Some(after)) => {
+            let mut age_aligned = after.clone();
+            age_aligned.age_rounds = before.age_rounds;
+            *before == age_aligned
+        }
+        _ => false,
+    }
 }
 
 pub(super) fn make_offer(

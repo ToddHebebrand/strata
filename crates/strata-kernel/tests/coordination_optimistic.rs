@@ -1671,3 +1671,104 @@ fn rebased_builder_replay_uses_durable_original_prepared_generation_after_reopen
     assert_eq!(replay.generation, 3);
     assert_eq!(*replay_observed.lock().unwrap(), vec![0]);
 }
+
+// A queued younger ticket that overlaps an older ticket's active claim is
+// correctly skipped every reconsideration pass, but each skip ages it. Because
+// `CoordinationTicket` equality includes `age_rounds`, an age-only pass used to
+// register as a lifecycle change and advance the scheduler revision, which then
+// failed the older claim's whole-scheduler-equality publication check. A younger
+// client could therefore starve an older validating claim just by polling. This
+// regression drives that interleaving deterministically: the older claim runs its
+// final publication check while the younger ticket reconsiders more times than
+// `MAX_OPTIMISTIC_RETRIES`. The age-only passes must not move the revision, the
+// older claim must publish, and only afterward does the younger ticket re-plan
+// against the committed rename into `NeedsDecision` — it must never publish.
+#[test]
+fn age_only_reconsideration_during_final_check_does_not_starve_older_claim() {
+    let fixture = MediumCoordinationFixture::load();
+    let user = fixture.declaration_named("User").clone();
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(GraphDerivedAnalyzer::new()),
+    )
+    .unwrap();
+    let kernel = Arc::new(kernel);
+
+    // Older A claims the User rename.
+    begin_with_intents(&kernel, "older-a", [rename(&user.id, "Account")]).unwrap();
+    let offer_a = ready(kernel.submit_change_set("older-a", 0).unwrap());
+    let claim_a = claimed(
+        kernel
+            .claim_ready(&offer_a.offer_id, &offer_a.claim_token, 1)
+            .unwrap(),
+    );
+
+    // Younger B queues behind A on the same symbol (fully overlapping scope).
+    begin_with_intents(&kernel, "younger-b", [rename(&user.id, "Client")]).unwrap();
+    assert!(matches!(
+        kernel.submit_change_set("younger-b", 2).unwrap(),
+        SubmissionOutcome::Queued { .. }
+    ));
+
+    let (revision_before, durable_revision_before) = kernel.test_scheduler_revisions().unwrap();
+    let polls = AtomicUsize::new(0);
+    // A's final publication check is preceded by B polling harder than the
+    // optimistic retry budget. Every pass is blocked by A's active claim, so it
+    // only ages B — and must stay observationally idempotent.
+    let before_final_check = |_attempt: u32| {
+        polls.fetch_add(1, Ordering::SeqCst);
+        assert!(
+            kernel.reconsider_tickets(3).unwrap().is_empty(),
+            "younger B overlaps A's active claim and must never be offered"
+        );
+        let (in_memory, durable) = kernel.test_scheduler_revisions().unwrap();
+        assert_eq!(
+            in_memory, revision_before,
+            "age-only reconsideration must not advance the in-memory scheduler revision"
+        );
+        assert_eq!(
+            durable, durable_revision_before,
+            "age-only reconsideration must not advance the durable scheduler revision"
+        );
+    };
+
+    let report = published(
+        kernel
+            .publish_claimed_with_test_hooks(
+                &claim_a,
+                &NodePatchBuilder::new(vec![(user.id.clone(), "\n// Account".into())]),
+                4,
+                &before_final_check,
+                &|| {},
+            )
+            .unwrap(),
+    );
+    assert_eq!(report.generation, 1);
+    assert!(
+        polls.load(Ordering::SeqCst) >= 1,
+        "the final-check hook must have exercised at least one reconsideration"
+    );
+    assert_eq!(
+        kernel.change_set("older-a").unwrap().unwrap().state,
+        ChangeSetState::Committed
+    );
+
+    // With A committed, B re-plans against the new resource version and needs a
+    // fresh decision. It never publishes and never renames.
+    assert!(kernel.reconsider_tickets(5).unwrap().is_empty());
+    assert_eq!(
+        kernel.change_set("younger-b").unwrap().unwrap().state,
+        ChangeSetState::NeedsDecision
+    );
+    assert_eq!(
+        kernel
+            .ticket_for_change_set("younger-b")
+            .unwrap()
+            .unwrap()
+            .state,
+        TicketState::NeedsDecision
+    );
+}

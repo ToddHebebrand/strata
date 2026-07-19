@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use strata_kernel::{
-    BeginChangeSet, ChangeSetState as KernelChangeSetState, ClaimOutcome, CoordinationEventKind,
-    GraphSnapshot, IntentParameters, Kernel, NodeBridgeConfig, PublishClaimOutcome,
-    TicketState as KernelTicketState,
+    BeginChangeSet, ChangeSetState as KernelChangeSetState, ClaimOutcome, CoordinationError,
+    CoordinationEventKind, GraphSnapshot, IntentParameters, Kernel, NodeBridgeConfig,
+    PublishClaimOutcome, TicketState as KernelTicketState,
 };
 
 use super::audit::{
@@ -585,8 +585,12 @@ impl ServiceSession {
             // A ticket requeued at claim time (dynamic scope expansion) has no
             // later transition to re-plan it once its sibling already
             // published, so an advance on queued work runs a reconsideration
-            // pass. Planning is idempotent: work that still overlaps an
-            // active claim or offer stays queued.
+            // pass. Work that still overlaps an active claim or offer stays
+            // queued, and such a pass is observationally idempotent: it only
+            // ages the blocked ticket and the planner suppresses those age-only
+            // diffs, so repeated polling neither advances the scheduler revision
+            // nor starves an older claim validating under whole-scheduler
+            // equality (see coordination/planner.rs).
             self.kernel.reconsider_tickets(tick)?;
             change_set = self
                 .kernel
@@ -644,6 +648,25 @@ impl ServiceSession {
                     }
                     Ok(PublishClaimOutcome::Requeued { .. })
                     | Ok(PublishClaimOutcome::NeedsDecision { .. }) => {
+                        Ok(ExecutedEffect::response(LocalServiceResponse::success(
+                            request_id,
+                            self.change_set_result(change_set_id, None, None)?,
+                        )))
+                    }
+                    Err(error)
+                        if matches!(
+                            error.downcast_ref::<CoordinationError>(),
+                            Some(CoordinationError::OptimisticRetryExhausted { .. })
+                        ) =>
+                    {
+                        // Optimistic scheduler contention is not a candidate/tsc
+                        // validation failure. The claim is intact and the change set
+                        // is still executing; the older validating client was merely
+                        // out-raced on the whole-scheduler-equality check. Report the
+                        // current non-terminal state so the client's advance polling
+                        // loop keeps driving it to completion, and do NOT fabricate a
+                        // `candidate_validation_failed` diagnostic or cancel the claim
+                        // (which is exactly what let younger overlapping work win).
                         Ok(ExecutedEffect::response(LocalServiceResponse::success(
                             request_id,
                             self.change_set_result(change_set_id, None, None)?,
