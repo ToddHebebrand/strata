@@ -45,6 +45,12 @@ pub(super) struct ServiceConfig {
     pub bridge_config: NodeBridgeConfig,
     pub audit_path: PathBuf,
     pub failpoint: ServiceFailpoint,
+    /// Publication-boundary crash failpoint (redb-spike-api only). When set to
+    /// anything other than `None`, the advance path publishes via
+    /// `execute_claimed_with_failpoint`; `None` is byte-for-byte the existing
+    /// `execute_claimed` path, so a build without this feature is unaffected.
+    #[cfg(feature = "redb-spike-api")]
+    pub publish_failpoint: strata_kernel::PublishFailpoint,
 }
 
 pub(super) struct ServiceSession {
@@ -56,6 +62,8 @@ pub(super) struct ServiceSession {
     delivered_events: Mutex<BTreeMap<String, u64>>,
     protocol: Mutex<LocalServiceProtocolContext>,
     failpoint: ServiceFailpoint,
+    #[cfg(feature = "redb-spike-api")]
+    publish_failpoint: strata_kernel::PublishFailpoint,
     recovered: bool,
 }
 
@@ -86,6 +94,8 @@ impl ServiceSession {
             delivered_events: Mutex::new(BTreeMap::new()),
             protocol: Mutex::new(LocalServiceProtocolContext::default()),
             failpoint: config.failpoint,
+            #[cfg(feature = "redb-spike-api")]
+            publish_failpoint: config.publish_failpoint,
             recovered: existed,
         });
         session.resolve_pending_before_bind()?;
@@ -608,7 +618,24 @@ impl ServiceSession {
                     state: Some("claimed".into()),
                     graph_generation: self.kernel.snapshot().generation().to_string(),
                 })?;
-                match self.kernel.execute_claimed(&claim, tick) {
+                // Publication is the sole durable-graph mutation of an advance.
+                // With a redb-spike-api publish failpoint armed, route it through
+                // the crash-injecting variant (which aborts at the configured
+                // durable boundary); otherwise this is exactly `execute_claimed`.
+                #[cfg(feature = "redb-spike-api")]
+                let publish_outcome =
+                    if self.publish_failpoint != strata_kernel::PublishFailpoint::None {
+                        self.kernel.execute_claimed_with_failpoint(
+                            &claim,
+                            tick,
+                            self.publish_failpoint,
+                        )
+                    } else {
+                        self.kernel.execute_claimed(&claim, tick)
+                    };
+                #[cfg(not(feature = "redb-spike-api"))]
+                let publish_outcome = self.kernel.execute_claimed(&claim, tick);
+                match publish_outcome {
                     Ok(PublishClaimOutcome::Published(report)) => {
                         Ok(ExecutedEffect::response(LocalServiceResponse::success(
                             request_id,

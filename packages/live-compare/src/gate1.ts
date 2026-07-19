@@ -286,6 +286,7 @@ export async function runKernelArmT03(
   options?: {
     directory?: string;
     extraArgs?: string[];
+    clientId?: string;
     onStage?: (
       stage: Gate1Stage,
       ctx: { client: CoordinationClient; changeSetId?: string; declarationId?: string }
@@ -302,9 +303,13 @@ export async function runKernelArmT03(
     ...(options?.directory !== undefined ? { directory: options.directory } : {}),
     ...(options?.extraArgs !== undefined ? { extraArgs: options.extraArgs } : {})
   });
+  // The change-set actor is the clientId that calls begin_change_set, and
+  // advance/cancel are actor-scoped (session.rs authorize_actor). The crash
+  // suite prepares the change set here, then restarts and must issue the
+  // advance from the SAME actor — so it supplies a known clientId to reuse.
   const client = new CoordinationClient({
     socketPath: service.socketPath,
-    clientId: `gate1-kernel-arm:${randomUUID()}`
+    clientId: options?.clientId ?? `gate1-kernel-arm:${randomUUID()}`
   });
 
   let stopped = false;

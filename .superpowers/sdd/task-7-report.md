@@ -1,114 +1,140 @@
-# Task 7 report — atomic clocks, attempts, lifecycle, and crash recovery
+# Task 7 report — crash injection reaching the advance publication, full atomic-state oracle
 
-## Status
+## Status: COMPLETE — all 10 crash-suite tests green, Rust feature matrix green.
 
-DONE. Coordinated publication now has explicit clock and attempt failpoint boundaries, complete-old-or-complete-new reopen evidence, and reopen validation for durable clocks, attempts, graph digests, and lifecycle revision metadata.
+## What shipped
 
-## Strict TDD evidence
+- Rust: `serve` gains `--test-publish-failpoint <camelCase boundary>` (gated
+  `#[cfg(feature = "redb-spike-api")]`), mirroring the existing
+  `--test-failpoint` block. Threaded through `ServiceConfig.publish_failpoint`
+  (cfg-gated field) into `ServiceSession`, and consumed in the advance path so
+  publication routes through `execute_claimed_with_failpoint(claim, tick, fp)`
+  when armed, else the byte-identical `execute_claimed(claim, tick)`.
+- TS: `packages/live-compare/tests/gate1Crash.test.ts` — 9 crash cases (5 journal
+  stages at the advance + 4 publication boundaries) plus one negative test, with
+  the full graph + atomic-state + idempotent-replay oracle.
+- TS: added an additive optional `clientId` to `runKernelArmT03` (ownership: the
+  advance/replay must run from the change-set's creating actor).
 
-- Failpoint RED command: `cargo test -p strata-kernel --features redb-spike-api --test coordination_publication failure_after`.
-- Failpoint RED result: exit 101. The new test failed to compile for exactly the missing graph-count, coordination-count, durable-clock accessors and the missing `AfterResourceClockWrite` / `AfterAttemptWrite` variants. The existing implementation already wrote clocks and attempts in one redb transaction, so no false partial-atomicity failure was manufactured.
-- Corruption RED command: `cargo test -p strata-kernel --features redb-spike-api --test coordination_recovery reopen_`.
-- Corruption RED result: exit 101 with all three new tests failing because reopen incorrectly succeeded for a missing nonzero dependency clock, a changed candidate digest, and a scheduler revision behind lifecycle state.
-- Focused GREEN: the complete failpoint sweep passed 1/1; the recovery suite passed 11/11.
+## Threading mechanism
 
-## Atomic recovery proof
+`main.rs::serve` builds the allowed-arg list as a `Vec` and `push`es
+`--test-failpoint` under `coordination-test-api` and `--test-publish-failpoint`
+under `redb-spike-api`. Because `redb-spike-api = ["coordination-test-api"]`, the
+crash binary (built `--features "coordination-test-api redb-spike-api"`) accepts
+BOTH flags; a `coordination-test-api`-only build accepts only the journal flag;
+a default build rejects both (`reject_unknown` fails closed → "unknown option").
 
-- `AtomicState` reads durable graph generation/digest, operation and graph-event counts, coordination-event count, change-set/ticket/offer/claim state, durable/live scheduler revision, durable/live resource clocks, the full publication attempt (including prepared generation), fence state, and live graph generation/digest.
-- Complete-old is captured from a recovered executing claim; complete-new is captured from a no-failpoint control publication over the same committed `examples/medium` fixture.
-- Every tested boundary is reopened and compared to those two complete states: `AfterFenceMutation`, every actual `AfterInsert(1..=18)` boundary, `AfterResourceClockWrite`, `AfterAttemptWrite`, and `BeforeCommit`.
-- The coordinated write order is attempt replay/mismatch check, graph validation, fence consumption, resource-clock validation/increment, graph publication, lifecycle/scheduler publication, attempt record, then one redb commit.
-- Live graph, live resource clocks, and live scheduler are still installed only after redb commit.
+The publish failpoint is parsed via `PublishFailpoint::from_boundary_name` and
+stored on `ServiceConfig` / `ServiceSession` behind `#[cfg(feature = "redb-spike-api")]`.
+In `advance()`, publication is the sole durable-graph mutation; when the stored
+failpoint is `!= None` it calls `execute_claimed_with_failpoint`, otherwise
+`execute_claimed`. When the feature is absent the field/branch do not exist and
+the call is unconditionally `execute_claimed` — **zero behavior change when unset**.
+Verified: default build rejects the flag (negative test + sealing test), and the
+help text keeps the test-authority surface sealed under every feature build.
 
-## Reopen corruption validation
+## Per-boundary OLD/NEW determination (asserted per case, not just XOR)
 
-- A nonzero active-claim dependency must have a durable resource-clock row.
-- `clocked_publication_generation` distinguishes a compatible legacy/pre-clock empty table from corruption after the first coordinated clocked publication.
-- Every publication attempt must match its durable key, generation, generation digest, durable delta, and canonical candidate digest.
-- Candidate-digest reconstruction reverses the only publication transformation: it restores the stored delta's base generation to `prepared_graph_generation`, with the legacy `generation - 1` fallback, then recomputes `canonical_candidate_digest`.
-- `latest_lifecycle_revision` is advanced with every scheduler lifecycle revision; reopen rejects a scheduler revision behind that durable high-water mark. Missing markers are initialized from existing scheduler metadata for legacy databases.
+Graph "OLD" = gen 0 (== prep-only reference); "NEW" = gen 1 with the rename
+(== completed reference). The offline `export-snapshot` reopen reads only the
+durable graph tables (no journal reconciliation), so it observes exactly what the
+crash committed.
 
-## Files changed
+Journal stages (`--test-failpoint`, trip on the advance request — the only
+mutation issued to the failpointed daemon):
 
-- `crates/strata-kernel/src/storage.rs`
-- `crates/strata-kernel/src/kernel.rs`
-- `crates/strata-kernel/src/coordination/durable.rs`
-- `crates/strata-kernel/tests/coordination_publication.rs`
-- `crates/strata-kernel/tests/coordination_recovery.rs`
-- `.superpowers/sdd/task-7-report.md`
+| stage           | trips at (session.rs)                                                 | side |
+|-----------------|-----------------------------------------------------------------------|------|
+| after_pending   | after `append_pending`, BEFORE `execute_pending` runs the publication | OLD  |
+| after_effect    | after `execute_pending` (advance published durably)                   | NEW  |
+| after_prepared  | after the effect-result journal write                                 | NEW  |
+| after_follow_up | after `apply_follow_up` (a no-op for a clean publish)                  | NEW  |
+| after_completed | after the completed journal write                                     | NEW  |
 
-## Final verification
+Publication boundaries (`--test-publish-failpoint`) — matches
+`PublishFailpoint::expects_committed_state()`:
 
-- `cargo fmt --all -- --check` — PASS.
-- `cargo clippy -p strata-kernel --all-targets -- -D warnings` — PASS.
-- `cargo clippy -p strata-kernel --features redb-spike-api --all-targets -- -D warnings` — PASS.
-- `cargo test -p strata-kernel` — PASS, 32 tests.
-- `cargo test -p strata-kernel --features redb-spike-api` — PASS, 153 tests.
-- `git diff --check` — PASS.
+| boundary                            | aborts (storage.rs / publication.rs)          | side |
+|-------------------------------------|-----------------------------------------------|------|
+| beforeRedbTransaction               | before `begin_write()`                         | OLD  |
+| insideRedbTransaction               | inside the write txn, before `commit()`        | OLD  |
+| afterRedbCommitBeforeMemoryPublish  | after `write.commit()`, before memory publish  | NEW  |
+| afterMemoryPublish                  | after the in-memory publish                    | NEW  |
 
-## Self-review
+Why the projection oracle still holds for the OLD publish cases even though the
+crash happened after `claim_ready` (an Executing change set with an active claim):
+recovery (`begin_service_epoch_and_recover_coordination_inner`) transitions BOTH
+a `Ready` change set (prep-only) AND an `Executing` change set (claimed-but-
+uncommitted crash) to `Queued`, dropping the offer/claim. So the prep-only
+reference and every OLD crash converge to the same recovered coordination state.
 
-- Confirmed no semantic provider, candidate builder, graph application, digest computation, or readiness planning moved under publication/scheduler locks.
-- Confirmed normal and invalidation lock order remains publication -> scheduler -> redb.
-- Confirmed clocks, their compatibility marker, graph/operation/events, lifecycle/scheduler marker, attempt, fences, and idempotency all share the one redb transaction.
-- Confirmed all in-memory projection updates remain after durable commit and failed failpoints update none of them.
-- Confirmed Task 6 rebased replay remains valid: original prepared generation is persisted and used to reconstruct the canonical candidate digest after reopen.
+Idempotent replay: after the offline oracle, a clean restart runs
+`resolve_pending_before_bind`, which re-executes the pending advance. For OLD it
+publishes (no failpoint) → the replay returns the cached committed response and
+the final graph equals the completed reference byte-for-byte. For NEW the
+publication's idempotency key is already durable → re-execution hits
+`AlreadyPublished` and returns the SAME `operationId` the store already holds
+(asserted against `projection.operations[0].operationId`). No double-commit.
+
+## normalizeProjection — stripped vs mapped (all in one place, `gate1Crash.test.ts`)
+
+Stripped (legitimately vary with the number of open/recovery cycles; the OLD
+boundaries drive one extra recovery, the publish boundaries an extra
+claim/reconsider, relative to the prep-only reference):
+
+- `serviceEpoch` — monotonic per-open counter.
+- `schedulerRevisions` (inMemory/durable) — bumped every recovery/reconsider.
+- `recoveryMetadata` — its sequence/revision counters churn with those cycles.
+- `coordinationCounts.events` / `eventIds` / `eventCursors` — each recovery emits
+  a service-epoch transition event, so the event COUNT tracks recovery cycles.
+
+Mapped to ordinal placeholders (random per run; deterministic here because N=1
+and history is generation-ordered), mirroring `normalize_crash_state` in
+`tests/full_key_free_acceptance.rs` (exact-string revalue + rekey + embedded-JSON
+recursion): change-set id, `submissionIdempotencyKey`, intent ids, ticket id,
+operation id(s), graph-event id(s), ready-offer id + claim token, active-claim /
+offer / attempt ids, `publicationAttempts` keys, and the per-change-set
+idempotency commit key.
+
+Everything else compares byte-for-byte after mapping: graph, graphDigest,
+graphCounts, operations (full canonical history + actor + reasoning + affected +
+renames + intents), deltas, generationDigests, graphEvents, changeSets (incl.
+state and ticks), intents, idempotencyGenerations, tickets, graphTickets,
+publicationAttempts, fenceStates, live/durable resource clocks, and the stable
+coordinationCounts. Empirically, once a single fixed actor is used for both the
+references and the crash preps, the ONLY residual differences were `actor`
+(fixed by construction) and `submissionIdempotencyKey` (mapped) — confirming the
+strip list is minimal and the comparison is strong.
+
+## Wall time
+
+Full 10-test crash suite: ~42–45 s (each case runs ~4 daemon lifecycles; publish
+boundaries ~5–6 s because they build+validate a real tsc candidate before the
+abort). The redb-spike-api crash binary is built once to `target/gate1-crash`
+(~11 s, cached thereafter). gate1 filter (parity + crash together): ~50 s. This
+is far under the ~15-minute budget, so the suite runs **unconditionally inside
+the `gate1` vitest filter** — no `STRATA_GATE1_CRASH` env gate. `kernel:gate1:test`
+already runs `pnpm --filter live-compare test gate1`, which the `gate1Crash`
+filename matches; no package.json change was needed.
+
+## Verification run
+
+- `cargo test -p strata-kernel` / `--features coordination-test-api` /
+  `--features redb-spike-api`: all green (fixed one sealing regression — the
+  test-authority flags must stay OUT of `--help` under every build).
+- `vitest run gate1`: 11/11 green (10 crash + 1 parity), rerun against the final
+  working tree.
+- Pre-existing, unrelated: `verify.test.ts` / `tasks.test.ts` (13 task-
+  registration-digest failures) fail identically on clean main with my changes
+  stashed — NOT introduced by this task.
 
 ## Concerns
 
-- No blocking concerns. Attempt/candidate recovery validation is feature-gated with the research semantic surface; default builds cannot execute semantic coordinated publications.
-
-## Commit
-
-- Planned subject: `test(kernel): prove atomic optimistic recovery`.
-
----
-
-## Reviewer fix wave — 2026-07-15
-
-### Status
-
-DONE. The recovery proof now fails closed before marker migration, preserves empty-delta publication, binds every attempt to the committed coordination and graph publication identities, and compares a normalized full atomic tuple rather than counts and coarse states.
-
-### Regression-first evidence
-
-- `failed_open_does_not_self_heal_a_missing_versioned_lifecycle_marker` — RED because newly created databases had no validation-version discriminator; GREEN with versioned marker validation before writes.
-- `failed_open_does_not_self_heal_a_missing_versioned_clock_marker_or_clocks` — RED because open recreated the clock marker and incorrectly succeeded; GREEN with schema setup restricted to tables/historical metadata only.
-- `reopen_rejects_a_publication_attempt_bound_to_a_different_change_set` — RED because changing only the attempt's `change_set_id` reopened successfully; GREEN after committed change-set/generation and graph identity validation.
-- `empty_delta_publication_reopens_without_a_false_clock_marker` — RED because an empty delta advanced the clock marker without writing clocks, then failed reopen; GREEN after marking only publications with non-empty clock updates.
-- Follow-up corruption tests cover graph operation/change-set and graph event/operation mismatches.
-- Legacy validation-version migration is covered both for successful backfill and a `BeforeCommit` failure that rolls back markers and service epoch together.
-- `atomic_state_distinguishes_wrong_graph_publication_content` proves that wrong operation, graph event, graph ticket, or idempotency contents cannot compare equal.
-
-### Recovery validation and migration
-
-- New databases receive recovery-validation version 1 plus zeroed lifecycle/clock markers during creation.
-- `ensure_coordination_schema` no longer creates validation markers. `DurableStore::open` performs no marker repair before `Kernel::open_inner` validates the durable state read-only.
-- A versioned database must contain both markers; missing markers reject reopen without changing coordination metadata or clocks.
-- A database without the validation version is treated as legacy. Marker values are derived only after the read-only validation succeeds, then are written in the same redb transaction as service-epoch advancement and authority recovery.
-- Publication attempts now require an existing `Committed` change set whose `committed_generation` matches the attempt, an operation with the same change-set identity, and a graph event whose generation and payload `changeSetId`/`operationId` link to that operation.
-
-### Complete atomic tuple
-
-`AtomicState` now includes the normalized full `OperationRecord`, graph `EventRecord` and parsed payload, graph `TicketRecord`, deterministic graph idempotency key/generation, full change-set/ticket/offer/claim records, full coordination events, scheduler metadata plus lifecycle/clock/version high-water markers, resource clocks, attempt, fences, and live graph/clock projections. Explicit referential-consistency entries cover operation/change-set, event/change-set, event/operation, graph/coordination ticket, ticket scope, idempotency generation, attempt identity/generation, and coordination-event sequences.
-
-Normalization is intentionally limited to independently generated identities: operation ID, graph and coordination event IDs, ticket ID, offer ID/token, claim/attempt ID, and intent IDs. Each is replaced by a relationship-preserving alias; embedded payload JSON is parsed before normalization. Stable content, state, scope, generation, key, clock, and payload fields remain exact.
-
-### Final verification after fixes
-
-- `cargo fmt --all -- --check` — PASS.
-- `cargo clippy -p strata-kernel --all-targets -- -D warnings` — PASS.
-- `cargo clippy -p strata-kernel --all-targets --features redb-spike-api -- -D warnings` — PASS.
-- `cargo test -p strata-kernel` — PASS, 32 tests.
-- `cargo test -p strata-kernel --features redb-spike-api` — PASS, 162 tests.
-- `git diff --check` — PASS.
-
-### Invariants and concerns
-
-- Task 6 ordering remains publication -> scheduler -> redb; no semantic analysis, candidate building, graph application, digest computation, or readiness planning moved under those global locks.
-- Empty deltas remain valid and advance graph/lifecycle state without inventing resource-clock history.
-- No blocking concerns. The deeper attempt/graph recovery validation remains feature-gated with the research coordination execution surface.
-
-### Fix commit
-
-- Planned subject: `fix(kernel): harden atomic recovery validation`.
+- The crash binary builds to a separate target dir (`target/gate1-crash`), so the
+  first `gate1` run in a fresh checkout pays a one-time ~11 s compile. The
+  `kernel:gate1:test` script's own `cargo build --features redb-spike-api` (to
+  `target/debug`) is now redundant for the crash arm (which self-builds) but is
+  harmless; left untouched to minimize surface.
+- Full `pnpm -r test` / `pnpm kernel:full-key-free:test` green is Task 9's gate;
+  the pre-existing verify/tasks digest failures must be resolved there.

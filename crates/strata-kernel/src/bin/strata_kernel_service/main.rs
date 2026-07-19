@@ -41,27 +41,27 @@ fn run() -> Result<()> {
 
 fn serve(arguments: &[OsString]) -> Result<()> {
     let values = parse_named(arguments)?;
+    // Built as a Vec so the two test-only flags are appended per cfg. Both the
+    // journal-stage failpoint (`--test-failpoint`, coordination-test-api) and
+    // the publication-boundary failpoint (`--test-publish-failpoint`,
+    // redb-spike-api) are additive test surfaces; because redb-spike-api
+    // implies coordination-test-api, a redb-spike-api build accepts both, a
+    // coordination-test-api build accepts only the first, and a default build
+    // accepts neither (so `reject_unknown` fails closed on either flag).
+    #[allow(unused_mut)]
+    let mut allowed = vec![
+        "--db",
+        "--snapshot",
+        "--bridge-worker",
+        "--source-root",
+        "--corpus-root",
+        "--audit",
+        "--socket-token",
+    ];
     #[cfg(feature = "coordination-test-api")]
-    let allowed = [
-        "--db",
-        "--snapshot",
-        "--bridge-worker",
-        "--source-root",
-        "--corpus-root",
-        "--audit",
-        "--socket-token",
-        "--test-failpoint",
-    ];
-    #[cfg(not(feature = "coordination-test-api"))]
-    let allowed = [
-        "--db",
-        "--snapshot",
-        "--bridge-worker",
-        "--source-root",
-        "--corpus-root",
-        "--audit",
-        "--socket-token",
-    ];
+    allowed.push("--test-failpoint");
+    #[cfg(feature = "redb-spike-api")]
+    allowed.push("--test-publish-failpoint");
     reject_unknown(&values, &allowed)?;
     let db_path = required_path(&values, "--db")?;
     let snapshot_path = required_path(&values, "--snapshot")?;
@@ -86,6 +86,23 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     };
     #[cfg(not(feature = "coordination-test-api"))]
     let failpoint = ServiceFailpoint::None;
+    // The publication-boundary crash failpoint. `None` (the default and the
+    // only value in a non-redb-spike-api build) threads through as
+    // `execute_claimed`, i.e. zero behavior change.
+    #[cfg(feature = "redb-spike-api")]
+    let publish_failpoint = match values.get("--test-publish-failpoint") {
+        None => strata_kernel::PublishFailpoint::None,
+        Some(value) => {
+            let name = value
+                .to_str()
+                .context("--test-publish-failpoint must be valid UTF-8")?;
+            strata_kernel::PublishFailpoint::from_boundary_name(name).with_context(|| {
+                format!(
+                    "invalid publish failpoint {name}; expected beforeRedbTransaction, insideRedbTransaction, afterRedbCommitBeforeMemoryPublish, or afterMemoryPublish"
+                )
+            })?
+        }
+    };
     let bridge_config = NodeBridgeConfig::tsc_only(
         "node",
         vec![worker.into_os_string()],
@@ -101,6 +118,8 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             bridge_config,
             audit_path,
             failpoint,
+            #[cfg(feature = "redb-spike-api")]
+            publish_failpoint,
         },
         &token,
     )
@@ -204,6 +223,10 @@ fn required_text(
 }
 
 fn print_help() {
+    // The test-authority flags (`--test-failpoint`, `--test-publish-failpoint`)
+    // are intentionally sealed OUT of --help under every feature build — see
+    // `local_service_sealing::default_build_service_has_no_test_authority_surface`.
+    // They are parsed in `serve` but never advertised.
     println!(
         "strata-kernel-service\n\nCommands:\n  serve --db PATH --snapshot PATH --bridge-worker PATH --source-root PATH --corpus-root PATH --socket-token TOKEN --audit PATH\n  validate-socket --socket PATH\n  export-snapshot --db PATH --out PATH [--state-out PATH]"
     );
