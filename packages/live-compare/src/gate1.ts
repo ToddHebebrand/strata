@@ -289,7 +289,12 @@ export async function runKernelArmT03(
     clientId?: string;
     onStage?: (
       stage: Gate1Stage,
-      ctx: { client: CoordinationClient; changeSetId?: string; declarationId?: string }
+      ctx: {
+        client: CoordinationClient;
+        socketPath: string;
+        changeSetId?: string;
+        declarationId?: string;
+      }
     ) => Promise<void>;
     stopAfterSubmit?: boolean;
     preserveDirectory?: boolean;
@@ -332,24 +337,43 @@ export async function runKernelArmT03(
       );
     }
     const declarationId = discovery.declarations[0]!.nodeId;
-    await options?.onStage?.("after_discovery", { client, declarationId });
+    await options?.onStage?.("after_discovery", {
+      client,
+      socketPath: service.socketPath,
+      declarationId
+    });
 
     const begun = expectResult(
       await client.beginChangeSet(TASK_PROMPT, SUBMIT_DEADLINE_MS),
       "change_set"
     );
     const changeSetId = begun.changeSetId;
-    await options?.onStage?.("after_begin", { client, changeSetId, declarationId });
+    await options?.onStage?.("after_begin", {
+      client,
+      socketPath: service.socketPath,
+      changeSetId,
+      declarationId
+    });
 
     await client.addIntent(
       changeSetId,
       { type: "rename_symbol", declarationId, newName: NEW_NAME },
       SUBMIT_DEADLINE_MS
     );
-    await options?.onStage?.("after_add_intent", { client, changeSetId, declarationId });
+    await options?.onStage?.("after_add_intent", {
+      client,
+      socketPath: service.socketPath,
+      changeSetId,
+      declarationId
+    });
 
     expectResult(await client.submitChangeSet(changeSetId, SUBMIT_DEADLINE_MS), "change_set");
-    await options?.onStage?.("after_submit", { client, changeSetId, declarationId });
+    await options?.onStage?.("after_submit", {
+      client,
+      socketPath: service.socketPath,
+      changeSetId,
+      declarationId
+    });
 
     // Task 7 crash choreography: prep only (begin/add/submit committed to
     // durable state), clean stop preserving the redb, no advance. Returns what
