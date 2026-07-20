@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
-#[cfg(feature = "redb-spike-api")]
 use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -32,6 +31,15 @@ pub struct RecoveryReport {
     pub generation: u64,
     pub digest: String,
     pub service_epoch: u64,
+    /// Wall time of the whole open/create body (superset of `replay_ns`).
+    pub open_ns: u128,
+    /// Wall time of the delta replay loop; `0` on the create path.
+    pub replay_ns: u128,
+    /// Wall time of the `store.seed` bracket; `0` on the open path.
+    pub seed_ns: u128,
+    /// Encoded length of the replay-base snapshot value: seed's returned length
+    /// on the create path, `latest_snapshot`'s returned length on the open path.
+    pub snapshot_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -41,6 +49,19 @@ pub struct PublicationReport {
     pub persistence_ns: u128,
     pub memory_publish_ns: u128,
     pub already_published: bool,
+    /// Analysis wall time before candidate construction, summed across all
+    /// optimistic-retry attempts of this publication.
+    pub pre_candidate_analysis_ns: u128,
+    /// Post-candidate authority planning wall time, summed across all
+    /// optimistic-retry attempts of this publication.
+    pub post_candidate_analysis_ns: u128,
+    /// Candidate-build wall time. Retained from the original attempt (never
+    /// reset by an optimistic retry, which rebuilds nothing). `0` only for
+    /// coordination-test-api pre-validated sources that skip candidate build.
+    pub candidate_ns: u128,
+    /// Sum of the four encoded graph-publication record value lengths
+    /// (operation + delta + ticket + event). Not a total-transaction byte count.
+    pub core_graph_record_value_bytes: u64,
 }
 
 #[doc(hidden)]
@@ -182,9 +203,12 @@ impl Kernel {
         semantic_provider: Option<Arc<dyn SemanticProvider>>,
         candidate_executor: Option<Arc<dyn CandidateExecutor>>,
     ) -> Result<(Self, RecoveryReport)> {
+        let open_started = Instant::now();
         let graph = Arc::new(GraphGeneration::from_snapshot(initial.clone())?);
         let store = DurableStore::create(path)?;
-        store.seed(&initial)?;
+        let seed_started = Instant::now();
+        let snapshot_bytes = store.seed(&initial)?;
+        let seed_ns = seed_started.elapsed().as_nanos();
         let resource_clocks = Arc::new(ResourceClockSnapshot::from_clocks(
             store.coordination().resource_clocks()?,
         ));
@@ -195,6 +219,11 @@ impl Kernel {
             generation: graph.generation(),
             digest: graph.digest().to_owned(),
             service_epoch,
+            // Create path: no replay; the seed bracket is the durable-write cost.
+            open_ns: open_started.elapsed().as_nanos(),
+            replay_ns: 0,
+            seed_ns,
+            snapshot_bytes,
         };
         let scheduler_revision = store.coordination().metadata_state()?.scheduler_revision;
         let scheduler = SchedulerState::recover_with_revision(
@@ -253,8 +282,9 @@ impl Kernel {
         semantic_provider: Option<Arc<dyn SemanticProvider>>,
         candidate_executor: Option<Arc<dyn CandidateExecutor>>,
     ) -> Result<(Self, RecoveryReport)> {
+        let open_started = Instant::now();
         let store = DurableStore::open(path)?;
-        let snapshot = store.latest_snapshot()?;
+        let (snapshot, snapshot_bytes) = store.latest_snapshot()?;
         let snapshot_generation = snapshot.generation;
         let mut graph = GraphGeneration::from_snapshot(snapshot)?;
         let expected_snapshot_digest = store.generation_digest(snapshot_generation)?;
@@ -265,6 +295,7 @@ impl Kernel {
             );
         }
         let deltas = store.deltas_after(snapshot_generation)?;
+        let replay_started = Instant::now();
         for (delta_generation, delta) in &deltas {
             let expected_generation = graph.generation();
             if delta.base_generation != expected_generation {
@@ -290,6 +321,7 @@ impl Kernel {
                 );
             }
         }
+        let replay_ns = replay_started.elapsed().as_nanos();
 
         let durable_generation = store.current_generation()?;
         if graph.generation() != durable_generation {
@@ -333,6 +365,12 @@ impl Kernel {
             generation: graph.generation(),
             digest: graph.digest().to_owned(),
             service_epoch,
+            // Open path: the seed bracket does not run; replay is the durable
+            // catch-up cost and open_ns brackets the whole recovery body.
+            open_ns: open_started.elapsed().as_nanos(),
+            replay_ns,
+            seed_ns: 0,
+            snapshot_bytes,
         };
         let plan_after_recovery = semantic_provider.is_some();
         let kernel = Self::from_parts(
@@ -705,6 +743,12 @@ impl Kernel {
                 persistence_ns: 0,
                 memory_publish_ns: 0,
                 already_published: true,
+                // Direct redb-spike publish: no coordination analysis or
+                // candidate build to attribute; already-published carries zeros.
+                pre_candidate_analysis_ns: 0,
+                post_candidate_analysis_ns: 0,
+                candidate_ns: 0,
+                core_graph_record_value_bytes: 0,
             });
         }
 
@@ -721,8 +765,15 @@ impl Kernel {
                 persistence_ns,
                 memory_publish_ns: 0,
                 already_published: true,
+                pre_candidate_analysis_ns: 0,
+                post_candidate_analysis_ns: 0,
+                candidate_ns: 0,
+                core_graph_record_value_bytes: 0,
             }),
-            PublishOutcome::Published { generation } => {
+            PublishOutcome::Published {
+                generation,
+                core_graph_record_value_bytes,
+            } => {
                 if generation != next.generation() {
                     bail!(
                         "durable generation {generation} does not match prepared generation {}",
@@ -745,6 +796,12 @@ impl Kernel {
                     persistence_ns,
                     memory_publish_ns,
                     already_published: false,
+                    // Direct redb-spike publish bypasses coordination analysis
+                    // and candidate build; only the record-value byte sum applies.
+                    pre_candidate_analysis_ns: 0,
+                    post_candidate_analysis_ns: 0,
+                    candidate_ns: 0,
+                    core_graph_record_value_bytes,
                 })
             }
         }

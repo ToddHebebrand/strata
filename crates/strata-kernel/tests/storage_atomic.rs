@@ -95,12 +95,12 @@ fn publication_is_atomic_and_durable_across_reopen() {
         store.seed(&initial_snapshot()).unwrap();
         let service_epoch = store.begin_service_epoch().unwrap();
         publication.fence = issue_clock_fence(&store, service_epoch);
-        assert_eq!(
+        assert!(matches!(
             store
                 .publish(&publication, &expected_digest(&publication))
                 .unwrap(),
-            PublishOutcome::Published { generation: 1 }
-        );
+            PublishOutcome::Published { generation: 1, .. }
+        ));
     }
 
     let reopened = DurableStore::open(&database_path).unwrap();
@@ -135,12 +135,12 @@ fn duplicate_idempotency_key_returns_original_generation_without_appending() {
 
     let mut publication = publication("publish:duplicate");
     publication.fence = issue_clock_fence(&store, service_epoch);
-    assert_eq!(
+    assert!(matches!(
         store
             .publish(&publication, &expected_digest(&publication))
             .unwrap(),
-        PublishOutcome::Published { generation: 1 }
-    );
+        PublishOutcome::Published { generation: 1, .. }
+    ));
 
     let mut duplicate = publication.clone();
     duplicate.operation.operation_id = "operation:must-not-be-written".into();

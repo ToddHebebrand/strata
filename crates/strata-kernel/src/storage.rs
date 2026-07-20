@@ -37,8 +37,18 @@ pub(crate) const SERVICE_EPOCH: &str = "service_epoch";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublishOutcome {
-    Published { generation: u64 },
-    AlreadyPublished { generation: u64 },
+    Published {
+        generation: u64,
+        /// Sum of the four encoded graph-publication record value lengths
+        /// (operation + delta + ticket + event) written in this transaction.
+        /// Observer-only; this is NOT the total transaction or physical redb
+        /// byte count — lifecycle, attempt, idempotency, digest, and metadata
+        /// writes are deliberately excluded.
+        core_graph_record_value_bytes: u64,
+    },
+    AlreadyPublished {
+        generation: u64,
+    },
 }
 
 pub struct DurableStore {
@@ -80,7 +90,10 @@ impl DurableStore {
         })
     }
 
-    pub fn seed(&self, snapshot: &GraphSnapshot) -> Result<()> {
+    /// Seeds the generation-zero snapshot and complete graph-publication
+    /// schema. Returns the encoded snapshot value length so callers can record
+    /// a `snapshot_bytes` recovery observation without re-reading the store.
+    pub fn seed(&self, snapshot: &GraphSnapshot) -> Result<u64> {
         ensure_coordination_schema(&self.database)?;
         if snapshot.generation != 0 {
             bail!("initial snapshot must be generation 0");
@@ -150,8 +163,9 @@ impl DurableStore {
                 .context("create consumed fences table")?,
         );
 
+        let snapshot_bytes_len = snapshot_bytes.len() as u64;
         write.commit().context("commit seed transaction")?;
-        Ok(())
+        Ok(snapshot_bytes_len)
     }
 
     pub fn coordination(&self) -> CoordinationDurable<'_> {
@@ -209,12 +223,13 @@ impl DurableStore {
 
         self.validate_graph_publication_in_txn(&write, publication)?;
         self.verify_fence_in_write_txn(&write, &publication.fence)?;
-        let next_generation = self.write_graph_publication_in_txn_with_hook(
-            &write,
-            publication,
-            expected_digest,
-            &mut || Ok(()),
-        )?;
+        let (next_generation, core_graph_record_value_bytes) = self
+            .write_graph_publication_in_txn_with_hook(
+                &write,
+                publication,
+                expected_digest,
+                &mut || Ok(()),
+            )?;
 
         if failpoint == PublishFailpoint::InsideRedbTransaction {
             std::process::abort();
@@ -225,6 +240,7 @@ impl DurableStore {
         }
         Ok(PublishOutcome::Published {
             generation: next_generation,
+            core_graph_record_value_bytes,
         })
     }
 
@@ -302,12 +318,13 @@ impl DurableStore {
             }
             Ok(())
         };
-        let generation = self.write_graph_publication_in_txn_with_hook(
-            &write,
-            &commit.publication,
-            expected_digest,
-            &mut after_insert,
-        )?;
+        let (generation, core_graph_record_value_bytes) = self
+            .write_graph_publication_in_txn_with_hook(
+                &write,
+                &commit.publication,
+                expected_digest,
+                &mut after_insert,
+            )?;
         self.coordination()
             .persist_lifecycle_in_write_txn_with_hook(
                 &write,
@@ -337,22 +354,32 @@ impl DurableStore {
         if crash_failpoint == PublishFailpoint::AfterRedbCommitBeforeMemoryPublish {
             std::process::abort();
         }
-        Ok(PublishOutcome::Published { generation })
+        Ok(PublishOutcome::Published {
+            generation,
+            core_graph_record_value_bytes,
+        })
     }
 
+    /// Writes the graph-publication records for this transaction, returning the
+    /// new generation and the sum of the four encoded record value lengths
+    /// (operation + delta + ticket + event) — the `core_graph_record_value_bytes`
+    /// observation. That sum deliberately excludes idempotency, digest, and
+    /// metadata writes: it is not a total-transaction byte count.
     fn write_graph_publication_in_txn_with_hook(
         &self,
         write: &WriteTransaction,
         publication: &Publication,
         expected_digest: &str,
         on_write: &mut dyn FnMut() -> Result<()>,
-    ) -> Result<u64> {
+    ) -> Result<(u64, u64)> {
         let (_, next_generation, next_event_sequence) =
             self.validate_graph_publication_in_txn(write, publication)?;
         let operation = encode(&publication.operation, "operation")?;
         let delta = encode(&publication.delta, "delta")?;
         let ticket = encode(&publication.ticket, "ticket")?;
         let event = encode(&publication.event, "event")?;
+        let core_graph_record_value_bytes =
+            (operation.len() + delta.len() + ticket.len() + event.len()) as u64;
         write
             .open_table(OPERATIONS)?
             .insert(next_generation, operation.as_slice())?;
@@ -386,7 +413,7 @@ impl DurableStore {
             metadata.insert(CURRENT_EVENT_SEQUENCE, sequence_bytes.as_slice())?;
             on_write()?;
         }
-        Ok(next_generation)
+        Ok((next_generation, core_graph_record_value_bytes))
     }
 
     fn validate_graph_publication_in_txn(
@@ -645,7 +672,10 @@ impl DurableStore {
             )
     }
 
-    pub fn latest_snapshot(&self) -> Result<GraphSnapshot> {
+    /// Reads the newest durable snapshot. Returns the decoded snapshot together
+    /// with its encoded value length (`snapshot_bytes`) measured where the bytes
+    /// are read, so recovery can record replay-base size without re-reading.
+    pub fn latest_snapshot(&self) -> Result<(GraphSnapshot, u64)> {
         let read = self
             .database
             .begin_read()
@@ -658,14 +688,16 @@ impl DurableStore {
             .context("durable store has no graph snapshot")?
             .context("read latest snapshot")?;
         let key_generation = entry.0.value();
-        let snapshot: GraphSnapshot = decode(entry.1.value(), "snapshot")?;
+        let snapshot_bytes = entry.1.value();
+        let snapshot_bytes_len = snapshot_bytes.len() as u64;
+        let snapshot: GraphSnapshot = decode(snapshot_bytes, "snapshot")?;
         if snapshot.generation != key_generation {
             bail!(
                 "snapshot key generation {key_generation} does not match payload generation {}",
                 snapshot.generation
             );
         }
-        Ok(snapshot)
+        Ok((snapshot, snapshot_bytes_len))
     }
 
     pub fn deltas_after(&self, generation: u64) -> Result<Vec<(u64, GraphDelta)>> {

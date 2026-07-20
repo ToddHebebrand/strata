@@ -7,6 +7,7 @@ mod coordination_support;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::Duration;
 
 use anyhow::Result;
 use coordination_support::{
@@ -1882,4 +1883,144 @@ fn age_only_reconsideration_during_final_check_does_not_starve_older_claim() {
             .state,
         TicketState::NeedsDecision
     );
+}
+
+/// Wraps the graph-derived analyzer with a deterministic per-analysis sleep so
+/// that a retried publication's summed pre-candidate analysis time is robustly
+/// larger than a single-attempt baseline's (accumulation is observable rather
+/// than lost in sub-microsecond jitter).
+#[derive(Clone)]
+struct SleepingGraphAnalyzer {
+    inner: GraphDerivedAnalyzer,
+    sleep: Duration,
+}
+
+impl TestSemanticProvider for SleepingGraphAnalyzer {
+    fn analyze(&self, graph: &GraphGeneration, intent: &IntentRecord) -> Result<IntentAnalysis> {
+        std::thread::sleep(self.sleep);
+        self.inner.analyze(graph, intent)
+    }
+}
+
+/// Wraps a node-patch builder with a deterministic sleep so the candidate build
+/// bracket reports a strictly positive `candidate_ns` that a retry must retain.
+struct SleepingPatchBuilder {
+    inner: NodePatchBuilder,
+    sleep: Duration,
+}
+
+impl CandidateBuilder for SleepingPatchBuilder {
+    fn build_candidate(&self, prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
+        std::thread::sleep(self.sleep);
+        self.inner.build_candidate(prepared)
+    }
+}
+
+// A publication that loses its first optimistic attempt to disjoint scheduler
+// churn and republishes on the retry must report per-stage timings SUMMED across
+// every attempt for the analysis stages, while retaining the single original
+// candidate build time (the retry reuses the Validated candidate and rebuilds
+// nothing). This reuses the disjoint-churn choreography of
+// `optimistic_retry_exhaustion_from_disjoint_churn_keeps_claim_non_terminal`,
+// but submits the disjoint contender on attempt 0 ONLY, so attempt 1 finds a
+// stable scheduler and commits.
+#[test]
+fn retried_publication_accumulates_analysis_time_and_keeps_candidate_time() {
+    let fixture = MediumCoordinationFixture::load();
+    let user = fixture.declaration_named("User").clone();
+    let format = fixture.declaration_named("formatTimestamp").clone();
+    let analysis_sleep = Duration::from_millis(4);
+    let candidate_sleep = Duration::from_millis(2);
+
+    // Baseline: a clean single-attempt User rename. Its pre-candidate analysis is
+    // one analyze call (~one analysis_sleep).
+    let baseline_pre = {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("kernel.redb");
+        let (kernel, _) = Kernel::create_with_test_semantics(
+            &path,
+            fixture.snapshot().clone(),
+            Arc::new(SleepingGraphAnalyzer {
+                inner: GraphDerivedAnalyzer::new(),
+                sleep: analysis_sleep,
+            }),
+        )
+        .unwrap();
+        begin_with_intents(&kernel, "baseline", [rename(&user.id, "Account")]).unwrap();
+        let offer = ready(kernel.submit_change_set("baseline", 0).unwrap());
+        let claim = claimed(
+            kernel
+                .claim_ready(&offer.offer_id, &offer.claim_token, 1)
+                .unwrap(),
+        );
+        let builder = NodePatchBuilder::new(vec![(user.id.clone(), "\n// Account".into())]);
+        let report = published(kernel.publish_claimed(&claim, &builder, 2).unwrap());
+        assert!(!report.already_published);
+        assert!(report.pre_candidate_analysis_ns > 0);
+        report.pre_candidate_analysis_ns
+    };
+
+    // Retried: identical rename, but a disjoint submission lands inside the first
+    // final-check window, forcing exactly one optimistic retry before commit.
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let (kernel, _) = Kernel::create_with_test_semantics(
+        &path,
+        fixture.snapshot().clone(),
+        Arc::new(SleepingGraphAnalyzer {
+            inner: GraphDerivedAnalyzer::new(),
+            sleep: analysis_sleep,
+        }),
+    )
+    .unwrap();
+    let kernel = Arc::new(kernel);
+    begin_with_intents(&kernel, "retried", [rename(&user.id, "Account")]).unwrap();
+    let offer = ready(kernel.submit_change_set("retried", 0).unwrap());
+    let claim = claimed(
+        kernel
+            .claim_ready(&offer.offer_id, &offer.claim_token, 1)
+            .unwrap(),
+    );
+    begin_with_intents(
+        &kernel,
+        "disjoint-churn",
+        [rename(&format.id, "formatRevision")],
+    )
+    .unwrap();
+    let builder = SleepingPatchBuilder {
+        inner: NodePatchBuilder::new(vec![(user.id.clone(), "\n// Account".into())]),
+        sleep: candidate_sleep,
+    };
+    let submissions = AtomicUsize::new(0);
+    let before_final_check = |attempt: u32| {
+        if attempt == 0 {
+            submissions.fetch_add(1, Ordering::SeqCst);
+            kernel.submit_change_set("disjoint-churn", 10).unwrap();
+        }
+    };
+
+    let report = published(
+        kernel
+            .publish_claimed_with_test_hooks(&claim, &builder, 20, &before_final_check, &|| {})
+            .unwrap(),
+    );
+
+    assert_eq!(
+        submissions.load(Ordering::SeqCst),
+        1,
+        "the disjoint contender must be submitted exactly once, on attempt 0"
+    );
+    assert!(!report.already_published);
+    assert_eq!(report.generation, 1);
+    assert!(
+        report.pre_candidate_analysis_ns > baseline_pre,
+        "retried pre-candidate analysis {} must exceed single-attempt baseline {}",
+        report.pre_candidate_analysis_ns,
+        baseline_pre
+    );
+    assert!(
+        report.candidate_ns > 0,
+        "candidate build time must survive the retry, not reset to zero"
+    );
+    assert!(report.core_graph_record_value_bytes > 0);
 }

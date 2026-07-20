@@ -1728,3 +1728,84 @@ fn real_worker_derives_greet_callsites_with_production_policy() {
         strata_kernel::IdempotencyClass::ReplaySafe
     );
 }
+
+// Task 4 phase attribution: each of the five coordination phases must tag the
+// bridge runs it drives on the calling thread. This is only observable through
+// real worker `WorkerRunMetrics`, so it lives in the ignored bridge suite. The
+// guard mechanism itself (enter/restore) is unit-tested in `bridge::process`;
+// this test pins that the actual submit / claim / publish call sites install the
+// right phase string around their analyze / plan / candidate-build calls.
+#[test]
+#[ignore = "requires pnpm kernel:bridge:build"]
+fn coordination_phases_attribute_their_bridge_runs() {
+    let snapshot = trusted_medium_snapshot();
+    let directory = tempdir().unwrap();
+    let (kernel, _) = Kernel::create_with_node_bridge(
+        directory.path().join("kernel.redb"),
+        snapshot,
+        worker_config().with_metrics_collection(true),
+    )
+    .unwrap();
+
+    kernel
+        .begin_change_set(
+            BeginChangeSet {
+                change_set_id: "phase-probe".into(),
+                actor: "agent:phase".into(),
+                reasoning: "attribute coordination phases".into(),
+                submission_idempotency_key: "submission:phase-probe".into(),
+            },
+            0,
+        )
+        .unwrap();
+    kernel
+        .add_intent(
+            "phase-probe",
+            IntentParameters::RenameSymbol {
+                declaration_id: "fc98295bca9efc3e".into(),
+                new_name: "Account".into(),
+            },
+        )
+        .unwrap();
+
+    let phases = |records: Vec<strata_kernel::WorkerRunMetrics>| {
+        records
+            .into_iter()
+            .map(|record| record.phase)
+            .collect::<BTreeSet<_>>()
+    };
+
+    let SubmissionOutcome::Ready { offer, .. } =
+        kernel.submit_change_set("phase-probe", 1).unwrap()
+    else {
+        panic!("expected phase-probe to be ready")
+    };
+    let submit_phases = phases(kernel.take_worker_run_metrics());
+    assert!(
+        submit_phases.contains("submitAnalysis"),
+        "submit did not attribute its analyze run: {submit_phases:?}"
+    );
+
+    let ClaimOutcome::Claimed(claim) = kernel
+        .claim_ready(&offer.offer_id, &offer.claim_token, 2)
+        .unwrap()
+    else {
+        panic!("expected phase-probe to be claimed")
+    };
+    let claim_phases = phases(kernel.take_worker_run_metrics());
+    assert!(
+        claim_phases.contains("claimAnalysis"),
+        "claim did not attribute its plan run: {claim_phases:?}"
+    );
+
+    let PublishClaimOutcome::Published(_) = kernel.execute_claimed(&claim, 3).unwrap() else {
+        panic!("expected phase-probe to publish")
+    };
+    let publish_phases = phases(kernel.take_worker_run_metrics());
+    for expected in ["preCandidateAnalysis", "candidate", "postCandidateAnalysis"] {
+        assert!(
+            publish_phases.contains(expected),
+            "publish did not attribute a {expected} run: {publish_phases:?}"
+        );
+    }
+}

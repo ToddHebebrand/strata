@@ -464,7 +464,7 @@ fn kernel_open_upgrades_a_pre_coordination_database_atomically_and_idempotently(
     drop(kernel);
     let store = DurableStore::open(&path).unwrap();
     assert_eq!(store.current_generation().unwrap(), 0);
-    assert_eq!(store.latest_snapshot().unwrap(), snapshot);
+    assert_eq!(store.latest_snapshot().unwrap().0, snapshot);
     assert_eq!(
         store.generation_digest(0).unwrap(),
         GraphGeneration::from_snapshot(snapshot.clone())

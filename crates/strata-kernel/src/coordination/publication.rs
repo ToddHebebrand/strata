@@ -21,6 +21,7 @@ use super::{
     PublishClaimOutcome, SchedulerState, ScopeChange, TicketState, classify_scope_change,
 };
 use crate::bridge::CandidateExecutor;
+use crate::bridge::observer::enter_phase;
 #[cfg(feature = "redb-spike-api")]
 use crate::kernel::PublishFailpoint;
 use crate::model::{FenceClaim, Publication};
@@ -61,6 +62,16 @@ struct PublicationTestHooks<'a> {
     after_digest_validation: Option<&'a dyn Fn()>,
 }
 
+/// Observer-only per-stage timings accumulated across the optimistic-retry
+/// recursion of a single publication. Holding or threading these has zero effect
+/// on coordination control flow; they only populate the eventual report.
+#[derive(Clone, Copy, Default)]
+struct AttemptTimings {
+    pre_candidate_analysis_ns: u128,
+    post_candidate_analysis_ns: u128,
+    candidate_ns: u128,
+}
+
 #[derive(Clone, Copy)]
 struct PublicationExecution<'a> {
     failpoint: CoordinatedPublishFailpoint,
@@ -68,6 +79,9 @@ struct PublicationExecution<'a> {
     crash_failpoint: PublishFailpoint,
     after_outer_idempotency_lookup: Option<&'a dyn Fn()>,
     optimistic_attempt: u32,
+    /// Stage timings summed over all prior attempts of this publication. The
+    /// current attempt adds its own measurements before reporting or recursing.
+    accumulated: AttemptTimings,
     test_hooks: PublicationTestHooks<'a>,
 }
 
@@ -79,6 +93,7 @@ impl Default for PublicationExecution<'_> {
             crash_failpoint: PublishFailpoint::None,
             after_outer_idempotency_lookup: None,
             optimistic_attempt: 0,
+            accumulated: AttemptTimings::default(),
             test_hooks: PublicationTestHooks::default(),
         }
     }
@@ -333,8 +348,13 @@ impl Kernel {
             crash_failpoint,
             after_outer_idempotency_lookup,
             optimistic_attempt,
+            accumulated,
             test_hooks,
         } = execution;
+        // Running per-stage totals for this attempt chain; each stage bracket
+        // below adds this attempt's measurement, then the value is either
+        // reported or threaded into the retry recursion.
+        let mut accumulated = accumulated;
         let idempotency_key = coordination_commit_key(&claim.change_set_id);
         if let Some(report) = self.committed_candidate_report(claim, &candidate_source)? {
             return Ok(PublishClaimOutcome::Published(report));
@@ -365,7 +385,14 @@ impl Kernel {
             .as_ref()
             .context("executing change set has no inferred scope")?;
         let intents = durable.intents_for(&claim.change_set_id)?;
-        let fresh_scope = analyze_change_set(&prepared_graph, &intents, semantic_provider)?;
+        let pre_candidate_started = Instant::now();
+        let fresh_scope = {
+            let _phase = enter_phase("preCandidateAnalysis");
+            analyze_change_set(&prepared_graph, &intents, semantic_provider)?
+        };
+        accumulated.pre_candidate_analysis_ns = accumulated
+            .pre_candidate_analysis_ns
+            .saturating_add(pre_candidate_started.elapsed().as_nanos());
         let scope_change = classify_scope_change(previous_scope, &fresh_scope);
         if scope_change != ScopeChange::Unchanged {
             self.persist_changed_publication_scope(claim, now_tick, test_hooks)?;
@@ -381,10 +408,17 @@ impl Kernel {
                     attempt_id: claim.attempt_id.clone(),
                     scope_fingerprint: fresh_scope.scope_fingerprint.clone(),
                 };
-                let envelope = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    candidate_executor.build_candidate(&prepared)
-                }))
-                .map_err(|_| anyhow::anyhow!("candidate builder panicked"))??;
+                let candidate_started = Instant::now();
+                let envelope = {
+                    let _phase = enter_phase("candidate");
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        candidate_executor.build_candidate(&prepared)
+                    }))
+                    .map_err(|_| anyhow::anyhow!("candidate builder panicked"))??
+                };
+                accumulated.candidate_ns = accumulated
+                    .candidate_ns
+                    .saturating_add(candidate_started.elapsed().as_nanos());
                 envelope.validate_digest()?;
                 if let Some(hook) = test_hooks.after_digest_validation {
                     hook();
@@ -450,7 +484,14 @@ impl Kernel {
         if before_scheduler.revision() < captured_revision {
             bail!("scheduler revision moved backward during candidate construction");
         }
-        let current_authority = plan_change_set(&graph, &intents, semantic_provider)?;
+        let post_candidate_started = Instant::now();
+        let current_authority = {
+            let _phase = enter_phase("postCandidateAnalysis");
+            plan_change_set(&graph, &intents, semantic_provider)?
+        };
+        accumulated.post_candidate_analysis_ns = accumulated
+            .post_candidate_analysis_ns
+            .saturating_add(post_candidate_started.elapsed().as_nanos());
         let current_scope_change = classify_scope_change(previous_scope, &current_authority.scope);
         if current_scope_change != ScopeChange::Unchanged {
             self.persist_changed_publication_scope(claim, now_tick, test_hooks)?;
@@ -716,6 +757,9 @@ impl Kernel {
                         crash_failpoint,
                         after_outer_idempotency_lookup: None,
                         optimistic_attempt: next_attempt,
+                        // Carry this attempt's stage timings forward; the retry
+                        // rebuilds no candidate, so candidate_ns is preserved.
+                        accumulated,
                         test_hooks,
                     },
                 );
@@ -747,9 +791,19 @@ impl Kernel {
                     persistence_ns,
                     memory_publish_ns: 0,
                     already_published: true,
+                    // AlreadyPublished reports carry zeros: this attempt did not
+                    // produce the committed graph, so its analysis/candidate/byte
+                    // measurements do not describe the durable publication.
+                    pre_candidate_analysis_ns: 0,
+                    post_candidate_analysis_ns: 0,
+                    candidate_ns: 0,
+                    core_graph_record_value_bytes: 0,
                 }))
             }
-            PublishOutcome::Published { generation } => {
+            PublishOutcome::Published {
+                generation,
+                core_graph_record_value_bytes,
+            } => {
                 if generation != prepared_publication.next_graph.generation() {
                     bail!("durable generation does not match prepared generation");
                 }
@@ -775,6 +829,15 @@ impl Kernel {
                     persistence_ns,
                     memory_publish_ns,
                     already_published: false,
+                    // Analysis stages are summed across every optimistic-retry
+                    // attempt; candidate_ns retains the original build (retries
+                    // reuse the Validated candidate). candidate_ns is 0 only for
+                    // coordination-test-api pre-validated sources whose first
+                    // attempt skips the executor build entirely.
+                    pre_candidate_analysis_ns: accumulated.pre_candidate_analysis_ns,
+                    post_candidate_analysis_ns: accumulated.post_candidate_analysis_ns,
+                    candidate_ns: accumulated.candidate_ns,
+                    core_graph_record_value_bytes,
                 }))
             }
         }
@@ -856,6 +919,12 @@ impl Kernel {
             persistence_ns: 0,
             memory_publish_ns: 0,
             already_published: true,
+            // Idempotent replay of an already-committed attempt: this call did
+            // not build the candidate or write the records, so it carries zeros.
+            pre_candidate_analysis_ns: 0,
+            post_candidate_analysis_ns: 0,
+            candidate_ns: 0,
+            core_graph_record_value_bytes: 0,
         }))
     }
 
@@ -884,6 +953,12 @@ impl Kernel {
             persistence_ns: 0,
             memory_publish_ns: 0,
             already_published: true,
+            // Idempotent replay of an already-committed attempt: this call did
+            // not build the candidate or write the records, so it carries zeros.
+            pre_candidate_analysis_ns: 0,
+            post_candidate_analysis_ns: 0,
+            candidate_ns: 0,
+            core_graph_record_value_bytes: 0,
         }))
     }
 

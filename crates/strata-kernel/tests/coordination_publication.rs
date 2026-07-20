@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use std::sync::Barrier;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::Context;
 #[cfg(feature = "redb-spike-api")]
@@ -1738,4 +1739,82 @@ fn failure_after_in_transaction_fence_mutation_rolls_back_fences_graph_and_coord
             "{failpoint:?}: observed {observed:#?}\nold {complete_old_state:#?}\nnew {expected_new:#?}"
         );
     }
+}
+
+/// Builds a candidate after a deterministic sleep so the in-kernel candidate
+/// timing bracket observes a strictly positive `candidate_ns`.
+struct SleepingBuilder {
+    delta: GraphDelta,
+    sleep: Duration,
+}
+
+impl CandidateBuilder for SleepingBuilder {
+    fn build_candidate(&self, _prepared: &PreparedCandidate) -> anyhow::Result<CandidateEnvelope> {
+        std::thread::sleep(self.sleep);
+        CandidateEnvelope::from_delta(self.delta.clone())
+    }
+}
+
+#[test]
+fn publication_report_carries_phase_timings_and_core_record_bytes() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = Arc::new(SequencedAnalyzer::new(vec![analysis(&scope); 6]));
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), analyzer).unwrap();
+    let claim = begin_submit_claim(&kernel, "stage-timings", 0);
+    let builder = SleepingBuilder {
+        delta: user_delta(&snapshot, "export interface Account {}"),
+        sleep: Duration::from_millis(2),
+    };
+
+    let report = published(kernel.publish_claimed(&claim, &builder, 2).unwrap());
+
+    assert!(!report.already_published);
+    assert!(
+        report.pre_candidate_analysis_ns > 0,
+        "pre-candidate analysis was not timed"
+    );
+    assert!(
+        report.post_candidate_analysis_ns > 0,
+        "post-candidate planning was not timed"
+    );
+    assert!(
+        report.candidate_ns > 0,
+        "a sleeping candidate build must report positive candidate_ns"
+    );
+    assert!(
+        report.core_graph_record_value_bytes > 0,
+        "the four encoded record values must sum to a positive byte count"
+    );
+}
+
+#[test]
+fn coordination_test_api_prevalidated_source_reports_zero_candidate_time() {
+    // An external pre-validated envelope skips the executor candidate build, so
+    // candidate_ns is 0 while the analysis stages and record bytes are present.
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("kernel.redb");
+    let snapshot = fixture();
+    let scope = user_scope(&snapshot);
+    let analyzer = Arc::new(SequencedAnalyzer::new(vec![analysis(&scope); 6]));
+    let (kernel, _) =
+        Kernel::create_with_test_semantics(&path, snapshot.clone(), analyzer).unwrap();
+    let claim = begin_submit_claim(&kernel, "prevalidated", 0);
+    let envelope =
+        CandidateEnvelope::from_delta(user_delta(&snapshot, "export interface Account {}"))
+            .unwrap();
+
+    let report = published(
+        kernel
+            .publish_claimed_envelope(&claim, envelope, 2)
+            .unwrap(),
+    );
+
+    assert!(!report.already_published);
+    assert_eq!(report.candidate_ns, 0);
+    assert!(report.pre_candidate_analysis_ns > 0);
+    assert!(report.core_graph_record_value_bytes > 0);
 }

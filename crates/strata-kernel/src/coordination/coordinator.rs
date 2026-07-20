@@ -224,7 +224,10 @@ impl Kernel {
         let semantic_provider = self.semantic_provider()?;
         let graph = self.snapshot();
         let intents = durable.intents_for(change_set_id)?;
-        let scope = analyze_change_set(&graph, &intents, semantic_provider)?;
+        let scope = {
+            let _phase = crate::bridge::observer::enter_phase("submitAnalysis");
+            analyze_change_set(&graph, &intents, semantic_provider)?
+        };
 
         let mut scheduler = self
             .scheduler
@@ -354,7 +357,10 @@ impl Kernel {
                 .as_ref()
                 .context("ready change set has no inferred scope")?;
             let intents = durable.intents_for(&offer.change_set_id)?;
-            let next_authority = plan_change_set(&graph, &intents, self.semantic_provider()?)?;
+            let next_authority = {
+                let _phase = crate::bridge::observer::enter_phase("claimAnalysis");
+                plan_change_set(&graph, &intents, self.semantic_provider()?)?
+            };
             let next_scope = next_authority.scope.clone();
             let scope_change = classify_scope_change(before_scope, &next_scope);
             let metadata = durable.metadata_state()?;

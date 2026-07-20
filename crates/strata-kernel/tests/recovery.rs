@@ -85,6 +85,18 @@ fn publication(generation: u64, payload: &str, fence: FenceClaim) -> Publication
 fn seed_two_generations(database_path: &std::path::Path) -> (GraphSnapshot, GraphSnapshot) {
     let (kernel, create_report) = Kernel::create(database_path, initial_snapshot()).unwrap();
     assert_eq!(create_report.service_epoch, 1);
+    // Create path: the seed bracket is measured, no replay runs, and the seeded
+    // snapshot value has a positive encoded length.
+    assert!(
+        create_report.seed_ns > 0,
+        "create must time the seed bracket"
+    );
+    assert_eq!(create_report.replay_ns, 0, "create replays nothing");
+    assert!(
+        create_report.snapshot_bytes > 0,
+        "seed must report the encoded snapshot length"
+    );
+    assert!(create_report.open_ns >= create_report.seed_ns);
 
     let first_fence = kernel.issue_fence(&["symbol:Clock".into()]).unwrap();
     kernel
@@ -120,6 +132,16 @@ fn restart_recovers_latest_snapshot_and_replays_later_deltas() {
     assert_eq!(report.replayed_operations, 1);
     assert_eq!(report.generation, 2);
     assert_eq!(report.service_epoch, 2);
+    // Open path: the replay loop is timed and positive, the replay-base snapshot
+    // has a positive encoded length, the whole-body time is a superset of replay,
+    // and the seed bracket never runs.
+    assert!(report.replay_ns > 0, "reopen must time the replay loop");
+    assert!(
+        report.snapshot_bytes > 0,
+        "latest_snapshot must report the encoded snapshot length"
+    );
+    assert!(report.open_ns >= report.replay_ns);
+    assert_eq!(report.seed_ns, 0, "open path never seeds");
     assert_eq!(report.digest, reopened.snapshot().digest());
     assert_eq!(reopened.snapshot().snapshot(), expected);
     assert_eq!(
