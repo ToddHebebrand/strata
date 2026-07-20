@@ -1,4 +1,5 @@
 mod audit;
+mod metrics;
 mod protocol;
 mod server;
 mod session;
@@ -57,6 +58,9 @@ fn serve(arguments: &[OsString]) -> Result<()> {
         "--corpus-root",
         "--audit",
         "--socket-token",
+        // Opt-in observability sink. Unconditional (a production surface, not a
+        // test-authority flag): a build without it rejects `--metrics`.
+        "--metrics",
     ];
     #[cfg(feature = "coordination-test-api")]
     allowed.push("--test-failpoint");
@@ -70,6 +74,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     let corpus_root = required_path(&values, "--corpus-root")?;
     let audit_path = required_path(&values, "--audit")?;
     let token = required_text(&values, "--socket-token")?;
+    let metrics_path = optional_path(&values, "--metrics");
     #[cfg(feature = "coordination-test-api")]
     let failpoint = match values.get("--test-failpoint") {
         None => ServiceFailpoint::None,
@@ -103,7 +108,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             })?
         }
     };
-    let bridge_config = NodeBridgeConfig::tsc_only(
+    let mut bridge_config = NodeBridgeConfig::tsc_only(
         "node",
         vec![worker.into_os_string()],
         Duration::from_secs(30),
@@ -111,6 +116,11 @@ fn serve(arguments: &[OsString]) -> Result<()> {
         corpus_root,
         true,
     );
+    // Only ask workers to self-report metrics when the sink is active, so a run
+    // without `--metrics` never appends `--emit-metrics` to worker argv.
+    if metrics_path.is_some() {
+        bridge_config = bridge_config.with_metrics_collection(true);
+    }
     server::serve(
         ServiceConfig {
             db_path,
@@ -118,6 +128,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             bridge_config,
             audit_path,
             failpoint,
+            metrics_path,
             #[cfg(feature = "redb-spike-api")]
             publish_failpoint,
         },
@@ -208,6 +219,13 @@ fn required_path(
         .cloned()
         .map(PathBuf::from)
         .with_context(|| format!("missing required option {name}"))
+}
+
+fn optional_path(
+    values: &std::collections::BTreeMap<String, OsString>,
+    name: &str,
+) -> Option<PathBuf> {
+    values.get(name).cloned().map(PathBuf::from)
 }
 
 fn required_text(

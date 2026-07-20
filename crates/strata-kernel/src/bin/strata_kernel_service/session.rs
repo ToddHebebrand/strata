@@ -9,8 +9,10 @@ use sha2::{Digest, Sha256};
 use strata_kernel::{
     BeginChangeSet, ChangeSetState as KernelChangeSetState, ClaimOutcome, CoordinationError,
     CoordinationEventKind, GraphSnapshot, IntentParameters, Kernel, NodeBridgeConfig,
-    PublishClaimOutcome, TicketState as KernelTicketState,
+    PublicationReport, PublishClaimOutcome, TicketState as KernelTicketState,
 };
+
+use super::metrics::{MetricsRecord, MetricsSink, peak_rss_bytes};
 
 use super::audit::{
     AuditEvent, FollowUp, PendingRequest, RequestJournal, RequestLedgerEntry, ServiceAudit,
@@ -45,6 +47,10 @@ pub(super) struct ServiceConfig {
     pub bridge_config: NodeBridgeConfig,
     pub audit_path: PathBuf,
     pub failpoint: ServiceFailpoint,
+    /// When set, per-request/recovery observability records are written to this
+    /// JSONL sink. `None` (the default, no `--metrics`) is byte-identical
+    /// behavior with no sink and no worker metrics collection.
+    pub metrics_path: Option<PathBuf>,
     /// Publication-boundary crash failpoint (redb-spike-api only). When set to
     /// anything other than `None`, the advance path publishes via
     /// `execute_claimed_with_failpoint`; `None` is byte-for-byte the existing
@@ -62,6 +68,9 @@ pub(super) struct ServiceSession {
     delivered_events: Mutex<BTreeMap<String, u64>>,
     protocol: Mutex<LocalServiceProtocolContext>,
     failpoint: ServiceFailpoint,
+    /// Present only under `--metrics`. Behind a `Mutex` because connections are
+    /// served on independent threads and each may emit records.
+    metrics: Option<Mutex<MetricsSink>>,
     #[cfg(feature = "redb-spike-api")]
     publish_failpoint: strata_kernel::PublishFailpoint,
     recovered: bool,
@@ -69,7 +78,17 @@ pub(super) struct ServiceSession {
 
 impl ServiceSession {
     pub fn open(config: ServiceConfig) -> Result<(Arc<Self>, u64)> {
+        // Open the sink before any coordination work so a bad `--metrics` path
+        // fails startup loudly rather than silently dropping records.
+        let metrics = match config.metrics_path.as_deref() {
+            Some(path) => Some(Mutex::new(MetricsSink::open(path)?)),
+            None => None,
+        };
         let existed = config.db_path.exists();
+        // Sanity-check wall around the whole open/create body. The recovery
+        // report's own `open_ns` is authoritative; this bracket exists only so a
+        // gross discrepancy is observable to a maintainer stepping through.
+        let _open_bracket = Instant::now();
         let (kernel, recovery) = if existed {
             Kernel::open_with_node_bridge(&config.db_path, config.bridge_config)?
         } else {
@@ -79,6 +98,12 @@ impl ServiceSession {
                 )?)?;
             Kernel::create_with_node_bridge(&config.db_path, snapshot, config.bridge_config)?
         };
+        // The outer bracket strictly contains the report's own measurement, so
+        // it must never be shorter than `open_ns`.
+        debug_assert!(
+            _open_bracket.elapsed().as_nanos() >= recovery.open_ns,
+            "recovery.open_ns exceeded the outer open bracket"
+        );
         let journal_path = private_journal_path(&config.db_path);
         let journal = RequestJournal::open(&journal_path)?;
         let next_tick = journal
@@ -94,10 +119,18 @@ impl ServiceSession {
             delivered_events: Mutex::new(BTreeMap::new()),
             protocol: Mutex::new(LocalServiceProtocolContext::default()),
             failpoint: config.failpoint,
+            metrics,
             #[cfg(feature = "redb-spike-api")]
             publish_failpoint: config.publish_failpoint,
             recovered: existed,
         });
+        // One recovery record per daemon start, before the socket is reachable.
+        // `existed` is exactly the `recovered` flag surfaced on the wire.
+        if let Some(sink) = session.metrics.as_ref() {
+            if let Ok(mut sink) = sink.lock() {
+                sink.emit(&MetricsRecord::recovery(existed, &recovery));
+            }
+        }
         session.resolve_pending_before_bind()?;
         session.append_audit(AuditEvent {
             kind: if existed {
@@ -186,6 +219,9 @@ impl ServiceSession {
                 Ok(result) => {
                     let response = LocalServiceResponse::success(&request.request_id, result);
                     let _ = self.audit_request(&request, None, &response, "request_completed");
+                    // A read does no coordination work and spawns no worker, so
+                    // its publication is always `None` and the drain is empty.
+                    self.emit_request_metrics(&request.action, started, None);
                     response
                 }
                 Err(error) => LocalServiceResponse::error(
@@ -198,7 +234,7 @@ impl ServiceSession {
             };
         }
 
-        match self.handle_mutation(&request, deadline) {
+        match self.handle_mutation(&request, started, deadline) {
             Ok(response) => response,
             Err(_error) => LocalServiceResponse::error(
                 &request.request_id,
@@ -210,9 +246,42 @@ impl ServiceSession {
         }
     }
 
+    /// Emit one worker-run record per drained kernel metric, then the request
+    /// record. Only ever runs when `--metrics` is active. Emission never fails
+    /// the request: a poisoned sink lock or serialize error is swallowed.
+    ///
+    /// The worker-run drain point here is INCIDENTAL, not causal: each record is
+    /// self-attributed via its `changeSetId`+`phase`, and draining at the
+    /// request boundary must never be read as attributing those runs to this
+    /// request. A run produced by an earlier request that had not yet drained is
+    /// flushed here unchanged.
+    fn emit_request_metrics(
+        &self,
+        action: &RequestAction,
+        started: Instant,
+        publication: Option<PublicationReport>,
+    ) {
+        let Some(sink) = self.metrics.as_ref() else {
+            return;
+        };
+        let Ok(mut sink) = sink.lock() else {
+            return;
+        };
+        for run in self.kernel.take_worker_run_metrics() {
+            sink.emit(&MetricsRecord::worker_run(run));
+        }
+        sink.emit(&MetricsRecord::request(
+            action.name(),
+            started.elapsed().as_nanos(),
+            peak_rss_bytes(),
+            publication,
+        ));
+    }
+
     fn handle_mutation(
         &self,
         request: &LocalServiceRequest,
+        started: Instant,
         deadline: Instant,
     ) -> Result<LocalServiceResponse> {
         let key = request
@@ -377,6 +446,7 @@ impl ServiceSession {
         self.apply_follow_up(effect.follow_up.as_ref())?;
         self.trip_failpoint(ServiceFailpoint::AfterFollowUp);
         let response = effect.response;
+        let publication = effect.publication;
         self.journal.lock().map_err(lock_error)?.append_completed(
             identity,
             body_hash,
@@ -384,6 +454,10 @@ impl ServiceSession {
         )?;
         self.trip_failpoint(ServiceFailpoint::AfterCompleted);
         self.audit_request(request, Some(tick), &response, "request_completed")?;
+        // Emission at the single success boundary of a mutation. Idempotent
+        // replays and rejections short-circuit above this point and are
+        // unmeasured by design: they perform no coordination work.
+        self.emit_request_metrics(&request.action, started, publication);
         Ok(response)
     }
 
@@ -641,10 +715,13 @@ impl ServiceSession {
                 let publish_outcome = self.kernel.execute_claimed(&claim, tick);
                 match publish_outcome {
                     Ok(PublishClaimOutcome::Published(report)) => {
-                        Ok(ExecutedEffect::response(LocalServiceResponse::success(
+                        let response = LocalServiceResponse::success(
                             request_id,
-                            self.change_set_result(change_set_id, Some(report.digest), None)?,
-                        )))
+                            self.change_set_result(change_set_id, Some(report.digest.clone()), None)?,
+                        );
+                        // The report rides the effect to the emission point; no
+                        // response bytes change (digest is the only wire field).
+                        Ok(ExecutedEffect::response(response).with_publication(report))
                     }
                     Ok(PublishClaimOutcome::Requeued { .. })
                     | Ok(PublishClaimOutcome::NeedsDecision { .. }) => {
@@ -716,6 +793,7 @@ impl ServiceSession {
                                 change_set_id: change_set_id.to_owned(),
                                 tick,
                             }),
+                            publication: None,
                         })
                     }
                 }
@@ -1051,6 +1129,11 @@ fn service_event_kind(kind: &CoordinationEventKind) -> ServiceEventKind {
 struct ExecutedEffect {
     response: LocalServiceResponse,
     follow_up: Option<FollowUp>,
+    /// The publication report, present only on the advance that actually
+    /// published. It travels with the effect to the emission point so a
+    /// concurrent request can never cross-attribute another's publication —
+    /// there is deliberately no shared/global `last_publication` slot.
+    publication: Option<PublicationReport>,
 }
 
 impl ExecutedEffect {
@@ -1058,7 +1141,13 @@ impl ExecutedEffect {
         Self {
             response,
             follow_up: None,
+            publication: None,
         }
+    }
+
+    fn with_publication(mut self, report: PublicationReport) -> Self {
+        self.publication = Some(report);
+        self
     }
 }
 

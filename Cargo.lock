@@ -326,6 +326,7 @@ name = "strata-kernel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "redb",
  "serde",
  "serde_json",
