@@ -635,6 +635,25 @@ impl BridgeRequest {
         }
     }
 
+    /// Observability label for the request kind: `"analyzeIntent"` or
+    /// `"buildValidateCandidate"`. Purely for run records; never used by
+    /// binding or protocol validation.
+    pub(crate) fn observed_kind(&self) -> &'static str {
+        match self {
+            Self::AnalyzeIntent(_) => "analyzeIntent",
+            Self::BuildValidateCandidate(_) => "buildValidateCandidate",
+        }
+    }
+
+    /// The change set the request belongs to: the intent's change set for an
+    /// analyze request, the candidate's change set for a build request.
+    pub(crate) fn change_set_id(&self) -> &str {
+        match self {
+            Self::AnalyzeIntent(request) => &request.intent.change_set_id,
+            Self::BuildValidateCandidate(request) => &request.change_set.change_set_id,
+        }
+    }
+
     fn binding(&self) -> &BridgeBinding {
         match self {
             Self::AnalyzeIntent(request) => &request.binding,
@@ -933,14 +952,14 @@ pub(crate) struct CandidateResult {
 /// never consulted by protocol validation or binding checks.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct WorkerSelfMetrics {
-    pub(crate) hydrate_ns: Option<u64>,
-    pub(crate) analyze_ns: Option<u64>,
-    pub(crate) mutate_ns: Option<u64>,
-    pub(crate) validate_ns: Option<u64>,
-    pub(crate) export_ns: Option<u64>,
-    pub(crate) total_ns: u64,
-    pub(crate) peak_rss_bytes: u64,
+pub struct WorkerSelfMetrics {
+    pub hydrate_ns: Option<u64>,
+    pub analyze_ns: Option<u64>,
+    pub mutate_ns: Option<u64>,
+    pub validate_ns: Option<u64>,
+    pub export_ns: Option<u64>,
+    pub total_ns: u64,
+    pub peak_rss_bytes: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

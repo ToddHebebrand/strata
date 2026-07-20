@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::Deserialize;
 
+use super::observer;
 use super::process::NodeBridgeClient;
 use super::protocol::{
     AnalyzeIntentRequest, BridgeBinding, BridgeKind, BridgeRequest, Hash64,
@@ -33,7 +35,20 @@ impl NodeSemanticProvider {
 
 impl SemanticProvider for NodeSemanticProvider {
     fn analyze(&self, graph: &GraphGeneration, intent: &IntentRecord) -> Result<IntentAnalysis> {
+        let build_start = Instant::now();
         let request = analyze_request(self.service_epoch, graph, intent)?;
+        if self.client.collects_metrics() {
+            let snapshot_build_ns =
+                u64::try_from(build_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            // Extra snapshot serialization happens only when collecting.
+            let snapshot_bytes = match &request {
+                BridgeRequest::AnalyzeIntent(inner) => serde_json::to_vec(&inner.snapshot)
+                    .context("serialize analyze snapshot for run metrics")?
+                    .len() as u64,
+                BridgeRequest::BuildValidateCandidate(_) => 0,
+            };
+            observer::set_request_build(snapshot_bytes, snapshot_build_ns);
+        }
         let facts = self.client.run(&request)?.into_analyze_result()?;
         intent_analysis_from_facts(graph, intent, facts)
     }

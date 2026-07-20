@@ -5,6 +5,9 @@ pub use strata_kernel::{
 
 // Path-include the two Task 6 seams directly so later private bridge consumers do not
 // become part of this standalone protocol/process harness's synthetic crate root.
+#[path = "../src/bridge/observer.rs"]
+#[allow(dead_code)]
+mod observer;
 #[path = "../src/bridge/process.rs"]
 #[allow(dead_code)]
 mod process;
@@ -95,6 +98,7 @@ fn default_config(script: &str) -> NodeBridgeConfig {
         max_stderr_bytes: MAX_STDERR_BYTES,
         max_diagnostics_bytes: MAX_DIAGNOSTIC_BYTES,
         validation_profile: ValidationProfile::tsc_only("/project/src", "/project", true),
+        collect_metrics: false,
     }
 }
 

@@ -5,7 +5,7 @@ mod kernel;
 mod model;
 mod storage;
 
-pub use bridge::NodeBridgeConfig;
+pub use bridge::{NodeBridgeConfig, WorkerRunMetrics, WorkerSelfMetrics};
 
 #[cfg(feature = "coordination-test-api")]
 pub use coordination::affected_resource_keys;

@@ -2,13 +2,16 @@
 #![allow(dead_code)]
 
 pub(crate) mod executor;
+pub(crate) mod observer;
 pub(crate) mod process;
 pub(crate) mod protocol;
 pub(crate) mod provider;
 
 pub(crate) use executor::{CandidateExecutor, NodeCandidateExecutor};
+pub use observer::WorkerRunMetrics;
 pub(crate) use process::NodeBridgeClient;
 pub use process::NodeBridgeConfig;
+pub use protocol::WorkerSelfMetrics;
 pub(crate) use provider::NodeSemanticProvider;
 pub(crate) use provider::confirmed_declaration_name;
 pub(crate) use provider::declaration_name;

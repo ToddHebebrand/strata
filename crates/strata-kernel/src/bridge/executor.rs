@@ -1,7 +1,9 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result, ensure};
 
+use super::observer;
 use super::process::NodeBridgeClient;
 use super::protocol::{
     BridgeBinding, BridgeKind, BridgeRequest, BuildValidateCandidateRequest, ChangeSet, Hash64,
@@ -97,11 +99,24 @@ fn candidate_envelope(
 
 impl CandidateExecutor for NodeCandidateExecutor {
     fn build_candidate(&self, prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
+        let build_start = Instant::now();
         let request = candidate_request(
             self.service_epoch,
             prepared,
             self.client.validation_profile(),
         )?;
+        if self.client.collects_metrics() {
+            let snapshot_build_ns =
+                u64::try_from(build_start.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            // Extra snapshot serialization happens only when collecting.
+            let snapshot_bytes = match &request {
+                BridgeRequest::BuildValidateCandidate(inner) => serde_json::to_vec(&inner.snapshot)
+                    .context("serialize candidate snapshot for run metrics")?
+                    .len() as u64,
+                BridgeRequest::AnalyzeIntent(_) => 0,
+            };
+            observer::set_request_build(snapshot_bytes, snapshot_build_ns);
+        }
 
         // The protocol parser rejects request/kind/epoch/generation/digest/attempt/scope
         // mismatches before exposing the worker delta.

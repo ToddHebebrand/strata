@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail, ensure};
 
 use crate::bridge::{
     CandidateExecutor, NodeBridgeClient, NodeBridgeConfig, NodeCandidateExecutor,
-    NodeSemanticProvider, confirmed_declaration_name,
+    NodeSemanticProvider, WorkerRunMetrics, confirmed_declaration_name,
 };
 use crate::coordination::{
     CoordinationError, DependencyVersion, ResourceClockSnapshot, SemanticProvider,
@@ -129,6 +129,10 @@ pub struct Kernel {
     pub(crate) scheduler: Mutex<SchedulerState>,
     semantic_provider: Option<Arc<dyn SemanticProvider>>,
     candidate_executor: Option<Arc<dyn CandidateExecutor>>,
+    /// The shared Node bridge client, when one is wired. Held so the
+    /// observability accessors can reach its spawn counter and run-record
+    /// buffer; the provider and executor share this exact instance.
+    node_bridge_client: Option<Arc<NodeBridgeClient>>,
 }
 
 impl Kernel {
@@ -151,9 +155,10 @@ impl Kernel {
             report.service_epoch,
         )));
         kernel.candidate_executor = Some(Arc::new(NodeCandidateExecutor::new(
-            client,
+            client.clone(),
             report.service_epoch,
         )));
+        kernel.node_bridge_client = Some(client);
         Ok((kernel, report))
     }
 
@@ -227,9 +232,10 @@ impl Kernel {
             report.service_epoch,
         )));
         kernel.candidate_executor = Some(Arc::new(NodeCandidateExecutor::new(
-            client,
+            client.clone(),
             report.service_epoch,
         )));
+        kernel.node_bridge_client = Some(client);
         kernel.plan_and_apply_readiness(0, crate::coordination::TransitionCause::Restart, None)?;
         Ok((kernel, report))
     }
@@ -353,6 +359,23 @@ impl Kernel {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+
+    /// Drains the buffered per-run worker observability records. Empty when no
+    /// Node bridge is wired or when the bridge is not collecting metrics.
+    /// Production observability surface: no feature gate, never errors.
+    pub fn take_worker_run_metrics(&self) -> Vec<WorkerRunMetrics> {
+        self.node_bridge_client
+            .as_ref()
+            .map_or_else(Vec::new, |client| client.take_worker_run_metrics())
+    }
+
+    /// Total worker children the wired Node bridge has successfully spawned, or
+    /// 0 when no bridge is wired. Counts regardless of metrics collection.
+    pub fn worker_starts_total(&self) -> u64 {
+        self.node_bridge_client
+            .as_ref()
+            .map_or(0, |client| client.worker_starts_total())
     }
 
     /// Finds named declarations by exact name, optionally narrowed to one product
@@ -497,9 +520,10 @@ impl Kernel {
     pub fn test_replace_node_candidate_executor(&mut self, config: NodeBridgeConfig) {
         let client = Arc::new(NodeBridgeClient::new(config));
         self.candidate_executor = Some(Arc::new(NodeCandidateExecutor::new(
-            client,
+            client.clone(),
             self.service_epoch,
         )));
+        self.node_bridge_client = Some(client);
     }
 
     /// Injects one monotonic in-memory dependency-clock advance without durable or graph writes.
@@ -961,6 +985,7 @@ impl Kernel {
             scheduler: Mutex::new(scheduler),
             semantic_provider,
             candidate_executor,
+            node_bridge_client: None,
         }
     }
 }
