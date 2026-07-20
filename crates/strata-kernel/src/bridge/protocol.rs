@@ -928,6 +928,21 @@ pub(crate) struct CandidateResult {
     pub(crate) diagnostics: Vec<BridgeDiagnostic>,
 }
 
+/// Per-stage timings and peak memory a worker self-reports for a bridge call.
+/// Absent when a worker does not (yet) report metrics; purely observational —
+/// never consulted by protocol validation or binding checks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WorkerSelfMetrics {
+    pub(crate) hydrate_ns: Option<u64>,
+    pub(crate) analyze_ns: Option<u64>,
+    pub(crate) mutate_ns: Option<u64>,
+    pub(crate) validate_ns: Option<u64>,
+    pub(crate) export_ns: Option<u64>,
+    pub(crate) total_ns: u64,
+    pub(crate) peak_rss_bytes: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AnalyzeSuccessResponse {
@@ -937,6 +952,8 @@ pub(crate) struct AnalyzeSuccessResponse {
     binding: BridgeBinding,
     ok: True,
     result: AnalyzeResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) metrics: Option<WorkerSelfMetrics>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -948,6 +965,8 @@ pub(crate) struct CandidateSuccessResponse {
     binding: CandidateBinding,
     ok: True,
     result: CandidateResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) metrics: Option<WorkerSelfMetrics>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -959,6 +978,8 @@ pub(crate) struct AnalyzeErrorResponse {
     binding: BridgeBinding,
     ok: False,
     error: BridgeErrorPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) metrics: Option<WorkerSelfMetrics>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -970,6 +991,8 @@ pub(crate) struct CandidateErrorResponse {
     binding: CandidateBinding,
     ok: False,
     error: BridgeErrorPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) metrics: Option<WorkerSelfMetrics>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1005,6 +1028,15 @@ impl BridgeResponse {
                 response.error.message
             ),
             _ => bail!("Node bridge response is not a buildValidateCandidate response"),
+        }
+    }
+
+    pub(crate) fn metrics_ref(&self) -> Option<&WorkerSelfMetrics> {
+        match self {
+            Self::AnalyzeSuccess(response) => response.metrics.as_ref(),
+            Self::CandidateSuccess(response) => response.metrics.as_ref(),
+            Self::AnalyzeError(response) => response.metrics.as_ref(),
+            Self::CandidateError(response) => response.metrics.as_ref(),
         }
     }
 

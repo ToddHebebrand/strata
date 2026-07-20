@@ -14,8 +14,9 @@ mod protocol;
 
 use process::{NodeBridgeClient, NodeBridgeConfig};
 use protocol::{
-    BridgeRequest, BridgeResponse, ValidationProfile, WireU64, parse_bridge_request,
-    parse_bridge_response, serialize_bridge_request, serialize_bridge_response,
+    BridgeRequest, BridgeResponse, ValidationProfile, WireU64, WorkerSelfMetrics,
+    parse_bridge_request, parse_bridge_response, serialize_bridge_request,
+    serialize_bridge_response,
 };
 use serde_json::{Value, json};
 use std::env;
@@ -318,6 +319,42 @@ fn response_schema_rejects_unknown_fields_variants_and_oversized_diagnostics() {
     let encoded = serde_json::to_vec(&error).unwrap();
     let request = parse_request_fixture("analyze-request.json");
     assert!(parse_bridge_response(&encoded, &request, 128).is_err());
+}
+
+#[test]
+fn response_accepts_optional_worker_self_metrics_and_rejects_unknown_metrics_fields() {
+    let baseline = parse_response_fixture("analyze-response.json", "analyze-request.json");
+    assert!(baseline.metrics_ref().is_none());
+
+    let mut with_metrics = fixture_value("analyze-response.json");
+    with_metrics["metrics"] = json!({
+        "totalNs": 5,
+        "peakRssBytes": 2048,
+        "hydrateNs": 3
+    });
+    let encoded = serde_json::to_vec(&with_metrics).unwrap();
+    let request = parse_request_fixture("analyze-request.json");
+    let response = parse_bridge_response(&encoded, &request, MAX_DIAGNOSTIC_BYTES).unwrap();
+    assert_eq!(
+        response.metrics_ref(),
+        Some(&WorkerSelfMetrics {
+            hydrate_ns: Some(3),
+            analyze_ns: None,
+            mutate_ns: None,
+            validate_ns: None,
+            export_ns: None,
+            total_ns: 5,
+            peak_rss_bytes: 2048,
+        })
+    );
+
+    let mut with_bogus_metrics = fixture_value("analyze-response.json");
+    with_bogus_metrics["metrics"] = json!({
+        "totalNs": 5,
+        "peakRssBytes": 2048,
+        "bogus": 1
+    });
+    assert_response_value_rejected(with_bogus_metrics, "analyze-request.json");
 }
 
 #[test]
