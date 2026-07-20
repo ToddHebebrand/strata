@@ -60,7 +60,7 @@ const packageRoot = resolve(__dirname, "..");
 const repoRoot = resolve(packageRoot, "../..");
 
 /** Key-free process env: never leak model credentials into the daemon or oracle. */
-function credentialFreeEnv(): NodeJS.ProcessEnv {
+export function credentialFreeEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.ANTHROPIC_API_KEY;
   delete env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -75,14 +75,21 @@ function credentialFreeEnv(): NodeJS.ProcessEnv {
  */
 export const TASK_PROMPT =
   "Rename the exported interface User to Account throughout the registered projection.";
-const OLD_NAME = "User";
-const NEW_NAME = "Account";
+/** The T03 rename target: exported alone so other harnesses (gate 2) reuse, not re-derive, it. */
+export const OLD_NAME = "User";
+export const NEW_NAME = "Account";
 /** The SQLite arm's transaction actor (the audit's `actor`, distinct from the kernel clientId). */
 const SQLITE_ARM_ACTOR = "sqlite-arm";
 
-const DISCOVERY_DEADLINE_MS = 120_000;
-const SUBMIT_DEADLINE_MS = 120_000; // ≥120 s
-const ADVANCE_DEADLINE_MS = 180_000; // ≥180 s
+/**
+ * Exported so other harnesses (gate 2) reuse gate 1's proven deadline budgets
+ * instead of re-deriving their own. Both comfortably clear the daemon's
+ * minimum coordination budgets (`session.rs` `MIN_BRIDGE_ANALYSIS_MS` =
+ * 30.1 s for submit, `MIN_BRIDGE_PUBLICATION_MS` = 60.1 s for advance).
+ */
+export const DISCOVERY_DEADLINE_MS = 120_000;
+export const SUBMIT_DEADLINE_MS = 120_000; // ≥120 s
+export const ADVANCE_DEADLINE_MS = 180_000; // ≥180 s
 
 export type Gate1Stage = "after_discovery" | "after_begin" | "after_add_intent" | "after_submit";
 
@@ -116,7 +123,7 @@ export interface KernelArmOutcome {
 export { buildCorpusInputs } from "./tasks.js";
 
 /** Resolve the kernel-service binary: env override, else the default-features build. */
-function kernelServiceBinary(): string {
+export function kernelServiceBinary(): string {
   return (
     process.env.STRATA_KERNEL_SERVICE_BIN ??
     join(repoRoot, "target/debug/strata-kernel-service")
@@ -586,7 +593,8 @@ function neutralAudit(): NormalizedAudit {
   };
 }
 
-function expectResult<T extends CoordinationResult["type"]>(
+/** Unwrap a coordination result to a specific variant, or throw. Exported so other harnesses (gate 2) reuse it rather than re-implementing the same narrowing. */
+export function expectResult<T extends CoordinationResult["type"]>(
   result: CoordinationResult,
   type: T
 ): Extract<CoordinationResult, { type: T }> {
