@@ -1,161 +1,76 @@
-# Task 6 — Gate-1 parity harness: report
+# Task 6 report — Gate-2 profile runner (`packages/live-compare/src/gate2.ts`)
 
-**Status: PASS.** The key-free semantic-parity harness (kernel arm vs SQLite
-product arm) is implemented and green; all six parity assertions hold. No model
-calls, no persisted SQLite (`:memory:` only), default-features daemon binary.
+## Status: DONE
 
-## What landed
+Commit: `0df9943` — `feat(live-compare): gate-2 observability profile runner, parser, and artifacts`
 
-- `packages/live-compare/src/gate1.ts` — all interface exports from the brief
-  with exact names/signatures: `Gate1Stage`, `SqliteArmOutcome`,
-  `KernelArmOutcome`, `NormalizedAudit`, `buildCorpusInputs` (re-exported from
-  `tasks.ts`), `runSqliteArm`, `runKernelArmT03` (with
-  `onStage`/`stopAfterSubmit`/`preserveDirectory`/`directory`/`extraArgs`),
-  `renderSnapshotToTree`, `exportKernelSnapshot`, `tscAndVitestGreen`. Plus
-  `TASK_PROMPT`.
-- `packages/live-compare/src/tasks.ts` — added `buildCorpusInputs(corpusRoot)`
-  (the single corpus-relative POSIX `src/**.ts` input domain) and refactored
-  `createQualifiedKernelSnapshot` to call it, so both arms literally share one
-  input domain.
-- `packages/live-compare/tests/gate1Parity.test.ts` — the failing-first parity
-  test with the six assertions verbatim (600 s timeout). Placed in `tests/`
-  (the package's actual test layout; the brief's `test/` does not exist here).
-- `packages/live-compare/src/index.ts` — exports `./gate1.js`.
-- `packages/live-compare/package.json` — promoted `@strata-code/kernel-bridge`
-  to a dependency and added `@strata-code/render`, `@strata-code/store`,
-  `@strata-code/verify` (gate1.ts is `src`, so these are runtime deps, not dev).
-  `pnpm install` linked them; `pnpm-lock.yaml` updated.
-- Root `package.json` — added `kernel:gate1:test` and appended
-  `&& pnpm kernel:gate1:test` to `kernel:full-key-free:test`.
+(Note: this file previously held a report for a differently-numbered "Task 6"
+from the gate-1 plan iteration; it has been replaced with this task's report
+per the current plan, `docs/superpowers/plans/2026-07-19-iteration6-slice-a-gate2.md`.)
 
-## How module rendering was done
+## Implementation
 
-Both arms render through **one code path**, `renderSnapshotToTree(snapshot,
-corpusRoot, outDir)`, so the rendered-bytes assertion compares like against
-like. It hydrates the canonical `KernelSnapshotV1` into an in-memory store
-(`openDb(":memory:")` + `insertNodes`), then for each `Module` node calls
-`loadModule` + `renderWithSourceMap(module, children)` with no overlay — i.e. it
-joins the committed statement payloads (which already carry the post-rename
-text in both arms, since the rename materializes statement payloads on both
-sides). It writes each module to its corpus-relative path (`src/...` from the
-Module payload), then copies the corpus's `tsconfig.json` / `package.json` /
-`vitest.config.ts` / `tests/` and symlinks `node_modules` so the tree is a real,
-runnable corpus. The SQLite arm builds its `KernelSnapshotV1` via
-`@strata-code/kernel-bridge`'s `exportSnapshot(db, generation)`; the kernel arm
-via the offline `export-snapshot` oracle (`exportKernelSnapshot`).
+### Files changed
 
-Node IDs match across arms because both ingest the identical corpus-relative
-input domain (`buildCorpusInputs`) and node IDs hash the module path.
+- **Created** `packages/live-compare/src/gate2.ts` (535 lines):
+  - Metrics JSONL zod schemas: `recoveryRecordSchema`, `workerRunRecordSchema` (with nested `workerSelfMetricsSchema`, `runPhaseSchema` enum of the six shared-vocabulary phases), `requestRecordSchema` (with nested `publicationRecordSchema`), combined via `z.discriminatedUnion("kind", [...])` into `metricsRecordSchema`. All object schemas are `.strict()`. Exported types: `RecoveryRecord`, `WorkerRunRecord`, `RequestRecord`, `MetricsRecord`.
+  - `parseMetricsJsonl(text)` — splits on `\n`, skips blank lines, `JSON.parse` + `metricsRecordSchema.parse` per line (either failure throws, as required).
+  - `Gate2Profile` / `RecoveryLeg` interfaces — copied verbatim from the brief.
+  - `buildGate2Profile(records)` — pure; throws on missing cold recovery, missing restart recovery, any `workerRun.outcome !== "ok"`, and zero/>1 `request` records carrying a non-null `publication`. Attribution is purely by each record's own tagged fields (never array position/adjacency), per the global constraint.
+  - `runGate2KernelFlow(corpusRoot)` — cold leg (`startKernelService` with `extraArgs: ["--metrics", coldPath]` → `hello` → `find_declarations` → `begin_change_set` → `add_intent` (rename) → `submit_change_set` → `advanceUntilPublished` (a defensive polling loop, bounded at 10 attempts — T03 is uncontested so it resolves on the first call in practice, matching gate 1's single-call behavior) → `read_operation` → `stop({ preserveDirectory: true })`), then a restart leg (`startKernelService` on the same `directory` with a fresh `--metrics` path → `hello` → `stop`), then concatenates cold+restart JSONL text, parses, and builds the profile. The scratch directory is removed in a `finally` regardless of outcome.
+  - `writeGate2Artifacts(profile, records, outDir, options?)` — default `gate2-profile-<sanitized-ISO>.{json,md}` (matching the existing house convention in `liveAdapter.ts`/`bench/runner.ts`: `toISOString().replace(/[:.]/g, "-")`), or `gate2-observability-profile.{json,md}` with `{ deterministicName: true }`. JSON is `{ profile, records }`; Markdown is one row per review category (stage → measured value → source record kind) with `coreGraphRecordValueBytes` explicitly footnoted as the four graph-record value bytes only.
 
-**SQLite commit/validate note:** the arms ingest corpus-**relative** paths (to
-match kernel node IDs), but tsc discovery + module resolution need physical
-paths. So `commit(db, tx, corpusRoot)` and the post-commit `validate(db,
-checkTx, corpusRoot)` are passed `moduleBaseDir = corpusRoot` (exactly how
-`commitWithBehavioralGate` physicalizes keys). Without this the commit resolved
-against CWD and picked up the wrong tsconfig — fixed.
+- **Modified** `packages/live-compare/src/gate1.ts` — exported eight previously module-private symbols gate2.ts needed, with no behavior change: `OLD_NAME`, `NEW_NAME`, `DISCOVERY_DEADLINE_MS`, `SUBMIT_DEADLINE_MS`, `ADVANCE_DEADLINE_MS`, `credentialFreeEnv`, `kernelServiceBinary`, `expectResult`. `SUBMIT_DEADLINE_MS`/`ADVANCE_DEADLINE_MS` are gate-1's proven 120s/180s budgets, both comfortably clearing the daemon's `session.rs` minimums (`MIN_BRIDGE_ANALYSIS_MS` = 30.1s, `MIN_BRIDGE_PUBLICATION_MS` = 60.1s) that the brief referenced.
 
-## vitest vs tsc-only, and why
+- **Modified** `packages/live-compare/src/index.ts` — added `export * from "./gate2.js";` for consistency with every other `src/*.ts` module (mechanical, matches existing pattern).
 
-`tscAndVitestGreen(treeRoot)` reuses `@strata-code/verify`'s corpusRun runners:
-`tscNoEmit(treeRoot)` **and** `vitestRun(treeRoot, behavioralFixturesForTask("T03"))`.
-`taskBehavioralFixtures.ts` registers `T03: []`, so vitest is scoped to zero
-files and passes trivially — the harness check reduces to **tsc-only**, applied
-identically to both arms. This is deliberate and faithful to the T03 registered
-profile: the corpus's own discoverable test files (`tests/dateRange.test.ts`,
-`tests/format.test.ts`) are **T05/T01 fixtures, red-by-design** on the base
-corpus for *other* tasks (e.g. `isWithinRange` is inclusive-end while the T05
-test asserts half-open) and are outside T03's scope. Running them unscoped would
-be identically red on both arms but could not satisfy `toBe(true)`; scoping to
-the empty T03 fixture list is the correct realization of "run tsc only … both
-arms identical either way". tsc runs for real on both rendered trees and is
-green on both.
+- **Created** `packages/live-compare/tests/gate2Profile.unit.test.ts` (230 lines) — pure parser/builder unit test per the brief's Step 1: one hand-written JSONL fixture with one of each record kind using shared-vocabulary-shaped values; asserts full field-by-field profile output; malformed-JSON line → throw; unknown `kind` → throw; two publications → throw; zero publications → throw; missing restart recovery → throw; missing cold recovery → throw; a `workerRun` with `outcome: "timedOut"` → throw.
 
-## Actor mapping (audit)
+## TDD evidence
 
-`NormalizedAudit.actor` differs by construction and is asserted only as
-non-empty on both sides, with the mapping recorded here:
+**RED** (gate2.ts did not exist yet):
+```
+FAIL  tests/gate2Profile.unit.test.ts [ tests/gate2Profile.unit.test.ts ]
+Error: Cannot find module '../src/gate2.js' imported from '.../tests/gate2Profile.unit.test.ts'
+```
 
-- **SQLite arm:** `actor = "sqlite-arm"` — the transaction actor. The flow is
-  `begin(db, "sqlite-arm", TASK_PROMPT)`, so the transaction's
-  `triggering_prompt` column is `TASK_PROMPT`; `taskContext` is read from that
-  column. (The brief's shorthand `begin(db, prompt)` is honored in substance:
-  the actual `begin(db, actor, triggeringPrompt)` signature means the prompt is
-  the third argument, and `taskContext` = the transaction prompt = `TASK_PROMPT`.)
-- **Kernel arm:** `actor = "gate1-kernel-arm:<uuid>"` — the coordination
-  `clientId`, read back from `read_operation`. `taskContext` = the change set's
-  `reasoning`, which is the same `TASK_PROMPT` passed to `beginChangeSet`.
+**GREEN** (after implementing `gate2.ts`):
+```
+✓ tests/gate2Profile.unit.test.ts > parseMetricsJsonl > parses one of each record kind
+✓ tests/gate2Profile.unit.test.ts > parseMetricsJsonl > ignores blank lines
+✓ tests/gate2Profile.unit.test.ts > parseMetricsJsonl > throws on a malformed line (invalid JSON)
+✓ tests/gate2Profile.unit.test.ts > parseMetricsJsonl > throws on an unknown record kind
+✓ tests/gate2Profile.unit.test.ts > buildGate2Profile > builds a field-by-field profile from a valid record set
+✓ tests/gate2Profile.unit.test.ts > buildGate2Profile > throws when there are two publications
+✓ tests/gate2Profile.unit.test.ts > buildGate2Profile > throws when there is no publication
+✓ tests/gate2Profile.unit.test.ts > buildGate2Profile > throws when the restart recovery record is missing
+✓ tests/gate2Profile.unit.test.ts > buildGate2Profile > throws when the cold recovery record is missing
+✓ tests/gate2Profile.unit.test.ts > buildGate2Profile > throws when a workerRun outcome is not ok
+Test Files  1 passed (1) / Tests  10 passed (10)
+```
 
-Every other audit field (`taskContext`, `operationClass`, `declarationId`,
-`oldName`, `newName`, `renamedIdentifierIds`) is equal across arms, so
-`kernel.audit === { ...sqlite.audit, actor: kernel.audit.actor }`.
+**Build:** `pnpm --filter @strata-code/kernel-bridge build` and `pnpm --filter @strata-code/live-compare build` — both clean (`tsc -b`, no errors, no unused-import warnings).
 
-## renamedIdentifierIds — execution-forced narrowing (documented adaptation)
+**Full package suite:** `PATH=/opt/homebrew/bin:$PATH npx vitest run` inside `packages/live-compare` (run directly, not via `pnpm --filter`, because the pnpm-wrapped invocation hung/timed out for reasons unrelated to this change — direct `npx vitest run` uses the same test runner and config and is reliable):
+```
+Test Files  19 passed (19)
+Tests  158 passed (158)
+Duration  224.88s
+```
+This includes all pre-existing gate-1 suites (`gate1Parity`, `gate1Crash`, `gate1Intrusion`, `dynamicPreflight`, `mMechanism`, `service`, etc.) staying green with the gate1.ts export-only diff, plus the new `gate2Profile.unit.test.ts`.
 
-The Shared conventions define the kernel's `renamedIdentifierIds` as "the
-Identifier-kind subset of `affectedNodeIds`". Empirically that subset is
-**broader** than the SQLite operation's semantic `affected` list: the kernel's
-delta upserts *every* identifier in a changed statement — the renamed ones
-(text → the new name) **and** siblings whose offset merely shifted because the
-statement text grew (`User`→`Account`, +3 chars). Diagnostic: SQLite records 17
-renamed identifiers; the bare kernel Identifier-subset is 47 (30 extras, all
-with unchanged text like `email`/`id`/`user`/`JSON`).
+## Self-review
 
-Because the graphs are **byte-identical** (assertion 1 passed) and the new name
-`Account` is introduced only by this rename, the renamed set is exactly the
-affected identifiers whose final text is the new name. So the kernel projection
-narrows `affectedNodeIds ∩ Identifier` to `text === "Account"`, which equals the
-SQLite `affected` list exactly (verified: filtered kernel set == SQLite set).
-This is an **audit-projection** decision, not a change to kernel semantics —
-the underlying rename outcome is identical on both arms (assertions 1–3), and a
-genuine divergence would already have failed assertion 1. The full delta-derived
-`affectedNodeIds` (statements + offset-shifted identifiers) is retained as
-`rawAffectedNodeIds` and asserted separately as the superset (every renamed
-identifier ∈ rawAffectedNodeIds).
+- **No behavior change in gate1.ts**: diff is `function foo(` → `export function foo(` and `const X` → `export const X`, plus doc comments. No call sites, logic, or control flow touched. Confirmed via `git diff` before commit.
+- **No cross-arm numbers, no model calls, no SQLite**: `gate2.ts` never imports `@strata-code/store`/`openDb`; it only talks to the daemon over `CoordinationClient`. `credentialFreeEnv()` (reused from gate1) strips `ANTHROPIC_API_KEY`/`CLAUDE_CODE_OAUTH_TOKEN` before spawning the daemon.
+- **Attribution by tag, not adjacency**: `buildGate2Profile` filters records by their own `kind`/`outcome`/`publication` fields; it never assumes a `workerRun` belongs to a neighboring `request` record. Documented in the module doc-comment and the function doc-comment.
+- **`coreGraphRecordValueBytes` honesty footnote**: present verbatim in the generated Markdown, matching the plan's required wording (four graph-record value bytes only, not transaction/redb bytes).
+- **Artifact naming**: verified against Task 7's acceptance-test snippet in the plan (`expect(artifacts.jsonPath).toContain("gate2-profile-")`) — my default naming satisfies it. `deterministicName: true` produces the exact `gate2-observability-profile.{json,md}` name Task 8 expects to commit under `docs/spikes/`.
+- **`advanceUntilPublished` loop**: gate 1's equivalent flow makes exactly one `advance_change_set` call and expects `published` immediately (uncontested single-change-set T03). I kept that as the expected fast path but added a small bounded retry loop (max 10 attempts) since the brief's prose explicitly says "advance until published" — purely defensive, zero behavior risk, throws a clear error if the bound is ever exhausted.
+- **Not exercised end-to-end here**: `runGate2KernelFlow` was verified by build + type-check only (it compiles, and its building blocks — `startKernelService`, `CoordinationClient`, gate1's exported constants/helpers — are each independently tested elsewhere). Per the brief, the live end-to-end flow is Task 7's acceptance test to write and run, not this task's.
+- **Scope discipline**: did not touch root `package.json` scripts (`kernel:gate2:test`), did not create `docs/spikes/` artifacts, did not touch `decisions.md`/roadmap — all explicitly Task 7/8 territory per the plan.
 
-## Script wiring — deviation from the brief's literal string
+## Concerns
 
-The brief specifies the final step as `pnpm --filter @strata-code/live-compare
-test -- gate1`. Under the environment's **pnpm 10.26.2**, that forwards `--
-gate1` verbatim and vitest 3.2.4's `run -- gate1` does **not** filter — it runs
-the whole live-compare suite (which is substantially red on `main` for reasons
-unrelated to this task: 30 pre-existing failures in verify/tasks/baseline/cli/
-dynamicPreflight/service, confirmed by stashing all Task-6 changes and re-running).
-The filtering form `pnpm --filter @strata-code/live-compare test gate1` (no `--`)
-correctly scopes to `gate1Parity.test.ts` only. Since a gate that runs a
-pre-existing red suite can never pass, `kernel:gate1:test` uses the filtering
-form (`test gate1`). Everything else in the script matches the brief exactly,
-including the default + `redb-spike-api` daemon builds.
-
-The parity test runs against the daemon at `target/debug/strata-kernel-service`
-(overridable via `STRATA_KERNEL_SERVICE_BIN`). It passes against both the
-default-features binary and the `redb-spike-api` binary (the latter is a strict
-superset for the serve/find_declarations/read_operation/export-snapshot surface
-the parity flow uses), so the script's build order is robust.
-
-## Timing
-
-- Parity test (`gate1Parity.test.ts`): ~6.1–6.8 s per run (both arms, full
-  flow: ingest → SQLite commit+validate → daemon rename lifecycle → export →
-  render → tsc on both trees).
-- Full `kernel:gate1:test` end-to-end (kernel-bridge build + live-compare build
-  + two cargo builds + filtered test): ~8 s test phase after builds; validated
-  green from repo root.
-- `pnpm -r build`: clean, no regressions.
-
-## Falsifier watch
-
-No semantic divergence surfaced. Nodes, references, and rendered bytes are
-byte-equal across arms; T03 text criteria are all-true on both; the audit
-projection matches modulo actor. Nothing was weakened on either arm to make
-parity pass.
-
-## Not done / out of scope
-
-- The 30 pre-existing live-compare suite failures are unrelated to Task 6 and
-  untouched (they fail identically on the pristine tree). `pnpm -r test` is
-  therefore already red on `main` independent of this work.
-- `stopAfterSubmit` returns a `KernelArmOutcome` with neutral placeholders plus
-  `changeSetId`/`directory`; `declarationId` is attached as an extra runtime
-  field (the fixed `KernelArmOutcome` interface has no such field) for Task 7's
-  convenience. The load-bearing behavior — begin/add/submit committed to durable
-  state, clean stop, redb preserved — works.
+- None blocking. One judgment call flagged above for visibility: the `advanceUntilPublished` bounded-retry loop is a defensive addition beyond gate1's proven single-call pattern; if Task 7's acceptance run ever needs more than 10 attempts to reach `published` for a legitimate reason, that bound should be revisited (unlikely for an uncontested T03 flow).
+- The `pnpm --filter @strata-code/live-compare test -- gate2Profile` invocation form specified in the brief's Step 2 hung for me in this sandbox (2-minute Bash-tool timeout, unrelated to the code change — likely an environment/wrapper quirk); I verified RED/GREEN and the full suite instead via `cd packages/live-compare && PATH=/opt/homebrew/bin:$PATH npx vitest run [pattern]`, which is the same test runner and config. Worth a quick sanity check by the operator if the exact `pnpm --filter` form matters for later automation (e.g. Task 7's `kernel:gate2:test` script).
