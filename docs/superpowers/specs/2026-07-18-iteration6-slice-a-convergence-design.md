@@ -304,7 +304,10 @@ it); MCP/CLI adapters.
   publication, stop and log — "converge" is falsified, not delayed.
 - **Gate 2:** per-stage observability (wall, peak memory, snapshot bytes,
   worker starts, hydration, validation, publication, replay). Instrumentation
-  lands on both the daemon and the bridge; no keyed spend.
+  lands on both the daemon and the bridge; no keyed spend. *(landed 2026-07-20,
+  plan: `docs/superpowers/plans/2026-07-19-iteration6-slice-a-gate2.md`;
+  evidence: `docs/spikes/gate2-observability-profile.md`; decisions.md
+  2026-07-20.)*
 - **Gate 3:** unkeyed noninferiority — p95 mutation wall ≤1.25× SQLite, bounded
   memory, `examples/medium` + a ~1k-module corpus, no extra agent-visible
   lifecycle calls. Failure stops keyed spend. Watch falsifier 5 (fixing bridge

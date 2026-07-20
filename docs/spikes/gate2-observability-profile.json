@@ -1,0 +1,455 @@
+{
+  "profile": {
+    "seed": {
+      "snapshotBytes": 238640,
+      "seedNs": 73948667
+    },
+    "requests": [
+      {
+        "action": "hello",
+        "wallNs": 41916584,
+        "daemonPeakRssBytes": 9928704
+      },
+      {
+        "action": "find_declarations",
+        "wallNs": 57066792,
+        "daemonPeakRssBytes": 10551296
+      },
+      {
+        "action": "begin_change_set",
+        "wallNs": 157595833,
+        "daemonPeakRssBytes": 10911744
+      },
+      {
+        "action": "add_intent",
+        "wallNs": 152457083,
+        "daemonPeakRssBytes": 11010048
+      },
+      {
+        "action": "submit_change_set",
+        "wallNs": 1213415584,
+        "daemonPeakRssBytes": 11976704
+      },
+      {
+        "action": "advance_change_set",
+        "wallNs": 2920554083,
+        "daemonPeakRssBytes": 13418496
+      },
+      {
+        "action": "read_operation",
+        "wallNs": 46209167,
+        "daemonPeakRssBytes": 13418496
+      },
+      {
+        "action": "hello",
+        "wallNs": 52058292,
+        "daemonPeakRssBytes": 11337728
+      }
+    ],
+    "workerRuns": [
+      {
+        "requestKind": "analyzeIntent",
+        "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+        "phase": "submitAnalysis",
+        "outcome": "ok",
+        "bridgeWallNs": 442871208,
+        "snapshotBytes": 238642,
+        "totalRequestBytes": 239175,
+        "snapshotBuildNs": 4754666,
+        "requestSerializeNs": 9197208,
+        "responseBytes": 4066,
+        "worker": {
+          "hydrateNs": 151172666,
+          "analyzeNs": 9302750,
+          "mutateNs": null,
+          "validateNs": null,
+          "exportNs": null,
+          "totalNs": 175593417,
+          "peakRssBytes": 146898944
+        }
+      },
+      {
+        "requestKind": "analyzeIntent",
+        "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+        "phase": "unattributed",
+        "outcome": "ok",
+        "bridgeWallNs": 290303167,
+        "snapshotBytes": 238642,
+        "totalRequestBytes": 239175,
+        "snapshotBuildNs": 5747834,
+        "requestSerializeNs": 9925959,
+        "responseBytes": 4064,
+        "worker": {
+          "hydrateNs": 15165125,
+          "analyzeNs": 6879833,
+          "mutateNs": null,
+          "validateNs": null,
+          "exportNs": null,
+          "totalNs": 34239917,
+          "peakRssBytes": 152076288
+        }
+      },
+      {
+        "requestKind": "analyzeIntent",
+        "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+        "phase": "claimAnalysis",
+        "outcome": "ok",
+        "bridgeWallNs": 388195375,
+        "snapshotBytes": 238642,
+        "totalRequestBytes": 239175,
+        "snapshotBuildNs": 4345792,
+        "requestSerializeNs": 9214167,
+        "responseBytes": 4064,
+        "worker": {
+          "hydrateNs": 21534250,
+          "analyzeNs": 9802625,
+          "mutateNs": null,
+          "validateNs": null,
+          "exportNs": null,
+          "totalNs": 44519209,
+          "peakRssBytes": 133103616
+        }
+      },
+      {
+        "requestKind": "analyzeIntent",
+        "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+        "phase": "preCandidateAnalysis",
+        "outcome": "ok",
+        "bridgeWallNs": 336307125,
+        "snapshotBytes": 238642,
+        "totalRequestBytes": 239175,
+        "snapshotBuildNs": 4695417,
+        "requestSerializeNs": 9423375,
+        "responseBytes": 4064,
+        "worker": {
+          "hydrateNs": 17567000,
+          "analyzeNs": 7418917,
+          "mutateNs": null,
+          "validateNs": null,
+          "exportNs": null,
+          "totalNs": 36842500,
+          "peakRssBytes": 152551424
+        }
+      },
+      {
+        "requestKind": "buildValidateCandidate",
+        "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+        "phase": "candidate",
+        "outcome": "ok",
+        "bridgeWallNs": 1225330125,
+        "snapshotBytes": 238642,
+        "totalRequestBytes": 239817,
+        "snapshotBuildNs": 4723833,
+        "requestSerializeNs": 9896208,
+        "responseBytes": 11459,
+        "worker": {
+          "hydrateNs": 20685916,
+          "analyzeNs": null,
+          "mutateNs": 4588584,
+          "validateNs": 785893750,
+          "exportNs": 8118917,
+          "totalNs": 837097416,
+          "peakRssBytes": 249397248
+        }
+      },
+      {
+        "requestKind": "analyzeIntent",
+        "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+        "phase": "postCandidateAnalysis",
+        "outcome": "ok",
+        "bridgeWallNs": 413615791,
+        "snapshotBytes": 238642,
+        "totalRequestBytes": 239175,
+        "snapshotBuildNs": 4939250,
+        "requestSerializeNs": 9877042,
+        "responseBytes": 4064,
+        "worker": {
+          "hydrateNs": 16676583,
+          "analyzeNs": 6691542,
+          "mutateNs": null,
+          "validateNs": null,
+          "exportNs": null,
+          "totalNs": 35916083,
+          "peakRssBytes": 149438464
+        }
+      }
+    ],
+    "publication": {
+      "generation": 1,
+      "preCandidateAnalysisNs": 430598708,
+      "postCandidateAnalysisNs": 512650417,
+      "candidateNs": 1247332625,
+      "persistenceNs": 34144875,
+      "memoryPublishNs": 2584,
+      "coreGraphRecordValueBytes": 13048
+    },
+    "recovery": {
+      "cold": {
+        "recovered": false,
+        "openNs": 366486208,
+        "replayNs": 0,
+        "seedNs": 73948667,
+        "replayedOperations": 0,
+        "snapshotBytes": 238640
+      },
+      "restart": {
+        "recovered": true,
+        "openNs": 196618458,
+        "replayNs": 15734292,
+        "seedNs": 0,
+        "replayedOperations": 1,
+        "snapshotBytes": 238640
+      }
+    },
+    "totals": {
+      "workerStarts": 6,
+      "daemonPeakRssBytes": 13418496,
+      "maxWorkerPeakRssBytes": 249397248
+    }
+  },
+  "records": [
+    {
+      "kind": "recovery",
+      "recovered": false,
+      "openNs": 366486208,
+      "replayNs": 0,
+      "seedNs": 73948667,
+      "replayedOperations": 0,
+      "snapshotGeneration": 0,
+      "generation": 0,
+      "snapshotBytes": 238640,
+      "seq": 0
+    },
+    {
+      "kind": "request",
+      "action": "hello",
+      "wallNs": 41916584,
+      "daemonPeakRssBytes": 9928704,
+      "workerStartsTotal": 0,
+      "publication": null,
+      "seq": 1
+    },
+    {
+      "kind": "request",
+      "action": "find_declarations",
+      "wallNs": 57066792,
+      "daemonPeakRssBytes": 10551296,
+      "workerStartsTotal": 0,
+      "publication": null,
+      "seq": 2
+    },
+    {
+      "kind": "request",
+      "action": "begin_change_set",
+      "wallNs": 157595833,
+      "daemonPeakRssBytes": 10911744,
+      "workerStartsTotal": 0,
+      "publication": null,
+      "seq": 3
+    },
+    {
+      "kind": "request",
+      "action": "add_intent",
+      "wallNs": 152457083,
+      "daemonPeakRssBytes": 11010048,
+      "workerStartsTotal": 0,
+      "publication": null,
+      "seq": 4
+    },
+    {
+      "kind": "workerRun",
+      "requestKind": "analyzeIntent",
+      "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+      "phase": "submitAnalysis",
+      "outcome": "ok",
+      "bridgeWallNs": 442871208,
+      "snapshotBytes": 238642,
+      "totalRequestBytes": 239175,
+      "snapshotBuildNs": 4754666,
+      "requestSerializeNs": 9197208,
+      "responseBytes": 4066,
+      "worker": {
+        "hydrateNs": 151172666,
+        "analyzeNs": 9302750,
+        "mutateNs": null,
+        "validateNs": null,
+        "exportNs": null,
+        "totalNs": 175593417,
+        "peakRssBytes": 146898944
+      },
+      "seq": 5
+    },
+    {
+      "kind": "workerRun",
+      "requestKind": "analyzeIntent",
+      "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+      "phase": "unattributed",
+      "outcome": "ok",
+      "bridgeWallNs": 290303167,
+      "snapshotBytes": 238642,
+      "totalRequestBytes": 239175,
+      "snapshotBuildNs": 5747834,
+      "requestSerializeNs": 9925959,
+      "responseBytes": 4064,
+      "worker": {
+        "hydrateNs": 15165125,
+        "analyzeNs": 6879833,
+        "mutateNs": null,
+        "validateNs": null,
+        "exportNs": null,
+        "totalNs": 34239917,
+        "peakRssBytes": 152076288
+      },
+      "seq": 6
+    },
+    {
+      "kind": "request",
+      "action": "submit_change_set",
+      "wallNs": 1213415584,
+      "daemonPeakRssBytes": 11976704,
+      "workerStartsTotal": 2,
+      "publication": null,
+      "seq": 7
+    },
+    {
+      "kind": "workerRun",
+      "requestKind": "analyzeIntent",
+      "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+      "phase": "claimAnalysis",
+      "outcome": "ok",
+      "bridgeWallNs": 388195375,
+      "snapshotBytes": 238642,
+      "totalRequestBytes": 239175,
+      "snapshotBuildNs": 4345792,
+      "requestSerializeNs": 9214167,
+      "responseBytes": 4064,
+      "worker": {
+        "hydrateNs": 21534250,
+        "analyzeNs": 9802625,
+        "mutateNs": null,
+        "validateNs": null,
+        "exportNs": null,
+        "totalNs": 44519209,
+        "peakRssBytes": 133103616
+      },
+      "seq": 8
+    },
+    {
+      "kind": "workerRun",
+      "requestKind": "analyzeIntent",
+      "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+      "phase": "preCandidateAnalysis",
+      "outcome": "ok",
+      "bridgeWallNs": 336307125,
+      "snapshotBytes": 238642,
+      "totalRequestBytes": 239175,
+      "snapshotBuildNs": 4695417,
+      "requestSerializeNs": 9423375,
+      "responseBytes": 4064,
+      "worker": {
+        "hydrateNs": 17567000,
+        "analyzeNs": 7418917,
+        "mutateNs": null,
+        "validateNs": null,
+        "exportNs": null,
+        "totalNs": 36842500,
+        "peakRssBytes": 152551424
+      },
+      "seq": 9
+    },
+    {
+      "kind": "workerRun",
+      "requestKind": "buildValidateCandidate",
+      "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+      "phase": "candidate",
+      "outcome": "ok",
+      "bridgeWallNs": 1225330125,
+      "snapshotBytes": 238642,
+      "totalRequestBytes": 239817,
+      "snapshotBuildNs": 4723833,
+      "requestSerializeNs": 9896208,
+      "responseBytes": 11459,
+      "worker": {
+        "hydrateNs": 20685916,
+        "analyzeNs": null,
+        "mutateNs": 4588584,
+        "validateNs": 785893750,
+        "exportNs": 8118917,
+        "totalNs": 837097416,
+        "peakRssBytes": 249397248
+      },
+      "seq": 10
+    },
+    {
+      "kind": "workerRun",
+      "requestKind": "analyzeIntent",
+      "changeSetId": "change:fb9a3505177af30a6af827532e3e3e7ed11a4475330c964b98973f11f65b6ce3",
+      "phase": "postCandidateAnalysis",
+      "outcome": "ok",
+      "bridgeWallNs": 413615791,
+      "snapshotBytes": 238642,
+      "totalRequestBytes": 239175,
+      "snapshotBuildNs": 4939250,
+      "requestSerializeNs": 9877042,
+      "responseBytes": 4064,
+      "worker": {
+        "hydrateNs": 16676583,
+        "analyzeNs": 6691542,
+        "mutateNs": null,
+        "validateNs": null,
+        "exportNs": null,
+        "totalNs": 35916083,
+        "peakRssBytes": 149438464
+      },
+      "seq": 11
+    },
+    {
+      "kind": "request",
+      "action": "advance_change_set",
+      "wallNs": 2920554083,
+      "daemonPeakRssBytes": 13418496,
+      "workerStartsTotal": 6,
+      "publication": {
+        "generation": 1,
+        "preCandidateAnalysisNs": 430598708,
+        "postCandidateAnalysisNs": 512650417,
+        "candidateNs": 1247332625,
+        "persistenceNs": 34144875,
+        "memoryPublishNs": 2584,
+        "coreGraphRecordValueBytes": 13048,
+        "alreadyPublished": false
+      },
+      "seq": 12
+    },
+    {
+      "kind": "request",
+      "action": "read_operation",
+      "wallNs": 46209167,
+      "daemonPeakRssBytes": 13418496,
+      "workerStartsTotal": 6,
+      "publication": null,
+      "seq": 13
+    },
+    {
+      "kind": "recovery",
+      "recovered": true,
+      "openNs": 196618458,
+      "replayNs": 15734292,
+      "seedNs": 0,
+      "replayedOperations": 1,
+      "snapshotGeneration": 0,
+      "generation": 1,
+      "snapshotBytes": 238640,
+      "seq": 0
+    },
+    {
+      "kind": "request",
+      "action": "hello",
+      "wallNs": 52058292,
+      "daemonPeakRssBytes": 11337728,
+      "workerStartsTotal": 0,
+      "publication": null,
+      "seq": 1
+    }
+  ]
+}

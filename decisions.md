@@ -7,6 +7,102 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-20 — Gate 2 (per-stage observability) PASSED; slice A continues at gate 3
+
+**Result:** the convergence slice's second measurement gate is green, key-free,
+on `examples/medium`. The kernel arm's T03 flow is now instrumented on both the
+daemon and the bridge for every category the governing convergence review §4
+item 2 demands: *"Record per-stage wall time, peak memory, serialized snapshot
+bytes, Node-worker starts, SQLite hydration time, validation time, redb
+publication time, and restart replay time. Without this, a keyed result cannot
+distinguish coordination semantics from bridge mechanics."* Verification:
+`packages/live-compare/tests/gate2Observability.test.ts` asserts all eight
+categories plus phase coverage, all-`ok` worker outcomes, and three
+cross-invariants against a live instrumented run, via `pnpm kernel:gate2:test`;
+`pnpm kernel:full-key-free:test` and `pnpm -r test` green (gate-1 21/21 still
+green with metrics off; live-compare 160/160); final whole-branch review
+(5b05958..HEAD): "ready to merge", no Critical findings.
+
+**Chosen architecture (observer-only, opt-in end-to-end):** metrics are gated by
+one daemon `--metrics <path>` flag → `NodeBridgeConfig::with_metrics_collection`
+→ `--emit-metrics` on the worker argv. With the flag off (the default), the
+worker constructs no recorder and emits byte-identical responses, the daemon
+writes no file, and the run-metrics buffer never grows — so nothing an agent
+sees changes. The metrics ride a daemon-internal side channel only: an optional
+`metrics` field on the bridge stdout envelope (the Rust *consumer* landed one
+commit before the TS *producer* so every intermediate commit stays green) and a
+non-fsync'd JSONL sink separate from the hash-chained audit journal. The
+agent-visible Unix-socket protocol gains nothing (zero hunks in
+`strata_kernel_service/protocol.rs`); no digest input changed. The worker
+appends its stage/RSS block only after the semantic response frame is
+serialized and bound-checked, and drops it silently if the combined frame would
+exceed the 16 MiB response bound — a metrics-bearing build can never turn a
+valid candidate into `responseTooLarge`.
+
+**Attribution and honesty guards.** Worker runs are self-attributed by
+`changeSetId` + coordination `phase` (five RAII phase guards:
+submit/claim/pre-candidate/post-candidate analysis + candidate build), never by
+the incidental drain order of the shared bridge client. The publication report
+travels on `ExecutedEffect`, not a global slot, so concurrent change sets cannot
+cross-attribute. Node-worker starts use a spawn-anchored counter
+(`Kernel::worker_starts_total()`) emitted per request record and cross-checked
+per daemon leg against the terminal-record count (throws on mismatch), so a
+spawn that produced no terminal record cannot hide from the oracle. Optimistic
+publication retries accumulate analysis time and retain the original candidate
+build time (never reset to 0). `coreGraphRecordValueBytes` is named to state
+exactly what it is — the encoded value bytes of the four core graph records
+(operation+delta+ticket+event) — and is explicitly NOT presented as total
+transaction or physical redb bytes, at the Rust definition and in the artifact
+footnote. RSS units are normalized (`getrusage`/`resourceUsage` → bytes; macOS
+bytes, Linux KiB×1024; Node maxRSS KiB×1024).
+
+**Independent review before build.** The plan was reviewed adversarially by
+Codex (gpt-5.6-sol, xhigh, read-only, repo-grounded) — 1 blocker, 7 majors,
+1 minor, every finding source-verified in-session and incorporated into plan v2
+before any code (brief:
+[`specs/2026-07-19-slice-a-gate2-review-brief.md`](docs/superpowers/specs/2026-07-19-slice-a-gate2-review-brief.md),
+output:
+[`specs/2026-07-19-slice-a-gate2-review-codex.md`](docs/superpowers/specs/2026-07-19-slice-a-gate2-review-codex.md)).
+The blocker (metrics must be opt-in end-to-end and must never perturb the
+semantic response, incl. at the response bound; consumer-before-producer
+landing) and the majors (snapshot-bytes vs whole-request bytes split; per-phase
+attribution across the four analysis sites; `ExecutedEffect`-carried report vs
+global slot; retry-accumulated timing; spawn-anchored counting with terminal
+records for error runs; the `coreGraphRecordValueBytes` rename; measured
+`seed_ns` + storage-returned snapshot lengths) all shaped the final design.
+
+**Headline profile** (committed evidence:
+[`docs/spikes/gate2-observability-profile.md`](docs/spikes/gate2-observability-profile.md)
++ `.json`) — `examples/medium`, N=1, **observations not claims** (gate 3 owns
+distribution/percentile methodology): submit wall ~1.21 s, publishing advance
+wall ~2.92 s; daemon peak RSS ~13.4 MB, worker peak RSS ~249 MB; seed / worker
+analysis-request / restart snapshot ~238.6 KB each; 6 worker starts; worker
+SQLite hydration ~151 ms; candidate tsc validation ~786 ms; redb persistence
+~34.1 ms; core graph record value bytes ~13.0 KB; restart replay ~15.7 ms.
+
+**Residuals (logged, not blocking):**
+- *Full-transaction byte accounting* beyond the four core records (fences,
+  resource clocks, lifecycle, attempt, idempotency, digest, metadata) is
+  deferred to gate 3 if a total-bytes figure is needed; `coreGraphRecordValueBytes`
+  never stands in for it.
+- *Observer self-cost when metrics are on:* the extra snapshot serialization for
+  `snapshotBytes` runs inside the candidate/analysis brackets, so metrics-on
+  `candidateNs` and request `wallNs` include that self-cost (correctly excluded
+  from `snapshotBuildNs`). Read gate-2 numbers as metrics-on timings; the
+  `candidateNs ≥ bridgeWallNs` invariant still holds.
+- *Crash-restart replay publication is unmeasured:* a pending advance
+  re-executed by `resolve_pending_before_bind` before the socket binds emits no
+  `request` record (its worker runs still self-attribute and drain at the first
+  later request). Irrelevant to the clean-stop gate-2 flow; note for any gate-3
+  crash-path profiling.
+- *Idempotent replays are unmeasured by design* (they do no coordination work).
+- *Submit/claim in-process analysis* is not separately timed as a standalone
+  category — it is covered by the phase-tagged worker runs plus request walls.
+
+No model key or live spend was used. Gate 3 (unkeyed noninferiority — p95
+mutation wall ≤1.25× SQLite, bounded memory, `examples/medium` + a ~1k-module
+corpus) is next; no keyed spend before gate 5 and operator approval.
+
 ## 2026-07-19 — Gate 1 (key-free semantic parity) PASSED; slice A continues at gate 2
 
 **Result:** the convergence slice's first measurement gate is green end-to-end,
