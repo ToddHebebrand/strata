@@ -119,6 +119,11 @@ const requestRecordSchema = z
     action: z.string().min(1),
     wallNs: nonNegInt,
     daemonPeakRssBytes: nonNegInt,
+    // Monotonic daemon-lifetime count of worker children the node bridge has
+    // spawned, as of this request. Spawn-anchored, so it counts a spawned child
+    // even if that child produced no terminal `workerRun` record — the basis for
+    // the per-leg cross-check in `buildGate2Profile`.
+    workerStartsTotal: nonNegInt,
     publication: publicationRecordSchema.nullable(),
     seq: nonNegInt
   })
@@ -202,6 +207,35 @@ export interface Gate2Profile {
   totals: { workerStarts: number; daemonPeakRssBytes: number; maxWorkerPeakRssBytes: number };
 }
 
+/**
+ * The spawn-anchored worker-start count for one daemon leg, cross-checked
+ * against that leg's terminal-record count.
+ *
+ * `workerStartsTotal` is a monotonic daemon-lifetime counter; it resets per
+ * daemon process, so each leg (cold, restart) carries its own. We take the
+ * leg's FINAL request record's value and require it to equal the number of
+ * `workerRun` records in the same leg: a mismatch means a spawned child
+ * produced no terminal record (a silently lost run), which is exactly the hole
+ * this check closes. A leg with no request record contributes 0 and must then
+ * have no worker runs either.
+ */
+function legWorkerStarts(legRecords: MetricsRecord[], legName: string): number {
+  const requestRecords = legRecords.filter(
+    (record): record is RequestRecord => record.kind === "request"
+  );
+  const workerRunCount = legRecords.filter((record) => record.kind === "workerRun").length;
+  const finalRequest = requestRecords.at(-1);
+  const workerStartsTotal = finalRequest?.workerStartsTotal ?? 0;
+  if (workerStartsTotal !== workerRunCount) {
+    throw new Error(
+      `gate-2 profile: ${legName} leg spawn/terminal mismatch — final request ` +
+        `workerStartsTotal=${workerStartsTotal} but ${workerRunCount} workerRun record(s); ` +
+        `a spawned worker produced no terminal record`
+    );
+  }
+  return workerStartsTotal;
+}
+
 function toRecoveryLeg(record: RecoveryRecord): RecoveryLeg {
   return {
     recovered: record.recovered,
@@ -229,6 +263,20 @@ export function buildGate2Profile(records: MetricsRecord[]): Gate2Profile {
   if (!restart) {
     throw new Error("gate-2 profile requires one restart (recovered) recovery record; found none");
   }
+
+  // Split the concatenated cold+restart stream into its two daemon legs. The
+  // restart leg begins at the (single) recovery record with `recovered: true`;
+  // records are ordered per-leg and the cold leg's records all precede it. seq
+  // resets per daemon, so it is NOT a cross-leg ordering key — the recovery
+  // boundary is. This lets each leg's monotonic `workerStartsTotal` be checked
+  // against its own worker-run count.
+  const restartBoundary = records.findIndex(
+    (record) => record.kind === "recovery" && record.recovered
+  );
+  const coldLegRecords = records.slice(0, restartBoundary);
+  const restartLegRecords = records.slice(restartBoundary);
+  const coldWorkerStarts = legWorkerStarts(coldLegRecords, "cold");
+  const restartWorkerStarts = legWorkerStarts(restartLegRecords, "restart");
 
   const workerRunRecords = records.filter(
     (record): record is WorkerRunRecord => record.kind === "workerRun"
@@ -282,7 +330,11 @@ export function buildGate2Profile(records: MetricsRecord[]): Gate2Profile {
     },
     recovery: { cold: toRecoveryLeg(cold), restart: toRecoveryLeg(restart) },
     totals: {
-      workerStarts: workerRunRecords.length,
+      // Sum of each leg's final spawn-anchored counter, each cross-checked
+      // against that leg's worker-run count above. This is the real
+      // spawn-counter total, not the drain-derived record count — a spawn that
+      // produced no terminal record would have thrown in `legWorkerStarts`.
+      workerStarts: coldWorkerStarts + restartWorkerStarts,
       daemonPeakRssBytes: requestRecords.reduce(
         (max, record) => Math.max(max, record.daemonPeakRssBytes),
         0

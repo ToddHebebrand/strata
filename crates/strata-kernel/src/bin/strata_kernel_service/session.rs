@@ -274,6 +274,7 @@ impl ServiceSession {
             action.name(),
             started.elapsed().as_nanos(),
             peak_rss_bytes(),
+            self.kernel.worker_starts_total(),
             publication,
         ));
     }

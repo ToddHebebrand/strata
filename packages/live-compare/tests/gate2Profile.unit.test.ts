@@ -66,6 +66,7 @@ function validJsonl(): string {
       action: "submit_change_set",
       wallNs: 12_000_000,
       daemonPeakRssBytes: 30_000_000,
+      workerStartsTotal: 1,
       publication: null,
       seq: 3
     },
@@ -74,6 +75,7 @@ function validJsonl(): string {
       action: "advance_change_set",
       wallNs: 25_000_000,
       daemonPeakRssBytes: 31_000_000,
+      workerStartsTotal: 2,
       publication: {
         generation: 1,
         preCandidateAnalysisNs: 2_000_000,
@@ -217,6 +219,17 @@ describe("buildGate2Profile", () => {
       (record) => !(record.kind === "recovery" && !record.recovered)
     );
     expect(() => buildGate2Profile(records)).toThrow();
+  });
+
+  it("throws when a leg's final workerStartsTotal exceeds its workerRun count", () => {
+    // A spawned worker that produced no terminal record: the cold leg has two
+    // workerRun records but its final request claims three spawns.
+    const records = parseMetricsJsonl(validJsonl()).map((record) =>
+      record.kind === "request" && record.action === "advance_change_set"
+        ? { ...record, workerStartsTotal: 3 }
+        : record
+    );
+    expect(() => buildGate2Profile(records)).toThrow(/spawn\/terminal mismatch/);
   });
 
   it("throws when a workerRun outcome is not ok", () => {

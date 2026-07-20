@@ -40,6 +40,11 @@ pub(super) enum MetricsRecord {
         action: &'static str,
         wall_ns: u64,
         daemon_peak_rss_bytes: u64,
+        // Monotonic daemon-lifetime count of worker children the node bridge has
+        // spawned. Spawn-anchored (not drain-derived), so a spawned child that
+        // produced no terminal workerRun record is still counted here — the
+        // cross-check that closes the "spawn without a terminal record" hole.
+        worker_starts_total: u64,
         publication: Option<PublicationRecord>,
     },
 }
@@ -94,12 +99,14 @@ impl MetricsRecord {
         action: &'static str,
         wall_ns: u128,
         daemon_peak_rss_bytes: u64,
+        worker_starts_total: u64,
         publication: Option<PublicationReport>,
     ) -> Self {
         Self::Request {
             action,
             wall_ns: wall_ns as u64,
             daemon_peak_rss_bytes,
+            worker_starts_total,
             publication: publication.map(PublicationRecord::from),
         }
     }

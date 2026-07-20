@@ -298,6 +298,25 @@ fn metrics_sink_records_recovery_worker_runs_and_publication() {
         assert!(n(&request["wallNs"]) > 0, "{request}");
         assert!(n(&request["daemonPeakRssBytes"]) > 0, "{request}");
     }
+    // Spawn-anchored cross-check: the FINAL request record's monotonic
+    // workerStartsTotal must equal the number of workerRun records this daemon
+    // emitted (all outcomes). A spawned child that produced no terminal
+    // workerRun record would make the counter exceed the record count — the
+    // exact "spawn without a terminal record" hole this closes.
+    for request in &requests {
+        assert!(
+            request.get("workerStartsTotal").is_some(),
+            "request record missing workerStartsTotal: {request}"
+        );
+    }
+    let final_request = requests.last().unwrap();
+    assert_eq!(
+        n(&final_request["workerStartsTotal"]),
+        worker_runs.len() as u64,
+        "final request workerStartsTotal must equal workerRun record count; \
+         requests: {requests:#?} worker_runs: {worker_runs:#?}"
+    );
+
     let published: Vec<&Value> = requests
         .iter()
         .filter(|r| !r["publication"].is_null())

@@ -161,3 +161,70 @@ EXIT_CODE=0
    NOT `git add -A` blindly (which would have swept it in); I staged only my
    Task-7 files explicitly. The `task-6-report.md` change is left unstaged for
    its owner to commit.
+
+## Final-review fix round
+
+**Finding (whole-branch review):** the acceptance oracle's worker-starts
+cross-check was vacuous. `buildGate2Profile` set
+`totals.workerStarts = workerRunRecords.length`, so
+`expect(profile.totals.workerStarts).toBe(profile.workerRuns.length)` in
+`gate2Observability.test.ts` was a tautology. The real spawn-anchored counter
+(`Kernel::worker_starts_total()`, already public) never reached the JSONL, so a
+spawned child that failed to produce a terminal `workerRun` record would have
+been invisible to the gate oracle.
+
+**Fix (exactly as scoped — no wire/audit/recovery/workerRun changes):**
+
+1. **Rust producer.** `MetricsRecord::Request` gained a
+   `worker_starts_total: u64` field (auto camelCased to `workerStartsTotal` by
+   the enum's `rename_all_fields`), documented one line as a monotonic
+   daemon-lifetime counter. `MetricsRecord::request(...)` takes it as a new arg;
+   `session.rs::emit_request_metrics` populates it from
+   `self.kernel.worker_starts_total()` at emission. Recovery/workerRun records,
+   the audit journal, and the wire protocol are untouched; metrics stay opt-in.
+2. **Rust integration test.** `local_service_metrics.rs` now asserts every
+   request record carries `workerStartsTotal` and that the FINAL request
+   record's value equals that daemon's total `workerRun` record count (all
+   outcomes) — closing the "spawn without a terminal record" hole at the
+   integration level. Existing assertions kept.
+3. **TS consumer.** `requestRecordSchema` gained required
+   `workerStartsTotal: nonNegInt`. `buildGate2Profile` now splits the
+   concatenated cold+restart stream into its two daemon legs at the
+   `recovered:true` recovery boundary (seq resets per daemon, so it is not a
+   cross-leg key — the recovery record is), and a `legWorkerStarts` helper takes
+   each leg's final request record's `workerStartsTotal`, **throwing** if it
+   differs from that leg's `workerRun` count.
+   `totals.workerStarts = coldFinal + restartFinal` — the real spawn-counter
+   total, not the drain-derived record count.
+4. **Oracle unchanged.** `gate2Observability.test.ts`'s
+   `expect(profile.totals.workerStarts).toBe(profile.workerRuns.length)` is
+   retained as the readable surface assertion; it now tests real data (the
+   builder would have thrown on any per-leg spawn/terminal mismatch first). No
+   other assertion weakened.
+5. **Unit test.** `gate2Profile.unit.test.ts` fixtures gained the required field
+   (submit=1, advance=2), and one new case (`advance.workerStartsTotal=3` vs 2
+   worker runs → builder throws `/spawn\/terminal mismatch/`). 10 → 11 tests.
+
+**Commands + output tails (all foreground, `PATH=/opt/homebrew/bin:$PATH`):**
+
+- `cargo test -p strata-kernel --test local_service_metrics` →
+  `test result: ok. 2 passed; 0 failed`.
+- Three-config feature matrix (compile+test), each verified via captured exit
+  code: default `EXIT=0` (36 `test result: ok` lines, 0 failures),
+  `--features coordination-test-api` `EXIT=0`, `--features redb-spike-api`
+  `EXIT=0`; zero `FAILED`/`panicked`/`error[` lines in any.
+- `pnpm kernel:gate2:test` (builds daemon default + redb-spike-api, live flow) →
+  `Test Files 2 passed (2)` / `Tests 12 passed (12)`
+  (`gate2Observability` live 3671ms — the new per-leg cross-check did NOT throw
+  on real daemon output; `gate2Profile.unit` 11 tests).
+- `pnpm --filter @strata-code/kernel-bridge build && … live-compare build && …
+  live-compare test` → `BUILD_EXIT=0`, `TEST_EXIT=0`,
+  `Test Files 20 passed (20)` / `Tests 160 passed (160)` (was 159; +1 new unit
+  case), duration 269s.
+
+**Files changed:** `crates/strata-kernel/src/bin/strata_kernel_service/metrics.rs`,
+`crates/strata-kernel/src/bin/strata_kernel_service/session.rs`,
+`crates/strata-kernel/tests/local_service_metrics.rs`,
+`packages/live-compare/src/gate2.ts`,
+`packages/live-compare/tests/gate2Profile.unit.test.ts`, and this report.
+`gate2Observability.test.ts` deliberately unchanged.
