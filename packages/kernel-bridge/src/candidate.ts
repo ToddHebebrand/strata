@@ -155,6 +155,11 @@ export function buildValidateCandidateInScratch(
     }
 
     stage = "export";
+    // `exportNs` covers only the two bracketed calls below (snapshot export
+    // and delta diffing); the validateCandidateIdentity(...) call between
+    // them is deliberately left unmeasured here -- it's a graph-identity
+    // check, not serialization work, so folding it in would overstate the
+    // export stage's cost.
     const after = bracket("export", () =>
       exportSnapshot(
         db,

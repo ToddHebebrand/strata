@@ -141,8 +141,12 @@ async function runProcess(
   evaluation?: string,
   extraArgs: string[] = []
 ): Promise<ProcessResult> {
+  // In --eval mode, args after the script are only forwarded to
+  // process.argv (rather than parsed as Node CLI options) once a `--`
+  // separator marks the boundary; without it, e.g. "--emit-metrics" is
+  // rejected by Node itself as an unrecognized option.
   const args = evaluation
-    ? ["--input-type=module", "--eval", evaluation, ...extraArgs]
+    ? ["--input-type=module", "--eval", evaluation, ...(extraArgs.length > 0 ? ["--", ...extraArgs] : [])]
     : [workerPath, ...extraArgs];
   const child = spawn(process.execPath, args, {
     cwd: packageRoot,
@@ -299,6 +303,83 @@ describe("bounded one-shot worker", () => {
       ok: false,
       error: { stage: "protocol", code: "responseTooLarge" }
     });
+  }, 30_000);
+
+  it("drops metrics (not the semantic response) when attaching them would overflow the bound", async () => {
+    // Build the exact success-response shape the worker itself would produce
+    // (same fields dispatch() assembles for an analyzeIntent success), so we
+    // can compute its serialized frame size in this process before ever
+    // spawning the worker. Every "x" in declarationId is one ASCII byte, so
+    // frame size grows 1:1 with declarationId length -- no binary search
+    // needed, just base-size + N arithmetic.
+    const request = analyzeRequest();
+    const factsFor = (n: number) => ({
+      type: "renameSymbol" as const,
+      declarationId: "x".repeat(n),
+      declarationNameIdentifierId: "name",
+      references: [],
+      writableStatementIds: [],
+      validationDependencyNodeIds: [],
+      validationDependencyReferenceFromNodeIds: []
+    });
+    const successResponseFor = (n: number) => ({
+      protocolVersion: 1 as const,
+      requestId: request.requestId,
+      kind: "analyzeIntent" as const,
+      binding: request.binding,
+      ok: true as const,
+      result: { facts: factsFor(n) }
+    });
+    const frameBytesFor = (n: number): number =>
+      Buffer.byteLength(
+        `${JSON.stringify(bridgeResponseSchema.parse(successResponseFor(n)))}\n`,
+        "utf8"
+      );
+
+    // Smallest possible metrics block: only totalNs/peakRssBytes populated
+    // (this injected handler never calls the recorder, so no per-stage keys
+    // are set), each at their shortest possible digit width. Any real
+    // metrics block emitted by the worker is at least this large, since
+    // actual elapsed-ns/rss values have more digits than 0.
+    const metricsFloorBytes = Buffer.byteLength(
+      `,"metrics":${JSON.stringify({ totalNs: 0, peakRssBytes: 0 })}`,
+      "utf8"
+    );
+
+    // Land the semantic (metrics-free) frame 1 byte under MAX_RESPONSE_BYTES
+    // -- comfortably under the bound, but with headroom far smaller than
+    // metricsFloorBytes, so attaching any real metrics block is guaranteed
+    // to push the combined frame over the limit.
+    const margin = 1;
+    expect(margin).toBeLessThan(metricsFloorBytes);
+    // declarationId is a non-empty string (opaqueIdSchema), so anchor the
+    // base measurement at length 1 rather than 0.
+    const baseBytesAtOne = frameBytesFor(1);
+    const n = MAX_RESPONSE_BYTES - margin - baseBytesAtOne + 1;
+    expect(frameBytesFor(n)).toBe(MAX_RESPONSE_BYTES - margin);
+
+    const result = await runProcess(
+      JSON.stringify(request),
+      injectedWorker(`() => ({ facts: {
+        type: "renameSymbol",
+        declarationId: "x".repeat(${n}),
+        declarationNameIdentifierId: "name",
+        references: [],
+        writableStatementIds: [],
+        validationDependencyNodeIds: [],
+        validationDependencyReferenceFromNodeIds: []
+      } })`),
+      ["--emit-metrics"]
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout.length).toBeLessThanOrEqual(MAX_RESPONSE_BYTES);
+    const response = parseSingleFrame(result);
+    expect(response.ok).toBe(true);
+    expect(response.error).toBeUndefined();
+    expect(response.requestId).toBe(request.requestId);
+    expect(response.result.facts.declarationId).toHaveLength(n);
+    expect(response.metrics).toBeUndefined();
   }, 30_000);
 
   it("normalizes and deterministically truncates combined diagnostics", async () => {
