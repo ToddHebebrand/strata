@@ -1,5 +1,6 @@
 import { analyzeIntent } from "./analyze";
 import { buildValidateCandidate } from "./candidate";
+import { StageRecorder } from "./metrics";
 import {
   bridgeRequestSchema,
   bridgeResponseSchema,
@@ -20,9 +21,13 @@ const MAX_ERROR_MESSAGE_BYTES = 1_000;
 const FALLBACK_DIGEST = "0".repeat(64);
 
 export interface WorkerHandlers {
-  analyzeIntent: (request: AnalyzeIntentRequest) => ReturnType<typeof analyzeIntent>;
+  analyzeIntent: (
+    request: AnalyzeIntentRequest,
+    recorder?: StageRecorder
+  ) => ReturnType<typeof analyzeIntent>;
   buildValidateCandidate: (
-    request: BuildValidateCandidateRequest
+    request: BuildValidateCandidateRequest,
+    recorder?: StageRecorder
   ) => ReturnType<typeof buildValidateCandidate>;
 }
 
@@ -42,6 +47,13 @@ class WorkerFailure extends Error {
 export async function runOneShotWorker(
   handlers: WorkerHandlers = defaultHandlers
 ): Promise<void> {
+  // Strictly opt-in: absent this literal argv flag, no recorder is
+  // constructed and no `process.resourceUsage()` call happens, so a
+  // metrics-off worker's responses are byte-identical to before this feature
+  // existed. A later bridge task appends the flag when it wants metrics.
+  const emitMetrics = process.argv.includes("--emit-metrics");
+  const recorder = emitMetrics ? new StageRecorder() : undefined;
+
   let request: BridgeRequest | undefined;
   try {
     const raw = await readBoundedInput();
@@ -61,14 +73,14 @@ export async function runOneShotWorker(
       ? "requestTooLarge"
       : failureCode(error, "invalidRequest");
     const response = fallbackErrorResponse(code, error);
-    await emitResponse(response, undefined);
+    await emitResponse(response, undefined, recorder);
     writeOperationalError(code, error);
     return;
   }
 
   try {
-    const response = dispatch(request, handlers);
-    await emitResponse(response, request);
+    const response = dispatch(request, handlers, recorder);
+    await emitResponse(response, request, recorder);
   } catch (error) {
     const response = requestErrorResponse(
       request,
@@ -77,7 +89,7 @@ export async function runOneShotWorker(
       error,
       []
     );
-    await emitResponse(response, request);
+    await emitResponse(response, request, recorder);
     writeOperationalError(response.error.code, error);
   }
 }
@@ -104,9 +116,13 @@ async function readBoundedInput(): Promise<string> {
   return Buffer.concat(chunks, bytes).toString("utf8");
 }
 
-function dispatch(request: BridgeRequest, handlers: WorkerHandlers): BridgeResponse {
+function dispatch(
+  request: BridgeRequest,
+  handlers: WorkerHandlers,
+  recorder?: StageRecorder
+): BridgeResponse {
   if (request.kind === "analyzeIntent") {
-    const result = handlers.analyzeIntent(request);
+    const result = handlers.analyzeIntent(request, recorder);
     const response = "facts" in result
       ? {
           protocolVersion: 1 as const,
@@ -126,7 +142,7 @@ function dispatch(request: BridgeRequest, handlers: WorkerHandlers): BridgeRespo
     return bridgeResponseSchema.parse(response);
   }
 
-  const result = handlers.buildValidateCandidate(request);
+  const result = handlers.buildValidateCandidate(request, recorder);
   const response = "delta" in result
     ? {
         protocolVersion: 1 as const,
@@ -148,11 +164,17 @@ function dispatch(request: BridgeRequest, handlers: WorkerHandlers): BridgeRespo
 
 async function emitResponse(
   response: BridgeResponse,
-  request: BridgeRequest | undefined
+  request: BridgeRequest | undefined,
+  recorder?: StageRecorder
 ): Promise<void> {
-  let frame = serializeFrame(response);
+  // The semantic decision — which frame is the response — is settled here,
+  // exactly as before metrics existed. `finalResponse`/`frame` are the
+  // bound-checked semantic result; metrics are only ever appended on top,
+  // never allowed to change which semantic frame was chosen.
+  let finalResponse = response;
+  let frame = serializeFrame(finalResponse);
   if (Buffer.byteLength(frame) > MAX_RESPONSE_BYTES) {
-    const bounded = request === undefined
+    finalResponse = request === undefined
       ? fallbackErrorResponse(
           "responseTooLarge",
           new Error(`response exceeds ${MAX_RESPONSE_BYTES} bytes`)
@@ -164,11 +186,22 @@ async function emitResponse(
           `response exceeds ${MAX_RESPONSE_BYTES} bytes`,
           []
         );
-    frame = serializeFrame(bounded);
+    frame = serializeFrame(finalResponse);
   }
   if (Buffer.byteLength(frame) > MAX_RESPONSE_BYTES) {
     throw new Error("bounded protocol response exceeds response limit");
   }
+
+  if (recorder !== undefined) {
+    const withMetrics = serializeFrame({
+      ...finalResponse,
+      metrics: recorder.finish()
+    });
+    if (Buffer.byteLength(withMetrics) <= MAX_RESPONSE_BYTES) {
+      frame = withMetrics;
+    }
+  }
+
   await writeStdout(frame);
 }
 

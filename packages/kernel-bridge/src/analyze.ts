@@ -12,6 +12,7 @@ import {
 } from "@strata-code/store";
 import { posix } from "node:path";
 import ts from "typescript";
+import { StageRecorder } from "./metrics";
 import {
   semanticFactsSchema,
   type AnalyzeIntentRequest,
@@ -48,16 +49,23 @@ class AnalyzeFailure extends Error {
   }
 }
 
-export function analyzeIntent(request: AnalyzeIntentRequest): AnalyzeIntentResult {
+export function analyzeIntent(
+  request: AnalyzeIntentRequest,
+  recorder?: StageRecorder
+): AnalyzeIntentResult {
   let db: Db;
   try {
-    db = hydrateSnapshot(request.snapshot);
+    db = recorder
+      ? recorder.time("hydrate", () => hydrateSnapshot(request.snapshot))
+      : hydrateSnapshot(request.snapshot);
   } catch (error) {
     return errorPayload("hydrate", "invalidSnapshot", error, []);
   }
 
   try {
-    return analyzeIntentInDb(db, request.intent);
+    return recorder
+      ? recorder.time("analyze", () => analyzeIntentInDb(db, request.intent))
+      : analyzeIntentInDb(db, request.intent);
   } finally {
     db.close();
   }

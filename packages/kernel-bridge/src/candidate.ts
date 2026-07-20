@@ -13,6 +13,7 @@ import {
   type TxHandle
 } from "@strata-code/store";
 import { commit, commitWithBehavioralGate, type Diagnostic } from "@strata-code/verify";
+import { StageRecorder } from "./metrics";
 import {
   type BridgeDiagnostic,
   type BridgeErrorPayload,
@@ -45,20 +46,23 @@ class CandidateFailure extends Error {
 }
 
 export function buildValidateCandidate(
-  request: BuildValidateCandidateRequest
+  request: BuildValidateCandidateRequest,
+  recorder?: StageRecorder
 ): BuildValidateCandidateResult {
   const profileError = validateProfile(request.validationProfile, request.snapshot);
   if (profileError !== undefined) return profileError;
 
   let db: Db;
   try {
-    db = hydrateSnapshot(request.snapshot);
+    db = recorder
+      ? recorder.time("hydrate", () => hydrateSnapshot(request.snapshot))
+      : hydrateSnapshot(request.snapshot);
   } catch (error) {
     return errorPayload("hydrate", "invalidSnapshot", error, []);
   }
 
   try {
-    return buildValidateCandidateInScratch(request, db);
+    return buildValidateCandidateInScratch(request, db, recorder);
   } finally {
     db.close();
   }
@@ -70,55 +74,62 @@ export function buildValidateCandidate(
  */
 export function buildValidateCandidateInScratch(
   request: BuildValidateCandidateRequest,
-  db: Db
+  db: Db,
+  recorder?: StageRecorder
 ): BuildValidateCandidateResult {
   let tx: TxHandle | undefined;
   const touchedStatementIds = new Set<string>();
   let stage: BridgeErrorPayload["stage"] = "mutate";
+  const bracket = <T>(bracketStage: "mutate" | "validate" | "export", fn: () => T): T =>
+    recorder ? recorder.time(bracketStage, fn) : fn();
 
   try {
-    tx = begin(db, request.changeSet.actor, request.changeSet.reasoning);
-    for (const intent of request.changeSet.orderedIntents) {
-      if (intent.parameters.type === "renameSymbol") {
-        collectRenameTouchedStatements(
-          db,
-          intent.parameters.declarationId,
-          touchedStatementIds
-        );
-        rename_symbol(
-          db,
-          tx,
-          intent.parameters.declarationId,
-          intent.parameters.newName
-        );
-      } else {
-        const manifest = add_parameter(
-          db,
-          tx,
-          intent.parameters.functionId,
-          intent.parameters.name,
-          intent.parameters.typeText,
-          intent.parameters.position,
-          intent.parameters.defaultValue ?? undefined
-        );
-        touchedStatementIds.add(manifest.declaration.id);
-        for (const callsite of manifest.callsitesRewritten) {
-          touchedStatementIds.add(callsite.statementId);
+    const activeTx = begin(db, request.changeSet.actor, request.changeSet.reasoning);
+    tx = activeTx;
+    bracket("mutate", () => {
+      for (const intent of request.changeSet.orderedIntents) {
+        if (intent.parameters.type === "renameSymbol") {
+          collectRenameTouchedStatements(
+            db,
+            intent.parameters.declarationId,
+            touchedStatementIds
+          );
+          rename_symbol(
+            db,
+            activeTx,
+            intent.parameters.declarationId,
+            intent.parameters.newName
+          );
+        } else {
+          const manifest = add_parameter(
+            db,
+            activeTx,
+            intent.parameters.functionId,
+            intent.parameters.name,
+            intent.parameters.typeText,
+            intent.parameters.position,
+            intent.parameters.defaultValue ?? undefined
+          );
+          touchedStatementIds.add(manifest.declaration.id);
+          for (const callsite of manifest.callsitesRewritten) {
+            touchedStatementIds.add(callsite.statementId);
+          }
         }
       }
-    }
+    });
 
     stage = "validate";
-    const commitResult =
+    const commitResult = bracket("validate", () =>
       request.validationProfile.mode === "tscOnly"
-        ? commit(db, tx, request.validationProfile.corpusRoot)
-        : commitWithBehavioralGate(db, tx, {
+        ? commit(db, activeTx, request.validationProfile.corpusRoot)
+        : commitWithBehavioralGate(db, activeTx, {
             srcRoot: request.validationProfile.sourceRoot,
             corpusRoot: request.validationProfile.corpusRoot,
             behavioralFixtures: request.validationProfile.behavioralFixtures,
             strictSrcOnlyTscScope:
               request.validationProfile.strictSrcOnlyTscScope
-          });
+          })
+    );
     if (!commitResult.ok) {
       if ("diagnostics" in commitResult) {
         throw new CandidateFailure(
@@ -144,9 +155,11 @@ export function buildValidateCandidateInScratch(
     }
 
     stage = "export";
-    const after = exportSnapshot(
-      db,
-      parseCanonicalU64((BigInt(request.snapshot.generation) + 1n).toString())
+    const after = bracket("export", () =>
+      exportSnapshot(
+        db,
+        parseCanonicalU64((BigInt(request.snapshot.generation) + 1n).toString())
+      )
     );
     const identityError = validateCandidateIdentity(
       request.snapshot,
@@ -154,7 +167,10 @@ export function buildValidateCandidateInScratch(
       touchedStatementIds
     );
     if (identityError !== undefined) return identityError;
-    return { delta: diffSnapshots(request.snapshot, after), diagnostics: [] };
+    return {
+      delta: bracket("export", () => diffSnapshots(request.snapshot, after)),
+      diagnostics: []
+    };
   } catch (error) {
     rollbackIfOpen(db, tx);
     if (error instanceof CandidateFailure) {

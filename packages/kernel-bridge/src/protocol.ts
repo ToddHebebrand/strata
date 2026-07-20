@@ -115,6 +115,20 @@ export const kernelSnapshotV1Schema: z.ZodType<KernelSnapshotV1> = z
     });
   });
 
+const nonnegativeIntSchema = z.number().int().safe().nonnegative();
+
+export const workerStageMetricsSchema = z
+  .object({
+    hydrateNs: nonnegativeIntSchema.optional(),
+    analyzeNs: nonnegativeIntSchema.optional(),
+    mutateNs: nonnegativeIntSchema.optional(),
+    validateNs: nonnegativeIntSchema.optional(),
+    exportNs: nonnegativeIntSchema.optional(),
+    totalNs: nonnegativeIntSchema,
+    peakRssBytes: nonnegativeIntSchema
+  })
+  .strict();
+
 export const bridgeKindSchema = z.enum(["analyzeIntent", "buildValidateCandidate"]);
 
 export const bridgeBindingSchema = z
@@ -347,7 +361,8 @@ const analyzeSuccessResponseSchema = z
     kind: z.literal("analyzeIntent"),
     binding: bridgeBindingSchema,
     ok: z.literal(true),
-    result: z.object({ facts: semanticFactsSchema }).strict()
+    result: z.object({ facts: semanticFactsSchema }).strict(),
+    metrics: workerStageMetricsSchema.optional()
   })
   .strict();
 
@@ -363,7 +378,8 @@ const candidateSuccessResponseSchema = z
         delta: kernelGraphDeltaV1Schema,
         diagnostics: z.tuple([])
       })
-      .strict()
+      .strict(),
+    metrics: workerStageMetricsSchema.optional()
   })
   .strict()
   .superRefine((response, context) => {
@@ -392,7 +408,8 @@ const analyzeErrorResponseSchema = z
     kind: z.literal("analyzeIntent"),
     binding: bridgeBindingSchema,
     ok: z.literal(false),
-    error: bridgeErrorPayloadSchema
+    error: bridgeErrorPayloadSchema,
+    metrics: workerStageMetricsSchema.optional()
   })
   .strict();
 
@@ -403,7 +420,8 @@ const candidateErrorResponseSchema = z
     kind: z.literal("buildValidateCandidate"),
     binding: candidateResponseBindingSchema,
     ok: z.literal(false),
-    error: bridgeErrorPayloadSchema
+    error: bridgeErrorPayloadSchema,
+    metrics: workerStageMetricsSchema.optional()
   })
   .strict();
 
@@ -427,3 +445,4 @@ export type BridgeErrorPayload = z.infer<typeof bridgeErrorPayloadSchema>;
 export type BridgeDiagnostic = z.infer<typeof bridgeDiagnosticSchema>;
 export type SemanticFacts = z.infer<typeof semanticFactsSchema>;
 export type KernelGraphDeltaV1 = z.infer<typeof kernelGraphDeltaV1Schema>;
+export type WorkerStageMetrics = z.infer<typeof workerStageMetricsSchema>;

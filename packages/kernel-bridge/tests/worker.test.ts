@@ -138,11 +138,12 @@ function candidateRequest(snapshot = mediumSnapshot()): BuildValidateCandidateRe
 
 async function runProcess(
   input: string | Buffer,
-  evaluation?: string
+  evaluation?: string,
+  extraArgs: string[] = []
 ): Promise<ProcessResult> {
   const args = evaluation
-    ? ["--input-type=module", "--eval", evaluation]
-    : [workerPath];
+    ? ["--input-type=module", "--eval", evaluation, ...extraArgs]
+    : [workerPath, ...extraArgs];
   const child = spawn(process.execPath, args, {
     cwd: packageRoot,
     stdio: ["pipe", "pipe", "pipe"]
@@ -199,6 +200,27 @@ describe("bounded one-shot worker", () => {
       kind: "analyzeIntent",
       ok: true
     });
+  }, 30_000);
+
+  it("emits opt-in stage metrics only when --emit-metrics is in argv", async () => {
+    const result = await runProcess(
+      JSON.stringify(analyzeRequest()),
+      undefined,
+      ["--emit-metrics"]
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toHaveLength(0);
+    const response = parseSingleFrame(result);
+    expect(response).toMatchObject({
+      requestId: "worker-analyze-request",
+      kind: "analyzeIntent",
+      ok: true
+    });
+    expect(response.metrics).toBeDefined();
+    expect(response.metrics.hydrateNs).toBeGreaterThan(0);
+    expect(response.metrics.totalNs).toBeGreaterThan(0);
+    expect(response.metrics.peakRssBytes).toBeGreaterThan(0);
   }, 30_000);
 
   it("emits exactly one newline-terminated candidate success frame", async () => {
