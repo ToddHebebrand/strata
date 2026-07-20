@@ -34,14 +34,24 @@ import { startKernelService } from "./service.js";
 
 const nonNegInt = z.number().int().nonnegative();
 
-/** The worker's self-report — `RunPhase`-tagged per-stage nanoseconds + peak RSS. */
+/**
+ * The worker's self-report — `RunPhase`-tagged per-stage nanoseconds + peak RSS.
+ *
+ * Per-stage fields are `.nullish()`, not `.optional()`: the daemon's Rust
+ * `WorkerSelfMetrics` (bridge/protocol.rs) serializes each stage as
+ * `Option<u64>` with NO `skip_serializing_if`, so a stage a run never entered
+ * (e.g. `validateNs`/`exportNs` on an analyze-only run) is emitted as explicit
+ * `null` in the `--metrics` JSONL — not omitted. The tolerant `.nullish()`
+ * superset accepts both the daemon's `null` and a hand-omitted field (as in the
+ * unit fixture), matching the authoritative producer format either way.
+ */
 const workerSelfMetricsSchema = z
   .object({
-    hydrateNs: nonNegInt.optional(),
-    analyzeNs: nonNegInt.optional(),
-    mutateNs: nonNegInt.optional(),
-    validateNs: nonNegInt.optional(),
-    exportNs: nonNegInt.optional(),
+    hydrateNs: nonNegInt.nullish(),
+    analyzeNs: nonNegInt.nullish(),
+    mutateNs: nonNegInt.nullish(),
+    validateNs: nonNegInt.nullish(),
+    exportNs: nonNegInt.nullish(),
     totalNs: nonNegInt,
     peakRssBytes: nonNegInt
   })
@@ -167,11 +177,14 @@ export interface Gate2Profile {
     requestSerializeNs: number;
     responseBytes: number;
     worker: {
-      hydrateNs?: number;
-      analyzeNs?: number;
-      mutateNs?: number;
-      validateNs?: number;
-      exportNs?: number;
+      // Per-stage fields are `number | null` (present-but-null for a stage the
+      // run never entered) to mirror the daemon's explicit-`null` JSONL
+      // emission; see `workerSelfMetricsSchema`.
+      hydrateNs?: number | null;
+      analyzeNs?: number | null;
+      mutateNs?: number | null;
+      validateNs?: number | null;
+      exportNs?: number | null;
       totalNs: number;
       peakRssBytes: number;
     } | null;
@@ -474,7 +487,7 @@ function renderMarkdown(profile: Gate2Profile): string {
     ],
     [
       "Validation time (candidate tsc gate)",
-      candidate?.worker?.validateNs !== undefined ? formatNs(candidate.worker.validateNs) : "n/a",
+      candidate?.worker?.validateNs != null ? formatNs(candidate.worker.validateNs) : "n/a",
       "`workerRun` (phase=candidate, worker.validateNs)"
     ],
     [

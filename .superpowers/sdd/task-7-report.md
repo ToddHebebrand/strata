@@ -1,280 +1,163 @@
-# Task 7 report — crash injection reaching the advance publication, full atomic-state oracle
+# Task 7 (gate 2) — Gate-2 observability acceptance suite + scripts: report
 
-## Status: COMPLETE — all 10 crash-suite tests green, Rust feature matrix green.
+> Note: `.superpowers/sdd/task-N-report.md` paths are reused per gate slice. The
+> prior contents of this path were the gate-1 Task-7 crash-injection report
+> (committed at 8e563e1 — safe in history); the brief directs the gate-2 Task-7
+> report here, so it is overwritten.
 
-## What shipped
+**Status: PASS.** The live gate-2 per-stage observability acceptance suite is
+implemented and green against the real instrumented kernel-arm T03 flow; the
+`kernel:gate2:test` script is wired and `kernel:full-key-free:test` extended.
+Both full-verification commands are fully green. One real Task-6 parser defect
+was surfaced by this FIRST live run and fixed consumer-side — the acceptance
+oracle itself is unmodified.
 
-- Rust: `serve` gains `--test-publish-failpoint <camelCase boundary>` (gated
-  `#[cfg(feature = "redb-spike-api")]`), mirroring the existing
-  `--test-failpoint` block. Threaded through `ServiceConfig.publish_failpoint`
-  (cfg-gated field) into `ServiceSession`, and consumed in the advance path so
-  publication routes through `execute_claimed_with_failpoint(claim, tick, fp)`
-  when armed, else the byte-identical `execute_claimed(claim, tick)`.
-- TS: `packages/live-compare/tests/gate1Crash.test.ts` — 9 crash cases (5 journal
-  stages at the advance + 4 publication boundaries) plus one negative test, with
-  the full graph + atomic-state + idempotent-replay oracle.
-- TS: added an additive optional `clientId` to `runKernelArmT03` (ownership: the
-  advance/replay must run from the change-set's creating actor).
+## Implementation
 
-## Threading mechanism
+- **Created** `packages/live-compare/tests/gate2Observability.test.ts` — the
+  gate oracle, transcribed from the brief. All eight numbered categories, the
+  phase-coverage assertion (submitAnalysis / claimAnalysis /
+  preCandidateAnalysis / postCandidateAnalysis / candidate), the all-`ok`
+  outcome assertion, and the three cross-invariants are present exactly as
+  specified. 300 s vitest timeout.
+  - **Only mechanical adjustment (category a):** `__dirname` →
+    `import.meta.dirname` to compute `repoRoot`. Every sibling suite in
+    `packages/live-compare/tests/` uses `import.meta.dirname`; the sources are
+    ESM-style (`.js` specifiers, `import.meta`), run through vite/esbuild. Both
+    forms yield the identical `repoRoot`. No call-signature changes were needed:
+    Task 6's `runGate2KernelFlow(corpusRoot)` → `{records, profile}` and
+    `writeGate2Artifacts(profile, records, outDir)` match the brief's
+    consumption exactly, and the `Gate2Profile` shape the oracle reads is as
+    landed.
 
-`main.rs::serve` builds the allowed-arg list as a `Vec` and `push`es
-`--test-failpoint` under `coordination-test-api` and `--test-publish-failpoint`
-under `redb-spike-api`. Because `redb-spike-api = ["coordination-test-api"]`, the
-crash binary (built `--features "coordination-test-api redb-spike-api"`) accepts
-BOTH flags; a `coordination-test-api`-only build accepts only the journal flag;
-a default build rejects both (`reject_unknown` fails closed → "unknown option").
+- **Modified** root `package.json`:
+  - Added `kernel:gate2:test`, mirroring `kernel:gate1:test`'s build prelude
+    verbatim (`kernel-bridge build && live-compare build && cargo build -p
+    strata-kernel && cargo build -p strata-kernel --features redb-spike-api`),
+    ending in `pnpm --filter @strata-code/live-compare test gate2`.
+  - Appended `&& pnpm kernel:gate2:test` to `kernel:full-key-free:test`.
+  - **Filter note:** the vitest filter `gate2` matches BOTH the acceptance test
+    (`tests/gate2Observability.test.ts`) AND `tests/gate2Profile.unit.test.ts`.
+    Expected and fine — both pass (2 files / 11 tests).
 
-The publish failpoint is parsed via `PublishFailpoint::from_boundary_name` and
-stored on `ServiceConfig` / `ServiceSession` behind `#[cfg(feature = "redb-spike-api")]`.
-In `advance()`, publication is the sole durable-graph mutation; when the stored
-failpoint is `!= None` it calls `execute_claimed_with_failpoint`, otherwise
-`execute_claimed`. When the feature is absent the field/branch do not exist and
-the call is unconditionally `execute_claimed` — **zero behavior change when unset**.
-Verified: default build rejects the flag (negative test + sealing test), and the
-help text keeps the test-authority surface sealed under every feature build.
+## Live-flow surprise + how diagnosed (the one real finding)
 
-## Per-boundary OLD/NEW determination (asserted per case, not just XOR)
+The very first live run went RED — but NOT in the oracle's assertions. It failed
+inside Task 6's `parseMetricsJsonl` (gate2.ts:137) with a zod error:
 
-Graph "OLD" = gen 0 (== prep-only reference); "NEW" = gen 1 with the rename
-(== completed reference). The offline `export-snapshot` reopen reads only the
-durable graph tables (no journal reconciliation), so it observes exactly what the
-crash committed.
+```
+Invalid input: expected number, received null   (path: worker.validateNs)
+Invalid input: expected number, received null   (path: worker.exportNs)
+```
 
-Journal stages (`--test-failpoint`, trip on the advance request — the only
-mutation issued to the failpointed daemon):
+Root cause, traced across the stack (no threshold touched):
+- The daemon's Rust `WorkerSelfMetrics`
+  (`crates/strata-kernel/src/bridge/protocol.rs:955-962`) declares each
+  per-stage field as `Option<u64>` with **no** `#[serde(skip_serializing_if)]`.
+  A stage a run never entered (`validateNs`/`exportNs` on an analyze-only run)
+  is therefore serialized into the `--metrics` JSONL as an explicit
+  `"validateNs": null` — NOT omitted. This is the authoritative producer format
+  (the daemon is landed; the Rust suite `local_service_metrics.rs` reads this
+  same JSONL).
+- Task 6's zod schema (`gate2.ts` `workerSelfMetricsSchema`) declared those
+  fields `nonNegInt.optional()`. Zod `.optional()` accepts omitted/`undefined`
+  but REJECTS `null`. Task 6's unit fixture (`gate2Profile.unit.test.ts`) used
+  *omitted* fields, so this mismatch was never exercised until this first live
+  gate.
 
-| stage           | trips at (session.rs)                                                 | side |
-|-----------------|-----------------------------------------------------------------------|------|
-| after_pending   | after `append_pending`, BEFORE `execute_pending` runs the publication | OLD  |
-| after_effect    | after `execute_pending` (advance published durably)                   | NEW  |
-| after_prepared  | after the effect-result journal write                                 | NEW  |
-| after_follow_up | after `apply_follow_up` (a no-op for a clean publish)                  | NEW  |
-| after_completed | after the completed journal write                                     | NEW  |
+Fix — consumer-side, minimal, matching the producer's real wire format:
+- `workerSelfMetricsSchema` per-stage fields `.optional()` → `.nullish()`
+  (nullable + optional): a tolerant superset that accepts the daemon's `null`
+  AND a hand-omitted field, so the pure-unit test stays green too.
+- Widened the hand-written `Gate2Profile.workerRuns[].worker` interface stage
+  fields to `number | null` (optional) to mirror the emission, and narrowed the
+  one markdown-render use of `validateNs` from `!== undefined` to `!= null` so
+  `tsc -b` passes.
 
-Publication boundaries (`--test-publish-failpoint`) — matches
-`PublishFailpoint::expects_committed_state()`:
+This is a genuine Task-6 defect, fixed in the direction of the authoritative
+producer. It does NOT weaken the acceptance oracle — the eight categories,
+phase coverage, all-`ok`, and cross-invariants are untouched and all passed on
+the real flow once the parser accepted valid daemon output. (Rejected
+alternative: changing the daemon to omit `null` fields — a higher-blast-radius
+edit to tested Rust serialization that other consumers already handle as
+`null`.)
 
-| boundary                            | aborts (storage.rs / publication.rs)          | side |
-|-------------------------------------|-----------------------------------------------|------|
-| beforeRedbTransaction               | before `begin_write()`                         | OLD  |
-| insideRedbTransaction               | inside the write txn, before `commit()`        | OLD  |
-| afterRedbCommitBeforeMemoryPublish  | after `write.commit()`, before memory publish  | NEW  |
-| afterMemoryPublish                  | after the in-memory publish                    | NEW  |
+## RED → GREEN evidence
 
-Why the projection oracle still holds for the OLD publish cases even though the
-crash happened after `claim_ready` (an Executing change set with an active claim):
-recovery (`begin_service_epoch_and_recover_coordination_inner`) transitions BOTH
-a `Ready` change set (prep-only) AND an `Executing` change set (claimed-but-
-uncommitted crash) to `Queued`, dropping the offer/claim. So the prep-only
-reference and every OLD crash converge to the same recovered coordination state.
+- **RED (pre-fix):** `Test Files 1 failed | 19 passed (20)` /
+  `Tests 1 failed | 158 passed (159)` — `parseMetricsJsonl` zod
+  `invalid_type … received null` at `worker.validateNs`/`worker.exportNs`.
+- **GREEN (post-fix, cold live run):** `Test Files 20 passed (20)` /
+  `Tests 159 passed (159)`; `gate2Observability` ~223 s (cold: real daemon +
+  Node bridge workers + repeated tsc). The oracle's 8 categories + invariants
+  all held on the live instrumented flow.
+- **GREEN (via the new `kernel:gate2:test`, warm):**
+  `✓ tests/gate2Observability.test.ts (1 test) 3348ms`,
+  `✓ tests/gate2Profile.unit.test.ts (10 tests)`, `Test Files 2 passed (2)` /
+  `Tests 11 passed (11)`.
 
-Idempotent replay: after the offline oracle, a clean restart runs
-`resolve_pending_before_bind`, which re-executes the pending advance. For OLD it
-publishes (no failpoint) → the replay returns the cached committed response and
-the final graph equals the completed reference byte-for-byte. For NEW the
-publication's idempotency key is already durable → re-execution hits
-`AlreadyPublished` and returns the SAME `operationId` the store already holds
-(asserted against `projection.operations[0].operationId`). No double-commit.
+## Full verification tails
 
-## normalizeProjection — stripped vs mapped (all in one place, `gate1Crash.test.ts`)
+`PATH=/opt/homebrew/bin:$PATH pnpm kernel:full-key-free:test` → **EXIT_CODE=0**,
+zero `FAILED`/`error[`/`ERR_PNPM` lines. Terminal segment (appended gate2 leg):
 
-Stripped (legitimately vary with the number of open/recovery cycles; the OLD
-boundaries drive one extra recovery, the publish boundaries an extra
-claim/reconsider, relative to the prep-only reference):
+```
+> vitest run gate2
+ ✓ tests/gate2Observability.test.ts (1 test) 3348ms
+ ✓ tests/gate2Profile.unit.test.ts (10 tests) 6ms
+ Test Files  2 passed (2)
+      Tests  11 passed (11)
+EXIT_CODE=0
+```
 
-- `serviceEpoch` — monotonic per-open counter.
-- `schedulerRevisions` (inMemory/durable) — bumped every recovery/reconsider.
-- `recoveryMetadata` — its sequence/revision counters churn with those cycles.
-- `coordinationCounts.events` / `eventIds` / `eventCursors` — each recovery emits
-  a service-epoch transition event, so the event COUNT tracks recovery cycles.
+`PATH=/opt/homebrew/bin:$PATH pnpm -r test` → **EXIT_CODE=0**, zero failure
+lines. Per-package summaries:
 
-Mapped to ordinal placeholders (random per run; deterministic here because N=1
-and history is generation-ordered), mirroring `normalize_crash_state` in
-`tests/full_key_free_acceptance.rs` (exact-string revalue + rekey + embedded-JSON
-recursion): change-set id, `submissionIdempotencyKey`, intent ids, ticket id,
-operation id(s), graph-event id(s), ready-offer id + claim token, active-claim /
-offer / attempt ids, `publicationAttempts` keys, and the per-change-set
-idempotency commit key.
+```
+packages/ingest        Test Files  4 passed (4)
+packages/store         Test Files 36 passed (36)
+packages/render        Test Files  3 passed (3)
+packages/verify        Test Files 16 passed (16)
+packages/agent         Test Files 20 passed | 1 skipped (21)
+packages/kernel-bridge Test Files  6 passed (6)
+packages/bench         Test Files 16 passed (16)
+packages/cli           Test Files  7 passed (7)
+packages/live-compare  Test Files 20 passed (20)  /  Tests 159 passed (159)
+EXIT_CODE=0
+```
 
-Everything else compares byte-for-byte after mapping: graph, graphDigest,
-graphCounts, operations (full canonical history + actor + reasoning + affected +
-renames + intents), deltas, generationDigests, graphEvents, changeSets (incl.
-state and ticks), intents, idempotencyGenerations, tickets, graphTickets,
-publicationAttempts, fenceStates, live/durable resource clocks, and the stable
-coordinationCounts. Empirically, once a single fixed actor is used for both the
-references and the crash preps, the ONLY residual differences were `actor`
-(fixed by construction) and `submissionIdempotencyKey` (mapped) — confirming the
-strip list is minimal and the comparison is strong.
+## Files changed (committed)
 
-## Wall time
+- `packages/live-compare/tests/gate2Observability.test.ts` (new — the oracle)
+- `packages/live-compare/src/gate2.ts` (parser nullability fix — Task-6 defect)
+- `package.json` (`kernel:gate2:test`; extend `kernel:full-key-free:test`)
+- `.superpowers/sdd/task-7-report.md` (this report)
 
-Full 10-test crash suite: ~42–45 s (each case runs ~4 daemon lifecycles; publish
-boundaries ~5–6 s because they build+validate a real tsc candidate before the
-abort). The redb-spike-api crash binary is built once to `target/gate1-crash`
-(~11 s, cached thereafter). gate1 filter (parity + crash together): ~50 s. This
-is far under the ~15-minute budget, so the suite runs **unconditionally inside
-the `gate1` vitest filter** — no `STRATA_GATE1_CRASH` env gate. `kernel:gate1:test`
-already runs `pnpm --filter live-compare test gate1`, which the `gate1Crash`
-filename matches; no package.json change was needed.
+## Self-review
 
-## Verification run
-
-- `cargo test -p strata-kernel` / `--features coordination-test-api` /
-  `--features redb-spike-api`: all green (fixed one sealing regression — the
-  test-authority flags must stay OUT of `--help` under every build).
-- `vitest run gate1`: 11/11 green (10 crash + 1 parity), rerun against the final
-  working tree.
-- Pre-existing, unrelated: `verify.test.ts` / `tasks.test.ts` (13 task-
-  registration-digest failures) fail identically on clean main with my changes
-  stashed — NOT introduced by this task.
+- Oracle content is verbatim from the brief; the only edit is `__dirname` →
+  `import.meta.dirname` (mechanical, category a). No assertion substance changed.
+- The parser fix targets the authoritative producer (daemon emits `null`); it
+  broadens acceptance rather than narrowing a check and keeps the pure-unit test
+  green.
+- `kernel:gate2:test` mirrors `kernel:gate1:test`'s prelude exactly and ends in
+  `test gate2`. `kernel:full-key-free:test` now ends `… && pnpm
+  kernel:gate1:test && pnpm kernel:gate2:test`.
+- Both long verifications were run to completion (backgrounded run + completion
+  sentinel to beat the 10-min tool cap; the supervisor did not kill either) and
+  both are EXIT_CODE=0.
 
 ## Concerns
 
-- The crash binary builds to a separate target dir (`target/gate1-crash`), so the
-  first `gate1` run in a fresh checkout pays a one-time ~11 s compile. The
-  `kernel:gate1:test` script's own `cargo build --features redb-spike-api` (to
-  `target/debug`) is now redundant for the crash arm (which self-builds) but is
-  harmless; left untouched to minimize surface.
-- Full `pnpm -r test` / `pnpm kernel:full-key-free:test` green is Task 9's gate;
-  the pre-existing verify/tasks digest failures must be resolved there.
-
-## Fix: coordination-event stream coverage
-
-**Finding (Important, Task 7 review):** `normalizeProjection` stripped
-`coordinationCounts.events` / `eventIds` / `eventCursors` wholesale AND the
-atomic-state projection didn't expose coordination-event records at all, so
-duplication or loss of a coordination event across a crash boundary would
-escape the oracle. Graph-level events (`graphEvents`) were fully covered;
-this gap was specific to the coordination event stream.
-
-**Approach shipped: (a).** Coordination-event records are now compared at
-the record level (order-sensitive, ID-mapped), with only the specific
-recovery-emitted events stripped — not the whole stream.
-
-### Rust: expose the records
-
-`Kernel::test_atomic_state_projection` (`crates/strata-kernel/src/kernel.rs`)
-only exposed `coordinationCounts` (raw table-size scalars) — no coordination
-EventRecord-equivalent existed, unlike `graphEvents` (via `test_graph_event`,
-already backed by `store.event(sequence)`). Added, mirroring that pattern
-exactly:
-
-- `Kernel::test_coordination_event(sequence)` (`coordination-test-api`-gated),
-  a thin wrapper over the existing `CoordinationDurable::event(sequence)`
-  accessor (already used internally, just never exposed through the test
-  projection).
-- In `test_atomic_state_projection`, `coordination_events` is collected via
-  `(1..=recovery_metadata.current_event_sequence).filter_map(...)` (sequences
-  are contiguous 1..=N per `append_event`, same pattern as `graph_events`'
-  `1..=generation`) and added to the JSON as `"coordinationEvents"`.
-- `row_8`'s `CrashAtomicState` (`tests/full_key_free_acceptance.rs`) embeds
-  the shared projection verbatim and already fetches its own
-  `rowEightCoordinationEvents` via `events_after` for claim-scoped
-  normalization, so the new field is additive there — its own replacements
-  map already covers the same event IDs. Ran the row-8 acceptance test after
-  the change; still green (see Verification below).
-
-### TS: compare records, strip only recovery-shaped events
-
-`gate1Crash.test.ts` `normalizeProjection` / `buildReplacements`
-(`packages/live-compare/tests/gate1Crash.test.ts`):
-
-- `coordinationEvents` items get ID-mapped (`event.eventId` →
-  `<coordination-event:N>`), exactly like `graphEvents`, `operations`, etc.
-  Ordinals are assigned AFTER filtering (below), so they line up between the
-  reference and crash captures.
-- **Stripped kinds (central list, `STRIPPED_COORDINATION_EVENT_KINDS`):
-  `leaseExpired`** — the kind `begin_service_epoch_and_recover_coordination_inner`
-  (`crates/strata-kernel/src/coordination/durable.rs`) emits once per
-  recoverable Ready/Executing change set it resets to Queued, carrying
-  `{oldServiceEpoch, newServiceEpoch}`. `filterCoordinationEvents` asserts
-  that payload shape on every event it drops, so a genuine (non-recovery)
-  `leaseExpired` — the same kind is also used for real claim/offer TTL
-  expiry, just never triggered by this suite's flow — would fail the test
-  loudly instead of silently vanishing.
-- **First empirical surprise, found by actually running the strengthened
-  oracle (not anticipated from reading the Rust source alone):** stripping
-  `leaseExpired` was not sufficient. Every real (node-bridge-backed) daemon
-  open synchronously replans right after recovery
-  (`Kernel::open_with_node_bridge` calls
-  `plan_and_apply_readiness(0, TransitionCause::Restart, None)`), and for a
-  change set recovery just requeued with nothing left blocking it, that
-  replan immediately re-derives Ready and appends a companion `intentReady`
-  event (empty payload, same `changeSetId`) directly after the `leaseExpired`
-  event. 4 of the 10 crash cases failed on exactly this extra record before
-  the companion rule was added. Since `append_event` (the generic path used
-  for `intentReady`, `intentQueued`, etc.) always writes payload `"{}"`, a
-  genuine and a recovery-companion `intentReady` are byte-identical in
-  content — they can only be told apart positionally. `filterCoordinationEvents`
-  now also drops the event immediately following a stripped `leaseExpired`
-  ONLY when it exactly matches `{kind: "intentReady", changeSetId: <same>,
-  payloadJson: "{}"}`; anything else is left in place (and would fail the
-  compare loudly rather than being swallowed).
-- **Second empirical surprise:** even after removing both noise records, the
-  surviving genuine events still didn't compare equal — their `sequence`
-  field (a store-wide durable counter) had shifted by however many recovery
-  events preceded them, so e.g. the real `intentCommitted` read `sequence: 5`
-  in a crash capture vs. `sequence: 3` in the reference, despite being the
-  identical logical event. `sequence` is mechanical position, not business
-  content (same class as the already-stripped
-  `recoveryMetadata.currentEventSequence`), and the filtered array's
-  preserved append order already carries the ordering information, so
-  `filterCoordinationEvents` drops the `sequence` field from every surviving
-  record.
-- `coordinationCounts.events` / `eventIds` / `eventCursors` remain stripped
-  (raw durable table-size scalars — they still mechanically track the
-  recovery-cycle count even though the event content itself is now covered
-  at the record level), with the comment updated to say why explicitly
-  instead of leaving it as a bare list.
-
-### Verification
-
-```
-PATH=/opt/homebrew/bin:$PATH cargo build -p strata-kernel --features redb-spike-api
-# Finished, no warnings.
-
-PATH=/opt/homebrew/bin:$PATH cargo test -p strata-kernel --features redb-spike-api \
-  --test full_key_free_acceptance row_8_real_claimed_node_publication_crashes_complete_old_or_new \
-  -- --exact --ignored
-# test row_8_real_claimed_node_publication_crashes_complete_old_or_new ... ok
-# test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out
-
-PATH=/opt/homebrew/bin:$PATH cargo test -p strata-kernel --features redb-spike-api
-# test result: ok. 1 passed; 0 failed; 12 ignored  (full_key_free_acceptance)
-# test result: ok. 5 passed                         (graph_generation)
-# test result: ok. 15 passed                        (local_service)
-# test result: ok. 5 passed                         (local_service_hardening)
-# test result: ok. 9 passed                         (local_service_recovery)
-# test result: ok. 2 passed                         (local_service_sealing)
-# test result: ok. 4 passed                         (model_roundtrip)
-# test result: ok. 2 passed, 9 ignored              (node_bridge, requires bridge build)
-# test result: ok. 1 passed                         (node_bridge_failures)
-# test result: ok. 8 passed                         (recovery)
-# test result: ok. 4 passed                         (storage_atomic)
-# all green, no regressions from the kernel.rs change
-
-PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test gate1
-# Test Files  2 passed (2)
-#      Tests  11 passed (11)
-#  (10 crash cases incl. the 4 that initially failed on the companion
-#   intentReady before filterCoordinationEvents was fixed, + 1 parity test)
-```
-
-One earlier `cargo test -p strata-kernel --features redb-spike-api` run hit
-6 failures in `local_service_recovery` ("unknown option --test-failpoint");
-reproduced identically on a `git stash`ed clean checkout when run under the
-same 2-minute wall-clock cap, and disappeared entirely once the command was
-given headroom to finish (a pre-existing multi-test-binary build/spawn race
-under a tight timeout, unrelated to this change — confirmed by rerunning
-`local_service_recovery` alone, which was consistently green both before and
-after the fix).
-
-### Files touched
-
-- `crates/strata-kernel/src/kernel.rs` — `test_coordination_event` accessor +
-  `coordinationEvents` in `test_atomic_state_projection`.
-- `packages/live-compare/tests/gate1Crash.test.ts` — record-level coordination
-  event comparison, `STRIPPED_COORDINATION_EVENT_KINDS`,
-  `filterCoordinationEvents` (kind + companion + sequence handling), updated
-  doc comments.
+1. **Task-6 defect fix touches landed code.** I edited `gate2.ts` (Task 6's
+   module) rather than only my two nominal files. This is the honest, minimal
+   fix for a genuine wire-format/parser mismatch the first live run exposed; it
+   is consumer-side and preserves the oracle. Flagged for operator awareness.
+2. **A foreign uncommitted change was left out of my commit.**
+   `.superpowers/sdd/task-6-report.md` showed as modified during my session
+   though the tree started clean and I never authored it — it is the gate-2
+   slice's own Task-6 report (the committed version is still the gate-1 one),
+   evidently written to disk but not committed by the Task-6 execution. I did
+   NOT `git add -A` blindly (which would have swept it in); I staged only my
+   Task-7 files explicitly. The `task-6-report.md` change is left unstaged for
+   its owner to commit.
