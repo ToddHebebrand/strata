@@ -378,6 +378,24 @@ function decisiveRatioVerdict(report: Gate3Report): RatioVerdict {
 }
 
 /**
+ * `true` iff the overall verdict is `FAIL` but NO cold/warm ratio candidate
+ * (across whichever corpora are present) is itself in state `FAIL` — i.e. the
+ * FAIL is driven purely by a `MemoryVerdict` (see `corpusState`'s worst-of-four
+ * derivation, which folds memory into the tri-state). In that case
+ * `decisiveRatioVerdict`'s fallback (`candidates[0]`, since nothing matches
+ * `report.verdict`) would pick an arbitrary ratio candidate that is NOT itself
+ * failing — rendering its `lcb95` as "> 1.25" would misrepresent a
+ * non-falsifying number as the falsifier. Callers must check this before
+ * trusting `decisiveRatioVerdict`'s `lcb95` as "the falsifying bound".
+ */
+function isMemoryDrivenFail(report: Gate3Report): boolean {
+  if (report.verdict !== "FAIL") return false;
+  const ratioStates: RatioVerdictState[] = [report.medium.cold.state, report.medium.warm.state];
+  if (report.big1k) ratioStates.push(report.big1k.cold.state, report.big1k.warm.state);
+  return !ratioStates.includes("FAIL");
+}
+
+/**
  * Renders the full Markdown artifact: a provenance header, one
  * `(corpus, mode)` row per present corpus with n/p50/p95, ratio, UCB/LCB and
  * tri-state, a memory block, lifecycle parity, and a verdict banner that
@@ -385,11 +403,12 @@ function decisiveRatioVerdict(report: Gate3Report): RatioVerdict {
  * the measured LCB that falsified it).
  */
 export function renderGate3Markdown(report: Gate3Report): string {
-  const decisive = decisiveRatioVerdict(report);
-  const bannerMetric =
-    report.verdict === "FAIL"
-      ? `measured LCB ${formatRatio(decisive.lcb95)} > 1.25`
-      : `measured UCB ${formatRatio(decisive.ucb95)}`;
+  const memoryDrivenFail = isMemoryDrivenFail(report);
+  const bannerMetric = memoryDrivenFail
+    ? "driven by memory verdict (no ratio candidate itself failed — see the Memory arm table(s) below)"
+    : report.verdict === "FAIL"
+      ? `measured LCB ${formatRatio(decisiveRatioVerdict(report).lcb95)} > 1.25`
+      : `measured UCB ${formatRatio(decisiveRatioVerdict(report).ucb95)}`;
 
   const lines: string[] = [
     "# Gate 3 — unkeyed noninferiority profile (kernel vs SQLite, key-free)",

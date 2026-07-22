@@ -18,6 +18,7 @@ import { CoordinationClient } from "./client.js";
 import {
   ADVANCE_DEADLINE_MS,
   DISCOVERY_DEADLINE_MS,
+  MAX_ADVANCE_ATTEMPTS,
   NEW_NAME,
   OLD_NAME,
   SUBMIT_DEADLINE_MS,
@@ -371,7 +372,6 @@ async function advanceUntilPublished(
   client: CoordinationClient,
   changeSetId: string
 ): Promise<string> {
-  const MAX_ADVANCE_ATTEMPTS = 10;
   for (let attempt = 0; attempt < MAX_ADVANCE_ATTEMPTS; attempt += 1) {
     const advanced = expectResult(
       await client.advanceChangeSet(changeSetId, ADVANCE_DEADLINE_MS),

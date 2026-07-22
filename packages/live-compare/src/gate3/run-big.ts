@@ -155,28 +155,40 @@ async function captureLifecycle(corpusRoot: string, target: ChildRenameTarget): 
  * so `medium`/`big1k` MUST be different corpora's peaks (this is the reviewer's
  * fix: the assembly, not per-corpus self-comparison). The denominator can still
  * be ~0/negative because the landed 1-copy-baseline design makes the baseline
- * corpus the SAME 22-module size as `examples/medium`; in that case the ratio
- * is genuinely uninterpretable, so the verdict is INCONCLUSIVE (sentinel
- * growthAdjusted -1) with the absolute cap still evaluated. That residual
- * denominator degeneracy is a separate, documented concern (needs a smaller
- * baseline corpus); it does not affect the overall gate, which rests on the
- * wall-ratio, and memory stays non-dispositive in `gate3MachineVerdict`.
+ * corpus the SAME 22-module size as `examples/medium`; in that case the growth
+ * ratio itself is genuinely uninterpretable (sentinel growthAdjusted -1,
+ * growthPass false) — but the absolute cap is an INDEPENDENT predicate that
+ * does not depend on this denominator at all, so it is still evaluated and is
+ * still dispositive: a cap breach yields FAIL even with a degenerate
+ * denominator, and only a cap PASS with a degenerate denominator yields
+ * INCONCLUSIVE (the growth ratio can't be assessed, but nothing measured
+ * failed outright). That residual denominator degeneracy is a separate,
+ * documented concern (needs a smaller baseline corpus). Memory is NOT
+ * non-dispositive overall, despite that concern: both arms' `MemoryVerdict`
+ * states feed `corpusState` (the worst of cold/warm/memory-kernel/memory-
+ * sqlite), which feeds `report.verdict`, which is what `gate3MachineVerdict`
+ * exits on — so a memory FAIL here can and does drive the process exit code,
+ * exactly as the plan intends.
  */
-function memoryVerdictTolerant(
+export function memoryVerdictTolerant(
   arm: "kernel" | "sqlite",
   values: MemoryValues,
   sqliteControl?: { growthAdjusted: number }
 ): MemoryVerdict {
   if (values.medium <= values.baseline) {
+    const absoluteCapPass = values.big1k <= CAPS[arm];
     return {
       arm,
       medium: values.medium,
       big1k: values.big1k,
       baseline: values.baseline,
-      absoluteCapPass: values.big1k <= CAPS[arm],
+      absoluteCapPass,
       growthAdjusted: -1, // sentinel: growth ratio not computable (baseline≈medium)
       growthPass: false,
-      state: "INCONCLUSIVE"
+      // The absolute cap is an independent predicate: a breach is dispositive
+      // (FAIL) regardless of the degenerate growth denominator. Only a cap
+      // PASS combined with a non-computable growth ratio is INCONCLUSIVE.
+      state: absoluteCapPass ? "INCONCLUSIVE" : "FAIL"
     };
   }
   return memoryVerdict(arm, values, CAPS, GROWTH_FACTOR, sqliteControl);
@@ -429,8 +441,13 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
-  // Infra error -> exit 1 (never a silent success, never a measured-FAIL 2).
-  process.exitCode = 1;
-});
+// Guarded (mirrors `cli.ts`'s identical pattern) so this module's pure helpers
+// (e.g. `memoryVerdictTolerant`) can be imported by a unit test without
+// triggering the real operator run's children/corpora/artifact write.
+if (typeof require !== "undefined" && require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
+    // Infra error -> exit 1 (never a silent success, never a measured-FAIL 2).
+    process.exitCode = 1;
+  });
+}

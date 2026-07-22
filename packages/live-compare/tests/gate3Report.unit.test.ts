@@ -252,6 +252,35 @@ describe("renderGate3Markdown: verdict banner", () => {
     expect(markdown).toContain("1.3200");
   });
 
+  it("a memory-only FAIL (no ratio candidate itself FAILs) renders an honest 'driven by memory verdict' banner, not a mislabeled LCB", () => {
+    // Both cold/warm ratios PASS on both corpora; only the kernel memory
+    // verdict is FAIL. corpusState's worst-of-four still drives this corpus
+    // (and the overall report) to FAIL, but no cold/warm candidate is itself
+    // FAIL, so the old fallback (`candidates[0]`) would have picked an
+    // arbitrary PASSing ratio and mislabeled its lcb95 as "> 1.25".
+    const memoryOnlyFailCorpus = buildGate3CorpusReport({
+      cold: PASS_RATIO,
+      warm: PASS_RATIO,
+      warmTrend: OK_TREND,
+      memory: { kernel: makeMemoryVerdict("kernel", "FAIL"), sqlite: makeMemoryVerdict("sqlite", "PASS") },
+      lifecycle: OK_LIFECYCLE
+    });
+    expect(corpusState(memoryOnlyFailCorpus)).toBe("FAIL");
+
+    const report = buildGate3Report(FIXTURE_PROVENANCE, {
+      medium: memoryOnlyFailCorpus,
+      big1k: PASS_CORPUS
+    });
+    expect(report.verdict).toBe("FAIL");
+
+    const markdown = renderGate3Markdown(report);
+    expect(markdown).toMatch(/## Verdict: FAIL/);
+    expect(markdown).toContain("driven by memory verdict");
+    // The mislabeled form the bug produced: rendering some unrelated PASSing
+    // ratio's lcb95 dressed up as the ">1.25" falsifier.
+    expect(markdown).not.toContain("> 1.25");
+  });
+
   it("includes provenance fields and both corpora's rows", () => {
     const report = buildGate3Report(FIXTURE_PROVENANCE, { medium: PASS_CORPUS, big1k: PASS_CORPUS });
     const markdown = renderGate3Markdown(report);

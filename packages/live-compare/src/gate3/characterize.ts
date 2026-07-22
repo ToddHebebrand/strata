@@ -30,6 +30,7 @@ import { CoordinationClient } from "../client.js";
 import {
   ADVANCE_DEADLINE_MS,
   DISCOVERY_DEADLINE_MS,
+  MAX_ADVANCE_ATTEMPTS,
   SUBMIT_DEADLINE_MS,
   TASK_PROMPT,
   credentialFreeEnv,
@@ -47,8 +48,6 @@ import {
 import { startKernelService } from "../service.js";
 import type { RunnerCorpus } from "./runners.js";
 import { nearestRankDistribution, type WallDistribution } from "./stats.js";
-
-const MAX_ADVANCE_ATTEMPTS = 10;
 
 export interface CharacterizeKernelServerOptions {
   n: number;

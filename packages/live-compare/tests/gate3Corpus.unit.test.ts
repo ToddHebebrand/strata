@@ -11,8 +11,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tscNoEmitSrc } from "@strata-code/verify";
-import { buildCorpusInputs } from "../src/tasks.js";
-import { createQualifiedKernelSnapshot } from "../src/tasks.js";
+import { buildCorpusInputs, createQualifiedKernelSnapshot } from "../src/tasks.js";
 import {
   BASELINE_COPIES,
   BIG1K_COPIES,

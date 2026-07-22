@@ -19,6 +19,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
+import { ratioVerdict } from "../src/gate3/stats.js";
+import { GATE3_BOOTSTRAP_SEED } from "../src/gate3/config.js";
 
 const repoRoot = resolve(import.meta.dirname, "../../..");
 const spikesDir = resolve(repoRoot, "docs", "spikes");
@@ -133,4 +135,43 @@ describe("gate3 committed-artifact CI check", () => {
     expect(marker).toMatch(/^[0-9a-f]{40}$/);
     expect(report.provenance.headSha).toBe(marker);
   });
+
+  // Post-recording cleanup: binds the committed verdict to the committed raw
+  // samples. `ratioVerdict`'s bootstrap is seeded/deterministic
+  // (`GATE3_BOOTSTRAP_SEED`, see run-big.ts's `ratioVerdict(walls(pairs),
+  // GATE3_BOOTSTRAP_SEED)` call sites), and the artifact retains every raw
+  // pair — so recomputing `ratioVerdict` straight from `coldPairs`/`warmPairs`
+  // must reproduce EXACTLY the recorded `cold.state`/`warm.state` on both
+  // corpora. A mismatch here would mean the committed verdict does not
+  // actually follow from the committed samples — a real integrity finding,
+  // not something to paper over by adjusting this test.
+  it.skipIf(!ARTIFACT_EXISTS)(
+    "recomputing ratioVerdict from the artifact's own coldPairs/warmPairs (GATE3_BOOTSTRAP_SEED) reproduces the recorded cold/warm states on both corpora",
+    () => {
+      const report = gate3ReportSchema.parse(JSON.parse(readFileSync(ARTIFACT_JSON, "utf8")));
+      const walls = (pairs: readonly z.infer<typeof schedulePairSchema>[]) =>
+        pairs.map((pair) => ({ kernel: pair.kernel.callerWallNs, sqlite: pair.sqlite.callerWallNs }));
+
+      const mediumCold = ratioVerdict(walls(report.medium.coldPairs), GATE3_BOOTSTRAP_SEED);
+      const mediumWarm = ratioVerdict(walls(report.medium.warmPairs), GATE3_BOOTSTRAP_SEED);
+      const big1kCold = ratioVerdict(walls(report.big1k.coldPairs), GATE3_BOOTSTRAP_SEED);
+      const big1kWarm = ratioVerdict(walls(report.big1k.warmPairs), GATE3_BOOTSTRAP_SEED);
+
+      expect(mediumCold.state).toBe(report.medium.cold.state);
+      expect(mediumWarm.state).toBe(report.medium.warm.state);
+      expect(big1kCold.state).toBe(report.big1k.cold.state);
+      expect(big1kWarm.state).toBe(report.big1k.warm.state);
+
+      // Not just the tri-state label — the recomputed ucb95/lcb95 numbers
+      // themselves must match the recorded ones exactly (deterministic seed).
+      expect(mediumCold.ucb95).toBeCloseTo(report.medium.cold.ucb95, 10);
+      expect(mediumCold.lcb95).toBeCloseTo(report.medium.cold.lcb95, 10);
+      expect(mediumWarm.ucb95).toBeCloseTo(report.medium.warm.ucb95, 10);
+      expect(mediumWarm.lcb95).toBeCloseTo(report.medium.warm.lcb95, 10);
+      expect(big1kCold.ucb95).toBeCloseTo(report.big1k.cold.ucb95, 10);
+      expect(big1kCold.lcb95).toBeCloseTo(report.big1k.cold.lcb95, 10);
+      expect(big1kWarm.ucb95).toBeCloseTo(report.big1k.warm.ucb95, 10);
+      expect(big1kWarm.lcb95).toBeCloseTo(report.big1k.warm.lcb95, 10);
+    }
+  );
 });

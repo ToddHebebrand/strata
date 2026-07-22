@@ -122,7 +122,5 @@ export const GATE3_MEDIUM_BASELINE_SEED = 20260722202;
 export const GATE3_BIG1K_COLD_SEED = 20260722210;
 /** Seed for the big1k warm schedule (operator run). */
 export const GATE3_BIG1K_WARM_SEED = 20260722211;
-/** Seed for the big1k baseline-RSS cold schedule (operator run). */
-export const GATE3_BIG1K_BASELINE_SEED = 20260722212;
 /** Seed threaded into the bootstrap + provenance record for a run. */
 export const GATE3_BOOTSTRAP_SEED = 20260722299;

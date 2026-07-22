@@ -95,6 +95,15 @@ export const DISCOVERY_DEADLINE_MS = 120_000;
 export const SUBMIT_DEADLINE_MS = 120_000; // ≥120 s
 export const ADVANCE_DEADLINE_MS = 180_000; // ≥180 s
 
+/**
+ * Shared poll-loop bound for "advance until published" retry loops across
+ * the gate 2/3 harnesses (`gate2.ts`, `gate3/kernel-child.ts`,
+ * `gate3/characterize.ts`) — each previously defined its own identical local
+ * `MAX_ADVANCE_ATTEMPTS = 10`. Exported from here (not a new module) since
+ * all three already import their deadline budgets from this file.
+ */
+export const MAX_ADVANCE_ATTEMPTS = 10;
+
 export type Gate1Stage = "after_discovery" | "after_begin" | "after_add_intent" | "after_submit";
 
 export interface NormalizedAudit {

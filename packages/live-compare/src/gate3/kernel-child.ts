@@ -15,6 +15,7 @@ import { resolve } from "node:path";
 import {
   ADVANCE_DEADLINE_MS,
   DISCOVERY_DEADLINE_MS,
+  MAX_ADVANCE_ATTEMPTS,
   SUBMIT_DEADLINE_MS,
   TASK_PROMPT,
   credentialFreeEnv,
@@ -32,8 +33,6 @@ import {
   type ChildLineSource,
   type ChildRenameTarget
 } from "./child-protocol.js";
-
-const MAX_ADVANCE_ATTEMPTS = 10;
 
 /**
  * Resolve the interface `declarationId` to rename.

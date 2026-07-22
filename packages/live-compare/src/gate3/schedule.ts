@@ -74,7 +74,7 @@ export interface BalancedScheduleResult {
  * required for a reproducible, auditable schedule.
  */
 export async function runBalancedSchedule(opts: RunBalancedScheduleOptions): Promise<BalancedScheduleResult> {
-  const { n, seed, runPair } = opts;
+  const { corpus, mode, n, seed, runPair } = opts;
   if (!Number.isInteger(n) || n < 1) {
     throw new Error(`runBalancedSchedule: n must be a positive integer, got ${n}`);
   }
@@ -95,6 +95,16 @@ export async function runBalancedSchedule(opts: RunBalancedScheduleOptions): Pro
     }
     if (sqliteSample.arm !== "sqlite") {
       throw new Error(`runBalancedSchedule: pair ${pairId} runPair().sqlite.arm was ${sqliteSample.arm}, not "sqlite"`);
+    }
+    if (kernelSample.corpus !== corpus || sqliteSample.corpus !== corpus) {
+      throw new Error(
+        `runBalancedSchedule: pair ${pairId} runPair() reported corpus kernel=${kernelSample.corpus}/sqlite=${sqliteSample.corpus}, not the requested "${corpus}"`
+      );
+    }
+    if (kernelSample.mode !== mode || sqliteSample.mode !== mode) {
+      throw new Error(
+        `runBalancedSchedule: pair ${pairId} runPair() reported mode kernel=${kernelSample.mode}/sqlite=${sqliteSample.mode}, not the requested "${mode}"`
+      );
     }
 
     pairs.push({ pairId, order, kernel: kernelSample, sqlite: sqliteSample });

@@ -63,4 +63,19 @@ describe("lifecycleParity", () => {
     const parity = lifecycleParity(syntheticKernelTrace, SQLITE_CANONICAL_LIFECYCLE);
     expect(parity).toEqual({ kernel: 5, sqlite: 4, equal: false });
   });
+
+  it("same-length but REORDERED kernel trace disagrees with the canonical sequence -> equal:false (order-sensitivity guarantee)", () => {
+    // Same 4 calls as KERNEL_CANONICAL_LIFECYCLE, same length, but the
+    // submit/advance pair is swapped — count equality alone must not be
+    // enough for a PASS.
+    const reorderedKernelTrace = [
+      "begin_change_set",
+      "add_intent",
+      "advance_change_set",
+      "submit_change_set"
+    ];
+    expect(reorderedKernelTrace).toHaveLength(KERNEL_CANONICAL_LIFECYCLE.length);
+    const parity = lifecycleParity(reorderedKernelTrace, SQLITE_CANONICAL_LIFECYCLE);
+    expect(parity).toEqual({ kernel: 4, sqlite: 4, equal: false });
+  });
 });

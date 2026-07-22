@@ -159,4 +159,32 @@ describe("gate3Schedule", () => {
       })
     ).rejects.toThrow(/arm/);
   });
+
+  it("throws if runPair reports a corpus/mode that doesn't match what runBalancedSchedule was asked to run", async () => {
+    await expect(
+      runBalancedSchedule({
+        corpus: "medium",
+        mode: "cold",
+        n: 1,
+        seed: 1,
+        runPair: async () => ({
+          kernel: { arm: "kernel", corpus: "big1k", mode: "cold", callerWallNs: 1, childMaxRssBytes: 1, published: true },
+          sqlite: { arm: "sqlite", corpus: "medium", mode: "cold", callerWallNs: 1, childMaxRssBytes: 1, published: true }
+        })
+      })
+    ).rejects.toThrow(/corpus/);
+
+    await expect(
+      runBalancedSchedule({
+        corpus: "medium",
+        mode: "cold",
+        n: 1,
+        seed: 1,
+        runPair: async () => ({
+          kernel: { arm: "kernel", corpus: "medium", mode: "warm", callerWallNs: 1, childMaxRssBytes: 1, published: true },
+          sqlite: { arm: "sqlite", corpus: "medium", mode: "cold", callerWallNs: 1, childMaxRssBytes: 1, published: true }
+        })
+      })
+    ).rejects.toThrow(/mode/);
+  });
 });
