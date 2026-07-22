@@ -78,8 +78,12 @@ export const TASK_PROMPT =
 /** The T03 rename target: exported alone so other harnesses (gate 2) reuse, not re-derive, it. */
 export const OLD_NAME = "User";
 export const NEW_NAME = "Account";
-/** The SQLite arm's transaction actor (the audit's `actor`, distinct from the kernel clientId). */
-const SQLITE_ARM_ACTOR = "sqlite-arm";
+/**
+ * The SQLite arm's transaction actor (the audit's `actor`, distinct from the
+ * kernel clientId). Exported (export-only change) so gate-3's sqlite-child
+ * worker reuses the same actor identity rather than re-deriving one.
+ */
+export const SQLITE_ARM_ACTOR = "sqlite-arm";
 
 /**
  * Exported so other harnesses (gate 2) reuse gate 1's proven deadline budgets
