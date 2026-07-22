@@ -280,6 +280,27 @@ operator-big is acceptable once provenance is bound.
 - [ ] **Step 4: Roadmap + design-doc lines.** Roadmap: a `Gate 3 <PASS|FAIL|INCONCLUSIVE>` line under Gate 2 with evidence path + the UCB. Design-doc gate-map Gate 3 bullet: append the outcome + plan link. Slice-A checkbox stays unchecked.
 - [ ] **Step 5: Commit + push.** `git add -A && git commit -m "docs: gate 3 (unkeyed noninferiority) recorded — <PASS gate4 next | FAIL falsifier-5 slice paused | INCONCLUSIVE re-measure>" && git push`
 
+## Addendum (2026-07-22, operator-approved deviation)
+
+Task 8's acceptance run produced a **confident medium noninferiority FAIL**
+(cold ratio 3.99 / lcb95 3.917; warm 4.78 / 4.78 — mechanism: fixed ~2 s
+per-mutation bridge-worker spawn/IPC vs a ~0.3 s medium tsc; see decisions.md
+2026-07-22). Per Task 8 Step 3 the build STOPPED and the operator decided:
+**complete the big1k evidence run anyway.** Amendments in force:
+
+- Task 8's acceptance suite pins the RECORDED medium verdict (FAIL states,
+  lifecycle 4/4, RSS>0) instead of asserting not-FAIL; thresholds, windows,
+  N, seeds, bootstrap unchanged. The chain includes it plus the artifact check.
+- Task 9 proceeds knowing the overall machine verdict will be FAIL by
+  precedence (medium FAIL is present); the big1k leg is evidence about
+  amortization at ~1k modules, recorded in the same artifact. Task 9 Step 2's
+  exit-2 branch (record FAIL / falsifier-5, log, STOP the slice) is the
+  expected terminal outcome unless the machinery itself errors (exit 1).
+- The three Task-7 review obligations (provenance fields for corpus digest +
+  module count + metrics mode; mandatory raw pairs/N on the real artifact
+  path; lifecycle parity dispositive in the machine verdict) are closed in
+  Task 8's continuation before the first committed artifact.
+
 ## Self-review notes (v2)
 
 - All 9 review findings mapped: B1→metrics-off timing (global constraint, Task 2) + separate characterization (Task 5); B2→symmetric validate+commit vs submit+advance windows (Task 2) + runtime-trace parity (Task 6); B3→balanced paired schedule + bootstrap UCB tri-state (Task 3); B4→`src/copyNN` layout + ×46 + full-scale preflight (Task 1); B5→baseline-adjusted capped memory + real-schedule high-water (Tasks 4,5); Major 6→isolated-child cold both arms + warm trend/horizon (Tasks 2,4); Major 7→iteration-bound server records + retained server distributions (Task 5); Major 8→provenance + machine-enforced tri-state exit + artifact CI check (Tasks 7,8); Minor 9→corrected runtime model + pilot (Task 8).

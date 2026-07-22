@@ -7,6 +7,52 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-22 — Gate 3 medium acceptance: confident noninferiority FAIL; operator approved completing the big1k evidence run before recording the gate
+
+**Finding (decision-grade, reproduced 3×):** on `examples/medium` (22 modules),
+at the pre-registered `N_MEDIUM=12` and fixed seeds, through the real
+`runCold`/`runWarm`/`ratioVerdict` machinery (metrics off, symmetric windows,
+process-cold both arms): cold p95 kernel 2149.0 ms vs SQLite 538.6 ms — paired
+p95 ratio 3.99, **lcb95 3.917** ≫ 1.25; warm ratio 4.78, lcb95 4.78. Both modes
+**FAIL** with confidence. Lifecycle parity 4/4 and RSS capture hold; only the
+ratio fails. The acceptance suite failed exactly on its noninferiority
+assertion — nothing was weakened, retried, or widened.
+
+**Mechanism (verified against source, corroborated by the gate-2 artifact):**
+the kernel arm pays a fixed ~2 s per-mutation cross-process cost — a fresh
+bridge worker (Node subprocess) is spawned per advance, plus snapshot
+serialize/IPC/hydrate — while the 22-module tsc it wraps costs only ~0.25–0.5 s.
+The gate-2 observability profile independently shows advance wall up to ~2.92 s
+with candidate tsc ~0.79 s and hydration ~0.15 s. The SQLite arm runs entirely
+in-process (validate+commit = 2 tsc passes, no spawn). The kernel does *fewer*
+type-checks (1 vs 2) and still loses ~4× on wall: this is architecture (fixed
+orchestration cost on a corpus too small to amortize it), not a harness bug and
+not an unfair window.
+
+**Operator decision (2026-07-22):** complete the ~1012-module big1k evidence
+run anyway (key-free, operator-run) rather than stopping at the medium FAIL or
+pivoting to a pooled-worker slice first. Rationale: the design's decisive
+corpus is ~1k modules and whether a 1012-module tsc amortizes the fixed ~2 s is
+genuinely open (Task-1's preflight measured a fast full-corpus tsc, so
+amortization is NOT assured). Consequences accepted with eyes open:
+- By the plan's own precedence rule (overall verdict = worst corpus present),
+  the medium FAIL forces **overall Gate 3 = FAIL (falsifier-5)** regardless of
+  the big1k outcome. The big1k leg is run as *evidence about amortization* — a
+  big1k PASS-at-scale would be a valuable scoped finding for a future
+  pooled/warm bridge-worker slice (a bridge optimization inside the semantic
+  boundary, per the review's stated post-FAIL options), not a rescue of gate 3.
+- The CI acceptance suite cannot keep a permanently-red not-FAIL assertion
+  once the FAIL is recorded: `gate3Noninferiority.test.ts` is amended to pin
+  the *recorded* verdict (assert the machinery reproduces FAIL states,
+  lifecycle 4/4, RSS>0) instead of asserting not-FAIL. The 1.25 threshold,
+  windows, N, seeds, and bootstrap are unchanged; what changes is that CI now
+  protects the integrity of the recorded finding rather than re-litigating it.
+- The pre-registered constants (N_MEDIUM=12, N_BIG1K=8, WARM_HORIZON=32,
+  GROWTH_FACTOR=4, provisional RSS caps = pilot medium × 8) stand as registered
+  BEFORE the dispositive run; they were not tuned to any verdict.
+Full blocked report with pilot numbers: `.superpowers/sdd/task-8-report.md`.
+Plan Task 8/9 amended accordingly (addendum in the plan file).
+
 ## 2026-07-20 — Gate 2 (per-stage observability) PASSED; slice A continues at gate 3
 
 **Result:** the convergence slice's second measurement gate is green, key-free,
