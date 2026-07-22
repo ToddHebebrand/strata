@@ -7,6 +7,91 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-22 — Gate 3 (unkeyed noninferiority) FAIL / falsifier-5 recorded; slice A stops for operator decision
+
+**Contract** (convergence review §4 item 3): *"p95 mutation wall ≤ 1.25×
+SQLite, bounded memory, `examples/medium` + a ~1k-module corpus, no extra
+agent-visible lifecycle calls. Failure stops keyed spend."* Falsifier 5 (§5,
+line 130): if bridge costs push the kernel past the threshold, the kernel is a
+coordination proof, not the product core — record and stop, never engineer
+around.
+
+**Machine verdict: FAIL (exit 2), all four (corpus, mode) cells, with
+confidence.** From the committed artifact
+`docs/spikes/gate3-noninferiority-profile.{json,md}`:
+
+| corpus | mode | n | p95 kernel | p95 sqlite | ratio | ucb95 | lcb95 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| medium (22 mod) | cold | 12 | 2360 ms | 558 ms | 4.23 | 4.64 | 3.92 |
+| medium | warm | 12 | 2236 ms | 677 ms | 3.30 | 6.37 | 3.21 |
+| big1k (1012 mod) | cold | 8 | 24528 ms | 2003 ms | 12.25 | 12.85 | 12.15 |
+| big1k | warm | 8 | 25032 ms | 1942 ms | 12.89 | 12.96 | 12.89 |
+
+**The amortization theory is falsified in the strong direction.** The
+operator-approved question behind running big1k after the medium FAIL was
+whether a 1012-module tsc amortizes the kernel's fixed per-mutation
+orchestration cost. It does not — the ratio *tripled* at scale. Server
+characterization (metrics-on, non-dispositive) shows why: big1k submit p95
+≈ 9.0 s and advance p95 ≈ 17.4 s (vs 0.63 s / 1.56 s on medium) — the
+per-mutation full-snapshot serialize (~11 MB at 1012 modules), worker spawn,
+and 1012-module hydration all scale WITH the corpus, so scale hurts the
+kernel arm faster than it hurts SQLite's in-process validate. This is
+falsifier-5's exact predicted mechanism. Lifecycle parity held 4/4 both
+corpora; no extra agent-visible lifecycle calls.
+
+**Methodology** (independently reviewed before execution — Codex xhigh, 5
+blockers + 3 majors + 1 minor, all source-verified into plan v2; brief and
+output at `docs/superpowers/specs/2026-07-20-slice-a-gate3-review-{brief,codex}.md`):
+metrics-OFF caller-wall timing both arms, isolated child processes
+(process-cold symmetry), symmetric windows (kernel `submit+advance` vs SQLite
+`validate+commit`), balanced seeded AB/BA pairing, one-sided 95% bootstrap
+UCB/LCB on the paired p95 ratio (tri-state, never point estimates), ×46
+replicated real-code corpus (1012 modules under `src/copyNN`), warm mode via
+two persistent lockstepped children, per-iteration RSS high-water,
+provenance-bound artifact. Pre-registered before the dispositive run and
+never tuned: N_MEDIUM=12, N_BIG1K=8, WARM_HORIZON=32, GROWTH_FACTOR=4,
+provisional RSS caps (pilot medium × 8), fixed seeds.
+
+**Disclosures (required by the final whole-branch review, recorded here so
+the artifact cannot be over-read):**
+1. **The memory predicate measured the wrong process for the kernel arm and
+   is non-load-bearing.** `childMaxRssBytes` is the thin Node harness client
+   (~165-411 MB), not daemon+active-worker; the plan pre-registered
+   daemon+worker as the kernel headline. Real kernel-side peaks live in the
+   artifact's server characterization: big1k worker peak ≈ 508 MB, daemon
+   ≈ 175 MB. The kernel `growthAdjusted=194.8` in the artifact is an
+   artifact of a near-zero harness denominator (medium−baseline ≈ 1.2 MB),
+   not a leak signal. SQLite's `growthAdjusted=5.2 > 4` IS real in-process
+   growth and is recorded as its own memory-row FAIL. None of this feeds the
+   wall verdict; the gate FAIL rests entirely on the wall ratios.
+2. **Artifact provenance**: headSha `8e4f970459de34d28ece8dddcc6aa083a518d619`,
+   clean tree, harness + daemon-binary digests inside the artifact; the
+   `.head` sibling marker is tamper-detection, not commit-identity.
+3. **SQLite window = validate+commit = 2 full tsc passes per mutation**
+   (commit() internally re-validates; the CLI product path calls commit
+   alone). Plan v2 adjudicated this as the faithful product lifecycle; it
+   biases *against* SQLite, and SQLite still won 4-13×.
+
+**Consequence:** Gate 3 FAIL / falsifier-5 recorded. Slice A STOPS here per
+the plan — gates 4-5 (packed CLI, keyed comparison) do not proceed; **no
+keyed spend**. The kernel stands as a validated coordination proof
+(gates 1-2) whose current bridge architecture is not the product core. The
+operator's documented options (plan Task 9 Step 2): narrow scope; a
+bridge-optimization slice inside the semantic boundary (pooled/warm worker,
+delta snapshots — the characterization data localizes the cost precisely);
+or accept a provisional SQLite-authority split. A pooled-worker + delta-
+snapshot slice now has decision-grade cost data to aim at (~2 s fixed spawn
+on medium; ~9-17 s serialize/hydrate/validate at 1k).
+
+**CI state:** `kernel:gate3:test` green post-recording — the acceptance
+suite pins the recorded medium FAIL (machinery/threshold/seeds unchanged)
+and `gate3Artifact.ci.test.ts` validates the committed artifact. Deferred to
+one cleanup commit (final-review triage, none verdict-relevant): degenerate-
+denominator cap-mask (`memoryVerdictTolerant`), a false "non-dispositive"
+comment in run-big, shared `MAX_ADVANCE_ATTEMPTS`, corpus/mode cross-check
+guard, a reordered-trace parity test case, artifact-CI verdict recomputation
+from raw pairs.
+
 ## 2026-07-22 — Gate 3 medium acceptance: confident noninferiority FAIL; operator approved completing the big1k evidence run before recording the gate
 
 **Finding (decision-grade, reproduced 3×):** on `examples/medium` (22 modules),

@@ -1,0 +1,1402 @@
+{
+  "provenance": {
+    "headSha": "8e4f970459de34d28ece8dddcc6aa083a518d619",
+    "dirty": false,
+    "harnessDigest": "83a54a1441825f51c478e93eca4970acff0cfde930777a3fce0279f0807b2ba4",
+    "daemonBinarySha": "7047e1f009840f98caeb51e5a72cd8b3bc50b3ca9f8b77ddf37d1839bfab21db",
+    "os": "darwin 25.5.0",
+    "cpu": "Apple M4 Pro",
+    "nodeVersion": "v26.3.0",
+    "rustVersion": "rustc 1.89.0 (29483883e 2025-08-04)",
+    "scheduleSeed": 20260722200,
+    "timestamp": "2026-07-22T16:07:03.687Z",
+    "metricsMode": "timing:off;characterization:on"
+  },
+  "medium": {
+    "cold": {
+      "p95Kernel": 2360429792,
+      "p95Sqlite": 557818500,
+      "pointRatio": 4.231537304696778,
+      "ucb95": 4.6379375187906655,
+      "lcb95": 3.9227593742409046,
+      "state": "FAIL"
+    },
+    "warm": {
+      "p95Kernel": 2235558250,
+      "p95Sqlite": 677378417,
+      "pointRatio": 3.3003092420643214,
+      "ucb95": 6.369449803426179,
+      "lcb95": 3.2131726319824567,
+      "state": "FAIL"
+    },
+    "warmTrend": {
+      "firstHalfP95Ratio": 3.3003092420643214,
+      "lastHalfP95Ratio": 6.335478917962421
+    },
+    "memory": {
+      "kernel": {
+        "arm": "kernel",
+        "medium": 172965888,
+        "big1k": 172965888,
+        "baseline": 171737088,
+        "absoluteCapPass": true,
+        "growthAdjusted": -1,
+        "growthPass": false,
+        "state": "INCONCLUSIVE"
+      },
+      "sqlite": {
+        "arm": "sqlite",
+        "medium": 388546560,
+        "big1k": 388546560,
+        "baseline": 320520192,
+        "absoluteCapPass": true,
+        "growthAdjusted": -1,
+        "growthPass": false,
+        "state": "INCONCLUSIVE"
+      }
+    },
+    "lifecycle": {
+      "kernel": 4,
+      "sqlite": 4
+    },
+    "server": {
+      "submit": {
+        "n": 8,
+        "min": 601913959,
+        "p50": 618487917,
+        "p95": 634191042,
+        "p99": 634191042,
+        "max": 634191042,
+        "mean": 617588192.625,
+        "samples": [
+          634191042,
+          618487917,
+          606580083,
+          604052458,
+          621824208,
+          625001541,
+          628654333,
+          601913959
+        ]
+      },
+      "advance": {
+        "n": 8,
+        "min": 1423494917,
+        "p50": 1441194500,
+        "p95": 1559144500,
+        "p99": 1559144500,
+        "max": 1559144500,
+        "mean": 1463307546.875,
+        "samples": [
+          1559144500,
+          1441194500,
+          1439351542,
+          1481332250,
+          1465532416,
+          1458225375,
+          1423494917,
+          1438184875
+        ]
+      },
+      "daemonRss": 16089088,
+      "workerRss": 273055744
+    },
+    "coldPairs": [
+      {
+        "pairId": 0,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2162971500,
+          "childMaxRssBytes": 171081728,
+          "published": true,
+          "childPid": 59877,
+          "pairId": 0,
+          "order": "BA",
+          "iteration": 0
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 487877208,
+          "childMaxRssBytes": 313901056,
+          "published": true,
+          "childPid": 59837,
+          "pairId": 0,
+          "order": "BA",
+          "iteration": 0
+        }
+      },
+      {
+        "pairId": 1,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2324035958,
+          "childMaxRssBytes": 169951232,
+          "published": true,
+          "childPid": 60100,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 497010625,
+          "childMaxRssBytes": 320274432,
+          "published": true,
+          "childPid": 60070,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        }
+      },
+      {
+        "pairId": 2,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2139299834,
+          "childMaxRssBytes": 171638784,
+          "published": true,
+          "childPid": 60364,
+          "pairId": 2,
+          "order": "BA",
+          "iteration": 2
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 475029459,
+          "childMaxRssBytes": 319455232,
+          "published": true,
+          "childPid": 60337,
+          "pairId": 2,
+          "order": "BA",
+          "iteration": 2
+        }
+      },
+      {
+        "pairId": 3,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2138920000,
+          "childMaxRssBytes": 172392448,
+          "published": true,
+          "childPid": 60516,
+          "pairId": 3,
+          "order": "BA",
+          "iteration": 3
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 481335500,
+          "childMaxRssBytes": 315965440,
+          "published": true,
+          "childPid": 60489,
+          "pairId": 3,
+          "order": "BA",
+          "iteration": 3
+        }
+      },
+      {
+        "pairId": 4,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2120792417,
+          "childMaxRssBytes": 172965888,
+          "published": true,
+          "childPid": 60649,
+          "pairId": 4,
+          "order": "AB",
+          "iteration": 4
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 479732375,
+          "childMaxRssBytes": 323633152,
+          "published": true,
+          "childPid": 60702,
+          "pairId": 4,
+          "order": "AB",
+          "iteration": 4
+        }
+      },
+      {
+        "pairId": 5,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2133434417,
+          "childMaxRssBytes": 171081728,
+          "published": true,
+          "childPid": 60730,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 473006708,
+          "childMaxRssBytes": 317587456,
+          "published": true,
+          "childPid": 60728,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        }
+      },
+      {
+        "pairId": 6,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2087649291,
+          "childMaxRssBytes": 171540480,
+          "published": true,
+          "childPid": 60863,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 557818500,
+          "childMaxRssBytes": 319307776,
+          "published": true,
+          "childPid": 60994,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        }
+      },
+      {
+        "pairId": 7,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2114821458,
+          "childMaxRssBytes": 172228608,
+          "published": true,
+          "childPid": 61022,
+          "pairId": 7,
+          "order": "AB",
+          "iteration": 7
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 508939541,
+          "childMaxRssBytes": 322027520,
+          "published": true,
+          "childPid": 61157,
+          "pairId": 7,
+          "order": "AB",
+          "iteration": 7
+        }
+      },
+      {
+        "pairId": 8,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2360429792,
+          "childMaxRssBytes": 171196416,
+          "published": true,
+          "childPid": 61284,
+          "pairId": 8,
+          "order": "BA",
+          "iteration": 8
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 478894791,
+          "childMaxRssBytes": 319012864,
+          "published": true,
+          "childPid": 61256,
+          "pairId": 8,
+          "order": "BA",
+          "iteration": 8
+        }
+      },
+      {
+        "pairId": 9,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2130896125,
+          "childMaxRssBytes": 171524096,
+          "published": true,
+          "childPid": 61930,
+          "pairId": 9,
+          "order": "BA",
+          "iteration": 9
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 493898417,
+          "childMaxRssBytes": 319488000,
+          "published": true,
+          "childPid": 61404,
+          "pairId": 9,
+          "order": "BA",
+          "iteration": 9
+        }
+      },
+      {
+        "pairId": 10,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2182814459,
+          "childMaxRssBytes": 170967040,
+          "published": true,
+          "childPid": 62328,
+          "pairId": 10,
+          "order": "AB",
+          "iteration": 10
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 553867583,
+          "childMaxRssBytes": 322568192,
+          "published": true,
+          "childPid": 62561,
+          "pairId": 10,
+          "order": "AB",
+          "iteration": 10
+        }
+      },
+      {
+        "pairId": 11,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2188187750,
+          "childMaxRssBytes": 171376640,
+          "published": true,
+          "childPid": 62623,
+          "pairId": 11,
+          "order": "BA",
+          "iteration": 11
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 496219708,
+          "childMaxRssBytes": 316915712,
+          "published": true,
+          "childPid": 62612,
+          "pairId": 11,
+          "order": "BA",
+          "iteration": 11
+        }
+      }
+    ],
+    "warmPairs": [
+      {
+        "pairId": 0,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2111719625,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 0,
+          "order": "BA",
+          "iteration": 0
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 677378417,
+          "childMaxRssBytes": 302202880,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 0,
+          "order": "BA",
+          "iteration": 0
+        }
+      },
+      {
+        "pairId": 1,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2056560542,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 350981375,
+          "childMaxRssBytes": 302202880,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        }
+      },
+      {
+        "pairId": 2,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2050925958,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 2,
+          "order": "BA",
+          "iteration": 2
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 324048041,
+          "childMaxRssBytes": 302202880,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 2,
+          "order": "BA",
+          "iteration": 2
+        }
+      },
+      {
+        "pairId": 3,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2176533791,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 322999583,
+          "childMaxRssBytes": 302202880,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        }
+      },
+      {
+        "pairId": 4,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2235558250,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 329244083,
+          "childMaxRssBytes": 349732864,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        }
+      },
+      {
+        "pairId": 5,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2058538292,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 324400000,
+          "childMaxRssBytes": 349732864,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        }
+      },
+      {
+        "pairId": 6,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2147770292,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 318996542,
+          "childMaxRssBytes": 349732864,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        }
+      },
+      {
+        "pairId": 7,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2226210208,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 7,
+          "order": "BA",
+          "iteration": 7
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 320898042,
+          "childMaxRssBytes": 388530176,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 7,
+          "order": "BA",
+          "iteration": 7
+        }
+      },
+      {
+        "pairId": 8,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2116762750,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 8,
+          "order": "AB",
+          "iteration": 8
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 351387833,
+          "childMaxRssBytes": 388546560,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 8,
+          "order": "AB",
+          "iteration": 8
+        }
+      },
+      {
+        "pairId": 9,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2129116500,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 9,
+          "order": "AB",
+          "iteration": 9
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 336435209,
+          "childMaxRssBytes": 388546560,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 9,
+          "order": "AB",
+          "iteration": 9
+        }
+      },
+      {
+        "pairId": 10,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2065627334,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 10,
+          "order": "BA",
+          "iteration": 10
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 318260083,
+          "childMaxRssBytes": 388546560,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 10,
+          "order": "BA",
+          "iteration": 10
+        }
+      },
+      {
+        "pairId": 11,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2048507000,
+          "childMaxRssBytes": 172146688,
+          "published": true,
+          "childPid": 62708,
+          "pairId": 11,
+          "order": "BA",
+          "iteration": 11
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 324350708,
+          "childMaxRssBytes": 388546560,
+          "published": true,
+          "childPid": 62709,
+          "pairId": 11,
+          "order": "BA",
+          "iteration": 11
+        }
+      }
+    ],
+    "corpusInfo": {
+      "digest": "b808cda8f020972643d62268e686e8322ef2130ed64abc90a0a8d430a82379e8",
+      "moduleCount": 22,
+      "copies": 1
+    },
+    "schedules": {
+      "cold": {
+        "seed": 20260722200,
+        "n": 12,
+        "realizedOrder": [
+          "BA",
+          "BA",
+          "BA",
+          "BA",
+          "AB",
+          "BA",
+          "AB",
+          "AB",
+          "BA",
+          "BA",
+          "AB",
+          "BA"
+        ]
+      },
+      "warm": {
+        "seed": 20260722201,
+        "n": 12,
+        "realizedOrder": [
+          "BA",
+          "BA",
+          "BA",
+          "AB",
+          "BA",
+          "BA",
+          "AB",
+          "BA",
+          "AB",
+          "AB",
+          "BA",
+          "BA"
+        ]
+      }
+    }
+  },
+  "big1k": {
+    "cold": {
+      "p95Kernel": 24528270666,
+      "p95Sqlite": 2003131958,
+      "pointRatio": 12.244959982811077,
+      "ucb95": 12.851994392247548,
+      "lcb95": 12.152881842245563,
+      "state": "FAIL"
+    },
+    "warm": {
+      "p95Kernel": 25031606083,
+      "p95Sqlite": 1941980917,
+      "pointRatio": 12.889728145047473,
+      "ucb95": 12.955257651996972,
+      "lcb95": 12.889728145047473,
+      "state": "FAIL"
+    },
+    "warmTrend": {
+      "firstHalfP95Ratio": 12.889728145047473,
+      "lastHalfP95Ratio": 12.941614985253747
+    },
+    "memory": {
+      "kernel": {
+        "arm": "kernel",
+        "medium": 172965888,
+        "big1k": 411123712,
+        "baseline": 171737088,
+        "absoluteCapPass": true,
+        "growthAdjusted": 194.81333333333333,
+        "growthPass": false,
+        "state": "INCONCLUSIVE"
+      },
+      "sqlite": {
+        "arm": "sqlite",
+        "medium": 388546560,
+        "big1k": 674365440,
+        "baseline": 320520192,
+        "absoluteCapPass": true,
+        "growthAdjusted": 5.201589595375722,
+        "growthPass": false,
+        "state": "FAIL"
+      }
+    },
+    "lifecycle": {
+      "kernel": 4,
+      "sqlite": 4
+    },
+    "server": {
+      "submit": {
+        "n": 8,
+        "min": 8785810208,
+        "p50": 8809728167,
+        "p95": 8982345875,
+        "p99": 8982345875,
+        "max": 8982345875,
+        "mean": 8853945739.5,
+        "samples": [
+          8841379916,
+          8802834334,
+          8785810208,
+          8786556958,
+          8885798083,
+          8809728167,
+          8937112375,
+          8982345875
+        ]
+      },
+      "advance": {
+        "n": 8,
+        "min": 16659474375,
+        "p50": 16906255541,
+        "p95": 17386343000,
+        "p99": 17386343000,
+        "max": 17386343000,
+        "mean": 16981869421.875,
+        "samples": [
+          16659474375,
+          16841696375,
+          16906255541,
+          17068199083,
+          16905527875,
+          16988609584,
+          17098849542,
+          17386343000
+        ]
+      },
+      "daemonRss": 174620672,
+      "workerRss": 508395520
+    },
+    "coldPairs": [
+      {
+        "pairId": 0,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 24242670917,
+          "childMaxRssBytes": 411123712,
+          "published": true,
+          "childPid": 66138,
+          "pairId": 0,
+          "order": "AB",
+          "iteration": 0
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 1957067417,
+          "childMaxRssBytes": 634535936,
+          "published": true,
+          "childPid": 67234,
+          "pairId": 0,
+          "order": "AB",
+          "iteration": 0
+        }
+      },
+      {
+        "pairId": 1,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 24343826000,
+          "childMaxRssBytes": 392364032,
+          "published": true,
+          "childPid": 67772,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 2003131958,
+          "childMaxRssBytes": 623329280,
+          "published": true,
+          "childPid": 67547,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        }
+      },
+      {
+        "pairId": 2,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 24322548333,
+          "childMaxRssBytes": 392069120,
+          "published": true,
+          "childPid": 69565,
+          "pairId": 2,
+          "order": "AB",
+          "iteration": 2
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 1842010875,
+          "childMaxRssBytes": 650625024,
+          "published": true,
+          "childPid": 71068,
+          "pairId": 2,
+          "order": "AB",
+          "iteration": 2
+        }
+      },
+      {
+        "pairId": 3,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 24236115583,
+          "childMaxRssBytes": 405962752,
+          "published": true,
+          "childPid": 71245,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 1808412500,
+          "childMaxRssBytes": 654295040,
+          "published": true,
+          "childPid": 72797,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        }
+      },
+      {
+        "pairId": 4,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 24214657125,
+          "childMaxRssBytes": 409534464,
+          "published": true,
+          "childPid": 73022,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 1908518625,
+          "childMaxRssBytes": 633077760,
+          "published": true,
+          "childPid": 72937,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        }
+      },
+      {
+        "pairId": 5,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 24266085125,
+          "childMaxRssBytes": 390610944,
+          "published": true,
+          "childPid": 74049,
+          "pairId": 5,
+          "order": "AB",
+          "iteration": 5
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 1862126084,
+          "childMaxRssBytes": 625737728,
+          "published": true,
+          "childPid": 75948,
+          "pairId": 5,
+          "order": "AB",
+          "iteration": 5
+        }
+      },
+      {
+        "pairId": 6,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 24528270666,
+          "childMaxRssBytes": 394166272,
+          "published": true,
+          "childPid": 76087,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 1797922542,
+          "childMaxRssBytes": 632619008,
+          "published": true,
+          "childPid": 77863,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        }
+      },
+      {
+        "pairId": 7,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 23411968250,
+          "childMaxRssBytes": 408109056,
+          "published": true,
+          "childPid": 77941,
+          "pairId": 7,
+          "order": "AB",
+          "iteration": 7
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 1745375834,
+          "childMaxRssBytes": 627785728,
+          "published": true,
+          "childPid": 79488,
+          "pairId": 7,
+          "order": "AB",
+          "iteration": 7
+        }
+      }
+    ],
+    "warmPairs": [
+      {
+        "pairId": 0,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 23377028625,
+          "childMaxRssBytes": 395067392,
+          "published": true,
+          "childPid": 79615,
+          "pairId": 0,
+          "order": "AB",
+          "iteration": 0
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 1929558167,
+          "childMaxRssBytes": 435748864,
+          "published": true,
+          "childPid": 79616,
+          "pairId": 0,
+          "order": "AB",
+          "iteration": 0
+        }
+      },
+      {
+        "pairId": 1,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 24178629292,
+          "childMaxRssBytes": 395067392,
+          "published": true,
+          "childPid": 79615,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 1648580084,
+          "childMaxRssBytes": 647561216,
+          "published": true,
+          "childPid": 79616,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        }
+      },
+      {
+        "pairId": 2,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 24968952917,
+          "childMaxRssBytes": 395067392,
+          "published": true,
+          "childPid": 79615,
+          "pairId": 2,
+          "order": "AB",
+          "iteration": 2
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 1900914041,
+          "childMaxRssBytes": 647561216,
+          "published": true,
+          "childPid": 79616,
+          "pairId": 2,
+          "order": "AB",
+          "iteration": 2
+        }
+      },
+      {
+        "pairId": 3,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 25031606083,
+          "childMaxRssBytes": 395067392,
+          "published": true,
+          "childPid": 79615,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 1941980917,
+          "childMaxRssBytes": 647561216,
+          "published": true,
+          "childPid": 79616,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        }
+      },
+      {
+        "pairId": 4,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 24997923208,
+          "childMaxRssBytes": 395067392,
+          "published": true,
+          "childPid": 79615,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 1855890417,
+          "childMaxRssBytes": 674365440,
+          "published": true,
+          "childPid": 79616,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        }
+      },
+      {
+        "pairId": 5,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 24561757333,
+          "childMaxRssBytes": 395067392,
+          "published": true,
+          "childPid": 79615,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 1892290333,
+          "childMaxRssBytes": 674365440,
+          "published": true,
+          "childPid": 79616,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        }
+      },
+      {
+        "pairId": 6,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 24546121292,
+          "childMaxRssBytes": 395067392,
+          "published": true,
+          "childPid": 79615,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 1931592250,
+          "childMaxRssBytes": 674365440,
+          "published": true,
+          "childPid": 79616,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        }
+      },
+      {
+        "pairId": 7,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 24733214667,
+          "childMaxRssBytes": 395067392,
+          "published": true,
+          "childPid": 79615,
+          "pairId": 7,
+          "order": "BA",
+          "iteration": 7
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 1778700208,
+          "childMaxRssBytes": 674365440,
+          "published": true,
+          "childPid": 79616,
+          "pairId": 7,
+          "order": "BA",
+          "iteration": 7
+        }
+      }
+    ],
+    "corpusInfo": {
+      "digest": "845af2a91899690e849cefb4e4cbdc93eb2926ba3e8fc58aac709a94b5a69401",
+      "moduleCount": 1012,
+      "copies": 46
+    },
+    "schedules": {
+      "cold": {
+        "seed": 20260722210,
+        "n": 8,
+        "realizedOrder": [
+          "AB",
+          "BA",
+          "AB",
+          "AB",
+          "BA",
+          "AB",
+          "AB",
+          "AB"
+        ]
+      },
+      "warm": {
+        "seed": 20260722211,
+        "n": 8,
+        "realizedOrder": [
+          "AB",
+          "BA",
+          "AB",
+          "AB",
+          "BA",
+          "BA",
+          "AB",
+          "BA"
+        ]
+      }
+    }
+  },
+  "verdict": "FAIL"
+}

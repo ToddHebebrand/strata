@@ -311,7 +311,12 @@ it); MCP/CLI adapters.
 - **Gate 3:** unkeyed noninferiority — p95 mutation wall ≤1.25× SQLite, bounded
   memory, `examples/medium` + a ~1k-module corpus, no extra agent-visible
   lifecycle calls. Failure stops keyed spend. Watch falsifier 5 (fixing bridge
-  costs must not violate the semantic boundary).
+  costs must not violate the semantic boundary). *(FAILED 2026-07-22 —
+  falsifier 5 confirmed: ratio 4.2-4.8× on medium, 12.2-12.9× at 1012 modules;
+  snapshot-serialize/spawn/hydrate scale with the corpus. Slice stopped, no
+  keyed spend. Plan: `docs/superpowers/plans/2026-07-20-iteration6-slice-a-gate3.md`;
+  evidence: `docs/spikes/gate3-noninferiority-profile.md`; decisions.md
+  2026-07-22.)*
 - **Gate 4:** clean-room packed CLI + native daemon: install, start/restart,
   discover, rename, tsc+tests, reopen the same canonical database. Watch
   falsifier 6 (a real product surface must not need the SQLite authority).
