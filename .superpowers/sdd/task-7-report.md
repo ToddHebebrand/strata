@@ -1,230 +1,178 @@
-# Task 7 (gate 2) — Gate-2 observability acceptance suite + scripts: report
+# Task 7 (gate 3) — Gate-3 report builder, provenance, tri-state, artifact writer: report
 
-> Note: `.superpowers/sdd/task-N-report.md` paths are reused per gate slice. The
-> prior contents of this path were the gate-1 Task-7 crash-injection report
-> (committed at 8e563e1 — safe in history); the brief directs the gate-2 Task-7
-> report here, so it is overwritten.
+> Note: `.superpowers/sdd/task-N-report.md` paths are reused per gate slice
+> (documented precedent in this same file's gate-2 Task-7 report, commit
+> 8b10f4c). The prior contents of this path were the gate-2 Task-7
+> observability-suite report — safe in history at that commit; this task's
+> brief directs the gate-3 Task-7 report here, so it is overwritten.
 
-**Status: PASS.** The live gate-2 per-stage observability acceptance suite is
-implemented and green against the real instrumented kernel-arm T03 flow; the
-`kernel:gate2:test` script is wired and `kernel:full-key-free:test` extended.
-Both full-verification commands are fully green. One real Task-6 parser defect
-was surfaced by this FIRST live run and fixed consumer-side — the acceptance
-oracle itself is unmodified.
+**Status: DONE.** `packages/live-compare/src/gate3/report.ts` and
+`.../provenance.ts` are implemented per the brief; the fixture-only unit
+suite (`gate3Report.unit.test.ts`, 21 tests) is green, TDD RED confirmed
+first, and the full `gate3` group (11 files / 75 tests) is green after the
+build.
 
 ## Implementation
 
-- **Created** `packages/live-compare/tests/gate2Observability.test.ts` — the
-  gate oracle, transcribed from the brief. All eight numbered categories, the
-  phase-coverage assertion (submitAnalysis / claimAnalysis /
-  preCandidateAnalysis / postCandidateAnalysis / candidate), the all-`ok`
-  outcome assertion, and the three cross-invariants are present exactly as
-  specified. 300 s vitest timeout.
-  - **Only mechanical adjustment (category a):** `__dirname` →
-    `import.meta.dirname` to compute `repoRoot`. Every sibling suite in
-    `packages/live-compare/tests/` uses `import.meta.dirname`; the sources are
-    ESM-style (`.js` specifiers, `import.meta`), run through vite/esbuild. Both
-    forms yield the identical `repoRoot`. No call-signature changes were needed:
-    Task 6's `runGate2KernelFlow(corpusRoot)` → `{records, profile}` and
-    `writeGate2Artifacts(profile, records, outDir)` match the brief's
-    consumption exactly, and the `Gate2Profile` shape the oracle reads is as
-    landed.
+- **Created** `packages/live-compare/src/gate3/provenance.ts`:
+  - `Provenance` interface exactly per the brief: `{ headSha, dirty,
+    harnessDigest, daemonBinarySha, os, cpu, nodeVersion, rustVersion,
+    scheduleSeed?, timestamp? }`.
+  - `collectProvenance(options?: { scheduleSeed?, timestamp? })` — the only
+    exported entrypoint; ALL impurity (git `rev-parse HEAD` / `status
+    --porcelain` via `execFileSync`, `rustc --version`, filesystem hashing,
+    `os.cpus()/platform()/release()`, `process.version`) lives here,
+    isolated from `report.ts`. `timestamp` is never generated inside this
+    module (no `Date.now()`/`new Date()`) — always caller-injected.
+  - `harnessDigest(distGate3Dir?)` — sha256 over the sorted
+    `{relPath: sha256(contents)}` map of every file under the built
+    `dist/gate3/**` (mirrors `corpus.ts`'s `sha256Hex` pattern exactly:
+    sorted-keys JSON, so directory-walk order never perturbs the digest).
+    Throws if the directory doesn't exist rather than hashing nothing.
+  - `daemonBinarySha(binaryPath?)` — sha256 of the `strata-kernel-service`
+    binary, defaulting to `kernelServiceBinary()` (gate1.ts's existing
+    env-override-or-`target/debug` resolver — reused, not reimplemented).
+    Throws if missing.
 
-- **Modified** root `package.json`:
-  - Added `kernel:gate2:test`, mirroring `kernel:gate1:test`'s build prelude
-    verbatim (`kernel-bridge build && live-compare build && cargo build -p
-    strata-kernel && cargo build -p strata-kernel --features redb-spike-api`),
-    ending in `pnpm --filter @strata-code/live-compare test gate2`.
-  - Appended `&& pnpm kernel:gate2:test` to `kernel:full-key-free:test`.
-  - **Filter note:** the vitest filter `gate2` matches BOTH the acceptance test
-    (`tests/gate2Observability.test.ts`) AND `tests/gate2Profile.unit.test.ts`.
-    Expected and fine — both pass (2 files / 11 tests).
+- **Created** `packages/live-compare/src/gate3/report.ts` — pure
+  assembly/verdict/rendering only, no I/O beyond the final artifact write:
+  - `Gate3CorpusReport` — `{ cold, warm, warmTrend, memory:{kernel,sqlite},
+    lifecycle:{kernel,sqlite}, server? }` per the plan's shared vocabulary,
+    plus two **optional** additions: `coldPairs?`/`warmPairs?`
+    (`SchedulePair[]`) so the committed JSON can retain every raw sample
+    behind the summary `RatioVerdict`s (the brief's "JSON retains ALL raw
+    samples" — `RatioVerdict` itself carries only the bootstrap summary
+    numbers, not the pairs it was computed from) without forcing every
+    caller, including hand-built unit fixtures that never ran a real child,
+    to supply them.
+  - `buildGate3CorpusReport(inputs)` — a deliberate, documented pass-through:
+    it assembles already-computed pieces (Tasks 3-6's `ratioVerdict`,
+    `memoryVerdict`, `lifecycleParity`, `characterizeKernelServer`,
+    `runCold`/`runWarm`'s pairs), it does not compute any of them itself.
+  - `corpusState(report)` — **the corpus-state derivation rule this task
+    defines** (the plan's `Gate3CorpusReport` shape carries no `state`
+    field of its own): worst-of-four over `cold.state`, `warm.state`,
+    `memory.kernel.state`, `memory.sqlite.state`, precedence FAIL ≺
+    INCONCLUSIVE ≺ PASS. `lifecycle` is deliberately excluded — it's a
+    pass/fail-by-inspection call-count pair (4 vs 4), not itself a
+    tri-state verdict, and Task 8's own acceptance suite already asserts
+    lifecycle parity as an independent condition ("AND lifecycle 4/4")
+    rather than folding it into the noninferiority tri-state; `server`
+    (metrics-on characterization) is excluded too, per the plan's "feeds
+    the gate-3 REPORT, never the wall verdict".
+  - `buildGate3Report(provenance, {medium, big1k?})` — overall verdict =
+    worst state across corpora present, **except** overall PASS additionally
+    requires BOTH corpora present: `big1k` absent + medium PASS is capped
+    down to INCONCLUSIVE; medium-only FAIL/INCONCLUSIVE is NOT capped (those
+    are genuine findings regardless of what a bigger corpus would show).
+  - `renderGate3Markdown(report)` — provenance header; one
+    `(corpus, mode)` row per present corpus with n/p50/p95 (n/p50 derived
+    from `coldPairs`/`warmPairs` via `nearestRankDistribution` when present,
+    else "n/a" — `RatioVerdict` itself has no `n`/`p50` field), ratio,
+    ucb95/lcb95, tri-state; a memory table; lifecycle parity line; a verdict
+    banner that literally names the overall verdict word and its measured
+    UCB (or, for FAIL, the falsifying LCB) via `decisiveRatioVerdict` — the
+    corpus/mode whose own state equals the overall verdict, preferring
+    `big1k` over `medium` and `warm` over `cold`.
+  - `writeGate3Artifacts(report, outDir, {deterministicName?})` — JSON is
+    `JSON.stringify(report, null, 2)` verbatim (nothing summarized away —
+    provenance + every raw sample the caller attached comes along for free
+    since it's just the object graph); Markdown from
+    `renderGate3Markdown`. Deterministic name
+    `gate3-noninferiority-profile.{json,md}` (mirrors `writeGate2Artifacts`'s
+    existing `{deterministicName}` convention exactly); default name
+    `gate3-profile-<ISO>.{json,md}`.
 
-## Live-flow surprise + how diagnosed (the one real finding)
+## TDD RED → GREEN
 
-The very first live run went RED — but NOT in the oracle's assertions. It failed
-inside Task 6's `parseMetricsJsonl` (gate2.ts:137) with a zod error:
+- **RED:** wrote `gate3Report.unit.test.ts` first, then moved
+  `report.ts`/`provenance.ts` out of the tree and ran
+  `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test
+  gate3Report` → `Cannot find module '../src/gate3/provenance.js'`, 1 file
+  failed, 0 tests collected.
+- Restored both files, re-ran → **GREEN:** `Test Files 1 passed (1)` /
+  `Tests 21 passed (21)` on the first implementation attempt (no fix-up
+  round needed).
+- `pnpm --filter @strata-code/live-compare build` → clean, no `tsc -b`
+  errors.
+- Gate-3 group: `PATH=/opt/homebrew/bin:$PATH pnpm --filter
+  @strata-code/live-compare test gate3` → **`Test Files 11 passed (11)` /
+  `Tests 75 passed (75)`**, 72.5s (includes the real cold/warm/child/daemon
+  suites from Tasks 1-6, unaffected by this task).
 
-```
-Invalid input: expected number, received null   (path: worker.validateNs)
-Invalid input: expected number, received null   (path: worker.exportNs)
-```
+## Unit-suite coverage (21 tests, `gate3Report.unit.test.ts`)
 
-Root cause, traced across the stack (no threshold touched):
-- The daemon's Rust `WorkerSelfMetrics`
-  (`crates/strata-kernel/src/bridge/protocol.rs:955-962`) declares each
-  per-stage field as `Option<u64>` with **no** `#[serde(skip_serializing_if)]`.
-  A stage a run never entered (`validateNs`/`exportNs` on an analyze-only run)
-  is therefore serialized into the `--metrics` JSONL as an explicit
-  `"validateNs": null` — NOT omitted. This is the authoritative producer format
-  (the daemon is landed; the Rust suite `local_service_metrics.rs` reads this
-  same JSONL).
-- Task 6's zod schema (`gate2.ts` `workerSelfMetricsSchema`) declared those
-  fields `nonNegInt.optional()`. Zod `.optional()` accepts omitted/`undefined`
-  but REJECTS `null`. Task 6's unit fixture (`gate2Profile.unit.test.ts`) used
-  *omitted* fields, so this mismatch was never exercised until this first live
-  gate.
+- `corpusState`: the brief's PASS (ucb95 1.18)/FAIL (lcb95 1.4)/
+  INCONCLUSIVE (straddle) fixtures resolve correctly; a FAIL memory
+  verdict alone (ratios PASS) still drives FAIL; a lifecycle mismatch does
+  NOT affect corpusState (proves the exclusion rule).
+- `buildGate3Report` precedence: PASS+PASS→PASS, PASS+FAIL→FAIL (both
+  orders), PASS+INCONCLUSIVE→INCONCLUSIVE, FAIL+INCONCLUSIVE→FAIL;
+  provenance threaded through unchanged (`toEqual`).
+- Medium-only never PASS: PASS-only corpus → INCONCLUSIVE (`big1k`
+  `undefined`); FAIL-only → FAIL (not capped); INCONCLUSIVE-only →
+  INCONCLUSIVE.
+- Markdown banner: PASS report contains `## Verdict: PASS` and the literal
+  `1.1800` (decisive corpus's ucb95); FAIL contains `## Verdict: FAIL` and
+  `1.4000` (the falsifying lcb95); INCONCLUSIVE contains `## Verdict:
+  INCONCLUSIVE` and `1.3200`; provenance fields (headSha/harnessDigest/
+  daemonBinarySha) and both `### medium`/`### big1k` sections present.
+- `writeGate3Artifacts`: deterministic-name files exist at the expected
+  paths, JSON round-trips to the same verdict/provenance, `coldPairs`/
+  `warmPairs` retained verbatim (length + a spot-checked field); default
+  (non-deterministic) name matches the timestamped pattern.
+- **One real, unmocked `collectProvenance()` smoke test** (no mocks): 40-hex
+  `headSha`, boolean `dirty`, two real 64-hex sha256 digests
+  (`harnessDigest` over the actually-built `dist/gate3/**`,
+  `daemonBinarySha` over the actually-built `target/debug/strata-kernel-
+  service`), non-empty `os`/`cpu`, `nodeVersion` matching `v\d+\.`,
+  `rustVersion` containing "rustc", and the injected `scheduleSeed`/
+  `timestamp` passed through untouched. 441ms.
 
-Fix — consumer-side, minimal, matching the producer's real wire format:
-- `workerSelfMetricsSchema` per-stage fields `.optional()` → `.nullish()`
-  (nullable + optional): a tolerant superset that accepts the daemon's `null`
-  AND a hand-omitted field, so the pure-unit test stays green too.
-- Widened the hand-written `Gate2Profile.workerRuns[].worker` interface stage
-  fields to `number | null` (optional) to mirror the emission, and narrowed the
-  one markdown-render use of `validateNs` from `!== undefined` to `!= null` so
-  `tsc -b` passes.
+## Files changed
 
-This is a genuine Task-6 defect, fixed in the direction of the authoritative
-producer. It does NOT weaken the acceptance oracle — the eight categories,
-phase coverage, all-`ok`, and cross-invariants are untouched and all passed on
-the real flow once the parser accepted valid daemon output. (Rejected
-alternative: changing the daemon to omit `null` fields — a higher-blast-radius
-edit to tested Rust serialization that other consumers already handle as
-`null`.)
-
-## RED → GREEN evidence
-
-- **RED (pre-fix):** `Test Files 1 failed | 19 passed (20)` /
-  `Tests 1 failed | 158 passed (159)` — `parseMetricsJsonl` zod
-  `invalid_type … received null` at `worker.validateNs`/`worker.exportNs`.
-- **GREEN (post-fix, cold live run):** `Test Files 20 passed (20)` /
-  `Tests 159 passed (159)`; `gate2Observability` ~223 s (cold: real daemon +
-  Node bridge workers + repeated tsc). The oracle's 8 categories + invariants
-  all held on the live instrumented flow.
-- **GREEN (via the new `kernel:gate2:test`, warm):**
-  `✓ tests/gate2Observability.test.ts (1 test) 3348ms`,
-  `✓ tests/gate2Profile.unit.test.ts (10 tests)`, `Test Files 2 passed (2)` /
-  `Tests 11 passed (11)`.
-
-## Full verification tails
-
-`PATH=/opt/homebrew/bin:$PATH pnpm kernel:full-key-free:test` → **EXIT_CODE=0**,
-zero `FAILED`/`error[`/`ERR_PNPM` lines. Terminal segment (appended gate2 leg):
-
-```
-> vitest run gate2
- ✓ tests/gate2Observability.test.ts (1 test) 3348ms
- ✓ tests/gate2Profile.unit.test.ts (10 tests) 6ms
- Test Files  2 passed (2)
-      Tests  11 passed (11)
-EXIT_CODE=0
-```
-
-`PATH=/opt/homebrew/bin:$PATH pnpm -r test` → **EXIT_CODE=0**, zero failure
-lines. Per-package summaries:
-
-```
-packages/ingest        Test Files  4 passed (4)
-packages/store         Test Files 36 passed (36)
-packages/render        Test Files  3 passed (3)
-packages/verify        Test Files 16 passed (16)
-packages/agent         Test Files 20 passed | 1 skipped (21)
-packages/kernel-bridge Test Files  6 passed (6)
-packages/bench         Test Files 16 passed (16)
-packages/cli           Test Files  7 passed (7)
-packages/live-compare  Test Files 20 passed (20)  /  Tests 159 passed (159)
-EXIT_CODE=0
-```
-
-## Files changed (committed)
-
-- `packages/live-compare/tests/gate2Observability.test.ts` (new — the oracle)
-- `packages/live-compare/src/gate2.ts` (parser nullability fix — Task-6 defect)
-- `package.json` (`kernel:gate2:test`; extend `kernel:full-key-free:test`)
+- `packages/live-compare/src/gate3/report.ts` (new)
+- `packages/live-compare/src/gate3/provenance.ts` (new)
+- `packages/live-compare/tests/gate3Report.unit.test.ts` (new, 21 tests)
 - `.superpowers/sdd/task-7-report.md` (this report)
 
 ## Self-review
 
-- Oracle content is verbatim from the brief; the only edit is `__dirname` →
-  `import.meta.dirname` (mechanical, category a). No assertion substance changed.
-- The parser fix targets the authoritative producer (daemon emits `null`); it
-  broadens acceptance rather than narrowing a check and keeps the pure-unit test
-  green.
-- `kernel:gate2:test` mirrors `kernel:gate1:test`'s prelude exactly and ends in
-  `test gate2`. `kernel:full-key-free:test` now ends `… && pnpm
-  kernel:gate1:test && pnpm kernel:gate2:test`.
-- Both long verifications were run to completion (backgrounded run + completion
-  sentinel to beat the 10-min tool cap; the supervisor did not kill either) and
-  both are EXIT_CODE=0.
+- Verdict precedence, corpus-state derivation, and the medium-only-never-
+  PASS cap are implemented exactly as specified in the orchestrator brief
+  and independently re-derived from the plan's own vocabulary section; both
+  match.
+- `collectProvenance`'s impure collectors are fully isolated in
+  `provenance.ts`, imported into `report.ts` only as a type — verified by
+  the RED run (deleting the impl files, not just report.ts, still failed
+  cleanly on the missing module, and the fixture tests never call
+  `collectProvenance`).
+- No existing file was modified — `gate1.ts`'s `kernelServiceBinary()` and
+  `gate3/schedule.ts`'s `SchedulePair`/`Sample` types were consumed as-is,
+  not changed. `index.ts` was left unchanged: no other `gate3/*` module is
+  re-exported there either (confirmed by grep before starting), so
+  `report.ts`/`provenance.ts` follow the same "import directly from
+  `src/gate3/...js`" convention every other gate3 test file already uses.
+- Markdown row n/p50 fields are `RatioVerdict`-external (that type has no
+  `n`/`p50`) — derived from the optional `coldPairs`/`warmPairs` when
+  present, else "n/a"; this is a judgment call flagged for operator
+  awareness below since the plan text doesn't spell out where n/p50 come
+  from.
 
 ## Concerns
 
-1. **Task-6 defect fix touches landed code.** I edited `gate2.ts` (Task 6's
-   module) rather than only my two nominal files. This is the honest, minimal
-   fix for a genuine wire-format/parser mismatch the first live run exposed; it
-   is consumer-side and preserves the oracle. Flagged for operator awareness.
-2. **A foreign uncommitted change was left out of my commit.**
-   `.superpowers/sdd/task-6-report.md` showed as modified during my session
-   though the tree started clean and I never authored it — it is the gate-2
-   slice's own Task-6 report (the committed version is still the gate-1 one),
-   evidently written to disk but not committed by the Task-6 execution. I did
-   NOT `git add -A` blindly (which would have swept it in); I staged only my
-   Task-7 files explicitly. The `task-6-report.md` change is left unstaged for
-   its owner to commit.
-
-## Final-review fix round
-
-**Finding (whole-branch review):** the acceptance oracle's worker-starts
-cross-check was vacuous. `buildGate2Profile` set
-`totals.workerStarts = workerRunRecords.length`, so
-`expect(profile.totals.workerStarts).toBe(profile.workerRuns.length)` in
-`gate2Observability.test.ts` was a tautology. The real spawn-anchored counter
-(`Kernel::worker_starts_total()`, already public) never reached the JSONL, so a
-spawned child that failed to produce a terminal `workerRun` record would have
-been invisible to the gate oracle.
-
-**Fix (exactly as scoped — no wire/audit/recovery/workerRun changes):**
-
-1. **Rust producer.** `MetricsRecord::Request` gained a
-   `worker_starts_total: u64` field (auto camelCased to `workerStartsTotal` by
-   the enum's `rename_all_fields`), documented one line as a monotonic
-   daemon-lifetime counter. `MetricsRecord::request(...)` takes it as a new arg;
-   `session.rs::emit_request_metrics` populates it from
-   `self.kernel.worker_starts_total()` at emission. Recovery/workerRun records,
-   the audit journal, and the wire protocol are untouched; metrics stay opt-in.
-2. **Rust integration test.** `local_service_metrics.rs` now asserts every
-   request record carries `workerStartsTotal` and that the FINAL request
-   record's value equals that daemon's total `workerRun` record count (all
-   outcomes) — closing the "spawn without a terminal record" hole at the
-   integration level. Existing assertions kept.
-3. **TS consumer.** `requestRecordSchema` gained required
-   `workerStartsTotal: nonNegInt`. `buildGate2Profile` now splits the
-   concatenated cold+restart stream into its two daemon legs at the
-   `recovered:true` recovery boundary (seq resets per daemon, so it is not a
-   cross-leg key — the recovery record is), and a `legWorkerStarts` helper takes
-   each leg's final request record's `workerStartsTotal`, **throwing** if it
-   differs from that leg's `workerRun` count.
-   `totals.workerStarts = coldFinal + restartFinal` — the real spawn-counter
-   total, not the drain-derived record count.
-4. **Oracle unchanged.** `gate2Observability.test.ts`'s
-   `expect(profile.totals.workerStarts).toBe(profile.workerRuns.length)` is
-   retained as the readable surface assertion; it now tests real data (the
-   builder would have thrown on any per-leg spawn/terminal mismatch first). No
-   other assertion weakened.
-5. **Unit test.** `gate2Profile.unit.test.ts` fixtures gained the required field
-   (submit=1, advance=2), and one new case (`advance.workerStartsTotal=3` vs 2
-   worker runs → builder throws `/spawn\/terminal mismatch/`). 10 → 11 tests.
-
-**Commands + output tails (all foreground, `PATH=/opt/homebrew/bin:$PATH`):**
-
-- `cargo test -p strata-kernel --test local_service_metrics` →
-  `test result: ok. 2 passed; 0 failed`.
-- Three-config feature matrix (compile+test), each verified via captured exit
-  code: default `EXIT=0` (36 `test result: ok` lines, 0 failures),
-  `--features coordination-test-api` `EXIT=0`, `--features redb-spike-api`
-  `EXIT=0`; zero `FAILED`/`panicked`/`error[` lines in any.
-- `pnpm kernel:gate2:test` (builds daemon default + redb-spike-api, live flow) →
-  `Test Files 2 passed (2)` / `Tests 12 passed (12)`
-  (`gate2Observability` live 3671ms — the new per-leg cross-check did NOT throw
-  on real daemon output; `gate2Profile.unit` 11 tests).
-- `pnpm --filter @strata-code/kernel-bridge build && … live-compare build && …
-  live-compare test` → `BUILD_EXIT=0`, `TEST_EXIT=0`,
-  `Test Files 20 passed (20)` / `Tests 160 passed (160)` (was 159; +1 new unit
-  case), duration 269s.
-
-**Files changed:** `crates/strata-kernel/src/bin/strata_kernel_service/metrics.rs`,
-`crates/strata-kernel/src/bin/strata_kernel_service/session.rs`,
-`crates/strata-kernel/tests/local_service_metrics.rs`,
-`packages/live-compare/src/gate2.ts`,
-`packages/live-compare/tests/gate2Profile.unit.test.ts`, and this report.
-`gate2Observability.test.ts` deliberately unchanged.
+1. **n/p50 in the Markdown table are derived, not part of `RatioVerdict`.**
+   The plan's `RatioVerdict` shape (already landed, Task 3) is
+   `{p95Kernel, p95Sqlite, pointRatio, ucb95, lcb95, state}` — no `n`, no
+   `p50`. To satisfy "one row per (corpus, mode) with n/p50/p95" I added
+   optional `coldPairs`/`warmPairs` to `Gate3CorpusReport` and compute n/p50
+   from them via the existing `nearestRankDistribution` when a caller
+   supplies the raw pairs (Task 8/9's real runs will); fixture-only
+   `Gate3CorpusReport`s (this task's own tests) render "n/a" there. This is
+   an additive, backward-compatible extension of the plan's sketch, not a
+   change to any already-landed type.
+2. **A foreign uncommitted change was left out of my commit**, matching the
+   documented gate-2 Task-7 precedent: `.superpowers/sdd/task-6-report.md`
+   shows modified in `git status` (Task 6's own report update, not
+   authored by me this session). I did not `git add -A`; I staged only my
+   three files explicitly.
