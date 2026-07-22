@@ -35,12 +35,35 @@ import {
 
 const MAX_ADVANCE_ATTEMPTS = 10;
 
-/** Resolve the interface named `name` inside `target.modulePath`, filtering out same-named declarations in other (replicated-corpus) copies. */
+/**
+ * Resolve the interface `declarationId` to rename.
+ *
+ * The single-copy case (`examples/medium`) has exactly one match and returns it
+ * directly. In a REPLICATED corpus (gate-3 big1k) the same interface name
+ * exists once per `src/copyNN` — so `find_declarations` returns many. Unlike the
+ * SQLite arm (which selects the specific `target.modulePath` via
+ * `modulePathOf`), the kernel arm has NO module-path information to select by:
+ * the kernel graph's `Module` nodes carry an EMPTY `payload` (verified by
+ * probing the live daemon's `inspect_nodes` — a Module's payload is `""`), so
+ * there is nothing to match `target.modulePath` against. That is a genuine
+ * asymmetry in the daemon's node model, not something this harness can recover
+ * per-call.
+ *
+ * It does not need to: every `src/copyNN` copy is a verbatim, self-contained
+ * replica (identical source text, identical INTRA-copy reference count — imports
+ * are copy-relative), and validation tsc-checks the WHOLE corpus regardless of
+ * which copy is mutated. So renaming ANY single one of the equally-shaped
+ * matches is a measurement-equivalent timed mutation. We pick deterministically
+ * (lexicographically-smallest `nodeId`) so a seeded run is fully reproducible.
+ * `target.modulePath` is retained in the wire contract for the SQLite arm's
+ * precise selection and for provenance; the kernel arm simply cannot honor it.
+ */
 async function resolveTargetDeclarationId(
   client: CoordinationClient,
   target: ChildRenameTarget,
   name: string
 ): Promise<string> {
+  void target;
   const discovery = expectResult(
     await client.findDeclarations(name, "interface", DISCOVERY_DEADLINE_MS),
     "declarations"
@@ -48,21 +71,8 @@ async function resolveTargetDeclarationId(
   if (discovery.declarations.length === 0) {
     throw new Error(`kernel-child: no interface named ${JSON.stringify(name)} found`);
   }
-  if (discovery.declarations.length === 1) {
-    return discovery.declarations[0]!.nodeId;
-  }
-  const moduleIds = [...new Set(discovery.declarations.map((declaration) => declaration.moduleId))];
-  const inspected = expectResult(await client.inspectNodes(moduleIds, DISCOVERY_DEADLINE_MS), "nodes");
-  const modulePathById = new Map(inspected.nodes.map((node) => [node.nodeId, node.payload]));
-  const match = discovery.declarations.find(
-    (declaration) => modulePathById.get(declaration.moduleId) === target.modulePath
-  );
-  if (!match) {
-    throw new Error(
-      `kernel-child: no interface named ${JSON.stringify(name)} found in module ${target.modulePath}`
-    );
-  }
-  return match.nodeId;
+  const chosen = [...discovery.declarations].sort((a, b) => a.nodeId.localeCompare(b.nodeId))[0]!;
+  return chosen.nodeId;
 }
 
 interface MutationOutcome {

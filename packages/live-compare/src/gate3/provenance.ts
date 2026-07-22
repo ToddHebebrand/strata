@@ -40,7 +40,19 @@ export interface Provenance {
   rustVersion: string;
   scheduleSeed?: number;
   timestamp?: string;
+  /**
+   * Task 8 (Task-7 review obligation 1): the metrics mode of this run, made
+   * explicit in the committed artifact. Always `"timing:off;characterization:on"`
+   * for a real gate-3 run — the noninferiority ratio is measured metrics-OFF on
+   * both arms (B1), and the separate kernel-server characterization is the only
+   * metrics-ON leg. Optional so hand-built `Provenance` unit fixtures that
+   * predate this field keep compiling and `toEqual`-comparing unchanged.
+   */
+  metricsMode?: string;
 }
+
+/** The canonical metrics-mode string for a real gate-3 run (timing metrics-off both arms; characterization metrics-on). */
+export const GATE3_METRICS_MODE = "timing:off;characterization:on";
 
 function sha256Hex(value: Buffer | string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -123,6 +135,8 @@ export interface CollectProvenanceOptions {
   scheduleSeed?: number;
   /** Injected by the caller — this module never calls `Date.now()`/`new Date()` itself. */
   timestamp?: string;
+  /** Metrics mode string for the run; defaults to `GATE3_METRICS_MODE`. */
+  metricsMode?: string;
 }
 
 /**
@@ -144,6 +158,7 @@ export function collectProvenance(options: CollectProvenanceOptions = {}): Prove
     nodeVersion: process.version,
     rustVersion: rustcVersion(),
     scheduleSeed: options.scheduleSeed,
-    timestamp: options.timestamp
+    timestamp: options.timestamp,
+    metricsMode: options.metricsMode ?? GATE3_METRICS_MODE
   };
 }

@@ -81,6 +81,12 @@ async function resolveTargetDeclarationId(
   target: RunnerCorpus["target"],
   name: string
 ): Promise<string> {
+  // See kernel-child.ts's identical helper for the full rationale: the kernel
+  // graph's Module nodes carry no path payload, so the kernel arm cannot select
+  // a replicated copy by `target.modulePath`. Every copy is structurally
+  // identical and validation covers the whole corpus, so a deterministic pick
+  // (smallest nodeId) is a measurement-equivalent, reproducible choice.
+  void target;
   const discovery = expectResult(
     await client.findDeclarations(name, "interface", DISCOVERY_DEADLINE_MS),
     "declarations"
@@ -88,21 +94,7 @@ async function resolveTargetDeclarationId(
   if (discovery.declarations.length === 0) {
     throw new Error(`characterizeKernelServer: no interface named ${JSON.stringify(name)} found`);
   }
-  if (discovery.declarations.length === 1) {
-    return discovery.declarations[0]!.nodeId;
-  }
-  const moduleIds = [...new Set(discovery.declarations.map((declaration) => declaration.moduleId))];
-  const inspected = expectResult(await client.inspectNodes(moduleIds, DISCOVERY_DEADLINE_MS), "nodes");
-  const modulePathById = new Map(inspected.nodes.map((node) => [node.nodeId, node.payload]));
-  const match = discovery.declarations.find(
-    (declaration) => modulePathById.get(declaration.moduleId) === target.modulePath
-  );
-  if (!match) {
-    throw new Error(
-      `characterizeKernelServer: no interface named ${JSON.stringify(name)} found in module ${target.modulePath}`
-    );
-  }
-  return match.nodeId;
+  return [...discovery.declarations].sort((a, b) => a.nodeId.localeCompare(b.nodeId))[0]!.nodeId;
 }
 
 /** Read and fully re-parse the metrics JSONL sink. Simple and robust (whole-file re-parse each call) — the file is small for `n` in the tens, and every record is guaranteed flushed before the daemon's response reaches us (see `metrics.rs`: `emit_request_metrics` runs synchronously before the mutation's response is returned, and `MetricsSink::emit` flushes every record). */

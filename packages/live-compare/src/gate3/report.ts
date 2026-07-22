@@ -13,8 +13,36 @@ import { join } from "node:path";
 import type { KernelServerCharacterization } from "./characterize.js";
 import type { Provenance } from "./provenance.js";
 import type { WarmTrend } from "./runners.js";
-import type { SchedulePair } from "./schedule.js";
+import type { PairOrder, SchedulePair } from "./schedule.js";
 import { nearestRankDistribution, type MemoryVerdict, type RatioVerdict, type RatioVerdictState } from "./stats.js";
+
+/**
+ * Task 8 (Task-7 review obligation 1): per-schedule provenance carried on the
+ * committed artifact — the fixed `seed`, the sample count `n` (the number of
+ * PAIRS; each pair is one kernel + one sqlite sample, so `n` is the N per
+ * (corpus, mode) for BOTH arms), and the fully-realized AB/BA `order` sequence
+ * the seed produced. Together these let any reader reproduce the exact schedule
+ * a measurement ran, not just its summary.
+ */
+export interface ScheduleProvenance {
+  seed: number;
+  /** Pairs run (N per (corpus, mode); each pair yields one kernel + one sqlite sample). */
+  n: number;
+  /** The realized AB/BA order per pair, in pair order — deterministic for the seed. */
+  realizedOrder: PairOrder[];
+}
+
+/**
+ * Task 8 (Task-7 review obligation 1): per-corpus identity carried on the
+ * committed artifact — the corpus content `digest`, its `moduleCount`, and the
+ * `copies` used to build it (1 for baseline, 46 for big1k; `medium` reports its
+ * own 22 / 1). Binds the measurement to the exact corpus it ran against.
+ */
+export interface CorpusInfo {
+  digest: string;
+  moduleCount: number;
+  copies: number;
+}
 
 // ---------------------------------------------------------------------------
 // Shapes — plan `docs/superpowers/plans/2026-07-20-iteration6-slice-a-gate3.md`,
@@ -41,6 +69,20 @@ export interface Gate3CorpusReport {
   coldPairs?: SchedulePair[];
   /** Raw per-pair samples backing `warm` (from `runWarm`), when the caller has them. */
   warmPairs?: SchedulePair[];
+  /**
+   * Task 8 (Task-7 review obligation 1): the corpus this report measured —
+   * digest + module count + copies. Optional so hand-built unit-test fixtures
+   * that never built a real corpus keep compiling; the real artifact path
+   * (`run-big.ts`) always populates it.
+   */
+  corpusInfo?: CorpusInfo;
+  /**
+   * Task 8 (Task-7 review obligation 1): per-mode schedule provenance (seed +
+   * realized order + N). Optional for the same fixture-compat reason; the real
+   * artifact path always populates `cold`/`warm` (and `baseline` when a
+   * baseline-RSS schedule ran for this corpus).
+   */
+  schedules?: { cold: ScheduleProvenance; warm: ScheduleProvenance; baseline?: ScheduleProvenance };
 }
 
 /**
@@ -131,6 +173,61 @@ export function buildGate3Report(
 }
 
 // ---------------------------------------------------------------------------
+// Machine verdict (exit code) — lifecycle parity is DISPOSITIVE here.
+// ---------------------------------------------------------------------------
+
+/** `true` iff a corpus's traced lifecycle counts are the canonical 4-vs-4. */
+function lifecycleOk(report: Gate3CorpusReport): boolean {
+  return report.lifecycle.kernel === 4 && report.lifecycle.sqlite === 4;
+}
+
+/** The overall machine outcome for a gate-3 run: a tri-state exit code plus a human reason. */
+export interface Gate3MachineVerdict {
+  /** 0 = overall PASS; 2 = measured FAIL; 1 = INCONCLUSIVE or an integrity failure (e.g. lifecycle mismatch). */
+  exitCode: 0 | 1 | 2;
+  reason: string;
+}
+
+/**
+ * Task 8 (Task-7 review obligation 3): the machine verdict `run-big.ts` exits
+ * on, with lifecycle parity made **dispositive** — an overall PASS additionally
+ * REQUIRES 4-vs-4 lifecycle parity on EVERY present corpus, so a lifecycle
+ * mismatch can never yield exit 0. Precedence:
+ *
+ *   - a measured `FAIL` anywhere -> exit 2 (the noninferiority falsifier
+ *     dominates; a lifecycle note is appended if one is also mismatched);
+ *   - else a lifecycle mismatch on any present corpus -> exit 1 (integrity
+ *     failure: the arms' call structures are not comparable, so no PASS can be
+ *     certified — this is the AND-lifecycle-into-PASS gate);
+ *   - else `INCONCLUSIVE` -> exit 1;
+ *   - else (`PASS` AND all lifecycles 4/4) -> exit 0.
+ *
+ * (With the recorded medium FAIL present, this returns exit 2 as expected — but
+ * the lifecycle gate is correct on its own, independent of that.)
+ */
+export function gate3MachineVerdict(report: Gate3Report): Gate3MachineVerdict {
+  const corpora: Array<{ label: string; corpus: Gate3CorpusReport }> = [{ label: "medium", corpus: report.medium }];
+  if (report.big1k) corpora.push({ label: "big1k", corpus: report.big1k });
+
+  const mismatches = corpora.filter(({ corpus }) => !lifecycleOk(corpus)).map(({ label }) => label);
+  const lifecycleNote = mismatches.length > 0 ? ` (WARNING: lifecycle mismatch on ${mismatches.join(", ")})` : "";
+
+  if (report.verdict === "FAIL") {
+    return { exitCode: 2, reason: `measured noninferiority FAIL${lifecycleNote}` };
+  }
+  if (mismatches.length > 0) {
+    return {
+      exitCode: 1,
+      reason: `lifecycle parity mismatch on ${mismatches.join(", ")} — cannot certify PASS (lifecycle is dispositive)`
+    };
+  }
+  if (report.verdict === "INCONCLUSIVE") {
+    return { exitCode: 1, reason: "INCONCLUSIVE (confidence interval straddles the 1.25x threshold)" };
+  }
+  return { exitCode: 0, reason: "overall PASS (both corpora present, all ratios PASS, lifecycle 4/4)" };
+}
+
+// ---------------------------------------------------------------------------
 // Markdown rendering + artifact writer.
 // ---------------------------------------------------------------------------
 
@@ -187,6 +284,7 @@ function renderMemoryRow(verdict: MemoryVerdict): string {
 function renderCorpusSection(label: string, report: Gate3CorpusReport): string[] {
   const lines: string[] = [];
   lines.push(`### ${label}`, "");
+  lines.push(...renderCorpusProvenance(report));
   lines.push(
     "| Corpus | Mode | n | p50(kernel) | p50(sqlite) | p95(kernel) | p95(sqlite) | ratio | ucb95 | lcb95 | state |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -232,9 +330,31 @@ function renderProvenanceHeader(provenance: Provenance): string[] {
     `- OS: ${provenance.os} / CPU: ${provenance.cpu}`,
     `- Node: ${provenance.nodeVersion} / Rust: ${provenance.rustVersion}`,
     `- Schedule seed: ${provenance.scheduleSeed ?? "n/a"}`,
+    `- Metrics mode: ${provenance.metricsMode ?? "n/a"}`,
     `- Timestamp: ${provenance.timestamp ?? "n/a"}`,
     ""
   ];
+}
+
+/** Per-corpus identity + per-mode schedule provenance lines (obligation 1), rendered when the caller attached them. */
+function renderCorpusProvenance(report: Gate3CorpusReport): string[] {
+  const lines: string[] = [];
+  if (report.corpusInfo) {
+    lines.push(
+      `Corpus: digest \`${report.corpusInfo.digest}\`, ${report.corpusInfo.moduleCount} modules, ` +
+        `${report.corpusInfo.copies} cop${report.corpusInfo.copies === 1 ? "y" : "ies"}`,
+      ""
+    );
+  }
+  if (report.schedules) {
+    const fmt = (label: string, s: ScheduleProvenance): string =>
+      `- ${label}: seed ${s.seed}, N=${s.n} (per arm), realized order ${s.realizedOrder.join("")}`;
+    lines.push("Schedules (N is pairs; each pair = 1 kernel + 1 sqlite sample):");
+    lines.push(fmt("cold", report.schedules.cold), fmt("warm", report.schedules.warm));
+    if (report.schedules.baseline) lines.push(fmt("baseline", report.schedules.baseline));
+    lines.push("");
+  }
+  return lines;
 }
 
 /**
@@ -296,8 +416,24 @@ export function renderGate3Markdown(report: Gate3Report): string {
 export function writeGate3Artifacts(
   report: Gate3Report,
   outDir: string,
-  options?: { deterministicName?: boolean }
+  options?: { deterministicName?: boolean; requireRawPairs?: boolean }
 ): { jsonPath: string; markdownPath: string } {
+  // Task 8 (Task-7 review obligation 2): on the REAL artifact path
+  // (`run-big.ts` passes `requireRawPairs: true`), every present corpus MUST
+  // carry non-empty coldPairs/warmPairs — a committed artifact that renders
+  // "n/a" for n is not acceptable. Fixture-only unit writes never set this flag.
+  if (options?.requireRawPairs) {
+    const corpora: Array<{ label: string; corpus: Gate3CorpusReport }> = [{ label: "medium", corpus: report.medium }];
+    if (report.big1k) corpora.push({ label: "big1k", corpus: report.big1k });
+    for (const { label, corpus } of corpora) {
+      if (!corpus.coldPairs || corpus.coldPairs.length === 0) {
+        throw new Error(`writeGate3Artifacts: ${label}.coldPairs is empty — raw pairs are mandatory on the committed artifact`);
+      }
+      if (!corpus.warmPairs || corpus.warmPairs.length === 0) {
+        throw new Error(`writeGate3Artifacts: ${label}.warmPairs is empty — raw pairs are mandatory on the committed artifact`);
+      }
+    }
+  }
   mkdirSync(outDir, { recursive: true });
   const base = options?.deterministicName
     ? "gate3-noninferiority-profile"
