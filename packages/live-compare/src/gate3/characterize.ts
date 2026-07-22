@@ -36,7 +36,14 @@ import {
   expectResult,
   kernelServiceBinary
 } from "../gate1.js";
-import { parseMetricsJsonl, type MetricsRecord, type RequestRecord, type WorkerRunRecord } from "../gate2.js";
+import {
+  maxDaemonPeakRssBytes,
+  maxWorkerPeakRssBytes,
+  parseMetricsJsonl,
+  type MetricsRecord,
+  type RequestRecord,
+  type WorkerRunRecord
+} from "../gate2.js";
 import { startKernelService } from "../service.js";
 import type { RunnerCorpus } from "./runners.js";
 import { nearestRankDistribution, type WallDistribution } from "./stats.js";
@@ -101,6 +108,77 @@ async function resolveTargetDeclarationId(
 /** Read and fully re-parse the metrics JSONL sink. Simple and robust (whole-file re-parse each call) — the file is small for `n` in the tens, and every record is guaranteed flushed before the daemon's response reaches us (see `metrics.rs`: `emit_request_metrics` runs synchronously before the mutation's response is returned, and `MetricsSink::emit` flushes every record). */
 function readAllMetricsRecords(metricsPath: string): MetricsRecord[] {
   return parseMetricsJsonl(readFileSync(metricsPath, "utf8"));
+}
+
+/** One iteration's validated window binding — see `bindIterationWindow`. */
+export interface IterationWindowBinding {
+  submitRecord: RequestRecord;
+  advanceRecord: RequestRecord;
+  /** All records newly appended in this iteration's window (request + workerRun alike), for RSS aggregation. */
+  newRecords: MetricsRecord[];
+  /** `records.length` as of this binding — the `priorOffset` the NEXT iteration's `bindIterationWindow` call must pass. */
+  newOffset: number;
+}
+
+/**
+ * Validates and binds one iteration's window of newly-appended metrics
+ * records to that iteration (plan Major 7): `records` is the FULL,
+ * currently-parsed metrics record array; `priorOffset` is the record count
+ * observed before this iteration ran (the previous call's `newOffset`, or 0
+ * for the first iteration). Only `records.slice(priorOffset)` — the records
+ * appended DURING this iteration — are inspected; older records (from a
+ * prior iteration, or from resolving the target before the loop started)
+ * are never re-examined, which is what prevents cross-iteration bleed.
+ *
+ * Requires exactly one new `submit_change_set` request record and exactly
+ * one new PUBLISHING (`publication !== null`) `advance_change_set` request
+ * record in that window — a non-publishing `advance_change_set` (still
+ * polling) is expected and ignored, but the count of *publishing* advances
+ * must be exactly 1. Any other count throws loudly, with the offset window
+ * in the message: a silent cross-iteration mix would corrupt the reported
+ * wall distributions.
+ *
+ * Pure and synchronous — no I/O, no daemon — so it is unit-testable
+ * directly against synthetic record arrays (see
+ * `tests/gate3Characterize.test.ts`'s `bindIterationWindow` suite).
+ */
+export function bindIterationWindow(
+  records: readonly MetricsRecord[],
+  priorOffset: number,
+  iteration: number
+): IterationWindowBinding {
+  const newRecords = records.slice(priorOffset);
+  const newOffset = records.length;
+
+  const newRequestRecords = newRecords.filter(
+    (record): record is RequestRecord => record.kind === "request"
+  );
+  const submitRecords = newRequestRecords.filter((record) => record.action === "submit_change_set");
+  const publishingAdvanceRecords = newRequestRecords.filter(
+    (record) => record.action === "advance_change_set" && record.publication !== null
+  );
+
+  if (submitRecords.length !== 1) {
+    throw new Error(
+      `characterizeKernelServer: iteration ${iteration} bound ${submitRecords.length} ` +
+        `submit_change_set metrics record(s) (expected exactly 1) — cross-iteration bleed in the ` +
+        `metrics JSONL (offset window [${priorOffset}, ${newOffset}))`
+    );
+  }
+  if (publishingAdvanceRecords.length !== 1) {
+    throw new Error(
+      `characterizeKernelServer: iteration ${iteration} bound ${publishingAdvanceRecords.length} ` +
+        `publishing advance_change_set metrics record(s) (expected exactly 1) — cross-iteration bleed ` +
+        `in the metrics JSONL (offset window [${priorOffset}, ${newOffset}))`
+    );
+  }
+
+  return {
+    submitRecord: submitRecords[0]!,
+    advanceRecord: publishingAdvanceRecords[0]!,
+    newRecords: [...newRecords],
+    newOffset
+  };
 }
 
 /**
@@ -191,44 +269,24 @@ export async function characterizeKernelServer(
       }
 
       const allRecords = readAllMetricsRecords(metricsPath);
-      const newRecords = allRecords.slice(recordsSoFar);
-      recordsSoFar = allRecords.length;
+      const { submitRecord, advanceRecord, newRecords, newOffset } = bindIterationWindow(
+        allRecords,
+        recordsSoFar,
+        iteration
+      );
+      recordsSoFar = newOffset;
+
+      submitSamples.push(submitRecord.wallNs);
+      advanceSamples.push(advanceRecord.wallNs);
 
       const newRequestRecords = newRecords.filter(
         (record): record is RequestRecord => record.kind === "request"
       );
-      const submitRecords = newRequestRecords.filter((record) => record.action === "submit_change_set");
-      const publishingAdvanceRecords = newRequestRecords.filter(
-        (record) => record.action === "advance_change_set" && record.publication !== null
-      );
-
-      if (submitRecords.length !== 1) {
-        throw new Error(
-          `characterizeKernelServer: iteration ${iteration} bound ${submitRecords.length} ` +
-            `submit_change_set metrics record(s) (expected exactly 1) — cross-iteration bleed in the ` +
-            `metrics JSONL (offset window [${recordsSoFar - newRecords.length}, ${recordsSoFar}))`
-        );
-      }
-      if (publishingAdvanceRecords.length !== 1) {
-        throw new Error(
-          `characterizeKernelServer: iteration ${iteration} bound ${publishingAdvanceRecords.length} ` +
-            `publishing advance_change_set metrics record(s) (expected exactly 1) — cross-iteration bleed ` +
-            `in the metrics JSONL (offset window [${recordsSoFar - newRecords.length}, ${recordsSoFar}))`
-        );
-      }
-
-      submitSamples.push(submitRecords[0]!.wallNs);
-      advanceSamples.push(publishingAdvanceRecords[0]!.wallNs);
-
       const newWorkerRunRecords = newRecords.filter(
         (record): record is WorkerRunRecord => record.kind === "workerRun"
       );
-      daemonRssPerIteration.push(
-        newRequestRecords.reduce((max, record) => Math.max(max, record.daemonPeakRssBytes), 0)
-      );
-      workerRssPerIteration.push(
-        newWorkerRunRecords.reduce((max, record) => Math.max(max, record.worker?.peakRssBytes ?? 0), 0)
-      );
+      daemonRssPerIteration.push(maxDaemonPeakRssBytes(newRequestRecords));
+      workerRssPerIteration.push(maxWorkerPeakRssBytes(newWorkerRunRecords));
     }
 
     return {

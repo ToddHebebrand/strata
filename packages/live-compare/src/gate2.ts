@@ -236,6 +236,22 @@ function legWorkerStarts(legRecords: MetricsRecord[], legName: string): number {
   return workerStartsTotal;
 }
 
+/**
+ * Max `daemonPeakRssBytes` across `requestRecords`, 0 if empty. Shared by
+ * this module's own profile aggregation (below) and gate 3's metrics-on
+ * characterization (`gate3/characterize.ts`) — reused rather than
+ * duplicated (both consume the same `RequestRecord` shape this module
+ * defines).
+ */
+export function maxDaemonPeakRssBytes(requestRecords: readonly RequestRecord[]): number {
+  return requestRecords.reduce((max, record) => Math.max(max, record.daemonPeakRssBytes), 0);
+}
+
+/** Max `worker.peakRssBytes` across `workerRunRecords` (a `null` worker counts as 0), 0 if empty. Shared the same way as `maxDaemonPeakRssBytes`. */
+export function maxWorkerPeakRssBytes(workerRunRecords: readonly WorkerRunRecord[]): number {
+  return workerRunRecords.reduce((max, record) => Math.max(max, record.worker?.peakRssBytes ?? 0), 0);
+}
+
 function toRecoveryLeg(record: RecoveryRecord): RecoveryLeg {
   return {
     recovered: record.recovered,
@@ -335,14 +351,8 @@ export function buildGate2Profile(records: MetricsRecord[]): Gate2Profile {
       // spawn-counter total, not the drain-derived record count — a spawn that
       // produced no terminal record would have thrown in `legWorkerStarts`.
       workerStarts: coldWorkerStarts + restartWorkerStarts,
-      daemonPeakRssBytes: requestRecords.reduce(
-        (max, record) => Math.max(max, record.daemonPeakRssBytes),
-        0
-      ),
-      maxWorkerPeakRssBytes: workerRunRecords.reduce(
-        (max, record) => Math.max(max, record.worker?.peakRssBytes ?? 0),
-        0
-      )
+      daemonPeakRssBytes: maxDaemonPeakRssBytes(requestRecords),
+      maxWorkerPeakRssBytes: maxWorkerPeakRssBytes(workerRunRecords)
     }
   };
 }

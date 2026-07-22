@@ -186,6 +186,8 @@ export interface MemoryVerdict {
  * KERNEL arm's call. This keeps `memoryVerdict` a single pure function for
  * both arms while still expressing the plan's asymmetric rule (only the
  * KERNEL comparison can be downgraded by an explosive SQLite control).
+ * Passing `sqliteControl` with `arm === "sqlite"` is a caller bug, not a
+ * silent no-op or a self-downgrade — it throws.
  *
  * Guards `medium === baseline` (the growth-ratio denominator) by throwing —
  * a zero/undefined denominator must never silently produce `NaN` or
@@ -207,6 +209,14 @@ export function memoryVerdict(
   }
   if (!(growthFactor > 0)) {
     throw new Error(`memoryVerdict: growthFactor must be a positive number, got ${growthFactor}`);
+  }
+  if (sqliteControl && arm === "sqlite") {
+    throw new Error(
+      "memoryVerdict: sqliteControl was passed for arm \"sqlite\" — it exists to downgrade the KERNEL " +
+        "comparison against an explosive SQLite control, and would be self-referential for the SQLite " +
+        "arm's own verdict; compute the SQLite arm's verdict without it, first, then thread its " +
+        "growthAdjusted into the KERNEL call"
+    );
   }
 
   const cap = caps[arm];

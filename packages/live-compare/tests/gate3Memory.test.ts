@@ -120,4 +120,16 @@ describe("memoryVerdict", () => {
       memoryVerdict("kernel", { baseline: 200, medium: 200, big1k: 380 }, GENEROUS_CAPS, GROWTH_FACTOR)
     ).toThrow();
   });
+
+  it("guards against passing sqliteControl for arm===\"sqlite\" (self-referential, always a caller bug)", () => {
+    expect(() =>
+      memoryVerdict(
+        "sqlite",
+        { baseline: 200, medium: 260, big1k: 380 },
+        GENEROUS_CAPS,
+        GROWTH_FACTOR,
+        { growthAdjusted: 1.0 }
+      )
+    ).toThrow(/sqliteControl/);
+  });
 });
