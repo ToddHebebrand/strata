@@ -136,6 +136,55 @@ export function pairedP95RatioBootstrap(
 export type RatioVerdictState = "PASS" | "FAIL" | "INCONCLUSIVE";
 
 // ---------------------------------------------------------------------------
+// Task 6: lifecycle-call parity, derived from the runtime trace.
+// ---------------------------------------------------------------------------
+
+/** The sqlite-child.ts call order, as documented at child-protocol.ts's `ChildResult.lifecycle` and asserted verbatim in gate3Child.test.ts. */
+export const SQLITE_CANONICAL_LIFECYCLE = ["begin", "rename_symbol", "validate", "commit"] as const;
+
+/** The kernel-child.ts call order, as documented at child-protocol.ts's `ChildResult.lifecycle` and asserted verbatim in gate3Child.test.ts. */
+export const KERNEL_CANONICAL_LIFECYCLE = [
+  "begin_change_set",
+  "add_intent",
+  "submit_change_set",
+  "advance_change_set"
+] as const;
+
+/** `{ kernel, sqlite, equal }` — the traced call counts for each arm, and whether both traces are the expected canonical sequence. */
+export interface LifecycleParity {
+  kernel: number;
+  sqlite: number;
+  equal: boolean;
+}
+
+function sequenceEquals(trace: readonly string[], canonical: readonly string[]): boolean {
+  return trace.length === canonical.length && trace.every((call, index) => call === canonical[index]);
+}
+
+/**
+ * Lifecycle-call parity between the kernel and sqlite arms, derived from the
+ * ACTUAL `ChildResult.lifecycle` traces each Task-2 child recorded from its
+ * own wrapped calls — never a hand-list. `kernel`/`sqlite` are the traced
+ * call counts (currently 4 and 4). `equal` is true only when BOTH traces
+ * match their documented canonical sequence exactly (order and length) —
+ * count equality alone is not enough, so a same-length-but-reordered or
+ * substituted trace still reports `equal: false`. Because the counts come
+ * from the traces themselves, a future call-structure change in either
+ * child (e.g. an added or removed wrapped call) changes what this function
+ * reports automatically, instead of silently disagreeing with a stale
+ * hardcoded expectation.
+ */
+export function lifecycleParity(kernelTrace: readonly string[], sqliteTrace: readonly string[]): LifecycleParity {
+  const kernelMatchesCanonical = sequenceEquals(kernelTrace, KERNEL_CANONICAL_LIFECYCLE);
+  const sqliteMatchesCanonical = sequenceEquals(sqliteTrace, SQLITE_CANONICAL_LIFECYCLE);
+  return {
+    kernel: kernelTrace.length,
+    sqlite: sqliteTrace.length,
+    equal: kernelMatchesCanonical && sqliteMatchesCanonical
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Task 5 (half a): the baseline-adjusted, capped memory predicate.
 // ---------------------------------------------------------------------------
 
