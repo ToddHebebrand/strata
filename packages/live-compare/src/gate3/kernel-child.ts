@@ -25,8 +25,11 @@ import { CoordinationClient } from "../client.js";
 import { startKernelService } from "../service.js";
 import {
   childMaxRssBytes,
+  openChildLineSource,
   readChildRequest,
+  readChildStepRequest,
   writeChildMessage,
+  type ChildLineSource,
   type ChildRenameTarget
 } from "./child-protocol.js";
 
@@ -139,7 +142,12 @@ async function verifyRenamed(
   }
 }
 
-async function runPlan(corpusRoot: string, target: ChildRenameTarget, iterations: number): Promise<void> {
+async function runPlan(
+  corpusRoot: string,
+  target: ChildRenameTarget,
+  iterations: number,
+  awaitStep?: () => Promise<void>
+): Promise<void> {
   const service = await startKernelService(corpusRoot, {
     binaryPath: kernelServiceBinary(),
     env: credentialFreeEnv()
@@ -155,6 +163,7 @@ async function runPlan(corpusRoot: string, target: ChildRenameTarget, iterations
 
     let expectedCurrentName = target.declarationName;
     for (let iteration = 0; iteration < iterations; iteration += 1) {
+      if (awaitStep) await awaitStep();
       const nextName = iteration % 2 === 0 ? target.newName : target.declarationName;
 
       const { callerWallNs, lifecycle, operationId } = await runOneMutation(client, declarationId, nextName);
@@ -165,7 +174,8 @@ async function runPlan(corpusRoot: string, target: ChildRenameTarget, iterations
         callerWallNs,
         childMaxRssBytes: childMaxRssBytes(),
         published: true,
-        lifecycle
+        lifecycle,
+        childPid: process.pid
       });
     }
   } finally {
@@ -174,12 +184,24 @@ async function runPlan(corpusRoot: string, target: ChildRenameTarget, iterations
 }
 
 async function main(): Promise<void> {
-  const request = await readChildRequest();
+  const source: ChildLineSource = openChildLineSource();
+  const request = await readChildRequest(source);
   const resolvedRoot = resolve(request.corpusRoot);
   const iterations = request.mode === "cold" ? 1 : request.iterations;
+  const stepped = request.mode === "warm" && request.stepped === true;
 
-  await runPlan(resolvedRoot, request.target, iterations);
+  await runPlan(
+    resolvedRoot,
+    request.target,
+    iterations,
+    stepped
+      ? async () => {
+          await readChildStepRequest(source);
+        }
+      : undefined
+  );
 
+  source.close();
   writeChildMessage({ done: true });
 }
 

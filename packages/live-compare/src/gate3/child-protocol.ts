@@ -30,10 +30,30 @@ export const childRequestSchema = z
     target: renameTargetSchema,
     mode: z.enum(["cold", "warm"]),
     /** Ignored (forced to 1) in "cold" mode; the iteration count in "warm" mode. */
-    iterations: z.number().int().positive()
+    iterations: z.number().int().positive(),
+    /**
+     * Task 4 addition, additive and backward-compatible: only meaningful
+     * when `mode === "warm"`. When true, the child does NOT auto-loop
+     * through `iterations` eagerly; instead it awaits one `ChildStepRequest`
+     * line per iteration before computing and reporting that iteration's
+     * mutation. This is what lets a persistent-warm-child driver keep two
+     * long-lived children (one per arm) in per-iteration lockstep instead of
+     * letting both arms race each other's timed windows concurrently.
+     * Omitted (or false), the child behaves exactly as it always has —
+     * existing one-shot batch callers (Task 2/3 tests) are unaffected.
+     */
+    stepped: z.boolean().optional()
   })
   .strict();
 export type ChildRequest = z.infer<typeof childRequestSchema>;
+
+/**
+ * Task 4 addition: one per-iteration continuation signal, sent by the parent
+ * only when the initiating `ChildRequest.stepped` was true. The child reads
+ * exactly one of these before computing each iteration's mutation.
+ */
+export const childStepRequestSchema = z.object({ step: z.literal(true) }).strict();
+export type ChildStepRequest = z.infer<typeof childStepRequestSchema>;
 
 /** One completed, independently-verified mutation. */
 export const childResultSchema = z
@@ -44,7 +64,14 @@ export const childResultSchema = z
     childMaxRssBytes: z.number().nonnegative(),
     published: z.literal(true),
     /** The real call sequence, recorded as each wrapped call actually ran. */
-    lifecycle: z.array(z.string().min(1)).min(1)
+    lifecycle: z.array(z.string().min(1)).min(1),
+    /**
+     * Task 4 addition: this child process's own `process.pid`. Lets a
+     * cold-mode driver prove each sample came from a genuinely fresh
+     * process (distinct PIDs), and a warm-mode driver prove the opposite
+     * (one PID reused across all its iterations).
+     */
+    childPid: z.number().int().positive()
   })
   .strict();
 export type ChildResult = z.infer<typeof childResultSchema>;
@@ -56,22 +83,64 @@ export type ChildDone = z.infer<typeof childDoneSchema>;
 export const childMessageSchema = z.union([childResultSchema, childDoneSchema]);
 export type ChildMessage = z.infer<typeof childMessageSchema>;
 
-/** Read and parse the single request line off stdin. */
-export async function readChildRequest(stdin: NodeJS.ReadableStream = process.stdin): Promise<ChildRequest> {
+/**
+ * A persistent, closable source of newline-delimited lines off a stream.
+ * Task 4 addition: unlike the old one-shot `readChildRequest`, this stays
+ * open across multiple reads so a `stepped` warm child can read its initial
+ * `ChildRequest` and then N subsequent `ChildStepRequest` lines off the
+ * SAME underlying `readline.Interface` — reopening a second interface on
+ * the same stream risks losing already-buffered bytes the first interface
+ * read ahead but never emitted.
+ */
+export interface ChildLineSource {
+  /** Resolves with the next line, or rejects if the stream ends before one arrives. */
+  nextLine(): Promise<string>;
+  /** Detaches the underlying `readline.Interface` (and pauses its input) so nothing keeps the process's event loop alive on its account. */
+  close(): void;
+}
+
+export function openChildLineSource(stdin: NodeJS.ReadableStream = process.stdin): ChildLineSource {
   const reader = createInterface({ input: stdin });
-  const line = await new Promise<string>((resolveLine, reject) => {
-    let resolved = false;
-    reader.once("line", (value) => {
-      resolved = true;
-      reader.close();
-      resolveLine(value);
-    });
-    reader.once("close", () => {
-      if (!resolved) reject(new Error("readChildRequest: stdin closed before a request line arrived"));
-    });
-    stdin.once("error", reject);
+  const queued: string[] = [];
+  const waiters: Array<{ resolve: (line: string) => void; reject: (error: Error) => void }> = [];
+  let closed = false;
+
+  reader.on("line", (line) => {
+    const waiter = waiters.shift();
+    if (waiter) waiter.resolve(line);
+    else queued.push(line);
   });
+  reader.on("close", () => {
+    closed = true;
+    while (waiters.length > 0) {
+      waiters.shift()!.reject(new Error("openChildLineSource: stdin closed before a line arrived"));
+    }
+  });
+
+  return {
+    nextLine(): Promise<string> {
+      if (queued.length > 0) return Promise.resolve(queued.shift()!);
+      if (closed) return Promise.reject(new Error("openChildLineSource: stdin closed before a line arrived"));
+      return new Promise((resolveLine, reject) => {
+        waiters.push({ resolve: resolveLine, reject });
+      });
+    },
+    close(): void {
+      reader.close();
+    }
+  };
+}
+
+/** Read and parse one request line off `source`. */
+export async function readChildRequest(source: ChildLineSource): Promise<ChildRequest> {
+  const line = await source.nextLine();
   return childRequestSchema.parse(JSON.parse(line));
+}
+
+/** Read and parse one step-continuation line off `source` (only used in `stepped` warm mode). */
+export async function readChildStepRequest(source: ChildLineSource): Promise<ChildStepRequest> {
+  const line = await source.nextLine();
+  return childStepRequestSchema.parse(JSON.parse(line));
 }
 
 /** Write one newline-delimited JSON message to stdout. */

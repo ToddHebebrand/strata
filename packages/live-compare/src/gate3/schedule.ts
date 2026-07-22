@@ -23,6 +23,13 @@ export interface Sample {
   callerWallNs: number;
   childMaxRssBytes: number;
   published: true;
+  /**
+   * Task 4 addition: the child process's own PID, when the sample came from
+   * a real spawned child (`runCold`/`runWarm` always set this). Optional so
+   * pre-existing hand-built `ArmSampleInput` literals (Task 3's scheduler
+   * tests, which don't spawn real children) keep compiling unchanged.
+   */
+  childPid?: number;
 }
 
 /**

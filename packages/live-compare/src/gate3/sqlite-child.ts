@@ -29,8 +29,11 @@ import { commit, validate } from "@strata-code/verify";
 import { SQLITE_ARM_ACTOR, TASK_PROMPT, buildCorpusInputs } from "../gate1.js";
 import {
   childMaxRssBytes,
+  openChildLineSource,
   readChildRequest,
+  readChildStepRequest,
   writeChildMessage,
+  type ChildLineSource,
   type ChildRenameTarget
 } from "./child-protocol.js";
 
@@ -85,9 +88,11 @@ function runOneMutation(db: Db, corpusRoot: string, declarationId: string, newNa
 }
 
 async function main(): Promise<void> {
-  const request = await readChildRequest();
+  const source: ChildLineSource = openChildLineSource();
+  const request = await readChildRequest(source);
   const resolvedRoot = resolve(request.corpusRoot);
   const iterations = request.mode === "cold" ? 1 : request.iterations;
+  const stepped = request.mode === "warm" && request.stepped === true;
 
   const batch = ingestBatch(buildCorpusInputs(resolvedRoot));
   const db = openDb(":memory:");
@@ -100,6 +105,7 @@ async function main(): Promise<void> {
 
     let expectedCurrentName = request.target.declarationName;
     for (let iteration = 0; iteration < iterations; iteration += 1) {
+      if (stepped) await readChildStepRequest(source);
       const nextName = iteration % 2 === 0 ? request.target.newName : request.target.declarationName;
 
       // Sanity: the declaration must still be where our own alternation
@@ -127,13 +133,15 @@ async function main(): Promise<void> {
         callerWallNs,
         childMaxRssBytes: childMaxRssBytes(),
         published: true,
-        lifecycle
+        lifecycle,
+        childPid: process.pid
       });
     }
   } finally {
     db.close();
   }
 
+  source.close();
   writeChildMessage({ done: true });
 }
 
