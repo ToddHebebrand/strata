@@ -25,16 +25,18 @@
 //
 // NOT run in Task 8 at full size — the ~1012-module measurement is Task 9's
 // operator run.
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { buildCorpusInputs } from "../tasks.js";
 import {
   BASELINE_COPIES,
   BIG1K_COPIES,
   buildReplicatedCorpus,
   type ReplicatedCorpus
 } from "./corpus.js";
-import { runCold, runWarm, runChildOnce, type RunnerCorpus } from "./runners.js";
+import { runCold, runWarm, runChildOnce, type RunnerCorpus, type WarmTrend } from "./runners.js";
 import type { ChildResult, ChildRenameTarget } from "./child-protocol.js";
 import type { PairOrder, SchedulePair } from "./schedule.js";
 import {
@@ -52,6 +54,7 @@ import {
   buildGate3Report,
   gate3MachineVerdict,
   writeGate3Artifacts,
+  type CorpusInfo,
   type Gate3CorpusReport,
   type ScheduleProvenance
 } from "./report.js";
@@ -146,13 +149,18 @@ async function captureLifecycle(corpusRoot: string, target: ChildRenameTarget): 
 }
 
 /**
- * `memoryVerdict`, but tolerant of the degenerate baseline≈medium denominator
- * that the landed 1-copy-baseline corpus design produces (baseline and medium
- * are BOTH the 22-module size, so `(medium - baseline)` is ~0/negative and the
- * growth ratio is not computable). In that case the growth predicate is
- * genuinely uninterpretable, so the verdict is INCONCLUSIVE — the absolute cap
- * is still evaluated for the record. Documented as a known limitation of the
- * memory leg (the overall gate verdict rests on the wall-ratio, not memory).
+ * `memoryVerdict`, but tolerant of a degenerate `(medium - baseline)`
+ * denominator. The plan's growth predicate is CROSS-corpus —
+ * `(big1k_peakRss - baseline_peakRss) / (medium_peakRss - baseline_peakRss)` —
+ * so `medium`/`big1k` MUST be different corpora's peaks (this is the reviewer's
+ * fix: the assembly, not per-corpus self-comparison). The denominator can still
+ * be ~0/negative because the landed 1-copy-baseline design makes the baseline
+ * corpus the SAME 22-module size as `examples/medium`; in that case the ratio
+ * is genuinely uninterpretable, so the verdict is INCONCLUSIVE (sentinel
+ * growthAdjusted -1) with the absolute cap still evaluated. That residual
+ * denominator degeneracy is a separate, documented concern (needs a smaller
+ * baseline corpus); it does not affect the overall gate, which rests on the
+ * wall-ratio, and memory stays non-dispositive in `gate3MachineVerdict`.
  */
 function memoryVerdictTolerant(
   arm: "kernel" | "sqlite",
@@ -174,23 +182,71 @@ function memoryVerdictTolerant(
   return memoryVerdict(arm, values, CAPS, GROWTH_FACTOR, sqliteControl);
 }
 
-interface CorpusRun {
-  report: Gate3CorpusReport;
-  coldVerdict: RatioVerdict;
-  warmVerdict: RatioVerdict;
+/**
+ * The medium corpus report's memory field is a NON-DISPOSITIVE placeholder: the
+ * baseline-adjusted growth predicate is inherently cross-corpus (big1k vs
+ * medium) and lands on the BIG1K report, which is the corpus whose growth is
+ * being tested. Medium's own report records its observed peak RSS with the
+ * growth ratio marked not-applicable (sentinel -1, state INCONCLUSIVE) — it
+ * never drives `corpusState` to FAIL (medium's state is already the wall-ratio
+ * FAIL), and it makes clear in the artifact that the real growth number is on
+ * big1k, not duplicated here.
+ */
+function mediumMemoryPlaceholder(arm: "kernel" | "sqlite", ownRss: number, baseline: number): MemoryVerdict {
+  return {
+    arm,
+    medium: ownRss,
+    big1k: ownRss,
+    baseline,
+    absoluteCapPass: ownRss <= CAPS[arm],
+    growthAdjusted: -1,
+    growthPass: false,
+    state: "INCONCLUSIVE"
+  };
 }
 
-/** Run the full per-corpus battery: cold, warm, characterization, lifecycle, RSS high-water — and assemble the corpus report (memory folded in by the caller, which needs the baseline first). */
+/** Real content digest + scanned module count for the unreplicated `examples/medium` source (mirrors corpus.ts's sha256-over-sorted-{relPath:sha256(text)} pattern). */
+function mediumCorpusInfo(): CorpusInfo {
+  const inputs = buildCorpusInputs(mediumRoot);
+  const sha256Hex = (value: string): string => createHash("sha256").update(value).digest("hex");
+  const digestByRelPath: Record<string, string> = {};
+  for (const input of inputs) digestByRelPath[input.path] = sha256Hex(input.text);
+  const digest = sha256Hex(
+    JSON.stringify(
+      Object.keys(digestByRelPath)
+        .sort()
+        .map((relPath) => [relPath, digestByRelPath[relPath]])
+    )
+  );
+  return { digest, moduleCount: inputs.length, copies: 1 };
+}
+
+/** Everything one corpus's battery produces EXCEPT its memory verdict — memory is assembled cross-corpus by `main` once BOTH corpora's peak RSS are known. */
+interface CorpusRun {
+  coldVerdict: RatioVerdict;
+  warmVerdict: RatioVerdict;
+  warmTrend: WarmTrend;
+  lifecycle: { kernel: number; sqlite: number };
+  server: KernelServerCharacterization;
+  coldPairs: SchedulePair[];
+  warmPairs: SchedulePair[];
+  corpusInfo: CorpusInfo;
+  schedules: { cold: ScheduleProvenance; warm: ScheduleProvenance };
+  /** This corpus's own peak RSS high-water per arm (max across its cold+warm samples). */
+  kernelRss: number;
+  sqliteRss: number;
+}
+
+/** Run the full per-corpus battery: cold, warm, characterization, lifecycle, RSS high-water. Does NOT compute memory (that is cross-corpus — see `main`). */
 async function runCorpus(
   label: "medium" | "big1k",
   corpus: RunnerCorpus,
-  corpusInfo: { digest: string; moduleCount: number; copies: number },
+  corpusInfo: CorpusInfo,
   sizing: Sizing,
   coldSeed: number,
   warmSeed: number,
   nCold: number,
-  nWarm: number,
-  baselineRss: { kernel: number; sqlite: number }
+  nWarm: number
 ): Promise<CorpusRun> {
   process.stderr.write(`[run-big] ${label}: cold n=${nCold}...\n`);
   const cold = await runCold(corpus, {
@@ -211,41 +267,42 @@ async function runCorpus(
   const coldVerdict = ratioVerdict(walls(cold.pairs), GATE3_BOOTSTRAP_SEED);
   const warmVerdict = ratioVerdict(walls(warm.pairs), GATE3_BOOTSTRAP_SEED);
 
-  // Per-corpus RSS high-water (this corpus's own peak across cold+warm samples).
-  const kernelRss = Math.max(maxRss(cold.pairs, "kernel"), maxRss(warm.pairs, "kernel"));
-  const sqliteRss = Math.max(maxRss(cold.pairs, "sqlite"), maxRss(warm.pairs, "sqlite"));
-
-  const schedules: { cold: ScheduleProvenance; warm: ScheduleProvenance } = {
-    cold: { seed: coldSeed, n: cold.pairs.length, realizedOrder: realizedOrder(cold.pairs) },
-    warm: { seed: warmSeed, n: warm.pairs.length, realizedOrder: realizedOrder(warm.pairs) }
-  };
-
-  // Memory verdicts: the predicate compares baseline -> medium -> big1k RSS.
-  // In a per-corpus report the `big1k` slot is this corpus's OWN high-water
-  // (for `medium` there is no big1k projection; for `big1k` it IS this
-  // corpus). sqlite first (never a control), then kernel with the sqlite
-  // control threaded in (stats.ts's asymmetric downgrade rule).
-  const sqliteMem = memoryVerdictTolerant("sqlite", { baseline: baselineRss.sqlite, medium: sqliteRss, big1k: sqliteRss });
-  const kernelMem = memoryVerdictTolerant(
-    "kernel",
-    { baseline: baselineRss.kernel, medium: kernelRss, big1k: kernelRss },
-    { growthAdjusted: sqliteMem.growthAdjusted }
-  );
-
-  const report = buildGate3CorpusReport({
-    cold: coldVerdict,
-    warm: warmVerdict,
+  return {
+    coldVerdict,
+    warmVerdict,
     warmTrend: warm.trend,
-    memory: { kernel: kernelMem, sqlite: sqliteMem },
     lifecycle: { kernel: lifecycle.kernel, sqlite: lifecycle.sqlite },
     server,
     coldPairs: cold.pairs,
     warmPairs: warm.pairs,
     corpusInfo,
-    schedules
-  });
+    schedules: {
+      cold: { seed: coldSeed, n: cold.pairs.length, realizedOrder: realizedOrder(cold.pairs) },
+      warm: { seed: warmSeed, n: warm.pairs.length, realizedOrder: realizedOrder(warm.pairs) }
+    },
+    // This corpus's own peak RSS high-water (max across cold+warm samples).
+    kernelRss: Math.max(maxRss(cold.pairs, "kernel"), maxRss(warm.pairs, "kernel")),
+    sqliteRss: Math.max(maxRss(cold.pairs, "sqlite"), maxRss(warm.pairs, "sqlite"))
+  };
+}
 
-  return { report, coldVerdict, warmVerdict };
+/** Assemble one corpus's `Gate3CorpusReport` from its battery run + the (cross-corpus-computed) memory verdicts. */
+function assembleCorpusReport(
+  run: CorpusRun,
+  memory: { kernel: MemoryVerdict; sqlite: MemoryVerdict }
+): Gate3CorpusReport {
+  return buildGate3CorpusReport({
+    cold: run.coldVerdict,
+    warm: run.warmVerdict,
+    warmTrend: run.warmTrend,
+    memory,
+    lifecycle: run.lifecycle,
+    server: run.server,
+    coldPairs: run.coldPairs,
+    warmPairs: run.warmPairs,
+    corpusInfo: run.corpusInfo,
+    schedules: run.schedules
+  });
 }
 
 /** Baseline RSS per arm: cold single mutations on the 1-copy control corpus, peak childMaxRssBytes per arm. */
@@ -283,13 +340,12 @@ async function main(): Promise<void> {
     const mediumRun = await runCorpus(
       "medium",
       mediumCorpus,
-      { digest: "examples/medium (unreplicated source)", moduleCount: 22, copies: 1 },
+      mediumCorpusInfo(),
       sizing,
       GATE3_MEDIUM_COLD_SEED,
       GATE3_MEDIUM_WARM_SEED,
       sizing.nMediumCold,
-      sizing.nMediumWarm,
-      baselineRss
+      sizing.nMediumWarm
     );
 
     // --- big1k leg -----------------------------------------------------------
@@ -302,9 +358,41 @@ async function main(): Promise<void> {
       GATE3_BIG1K_COLD_SEED,
       GATE3_BIG1K_WARM_SEED,
       sizing.nBig1kCold,
-      sizing.nBig1kWarm,
-      baselineRss
+      sizing.nBig1kWarm
     );
+
+    // --- CROSS-corpus memory predicate (the reviewer's fix) -----------------
+    // The plan's growth predicate is `(big1k_peak - baseline) / (medium_peak -
+    // baseline)`, comparing the TWO corpora — NOT a corpus against itself. It
+    // is assembled here, once both legs' peak RSS are known: the medium leg
+    // supplies the `medium` slot, the big1k leg the `big1k` slot, the 1-copy
+    // control the `baseline`. sqlite first (never a control), then kernel with
+    // the sqlite control threaded in (stats.ts's asymmetric downgrade rule).
+    // These dispositive cross-corpus verdicts land on the BIG1K corpus report;
+    // the medium report carries a documented non-dispositive placeholder.
+    const sqliteMem = memoryVerdictTolerant("sqlite", {
+      baseline: baselineRss.sqlite,
+      medium: mediumRun.sqliteRss,
+      big1k: big1kRun.sqliteRss
+    });
+    const kernelMem = memoryVerdictTolerant(
+      "kernel",
+      { baseline: baselineRss.kernel, medium: mediumRun.kernelRss, big1k: big1kRun.kernelRss },
+      { growthAdjusted: sqliteMem.growthAdjusted }
+    );
+    process.stderr.write(
+      `[run-big] cross-corpus memory growthAdjusted: sqlite=${sqliteMem.growthAdjusted.toFixed(4)} ` +
+        `kernel=${kernelMem.growthAdjusted.toFixed(4)} ` +
+        `(baseline k=${baselineRss.kernel} s=${baselineRss.sqlite}; ` +
+        `medium k=${mediumRun.kernelRss} s=${mediumRun.sqliteRss}; ` +
+        `big1k k=${big1kRun.kernelRss} s=${big1kRun.sqliteRss})\n`
+    );
+
+    const mediumReport = assembleCorpusReport(mediumRun, {
+      kernel: mediumMemoryPlaceholder("kernel", mediumRun.kernelRss, baselineRss.kernel),
+      sqlite: mediumMemoryPlaceholder("sqlite", mediumRun.sqliteRss, baselineRss.sqlite)
+    });
+    const big1kReport = assembleCorpusReport(big1kRun, { kernel: kernelMem, sqlite: sqliteMem });
 
     // --- Assemble + WRITE the artifact FIRST --------------------------------
     const provenance = collectProvenance({
@@ -312,7 +400,7 @@ async function main(): Promise<void> {
       timestamp: new Date().toISOString(),
       metricsMode: GATE3_METRICS_MODE
     });
-    const report = buildGate3Report(provenance, { medium: mediumRun.report, big1k: big1kRun.report });
+    const report = buildGate3Report(provenance, { medium: mediumReport, big1k: big1kReport });
 
     const { jsonPath, markdownPath } = writeGate3Artifacts(report, outDir, {
       deterministicName: !smoke,

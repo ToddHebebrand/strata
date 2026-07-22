@@ -321,3 +321,44 @@ artifact + marker written to tmpdir. (2-copy ratios are NOT representative of
    baseline corpus for a meaningful growth denominator.
 3. **Provisional RSS caps** (pilot medium × 8) are untested at 1012 modules;
    tighten after Task 9's first real big1k RSS (log a decision).
+
+---
+
+# Review fix (2026-07-22) — cross-corpus memory predicate + real medium digest
+
+**Reviewer Important defect:** `runCorpus` fed each corpus's OWN peak RSS into
+BOTH the `medium` and `big1k` memory slots, so `growthAdjusted = (own−baseline)/
+(own−baseline) = 1` for every corpus — the plan's cross-corpus predicate
+`(big1k−baseline)/(medium−baseline)` was never assembled. Lands in the committed
+artifact, so fixed before the operator run.
+
+**Fix (run-big.ts):** `runCorpus` no longer computes memory — it returns each
+corpus's per-arm peak RSS. After BOTH legs run, `main` assembles the memory
+verdicts CROSS-corpus: `memoryVerdict(arm, { baseline: <1-copy control peak>,
+medium: <medium-corpus peak>, big1k: <big1k-corpus peak> }, caps, GROWTH_FACTOR)`,
+sqlite first then kernel with the sqliteControl-downgrade threaded in. The
+dispositive cross-corpus verdicts land on the **big1k** corpus report; the
+**medium** report carries a documented non-dispositive placeholder
+(`mediumMemoryPlaceholder`: own peak RSS, growth N/A sentinel -1, INCONCLUSIVE —
+never drives medium's state, which is already the wall-ratio FAIL).
+`gate3MachineVerdict` is UNCHANGED — memory stays non-dispositive for the exit
+code; this is artifact honesty only.
+
+**Smoke evidence (cross-corpus values now real, ≠ 1):**
+`growthAdjusted: sqlite=-1.0000 kernel=65.4000` where kernel =
+`(big1k 187842560 − baseline 171769856)/(medium 172015616 − baseline 171769856)`
+= 65.4 — a genuine two-corpus number. The sqlite `-1` is the SEPARATE, documented
+baseline≈medium denominator degeneracy (medium peak 323207168 fell just below
+baseline 324108288; both are 22-module corpora) — concern #2, not the assembly
+bug. Smoke still exits 2 (verdict FAIL). The same wiring executes in `--smoke`
+(all three corpora present).
+
+**Minor (also fixed):** medium `corpusInfo` now carries a REAL content digest
+(`mediumCorpusInfo`: sha256 over the sorted `{relPath: sha256(text)}` map,
+mirroring corpus.ts) and a scanned `moduleCount` (`buildCorpusInputs(mediumRoot)
+.length`) instead of the placeholder string `"examples/medium (unreplicated
+source)"` and hardcoded 22.
+
+**Re-run:** smoke (above); `gate3Report` unit 21/21 GREEN; `gate3Artifact.ci`
+still skips gracefully. Per instruction, the pinned acceptance suite (untouched
+by this path) was NOT re-run. `tsc -b` clean.
