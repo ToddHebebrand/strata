@@ -7,6 +7,42 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-22 — Bridge-persistence slice chartered (operator-delegated direction call after gate-3 FAIL)
+
+**Decision:** of the three recorded post-falsifier-5 options (narrow scope /
+bridge optimization inside the semantic boundary / accept SQLite-authority
+split), the operator delegated the call and the chartered direction is the
+**bridge-persistence slice**: a persistent, delta-synchronized N=1 bridge
+worker serving ALL bridge requests, with exact generation/digest attestation
+and savepoint-rollback candidate isolation. Design:
+`docs/superpowers/specs/2026-07-22-bridge-persistence-slice-design.md`.
+
+**Process:** per the repo's different-class-lever rule, an independent Codex
+review (gpt-5.6-sol, xhigh, read-only) ran BEFORE the design was written
+(brief + archived output alongside the design spec). The review materially
+corrected the candidate: (1) the measured cost is SIX worker trips per
+mutation (2 submit analyses + 3 advance analyses + candidate), so
+candidate-validation-only persistence would move a fraction of the cost —
+verified against `coordinator.rs`/`planner.rs`/`publication.rs` and the
+gate-2 profile's 6 worker starts; (2) today's candidate handler `commit()`s
+into its db, so a persistent mirror needs savepoint-rollback isolation —
+verified `candidate.ts`/`validate.ts:237`; (3) the transport is one-shot
+EOF-framed (`process.rs:500-508`), so persistence needs a real multi-frame
+protocol; (4) three claims in our own brief were wrong and are corrected in
+the design (spawn is corpus-independent; the committed artifact does NOT
+contain a stage decomposition — worker stage records were discarded by the
+characterizer, though the raw JSONL has them; there is no "render subset"
+today — every module renders and a fresh whole-corpus ts.Program is built per
+validate).
+
+**Honesty terms baked in:** step-0 diagnostic (one big1k metrics-on mutation,
+raw JSONL preserved) before implementation; medium's ~0.70-0.85 s allowance
+is the tighter target and is NOT assured; pre-registered stopping rule — if
+the unchanged gate-3 harness still FAILs after the slice, accept the
+SQLite-authority split, no threshold changes, no optimization stacking. Next
+step: implementation plan (v1 → independent methodology review → v2) before
+any build.
+
 ## 2026-07-22 — Gate 3 (unkeyed noninferiority) FAIL / falsifier-5 recorded; slice A stops for operator decision
 
 **Contract** (convergence review §4 item 3): *"p95 mutation wall ≤ 1.25×
