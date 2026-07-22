@@ -135,6 +135,97 @@ export function pairedP95RatioBootstrap(
 
 export type RatioVerdictState = "PASS" | "FAIL" | "INCONCLUSIVE";
 
+// ---------------------------------------------------------------------------
+// Task 5 (half a): the baseline-adjusted, capped memory predicate.
+// ---------------------------------------------------------------------------
+
+/** Peak-RSS observations for one arm across the three gate-3 corpus sizes. */
+export interface MemoryValues {
+  /** Peak RSS on the single-copy control corpus. */
+  baseline: number;
+  /** Peak RSS on `examples/medium`. */
+  medium: number;
+  /** Peak RSS on the ~1012-module replicated corpus. */
+  big1k: number;
+}
+
+/** Pre-registered absolute RSS caps, one per arm (`KERNEL_1K_RSS_CAP` / `SQLITE_1K_RSS_CAP`). */
+export interface MemoryCaps {
+  kernel: number;
+  sqlite: number;
+}
+
+/** `{ arm, medium, big1k, baseline, absoluteCapPass, growthAdjusted, growthPass, state }` — the baseline-adjusted, capped memory verdict for one arm. */
+export interface MemoryVerdict {
+  arm: "kernel" | "sqlite";
+  medium: number;
+  big1k: number;
+  baseline: number;
+  absoluteCapPass: boolean;
+  growthAdjusted: number;
+  growthPass: boolean;
+  state: RatioVerdictState;
+}
+
+/**
+ * `absoluteCapPass = big1k <= caps[arm]`; `growthAdjusted =
+ * (big1k - baseline) / (medium - baseline)`; `growthPass = growthAdjusted <=
+ * growthFactor`; `state` is `"PASS"` iff both pass, else `"FAIL"` —
+ * UNLESS `sqliteControl` is given and is itself explosive (its
+ * `growthAdjusted > growthFactor`), in which case `state` is downgraded to
+ * `"INCONCLUSIVE"` regardless of this arm's own pass/fail: a memory
+ * falsifier only means something if the SQLite control it's measured
+ * against is itself well-behaved (plan §"Memory predicate", "if the SQLite
+ * control itself grows explosively the comparison is INCONCLUSIVE, not a
+ * kernel fail").
+ *
+ * `sqliteControl` is an options arg (not a second function) deliberately:
+ * the caller computes the SQLite arm's own `memoryVerdict` first (a normal,
+ * never-downgraded call — never pass `sqliteControl` when `arm === "sqlite"`,
+ * that would be self-referential) and threads its `growthAdjusted` into the
+ * KERNEL arm's call. This keeps `memoryVerdict` a single pure function for
+ * both arms while still expressing the plan's asymmetric rule (only the
+ * KERNEL comparison can be downgraded by an explosive SQLite control).
+ *
+ * Guards `medium === baseline` (the growth-ratio denominator) by throwing —
+ * a zero/undefined denominator must never silently produce `NaN` or
+ * `Infinity` in a gate verdict.
+ */
+export function memoryVerdict(
+  arm: "kernel" | "sqlite",
+  values: MemoryValues,
+  caps: MemoryCaps,
+  growthFactor: number,
+  sqliteControl?: { growthAdjusted: number }
+): MemoryVerdict {
+  const { baseline, medium, big1k } = values;
+  if (medium === baseline) {
+    throw new Error(
+      `memoryVerdict: medium (${medium}) equals baseline (${baseline}) — the growth-ratio denominator ` +
+        `(medium - baseline) would be zero; refusing to emit a NaN/Infinity growthAdjusted`
+    );
+  }
+  if (!(growthFactor > 0)) {
+    throw new Error(`memoryVerdict: growthFactor must be a positive number, got ${growthFactor}`);
+  }
+
+  const cap = caps[arm];
+  const absoluteCapPass = big1k <= cap;
+  const growthAdjusted = (big1k - baseline) / (medium - baseline);
+  const growthPass = growthAdjusted <= growthFactor;
+
+  let state: RatioVerdictState;
+  if (sqliteControl && sqliteControl.growthAdjusted > growthFactor) {
+    state = "INCONCLUSIVE";
+  } else if (absoluteCapPass && growthPass) {
+    state = "PASS";
+  } else {
+    state = "FAIL";
+  }
+
+  return { arm, medium, big1k, baseline, absoluteCapPass, growthAdjusted, growthPass, state };
+}
+
 /** `{ p95Kernel, p95Sqlite, pointRatio, ucb95, lcb95, state }` — the tri-state noninferiority verdict on the paired p95 wall ratio. */
 export interface RatioVerdict {
   p95Kernel: number;
