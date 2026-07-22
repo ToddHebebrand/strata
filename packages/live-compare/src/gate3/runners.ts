@@ -147,7 +147,15 @@ function parseLine(line: string): Record<string, unknown> {
 // Cold: one fresh child per arm per pair.
 // ---------------------------------------------------------------------------
 
-function runChildOnce(entry: string, request: unknown, timeoutMs: number): Promise<ChildResult> {
+/**
+ * Exported (not just an internal helper) so the driver's own error/kill
+ * behavior is directly testable without going through a full `runCold`
+ * balanced schedule — see gate3RunnersUnit.test.ts's protocol-violation
+ * case, which spawns a stub entrypoint that deliberately breaks the wire
+ * contract and asserts both that this rejects AND that the spawned process
+ * is actually dead afterward (no leaked child).
+ */
+export function runChildOnce(entry: string, request: unknown, timeoutMs: number): Promise<ChildResult> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, [entry], {
       cwd: repoRoot,
@@ -203,6 +211,14 @@ function runChildOnce(entry: string, request: unknown, timeoutMs: number): Promi
         });
       } catch (error) {
         clearTimeout(timer);
+        // Symmetric with the timeout branch above and with runWarm's catch:
+        // a wire-protocol mismatch (unexpected line shape, premature "done",
+        // etc.) means we can no longer trust this child to behave, so it
+        // gets killed here too, not just on a timeout. kernel-child.js in
+        // particular owns a real `strata-kernel-service` daemon subprocess
+        // — leaving it running on a protocol violation would leak a process
+        // (and, for the kernel arm, a daemon) per failed cold sample.
+        if (!child.killed) child.kill("SIGKILL");
         settle(() => reject(error instanceof Error ? error : new Error(String(error))));
       }
     })();
@@ -359,8 +375,12 @@ export interface RunWarmResult {
  * wall ratio computed independently within each half. This is the
  * nonexchangeability check: if warm-up/thermal/GC drift is biasing one arm
  * over the course of a run, the two halves' ratios diverge.
+ *
+ * Exported for direct unit coverage of the odd-`n` split rule
+ * (gate3RunnersUnit.test.ts) — a pure function on synthetic `SchedulePair`s,
+ * no children needed.
  */
-function computeWarmTrend(pairs: readonly SchedulePair[]): WarmTrend {
+export function computeWarmTrend(pairs: readonly SchedulePair[]): WarmTrend {
   const half = Math.floor(pairs.length / 2);
   if (half < 1) {
     throw new Error(`computeWarmTrend: need at least 2 pairs (1 per half), got ${pairs.length}`);
