@@ -224,7 +224,7 @@ export const analyzeIntentRequestSchema = z
     }
   });
 
-const changeSetSchema = z
+export const changeSetSchema = z
   .object({
     changeSetId: opaqueIdSchema,
     actor: nonEmptyStringSchema,

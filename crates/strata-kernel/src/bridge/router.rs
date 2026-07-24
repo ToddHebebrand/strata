@@ -1,20 +1,22 @@
 //! Persistent-bridge routing (`--persistent-bridge`, default OFF).
 //!
-//! **Task-6/Task-7 split — read this before adding routes.** The two bridge
-//! request kinds intentionally ride DIFFERENT persistent paths right now:
+//! **Both bridge request kinds ride the synced-mirror path** (Task 6 for
+//! analyze, Task 7 for candidates):
 //!
-//! - **`analyzeIntent` → synced-mirror path** ([`PersistentBridgeRouter::analyze_via_mirror`]):
+//! - **`analyzeIntent` → [`PersistentBridgeRouter::analyze_via_mirror`]**:
 //!   the worker holds one long-lived `:memory:` mirror kept exact by
 //!   attested, published-only delta sync (Task 6). Analyze frames carry NO
 //!   snapshot — only the graph identity — which removes the per-trip
 //!   snapshot build + serialize + hydrate cost the step-0 spike measured.
-//! - **`buildValidateCandidate` → full-snapshot scaffold path**
-//!   ([`run_with_persistent_fallback`] → `request_unattested`): candidate
-//!   execution MUTATES the worker's scratch database, so serving it from the
-//!   shared mirror requires Task 7's savepoint isolation + full logical
-//!   fingerprint. Until that lands, every candidate request still embeds the
-//!   full snapshot and hydrates a throwaway scratch db, exactly as Task 5
-//!   shipped it. Task 7 migrates this route; do not move it early.
+//! - **`buildValidateCandidate` → [`PersistentBridgeRouter::candidate_via_mirror`]**:
+//!   candidate execution mutates the worker's database, so the mirror serve
+//!   runs under the worker's savepoint-rollback bracket asserted by the full
+//!   logical fingerprint (Task 7): pre-fingerprint → `SAVEPOINT` → the
+//!   UNCHANGED candidate pipeline → `ROLLBACK TO; RELEASE` → post-
+//!   fingerprint. A divergence poisons the worker (`mirrorPoisoned`), which
+//!   the host converts into kill + lazy respawn + full rehydrate. The Task-5
+//!   full-snapshot scaffold (`request_unattested`) was retired with this
+//!   migration — non-mirror candidates are served by the one-shot spawn.
 //!
 //! **Routing predicate (review B2, structural):** a request may touch the
 //! synced mirror ONLY if its graph identity — `(generation,
@@ -24,34 +26,36 @@
 //! match and are served one-shot with their own in-band snapshot. The check
 //! is an identity comparison, never a caller-supplied flag.
 //!
-//! Fallback contract (unchanged from Task 5): ANY persistent-path error —
-//! poison, deadline, refusal, spawn failure, response-binding failure —
-//! falls back transparently to the untouched one-shot spawn for that
-//! request. The coordination request never fails because the persistent
-//! transport did; the failure is logged on the daemon's stderr (the
-//! existing operational-error convention) and, under metrics, recorded as a
-//! non-`ok` run record.
+//! Fallback contract: ANY persistent-path TRANSPORT error — poison,
+//! deadline, refusal, spawn failure, response-binding failure — falls back
+//! transparently to the untouched one-shot spawn for that request. A
+//! SEMANTIC candidate failure (the worker validated and refused the change)
+//! is NOT a transport error: it is surfaced to the coordinator exactly as
+//! the one-shot path surfaces it, with no re-run. Transport failures are
+//! logged on the daemon's stderr (the existing operational-error
+//! convention) and, under metrics, recorded as non-`ok` run records.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 
-use super::observer::{self, RequestBuild, WorkerRunMetrics};
+use super::observer::{self, WorkerRunMetrics};
 use super::persistent::{
     GraphIdentity, PersistentWorkerConfig, PersistentWorkerHost, SyncPlanner,
 };
 use super::process::{NodeBridgeClient, NodeBridgeConfig, elapsed_ns};
 use super::protocol::{
-    BridgeBinding, BridgeRequest, BridgeResponse, Hash64, PROTOCOL_VERSION, SemanticFacts,
-    WireU64, parse_bridge_response, parse_mirror_analyze_facts, serialize_bridge_request,
+    BridgeBinding, CandidateBinding, ChangeSet, Hash64, MirrorCandidateResponse,
+    PROTOCOL_VERSION, SemanticFacts, ValidationProfile, WireGraphDelta, WireU64,
+    parse_mirror_analyze_facts, parse_mirror_candidate_delta,
 };
 use super::provider::wire_intent;
 use super::sync_state::SyncShared;
 use crate::GraphGeneration;
-use crate::coordination::IntentRecord;
+use crate::coordination::{IntentRecord, PreparedCandidate};
 
 /// The Task-6 planner behind the host's [`SyncPlanner`] seam: delta batches
 /// and full-hydrate snapshots come from the kernel's published sync state.
@@ -273,41 +277,109 @@ impl PersistentBridgeRouter {
         result.map(|(facts, _metrics)| Some(facts))
     }
 
-    /// One request over the persistent transport, full snapshot in-band
-    /// (candidate scaffold path — Task 7 migrates it; see module docs).
-    /// Mirrors `NodeBridgeClient::run` exactly in what it measures and
-    /// records, with the documented difference that `bridge_wall_ns` is the
-    /// `request_unattested` round trip — spawn-free by construction (the
-    /// child already exists), so the one-shot record's spawn+module-load
-    /// cost is absent from it.
-    ///
-    /// `request_build` is the provider/executor's snapshot-build context for
-    /// THIS request (the caller owns the thread-local hand-off so a failed
-    /// persistent attempt can re-arm it for the one-shot fallback).
-    fn run(
+    /// The synced-mirror candidate route (Task 7). Returns:
+    /// - `Ok(MirrorCandidate::Delta(_))` — validated on the attested mirror
+    ///   under savepoint isolation;
+    /// - `Ok(MirrorCandidate::Failed(_))` — the candidate itself failed
+    ///   validation/mutation on the mirror. This is a SEMANTIC outcome: the
+    ///   caller surfaces it exactly like the one-shot path's failure and
+    ///   must NOT re-run the candidate one-shot;
+    /// - `Ok(MirrorCandidate::NotRouted)` — the request's graph identity is
+    ///   not the published identity (speculative, review B2) or the router
+    ///   is epoch-disabled; the caller serves one-shot with an in-band
+    ///   snapshot, byte-identical to before;
+    /// - `Err(_)` — routed but the TRANSPORT failed (sync refusal, poison —
+    ///   including a worker-reported `mirrorPoisoned` isolation divergence —
+    ///   deadline, binding mismatch). The caller logs and falls back
+    ///   one-shot.
+    pub(crate) fn candidate_via_mirror(
         &self,
         client: &NodeBridgeClient,
-        request: &BridgeRequest,
-        request_build: Option<RequestBuild>,
-    ) -> Result<BridgeResponse> {
+        prepared: &PreparedCandidate,
+        validation_profile: &ValidationProfile,
+        service_epoch: u64,
+    ) -> Result<MirrorCandidate> {
+        if !self.epoch_guard(service_epoch) {
+            return Ok(MirrorCandidate::NotRouted);
+        }
+        // Structural routing predicate (B2): published identity or bust.
+        let Some(target) = self
+            .sync
+            .published_sync_identity(prepared.graph.generation(), prepared.graph.digest())
+        else {
+            return Ok(MirrorCandidate::NotRouted);
+        };
+
         let serialize_start = Instant::now();
-        let request_bytes = serialize_bridge_request(request)?;
+        let binding = BridgeBinding {
+            service_epoch: WireU64::new(service_epoch),
+            graph_generation: WireU64::new(prepared.graph.generation()),
+            graph_digest: Hash64::parse(prepared.graph.digest())?,
+        };
+        let expected_binding = CandidateBinding {
+            service_epoch: WireU64::new(service_epoch),
+            graph_generation: WireU64::new(prepared.graph.generation()),
+            graph_digest: Hash64::parse(prepared.graph.digest())?,
+            attempt_id: prepared.attempt_id.clone(),
+            scope_fingerprint: Hash64::parse(&prepared.scope_fingerprint)?,
+        };
+        let change_set = ChangeSet {
+            change_set_id: prepared.change_set.change_set_id.clone(),
+            actor: prepared.change_set.actor.clone(),
+            reasoning: prepared.change_set.reasoning.clone(),
+            ordered_intents: prepared
+                .intents
+                .iter()
+                .map(|intent| wire_intent(intent, prepared.graph.generation()))
+                .collect(),
+        };
+        // Same request minus the snapshot, plus the sync identity the worker
+        // must hold attested. NO snapshot is built or serialized here — that
+        // absence is the measured point of this route (the worker's mirror
+        // IS the published generation, by attestation).
+        let frame = json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "kind": "buildValidateCandidateMirror",
+            "binding": serde_json::to_value(&binding).context("encode mirror binding")?,
+            "identity": {
+                "generation": target.generation.to_string(),
+                "digest": target.digest.clone(),
+            },
+            "attemptId": prepared.attempt_id.clone(),
+            "scopeFingerprint": prepared.scope_fingerprint.clone(),
+            "changeSet": serde_json::to_value(&change_set).context("encode mirror change set")?,
+            "validationProfile": serde_json::to_value(validation_profile)
+                .context("encode mirror validation profile")?,
+        });
+        let total_request_bytes = if self.collect_metrics {
+            serde_json::to_vec(&frame)
+                .map(|bytes| bytes.len() as u64)
+                .unwrap_or(0)
+        } else {
+            0
+        };
         let request_serialize_ns = elapsed_ns(serialize_start);
-        let total_request_bytes = request_bytes.len() as u64;
 
         let wall_start = Instant::now();
         let exchanged =
             self.host
-                .request_unattested(request.request_id(), &request_bytes, self.deadline);
+                .request_at_with_size(&target, frame, self.deadline, &self.planner());
         let bridge_wall_ns = elapsed_ns(wall_start);
 
         let (outcome, response_bytes, result) = match exchanged {
-            Ok(bytes) => {
-                let response_bytes = bytes.len() as u64;
-                // The identical binding/payload validation the one-shot path
-                // runs, over the identical response body bytes.
-                match parse_bridge_response(&bytes, request, self.max_diagnostics_bytes) {
-                    Ok(response) => ("ok", response_bytes, Ok(response)),
+            Ok((value, response_bytes)) => {
+                let metrics = value
+                    .get("metrics")
+                    .and_then(|metrics| serde_json::from_value(metrics.clone()).ok());
+                match parse_mirror_candidate_delta(
+                    value,
+                    &expected_binding,
+                    self.max_diagnostics_bytes,
+                ) {
+                    // A parsed CandidateError is a semantic outcome, recorded
+                    // "ok" exactly as the one-shot transport records it (its
+                    // parse succeeds there too; the failure surfaces after).
+                    Ok(parsed) => ("ok", response_bytes, Ok((parsed, metrics))),
                     Err(error) => ("parseFailed", response_bytes, Err(error)),
                 }
             }
@@ -316,24 +388,33 @@ impl PersistentBridgeRouter {
 
         if self.collect_metrics {
             client.record_run_metrics(WorkerRunMetrics {
-                request_kind: request.observed_kind().to_owned(),
-                change_set_id: request.change_set_id().to_owned(),
+                request_kind: "buildValidateCandidate".to_owned(),
+                change_set_id: prepared.change_set.change_set_id.clone(),
                 phase: observer::current_phase(),
                 outcome,
                 bridge_wall_ns,
-                snapshot_bytes: request_build.map_or(0, |build| build.snapshot_bytes),
+                // The measured claim of this route: no snapshot was built.
+                snapshot_bytes: 0,
                 total_request_bytes,
-                snapshot_build_ns: request_build.map_or(0, |build| build.snapshot_build_ns),
+                snapshot_build_ns: 0,
                 request_serialize_ns,
                 response_bytes,
-                worker: result
-                    .as_ref()
-                    .ok()
-                    .and_then(|response| response.metrics_ref().cloned()),
+                worker: result.as_ref().ok().and_then(|(_, metrics)| metrics.clone()),
             });
         }
 
-        result
+        result.map(|(parsed, _metrics)| match parsed {
+            MirrorCandidateResponse::Delta(delta) => MirrorCandidate::Delta(delta),
+            MirrorCandidateResponse::Failed {
+                stage,
+                code,
+                message,
+            } => MirrorCandidate::Failed(anyhow!(
+                // EXACT one-shot failure surface (into_candidate_result), so
+                // a failing candidate reports identically on both routes.
+                "Node bridge candidate failed at {stage:?}/{code}: {message}"
+            )),
+        })
     }
 
     #[cfg(test)]
@@ -342,36 +423,16 @@ impl PersistentBridgeRouter {
     }
 }
 
-/// The full-snapshot dispatch seam the executor (and, for its fallback, the
-/// provider) share. With no router configured this IS the one-shot path,
-/// untouched (the thread-local request-build hand-off is not even read
-/// here). With a router, the request goes persistent first; any error falls
-/// back to a fresh one-shot spawn for this request, with the request-build
-/// context re-armed so the fallback's run record keeps its snapshot fields.
-/// An epoch-disabled router is skipped entirely.
-pub(crate) fn run_with_persistent_fallback(
-    router: Option<&Arc<PersistentBridgeRouter>>,
-    client: &NodeBridgeClient,
-    request: &BridgeRequest,
-) -> Result<BridgeResponse> {
-    let Some(router) = router.filter(|router| !router.disabled.load(Ordering::SeqCst)) else {
-        return client.run(request);
-    };
-    let request_build = observer::take_request_build();
-    match router.run(client, request, request_build) {
-        Ok(response) => Ok(response),
-        Err(error) => {
-            // Existing operational convention: bounded, single-line stderr on
-            // the daemon. The coordination request itself is not failed.
-            eprintln!(
-                "persistent bridge trip failed; serving this request one-shot: {error:#}"
-            );
-            if let Some(build) = request_build {
-                observer::set_request_build(build.snapshot_bytes, build.snapshot_build_ns);
-            }
-            client.run(request)
-        }
-    }
+/// Semantic routing outcome of [`PersistentBridgeRouter::candidate_via_mirror`].
+pub(crate) enum MirrorCandidate {
+    /// Not eligible for the mirror (speculative identity / epoch-disabled):
+    /// serve one-shot with an in-band snapshot.
+    NotRouted,
+    /// Mirror-validated candidate delta.
+    Delta(WireGraphDelta),
+    /// The candidate itself failed on the mirror — a terminal semantic
+    /// outcome, surfaced with the one-shot path's exact error shape.
+    Failed(anyhow::Error),
 }
 
 #[cfg(test)]
@@ -453,6 +514,81 @@ mod tests {
             .analyze_via_mirror(&client, &graph, &intent, 7)
             .unwrap();
         assert!(routed.is_none());
+    }
+
+    fn prepared_candidate(
+        graph: &Arc<GraphGeneration>,
+        intent: IntentRecord,
+    ) -> crate::coordination::PreparedCandidate {
+        use crate::coordination::{ChangeSetRecord, ChangeSetState};
+        let mut change_set = ChangeSetRecord::new(
+            SCHEMA_VERSION,
+            intent.change_set_id.clone(),
+            "agent:router",
+            "route a candidate through the mirror predicate",
+            graph.generation(),
+            "submit:router",
+            std::slice::from_ref(&intent),
+        )
+        .unwrap();
+        change_set.state = ChangeSetState::Executing;
+        crate::coordination::PreparedCandidate {
+            change_set,
+            intents: vec![intent],
+            graph: graph.clone(),
+            attempt_id: "attempt:router".into(),
+            scope_fingerprint: "c".repeat(64),
+        }
+    }
+
+    #[test]
+    fn candidate_speculative_identity_is_never_routed_to_the_mirror() {
+        // Task 7, review B2 at the candidate route: a graph whose identity is
+        // not the published one must return NotRouted — served one-shot with
+        // its own snapshot — without any worker interaction.
+        let published = tiny_graph();
+        let sync = Arc::new(SyncShared::seed(published.clone()));
+        let router =
+            PersistentBridgeRouter::spawn(&fake_worker_config(), 7, Arc::clone(&sync)).unwrap();
+        let client = NodeBridgeClient::new(fake_worker_config());
+
+        let speculative = Arc::new(
+            published
+                .apply(&crate::GraphDelta {
+                    schema_version: SCHEMA_VERSION,
+                    base_generation: 0,
+                    changes: vec![crate::GraphChange::UpsertNode {
+                        node: NodeRecord {
+                            id: "m".into(),
+                            kind: "Module".into(),
+                            parent_id: None,
+                            child_index: None,
+                            payload: "src/next.ts".into(),
+                        },
+                    }],
+                })
+                .unwrap(),
+        );
+        let prepared = prepared_candidate(&speculative, rename_intent("intent:cand-spec", 1));
+        let profile =
+            super::super::protocol::ValidationProfile::tsc_only("/corpus/src", "/corpus", true);
+        let routed = router
+            .candidate_via_mirror(&client, &prepared, &profile, 7)
+            .unwrap();
+        assert!(
+            matches!(routed, MirrorCandidate::NotRouted),
+            "speculative graph must serve one-shot"
+        );
+        assert!(!router.test_disabled());
+
+        // Epoch mismatch: latched off, candidates included.
+        let published_prepared =
+            prepared_candidate(&published, rename_intent("intent:cand-epoch", 0));
+        let routed = router
+            .candidate_via_mirror(&client, &published_prepared, &profile, 8)
+            .unwrap();
+        assert!(matches!(routed, MirrorCandidate::NotRouted));
+        assert!(router.test_disabled());
     }
 
     #[test]

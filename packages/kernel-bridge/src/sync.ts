@@ -35,14 +35,17 @@ import {
   MAX_PROTOCOL_ARRAY_ITEMS,
   bridgeBindingSchema,
   canonicalU64Schema,
+  changeSetSchema,
   intentRecordSchema,
   kernelGraphDeltaV1Schema,
   kernelSnapshotV1Schema,
+  validationProfileSchema,
   type KernelGraphDeltaV1
 } from "./protocol";
 
 const requestIdSchema = z.string().min(1);
 const syncDigestSchema = z.string().regex(/^[0-9a-f]{64}$/);
+const hash64Schema = z.string().regex(/^[0-9a-f]{64}$/);
 
 /** The wire graph identity: generation as a canonical decimal string plus
  * the canonical sync digest (lowercase hex SHA-256). */
@@ -123,6 +126,54 @@ export const mirrorAnalyzeRequestSchema = z
 
 export type MirrorAnalyzeRequest = z.infer<typeof mirrorAnalyzeRequestSchema>;
 
+/**
+ * Mirror-served candidate request (Task 7): the buildValidateCandidate
+ * request minus the snapshot, plus the graph identity the worker must hold
+ * attested (naming follows `analyzeIntentMirror`). Candidate execution runs
+ * against the persistent mirror under savepoint-rollback isolation; the
+ * worker refuses (never guesses) when its attested identity differs.
+ */
+export const mirrorCandidateRequestSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    requestId: requestIdSchema,
+    kind: z.literal("buildValidateCandidateMirror"),
+    binding: bridgeBindingSchema,
+    identity: graphIdentitySchema,
+    attemptId: requestIdSchema,
+    scopeFingerprint: hash64Schema,
+    changeSet: changeSetSchema,
+    validationProfile: validationProfileSchema
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.identity.generation !== request.binding.graphGeneration) {
+      context.addIssue({
+        code: "custom",
+        path: ["identity", "generation"],
+        message: "identity generation does not match binding"
+      });
+    }
+    request.changeSet.orderedIntents.forEach((intent, index) => {
+      if (intent.changeSetId !== request.changeSet.changeSetId) {
+        context.addIssue({
+          code: "custom",
+          path: ["changeSet", "orderedIntents", index, "changeSetId"],
+          message: "intent change set id does not match"
+        });
+      }
+      if (intent.baseGeneration !== request.identity.generation) {
+        context.addIssue({
+          code: "custom",
+          path: ["changeSet", "orderedIntents", index, "baseGeneration"],
+          message: "intent generation does not match identity"
+        });
+      }
+    });
+  });
+
+export type MirrorCandidateRequest = z.infer<typeof mirrorCandidateRequestSchema>;
+
 export type RefusalReason = "gap" | "digest-mismatch" | "ahead";
 
 export type SyncOutcome =
@@ -142,14 +193,31 @@ class GenerationChainError extends Error {}
 export class MirrorState {
   private db: Db | null = null;
   private attestedIdentity: GraphIdentity | null = null;
+  private poisonDetail: string | null = null;
 
   attested(): GraphIdentity | null {
     return this.attestedIdentity;
   }
 
+  /**
+   * Task-7 poison latch: set when a post-candidate fingerprint diverged from
+   * its pre-candidate value (savepoint isolation failed). A poisoned mirror
+   * can never be trusted again in this process — the worker loop refuses
+   * EVERY subsequent request with the distinct `mirrorPoisoned` code so the
+   * host kills this worker and lazily respawns + full-rehydrates a fresh one.
+   */
+  poisonedDetail(): string | null {
+    return this.poisonDetail;
+  }
+
+  markPoisoned(detail: string): void {
+    this.poisonDetail = detail;
+  }
+
   /** The mirror database, ONLY if the attested identity equals `identity`. */
   databaseFor(identity: GraphIdentity): Db | null {
     if (
+      this.poisonDetail === null &&
       this.db !== null &&
       this.attestedIdentity !== null &&
       this.attestedIdentity.generation === identity.generation &&

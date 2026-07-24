@@ -14,6 +14,7 @@ import {
 } from "@strata-code/store";
 import { commit, commitWithBehavioralGate, type Diagnostic } from "@strata-code/verify";
 import { StageRecorder } from "./metrics";
+import { mirrorFingerprint } from "./mirror-fingerprint";
 import {
   type BridgeDiagnostic,
   type BridgeErrorPayload,
@@ -22,6 +23,7 @@ import {
   type ValidationProfile
 } from "./protocol";
 import { diffSnapshots, exportSnapshot, hydrateSnapshot } from "./snapshot";
+import type { MirrorCandidateRequest } from "./sync";
 
 const MAX_MESSAGE_CODE_UNITS = 1_000;
 const MAX_DIAGNOSTIC_CODE_UNITS = 64 * 1_024;
@@ -189,6 +191,146 @@ export function buildValidateCandidateInScratch(
           : "candidateExportFailed";
     return errorPayload(stage, code, error, []);
   }
+}
+
+/** The candidate pipeline signature the mirror wrapper brackets (test seam). */
+export type CandidatePipeline = (
+  request: BuildValidateCandidateRequest,
+  db: Db,
+  recorder?: StageRecorder
+) => BuildValidateCandidateResult;
+
+export type MirrorCandidateOutcome =
+  | { kind: "served"; result: BuildValidateCandidateResult }
+  | { kind: "poisoned"; detail: string };
+
+/**
+ * Runs the UNCHANGED candidate pipeline against the persistent mirror under
+ * savepoint-rollback isolation (bridge-persistence slice, Task 7).
+ *
+ * Contract, in order:
+ * 1. pre-fingerprint — the full logical {@link mirrorFingerprint} over ALL
+ *    mutable tables + integrity pragmas (strictly stronger than the sync
+ *    digest: candidate execution also writes transactions/operations rows);
+ * 2. `SAVEPOINT candidate`; export the attested mirror content as the
+ *    request snapshot the pipeline diffs against (the same bytes an in-band
+ *    snapshot would carry — the mirror IS the published generation by
+ *    attestation), then run the exact one-shot pipeline:
+ *    profile validation + `buildValidateCandidateInScratch` (its
+ *    begin/mutate/validate/commit all land inside the savepoint; nested
+ *    better-sqlite3 `db.transaction()` calls stack as inner savepoints);
+ * 3. `ROLLBACK TO candidate; RELEASE candidate` — ALWAYS: success, semantic
+ *    failure, and thrown-exception paths all unwind through the `finally`;
+ * 4. post-fingerprint must equal the pre-fingerprint. Any divergence (or a
+ *    rollback/fingerprint failure itself) POISONS: the caller must refuse
+ *    all further work so the host kills + respawns + full-rehydrates.
+ *
+ * Isolation scope note: the pipeline's only out-of-SQLite side effects are
+ * the rendered-tree temp dirs the verify gate creates per run (transient,
+ * identical on the one-shot path) and the store's module-level transaction
+ * overlay map, which the pipeline itself closes on every path and which the
+ * isolation gates assert stays at its baseline (`openTransactionOverlayCount`).
+ *
+ * `pipeline` is a test seam (poison-state gate: a pipeline that COMMITs
+ * behind the wrapper's back must be detected); production callers omit it.
+ */
+export function buildValidateCandidateOnMirror(
+  request: MirrorCandidateRequest,
+  db: Db,
+  recorder?: StageRecorder,
+  pipeline?: CandidatePipeline
+): MirrorCandidateOutcome {
+  const generation = request.identity.generation;
+  const run: CandidatePipeline = pipeline ?? buildValidateCandidateInScratch;
+
+  let pre: string;
+  try {
+    pre = mirrorFingerprint(db, generation);
+  } catch (error) {
+    return poisoned("pre-candidate fingerprint failed", error);
+  }
+
+  let result: BuildValidateCandidateResult;
+  let unwindFailure: unknown;
+  db.exec("SAVEPOINT candidate");
+  try {
+    // The "before" snapshot is exported from the mirror itself: by
+    // attestation it is byte-equal (post-sort) to the snapshot the one-shot
+    // request would have carried in-band for this published generation.
+    const snapshot = exportSnapshot(db, generation);
+    const fullRequest: BuildValidateCandidateRequest = {
+      protocolVersion: 1,
+      requestId: request.requestId,
+      kind: "buildValidateCandidate",
+      binding: request.binding,
+      snapshot,
+      attemptId: request.attemptId,
+      scopeFingerprint: request.scopeFingerprint,
+      changeSet: request.changeSet,
+      validationProfile: request.validationProfile
+    };
+    const profileError = validateProfile(request.validationProfile, snapshot);
+    result = profileError ?? run(fullRequest, db, recorder);
+  } catch (error) {
+    // The pipeline normally reports failures as payloads; anything that
+    // still throws (snapshot export, a seam, a store invariant) becomes an
+    // error payload AFTER the savepoint unwinds below.
+    result = errorPayload("mutate", "mirrorCandidateFailed", error, []);
+  } finally {
+    try {
+      db.exec("ROLLBACK TO candidate");
+      db.exec("RELEASE candidate");
+    } catch (error) {
+      unwindFailure = error;
+    }
+  }
+  if (unwindFailure !== undefined) {
+    return poisoned("candidate savepoint rollback failed", unwindFailure);
+  }
+
+  let post: string;
+  try {
+    post = mirrorFingerprint(db, generation);
+  } catch (error) {
+    return poisoned("post-candidate fingerprint failed", error);
+  }
+  if (post !== pre) {
+    return {
+      kind: "poisoned",
+      detail:
+        `mirror fingerprint diverged across candidate ${request.attemptId}: ` +
+        `pre ${pre} != post ${post}`
+    };
+  }
+  return { kind: "served", result };
+}
+
+function poisoned(context: string, error: unknown): MirrorCandidateOutcome {
+  const message = error instanceof Error ? error.message : String(error);
+  return { kind: "poisoned", detail: `${context}: ${normalizeMessage(message)}` };
+}
+
+/**
+ * TEST-ONLY pipeline seam for the poison-state gate (plan review Minor 2):
+ * releases the wrapper's savepoint early — committing a deliberate
+ * corruption behind its back — then reopens a same-named savepoint so the
+ * wrapper's unwind "succeeds" while the corruption survives. The wrapper's
+ * post-fingerprint MUST catch this. Selected in the worker only via the
+ * `STRATA_TEST_MIRROR_CANDIDATE_CORRUPT=1` environment seam; never used in
+ * production paths (the package barrel does not export it).
+ */
+export function corruptingMirrorPipelineForTests(
+  request: BuildValidateCandidateRequest,
+  db: Db,
+  recorder?: StageRecorder
+): BuildValidateCandidateResult {
+  db.exec("RELEASE candidate");
+  db.prepare(
+    `UPDATE nodes SET payload = payload || ' /* corrupted-behind-savepoint */'
+     WHERE id = (SELECT id FROM nodes ORDER BY id LIMIT 1)`
+  ).run();
+  db.exec("SAVEPOINT candidate");
+  return buildValidateCandidateInScratch(request, db, recorder);
 }
 
 /** Package-internal identity validator, exposed only for corruption regressions. */

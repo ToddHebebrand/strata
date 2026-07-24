@@ -43,9 +43,9 @@ pub struct NodeBridgeConfig {
     pub(crate) collect_metrics: bool,
     /// Persistent-bridge flag (`--persistent-bridge`, default false): when
     /// set, the kernel additionally spawns ONE persistent worker for the
-    /// session and routes bridge requests through it (analyze via the synced
-    /// mirror, candidates via the full-snapshot scaffold until Task 7), with
-    /// this one-shot transport as the per-request fallback. This config only
+    /// session and routes bridge requests through its synced mirror (analyze
+    /// per Task 6; candidates under Task 7's savepoint isolation), with this
+    /// one-shot transport as the per-request fallback. This config only
     /// CARRIES the operator's choice from the service flag to the kernel
     /// wiring; nothing in the one-shot client reads it.
     pub(crate) persistent_scaffold: bool,

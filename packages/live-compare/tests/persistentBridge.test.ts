@@ -1,10 +1,12 @@
-// Bridge-persistence slice, Task 6 (published-only attested delta sync):
-// with `--persistent-bridge` the daemon eagerly hydrates ONE persistent
-// worker's `:memory:` mirror at startup and keeps it exact via attested,
-// published-only delta sync — so analyzeIntent trips carry NO snapshot at
-// all (the step-0-measured hydrate + snapshot build/serialize cost is gone),
-// while buildValidateCandidate still rides the Task-5 full-snapshot scaffold
-// until Task 7's savepoint isolation lands.
+// Bridge-persistence slice, Tasks 6+7 (published-only attested delta sync +
+// savepoint candidate isolation): with `--persistent-bridge` the daemon
+// eagerly hydrates ONE persistent worker's `:memory:` mirror at startup and
+// keeps it exact via attested, published-only delta sync — so ALL SIX trips
+// of a mutation (five analyzeIntent + one buildValidateCandidate) carry NO
+// snapshot at all (the step-0-measured hydrate + snapshot build/serialize
+// cost is gone). Candidates run on the mirror under the worker's
+// savepoint-rollback bracket, asserted by the full logical fingerprint
+// (Task 7); only published deltas ever advance the mirror.
 //
 // End-to-end gates proven here on examples/medium (key-free, no model
 // calls):
@@ -12,22 +14,25 @@
 //   (a) N=3 sequential renames with the flag ON produce, mutation by
 //       mutation, the same published operation content (affected node ids,
 //       rename transitions) and re-inspected payloads as the identical
-//       sequence with the flag OFF;
-//   (b) EVERY analyzeIntent trip of every mutation is served from the synced
-//       mirror: metrics record snapshotBytes == 0 and snapshotBuildNs == 0,
-//       outcome "ok" (no silent one-shot fallback), and the worker
-//       self-metrics show an analyze stage with NO hydrate stage; the
-//       candidate trip still records an in-band snapshot (Task-7 boundary);
+//       sequence with the flag OFF — publish succeeds on every mutation;
+//   (b) EVERY trip of every mutation is served from the synced mirror:
+//       metrics record snapshotBytes == 0 and snapshotBuildNs == 0, outcome
+//       "ok" (no silent one-shot fallback), and the worker self-metrics
+//       show the semantic stages (analyze / mutate+validate+export) with NO
+//       hydrate stage anywhere;
 //   (c) exactly ONE worker child serves the whole sequence
-//       (workerStartsTotal stays 1 across all three mutations);
+//       (workerStartsTotal stays 1 across all three mutations) — and the
+//       SECOND and THIRD mutations being mirror-served proves candidate
+//       savepoint rollback and published-delta sync COMPOSE (the mirror
+//       advanced exactly by the published delta between mutations);
 //   (d) epoch reset (gate h, end-to-end): restarting the daemon on the same
 //       store (recovery → NEW service epoch; the old daemon's worker dies
 //       with it) eagerly re-hydrates a fresh mirror — the post-restart
-//       mutation again runs snapshot-free analyzes with workerStartsTotal 1
+//       mutation again runs fully snapshot-free with workerStartsTotal 1
 //       and results identical to the one-shot arm's.
 //
 // Modeled on gate1Parity.test.ts / the step-0 driver. See
-// docs/superpowers/plans/2026-07-23-bridge-persistence-slice.md, Task 6.
+// docs/superpowers/plans/2026-07-23-bridge-persistence-slice.md, Tasks 6-7.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -222,11 +227,9 @@ function expectMirrorServedMutation(outcome: MutationOutcome): void {
   expect(outcome.workerStartsTotal).toBe(1);
   expect(outcome.workerRuns.length).toBe(6);
 
-  const analyzes = analyzeRuns(outcome);
-  expect(analyzes.length).toBe(5);
-  for (const run of analyzes) {
-    // Served from the synced mirror: no fallback, no snapshot bytes, no
-    // snapshot build, and the worker itself ran no hydrate stage.
+  // ALL SIX trips are mirror-served (Task 7): no fallback, no snapshot
+  // bytes, no snapshot build, and the worker never ran a hydrate stage.
+  for (const run of outcome.workerRuns) {
     expect(run.outcome).toBe("ok");
     expect(run.snapshotBytes).toBe(0);
     expect(run.snapshotBuildNs).toBe(0);
@@ -234,19 +237,22 @@ function expectMirrorServedMutation(outcome: MutationOutcome): void {
     expect(run.totalRequestBytes).toBeGreaterThan(0);
     expect(run.responseBytes).toBeGreaterThan(0);
     expect(run.worker).not.toBeNull();
-    expect(run.worker!.analyzeNs).toBeGreaterThan(0);
     expect(run.worker!.hydrateNs ?? null).toBeNull();
   }
 
-  // The candidate trip is still the Task-5 full-snapshot scaffold (Task 7
-  // migrates it): snapshot present and worker-side hydration real.
+  const analyzes = analyzeRuns(outcome);
+  expect(analyzes.length).toBe(5);
+  for (const run of analyzes) {
+    expect(run.worker!.analyzeNs).toBeGreaterThan(0);
+  }
+
+  // The candidate trip runs the real pipeline on the mirror inside the
+  // savepoint bracket: mutate/validate/export stages are all real work.
   const candidates = candidateRuns(outcome);
   expect(candidates.length).toBe(1);
-  expect(candidates[0]!.outcome).toBe("ok");
-  expect(candidates[0]!.snapshotBytes).toBeGreaterThan(0);
-  expect(candidates[0]!.snapshotBuildNs).toBeGreaterThan(0);
-  expect(candidates[0]!.worker).not.toBeNull();
-  expect(candidates[0]!.worker!.hydrateNs).toBeGreaterThan(0);
+  expect(candidates[0]!.worker!.mutateNs).toBeGreaterThan(0);
+  expect(candidates[0]!.worker!.validateNs).toBeGreaterThan(0);
+  expect(candidates[0]!.worker!.exportNs).toBeGreaterThan(0);
 }
 
 describe("persistent bridge delta sync (--persistent-bridge, snapshot-free analyzes)", () => {

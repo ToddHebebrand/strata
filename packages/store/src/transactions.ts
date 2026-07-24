@@ -277,6 +277,19 @@ export function commitWithoutValidate(db: Db, tx: TxHandle): void {
   overlays.delete(tx.id);
 }
 
+/**
+ * Diagnostic seam for cross-transaction JS-state isolation checks: the number
+ * of transaction overlays currently open in THIS process. The overlay map is
+ * module-level (keyed by tx UUID), so a pipeline that fails to close its
+ * transaction leaks an entry here even after the database itself is rolled
+ * back. The kernel-bridge mirror-candidate isolation gates assert this count
+ * returns to its baseline after every candidate (success, failure, and
+ * thrown-exception paths).
+ */
+export function openTransactionOverlayCount(): number {
+  return overlays.size;
+}
+
 export function startupRecoverOpenTransactions(db: Db): void {
   db.prepare(
     `UPDATE transactions

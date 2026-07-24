@@ -5,7 +5,7 @@ use anyhow::{Context, Result, ensure};
 
 use super::observer;
 use super::process::NodeBridgeClient;
-use super::router::PersistentBridgeRouter;
+use super::router::{MirrorCandidate, PersistentBridgeRouter};
 use super::protocol::{
     BridgeBinding, BridgeKind, BridgeRequest, BuildValidateCandidateRequest, ChangeSet, Hash64,
     PROTOCOL_VERSION, ValidationProfile, WireGraphDelta, WireSnapshot, WireU64,
@@ -21,12 +21,14 @@ pub(crate) trait CandidateExecutor: Send + Sync {
 pub(crate) struct NodeCandidateExecutor {
     client: Arc<NodeBridgeClient>,
     service_epoch: u64,
-    /// Task-5 scaffold path, deliberately retained for candidates (see the
-    /// router module docs): candidate requests route through the session's
-    /// ONE persistent worker with the full snapshot still in-band, because
-    /// candidate execution mutates worker state and the shared mirror needs
-    /// Task 7's savepoint isolation first. Transparent one-shot fallback;
-    /// `None` is the one-shot path, untouched.
+    /// Task-7 synced-mirror route: candidate requests whose graph identity
+    /// IS the current published identity are served from the persistent
+    /// worker's attested mirror under savepoint isolation, with NO in-band
+    /// snapshot. Everything else — speculative graphs (review B2), an
+    /// epoch-disabled router, and any TRANSPORT failure — is served by the
+    /// untouched one-shot spawn with its own snapshot. `None` is the pure
+    /// one-shot path, byte-identical to before the persistent bridge
+    /// existed.
     persistent: Option<Arc<PersistentBridgeRouter>>,
 }
 
@@ -116,6 +118,46 @@ fn candidate_envelope(
 
 impl CandidateExecutor for NodeCandidateExecutor {
     fn build_candidate(&self, prepared: &PreparedCandidate) -> Result<CandidateEnvelope> {
+        // Kernel-authority preconditions, shared by BOTH routes (the one-shot
+        // request builder re-checks them; the mirror route relies on them
+        // here).
+        ensure!(
+            prepared.change_set.state == ChangeSetState::Executing,
+            "candidate execution requires an Executing change set"
+        );
+        ensure!(
+            prepared
+                .intents
+                .iter()
+                .all(|intent| intent.change_set_id == prepared.change_set.change_set_id),
+            "candidate intents do not belong to the prepared change set"
+        );
+
+        // Synced-mirror route first (Task 7): decided BEFORE any snapshot is
+        // built — skipping that build is the measured point of the route.
+        if let Some(router) = &self.persistent {
+            match router.candidate_via_mirror(
+                &self.client,
+                prepared,
+                &self.client.validation_profile(),
+                self.service_epoch,
+            ) {
+                Ok(MirrorCandidate::Delta(delta)) => return candidate_envelope(prepared, delta),
+                // Semantic candidate failure on the mirror: terminal, with
+                // the one-shot path's exact error surface — never re-run.
+                Ok(MirrorCandidate::Failed(error)) => return Err(error),
+                Ok(MirrorCandidate::NotRouted) => {} // speculative/disabled → one-shot below
+                Err(error) => {
+                    // Same operational convention as every persistent-path
+                    // fallback: bounded stderr line, request served one-shot.
+                    eprintln!(
+                        "persistent mirror candidate failed; serving this request one-shot: \
+                         {error:#}"
+                    );
+                }
+            }
+        }
+
         let build_start = Instant::now();
         let request = candidate_request(
             self.service_epoch,
@@ -137,12 +179,7 @@ impl CandidateExecutor for NodeCandidateExecutor {
 
         // The protocol parser rejects request/kind/epoch/generation/digest/attempt/scope
         // mismatches before exposing the worker delta (both transports).
-        let wire_delta = super::router::run_with_persistent_fallback(
-            self.persistent.as_ref(),
-            &self.client,
-            &request,
-        )?
-        .into_candidate_result()?;
+        let wire_delta = self.client.run(&request)?.into_candidate_result()?;
         candidate_envelope(prepared, wire_delta)
     }
 }

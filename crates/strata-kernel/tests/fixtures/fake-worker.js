@@ -14,7 +14,7 @@
 // Behavior is selected via argv (the host passes config arguments through):
 //   --mode=echo|extra-frame|wrong-id|silent|slow|stderr-flood|crash-once|
 //          oversize-response|malformed|refuse|refuse-sync-attest-hydrate|
-//          refuse-ahead|crash-on-sync-once|refuse-semantic
+//          refuse-ahead|crash-on-sync-once|refuse-semantic|poison-code
 //   --log=<path>          append one line per received frame: "<kind>:<tag>"
 //                         (kind falls back to "semantic" for kindless frames)
 //   --delay-ms=<n>        slow mode: response delay in milliseconds
@@ -193,6 +193,21 @@ function handleFrame(frame) {
           kind: 'refuse',
           reason: 'digest-mismatch',
           have: { generation: '1', digest: 'a'.repeat(64) },
+        });
+      }
+      break;
+    case 'poison-code':
+      // Attests syncs, then answers every semantic frame with the worker's
+      // self-reported mirror-poison code (Task 7 candidate-isolation
+      // divergence): the host must treat it as a poison (kill + respawn).
+      if (isSyncKind(frame)) {
+        echoResponse(frame);
+      } else {
+        writeFrame({
+          requestId: frame.requestId,
+          kind: 'error',
+          code: 'mirrorPoisoned',
+          message: 'mirror fingerprint diverged across candidate (scripted)',
         });
       }
       break;

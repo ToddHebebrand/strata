@@ -257,6 +257,25 @@ impl PersistentWorkerHost {
 
         let (bytes, value) =
             self.exchange_raw_locked(&mut state, &semantic_id, semantic_frame, deadline_at)?;
+        if value.get("kind").and_then(Value::as_str) == Some("error")
+            && value.get("code").and_then(Value::as_str) == Some("mirrorPoisoned")
+        {
+            // Task 7: the worker detected a candidate-isolation divergence
+            // (post-candidate fingerprint != pre) and latched itself
+            // poisoned — its mirror can never be trusted again. This IS a
+            // poison condition on the host too: kill + reap + cleared
+            // attestation; the next request lazily respawns and
+            // full-rehydrates a fresh mirror. THIS request is served
+            // one-shot by the caller's fallback.
+            let detail = value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unspecified");
+            return Err(self.poison(
+                &mut state,
+                &format!("worker reported a poisoned mirror (candidate isolation): {detail}"),
+            ));
+        }
         if value.get("kind").and_then(Value::as_str) == Some("refuse") {
             // A semantic-frame refusal (attested-identity assertion failed in
             // the worker) means host and worker attestation state diverged —
@@ -301,72 +320,14 @@ impl PersistentWorkerHost {
         Ok(())
     }
 
-    /// Task-5 SCAFFOLD entry point: dispatch one already-serialized bridge
-    /// request over the persistent transport WITHOUT any attestation check or
-    /// sync exchange, returning the worker's raw response frame bytes.
-    ///
-    /// Why skipping attestation is sound HERE and only here: the scaffold
-    /// still sends the FULL SNAPSHOT inside every request body (exactly the
-    /// bytes the one-shot transport writes to a fresh child's stdin), so the
-    /// request is self-contained — the worker holds no mirror state that
-    /// could be stale, and there is no graph identity to attest. Task 6
-    /// restricted this entry point to `buildValidateCandidate` (candidate
-    /// execution mutates worker scratch state and stays off the shared
-    /// mirror until Task 7's savepoint isolation); Task 7 retires it. Do not
-    /// add new callers.
-    ///
-    /// Every single-flight/poison invariant of `request_at` holds unchanged:
-    /// the whole exchange runs inside the one state-mutex critical section,
-    /// queue wait counts against `deadline` (a caller expiring while queued
-    /// gets an error without the worker being touched), an oversized request
-    /// is refused host-side before anything is written, and every abnormal
-    /// response outcome poisons (kill + reap + cleared attestation + lazy
-    /// respawn on the next call). Correlation uses the request's OWN
-    /// `requestId` (already unique per one-shot convention and verified
-    /// against the response frame) instead of a host-stamped one, so the
-    /// bytes on the wire are byte-identical to the one-shot request body.
-    pub fn request_unattested(
-        &self,
-        request_id: &str,
-        body: &[u8],
-        deadline: Duration,
-    ) -> Result<Vec<u8>> {
-        ensure!(
-            !request_id.is_empty(),
-            "persistent bridge scaffold request must carry a non-empty requestId"
-        );
-        let started = Instant::now();
-        let mut state = lock_state(&self.state);
-        let deadline_at = started
-            .checked_add(deadline)
-            .ok_or_else(|| anyhow!("persistent bridge request deadline is too large"))?;
-        if Instant::now() >= deadline_at {
-            // The worker was never touched; explicitly not a poison.
-            bail!(
-                "persistent bridge request deadline elapsed while queued for the worker \
-                 (worker untouched)"
-            );
-        }
-        // Same host-side request bound as `encode_frame`: refused before any
-        // write, worker untouched, never a poison.
-        ensure!(
-            body.len() <= self.config.max_request_bytes,
-            "bridge request frame of {} bytes exceeds the {}-byte request bound; \
-             refused host-side before writing (worker untouched)",
-            body.len(),
-            self.config.max_request_bytes
-        );
-        let length = u32::try_from(body.len())
-            .map_err(|_| anyhow!("bridge frame length does not fit the u32 prefix"))?;
-        let mut framed = Vec::with_capacity(4 + body.len());
-        framed.extend_from_slice(&length.to_le_bytes());
-        framed.extend_from_slice(body);
-
-        self.ensure_healthy_worker(&mut state)?;
-        let (bytes, _value) =
-            self.exchange_raw_locked(&mut state, request_id, framed, deadline_at)?;
-        Ok(bytes)
-    }
+    // NOTE (Task 7): the Task-5 scaffold entry point `request_unattested`
+    // (dispatch of a full-snapshot one-shot request body over the persistent
+    // transport, no attestation) was RETIRED here, exactly as its Task-5 doc
+    // note announced. Candidate requests now ride the same attested
+    // `request_at` mirror path as analyze; every non-mirror request (cold
+    // start, speculative graphs, fallback after a persistent-path error) is
+    // served by the untouched one-shot spawn (`process.rs`). Do not
+    // reintroduce an unattested semantic entry point.
 
     /// Clean shutdown: close stdin (EOF is the contract — the worker loop
     /// exits 0 on it), wait `config.deadline` for a voluntary exit, kill on
@@ -541,9 +502,9 @@ impl PersistentWorkerHost {
 
     /// One single-flight exchange: write the frame, await the one correlated
     /// response. Every abnormal outcome poisons. Returns both the raw
-    /// response frame bytes (for the scaffold path, which hands them to the
-    /// one-shot response parser unchanged) and the parsed JSON value that was
-    /// used for `requestId` correlation.
+    /// response frame bytes (so `request_at_with_size` can report the true
+    /// on-wire response size) and the parsed JSON value that was used for
+    /// `requestId` correlation.
     fn exchange_raw_locked(
         &self,
         state: &mut HostState,
@@ -1473,6 +1434,46 @@ mod tests {
             planner.attested_sequence(),
             vec![false, false],
             "the respawned worker must be re-hydrated from scratch"
+        );
+    }
+
+    #[test]
+    fn worker_reported_mirror_poison_kills_and_respawns_with_full_rehydrate() {
+        // Task 7 gate (e), host half: a worker that answers a semantic frame
+        // with the distinct `mirrorPoisoned` error code has latched itself
+        // poisoned (candidate-isolation divergence). The host must poison
+        // too — kill + reap + cleared attestation — and the NEXT request
+        // must lazily respawn a fresh child and full-rehydrate it.
+        let host = PersistentWorkerHost::spawn(fake_worker_config(&[
+            "--mode=poison-code".into(),
+        ]))
+        .unwrap();
+        let first_pid = host.worker_pid_for_test().unwrap();
+        let planner = PhasePlanner::new("A");
+        let id = identity(1, "digest-a");
+
+        let error = host
+            .request_at(&id, json!({"tag": "A"}), GENEROUS, &planner)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("poisoned"), "{error}");
+        assert!(error.contains("fingerprint diverged"), "{error}");
+        assert_eq!(host.worker_pid_for_test(), None, "worker must be killed");
+        assert_eq!(host.last_attestation_for_test(), None);
+
+        // The respawned child (same scripted mode) re-hydrates from scratch:
+        // its sync attests, and only the semantic frame poisons again.
+        let error = host
+            .request_at(&id, json!({"tag": "A"}), GENEROUS, &planner)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("poisoned"), "{error}");
+        assert_ne!(host.worker_pid_for_test(), Some(first_pid));
+        assert_eq!(host.spawns_total(), 2);
+        assert_eq!(
+            planner.attested_sequence(),
+            vec![false, false],
+            "each fresh child must be full-rehydrated (no attestation carry-over)"
         );
     }
 

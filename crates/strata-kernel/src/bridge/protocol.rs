@@ -1264,6 +1264,81 @@ pub(crate) fn parse_mirror_analyze_facts(
     }
 }
 
+/// The two SEMANTIC outcomes of a mirror-served candidate: a validated delta,
+/// or a worker-reported candidate failure (mutation/validation) — the same
+/// terminal outcome the one-shot path surfaces via [`BridgeResponse::into_candidate_result`].
+/// Transport/parse problems are `Err` instead, so callers can distinguish
+/// "fall back one-shot" (transport) from "this candidate failed" (semantic).
+pub(crate) enum MirrorCandidateResponse {
+    Delta(WireGraphDelta),
+    Failed {
+        stage: ErrorStage,
+        code: String,
+        message: String,
+    },
+}
+
+/// Binds a mirror-served candidate response (Task 7: `buildValidateCandidateMirror`
+/// frames carry no snapshot; the worker executes on its attested mirror under
+/// savepoint isolation) before exposing the delta. The transport (`request_at`)
+/// has already correlated the `requestId`; this validates protocol version,
+/// kind, the exact candidate binding echo (epoch/generation/digest/attempt/
+/// scope), and the payload — the same checks `parse_bridge_response` runs for
+/// the snapshot-carrying request, minus the request struct it binds against.
+pub(crate) fn parse_mirror_candidate_delta(
+    value: serde_json::Value,
+    expected_binding: &CandidateBinding,
+    max_diagnostic_bytes: usize,
+) -> Result<MirrorCandidateResponse> {
+    let response: BridgeResponse =
+        serde_json::from_value(value).context("invalid mirror candidate response")?;
+    match response {
+        BridgeResponse::CandidateSuccess(inner) => {
+            ensure!(
+                inner.protocol_version == PROTOCOL_VERSION,
+                "unsupported response protocol version {}",
+                inner.protocol_version
+            );
+            ensure!(
+                inner.kind == BridgeKind::BuildValidateCandidate,
+                "mirror candidate response kind mismatch"
+            );
+            ensure!(
+                &inner.binding == expected_binding,
+                "mirror candidate response binding mismatch"
+            );
+            inner.result.delta.validate()?;
+            ensure!(
+                inner.result.delta.base_generation == expected_binding.graph_generation,
+                "candidate delta base generation does not match request"
+            );
+            ensure!(
+                inner.result.diagnostics.is_empty(),
+                "successful candidate response contains diagnostics"
+            );
+            Ok(MirrorCandidateResponse::Delta(inner.result.delta))
+        }
+        BridgeResponse::CandidateError(inner) => {
+            ensure!(
+                inner.protocol_version == PROTOCOL_VERSION,
+                "unsupported response protocol version {}",
+                inner.protocol_version
+            );
+            ensure!(
+                &inner.binding == expected_binding,
+                "mirror candidate error binding mismatch"
+            );
+            inner.error.validate(max_diagnostic_bytes)?;
+            Ok(MirrorCandidateResponse::Failed {
+                stage: inner.error.stage,
+                code: inner.error.code,
+                message: inner.error.message,
+            })
+        }
+        _ => bail!("mirror candidate response is not a buildValidateCandidate response"),
+    }
+}
+
 fn validate_id_array(context: &str, values: &[String]) -> Result<()> {
     bounded_len(context, values.len())?;
     for (index, value) in values.iter().enumerate() {

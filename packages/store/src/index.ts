@@ -142,6 +142,7 @@ export {
   begin,
   commitWithoutValidate,
   getOverlay,
+  openTransactionOverlayCount,
   queueIdentifierUpdate,
   queueTextSpanEdit,
   queuePendingOp,

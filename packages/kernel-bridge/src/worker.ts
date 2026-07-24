@@ -1,5 +1,9 @@
 import { analyzeIntent, analyzeIntentInDb } from "./analyze";
-import { buildValidateCandidate } from "./candidate";
+import {
+  buildValidateCandidate,
+  buildValidateCandidateOnMirror,
+  corruptingMirrorPipelineForTests
+} from "./candidate";
 import {
   MAX_REQUEST_FRAME_BYTES,
   MAX_RESPONSE_FRAME_BYTES,
@@ -23,8 +27,10 @@ import {
   MirrorState,
   hydrateFrameSchema,
   mirrorAnalyzeRequestSchema,
+  mirrorCandidateRequestSchema,
   syncFrameSchema,
   type MirrorAnalyzeRequest,
+  type MirrorCandidateRequest,
   type SyncOutcome
 } from "./sync";
 
@@ -121,13 +127,17 @@ export async function runOneShotWorker(
  * The loop owns ONE long-lived `:memory:` mirror database ([`MirrorState`],
  * sync.ts) kept exact by the daemon's attested, published-only sync frames:
  * `hydrate` replaces it, `sync` applies ordered published deltas
- * transactionally, and `analyzeIntentMirror` requests analyze against it
- * with NO in-band snapshot (the worker refuses when its attested identity
- * does not match the frame's). Snapshot-carrying semantic kinds
- * (`analyzeIntent` / `buildValidateCandidate`) still route through the SAME
- * `dispatch` the one-shot path uses over their own throwaway scratch
- * databases — candidates stay off the mirror until Task 7's savepoint
- * isolation lands. Per-request `StageRecorder` under the same
+ * transactionally, and the mirror semantic kinds serve WITHOUT any in-band
+ * snapshot (the worker refuses when its attested identity does not match
+ * the frame's): `analyzeIntentMirror` analyzes the mirror directly, and
+ * `buildValidateCandidateMirror` (Task 7) runs the unchanged candidate
+ * pipeline on the mirror under savepoint-rollback isolation asserted by the
+ * full logical fingerprint — a divergence poisons the whole worker
+ * (`mirrorPoisoned` on every subsequent request) so the host respawns it.
+ * Snapshot-carrying semantic kinds (`analyzeIntent` /
+ * `buildValidateCandidate`) still route through the SAME `dispatch` the
+ * one-shot path uses over their own throwaway scratch databases — the
+ * host's fallback path. Per-request `StageRecorder` under the same
  * `--emit-metrics` opt-in keeps `workerRun` metrics per-trip comparable
  * across transports. `shutdown` is acked then exits 0; stdin EOF (the
  * host's clean-shutdown contract) also exits 0. A failure inside one
@@ -184,6 +194,17 @@ async function servePersistentFrame(
     await writePersistentFrame({ requestId, kind: "shutdownAck" });
     return true;
   }
+  // Task-7 poison latch: after a candidate-isolation divergence the mirror
+  // can never be trusted again in this process. EVERY request except a clean
+  // shutdown is refused with the distinct `mirrorPoisoned` code — the host
+  // treats it as a poison signal (kill + reap + lazy respawn + full
+  // rehydrate); this branch exists so even a host that somehow keeps talking
+  // to a poisoned worker can never read stale mirror state.
+  const poisonDetail = mirror.poisonedDetail();
+  if (poisonDetail !== null) {
+    await writeLoopErrorFrame(requestId, "mirrorPoisoned", new Error(poisonDetail));
+    return false;
+  }
   if (kind === "hydrate" || kind === "sync") {
     let outcome: SyncOutcome;
     try {
@@ -203,6 +224,10 @@ async function servePersistentFrame(
   }
   if (kind === "analyzeIntentMirror") {
     await serveMirrorAnalyze(value, requestId, emitMetrics, mirror);
+    return false;
+  }
+  if (kind === "buildValidateCandidateMirror") {
+    await serveMirrorCandidate(value, requestId, emitMetrics, mirror);
     return false;
   }
   if (kind !== "analyzeIntent" && kind !== "buildValidateCandidate") {
@@ -297,6 +322,91 @@ async function serveMirrorAnalyze(
     const response = errorResponseFor(
       identity,
       "analyze",
+      failureCode(error, "handlerFailed"),
+      error,
+      []
+    );
+    await writePersistentResponse(response, identity, recorder);
+    writeOperationalError(response.error.code, error);
+  }
+}
+
+/**
+ * Serves one `buildValidateCandidateMirror` frame against the persistent
+ * mirror (Task 7): no snapshot, no hydration — the request's graph identity
+ * must equal the mirror's attested identity, else the worker refuses exactly
+ * as `analyzeIntentMirror` does. The EXISTING candidate pipeline runs inside
+ * `buildValidateCandidateOnMirror`'s savepoint bracket; success/error
+ * responses are byte-shaped exactly like snapshot-served candidate responses
+ * (same schema, same binding echo). A fingerprint divergence marks the
+ * WHOLE worker poisoned and answers with the distinct `mirrorPoisoned`
+ * error code so the host kills + respawns + rehydrates.
+ *
+ * `STRATA_TEST_MIRROR_CANDIDATE_CORRUPT=1` is the poison-state test seam
+ * (plan review Minor 2): it swaps in a pipeline that commits a corruption
+ * behind the savepoint, which the post-fingerprint MUST catch.
+ */
+async function serveMirrorCandidate(
+  value: unknown,
+  requestId: string,
+  emitMetrics: boolean,
+  mirror: MirrorState
+): Promise<void> {
+  const recorder = emitMetrics ? new StageRecorder(process.hrtime.bigint()) : undefined;
+  let request: MirrorCandidateRequest;
+  try {
+    request = mirrorCandidateRequestSchema.parse(value);
+  } catch (error) {
+    await writeLoopErrorFrame(requestId, "invalidRequest", error);
+    return;
+  }
+  const db = mirror.databaseFor(request.identity);
+  if (db === null) {
+    await writePersistentFrame({
+      requestId: request.requestId,
+      kind: "refuse",
+      reason: mirror.mismatchReason(request.identity),
+      have: mirror.attested()
+    });
+    return;
+  }
+  const identity: ResponseIdentity = {
+    requestId: request.requestId,
+    kind: "buildValidateCandidate",
+    binding: {
+      ...request.binding,
+      attemptId: request.attemptId,
+      scopeFingerprint: request.scopeFingerprint
+    }
+  };
+  const pipeline =
+    process.env.STRATA_TEST_MIRROR_CANDIDATE_CORRUPT === "1"
+      ? corruptingMirrorPipelineForTests
+      : undefined;
+  try {
+    const outcome = buildValidateCandidateOnMirror(request, db, recorder, pipeline);
+    if (outcome.kind === "poisoned") {
+      mirror.markPoisoned(outcome.detail);
+      await writeLoopErrorFrame(request.requestId, "mirrorPoisoned", new Error(outcome.detail));
+      return;
+    }
+    const result = outcome.result;
+    const response =
+      "delta" in result
+        ? bridgeResponseSchema.parse({
+            protocolVersion: 1,
+            requestId: request.requestId,
+            kind: "buildValidateCandidate",
+            binding: identity.binding,
+            ok: true,
+            result
+          })
+        : errorResponseFor(identity, result.stage, result.code, result.message, result.diagnostics);
+    await writePersistentResponse(response, identity, recorder);
+  } catch (error) {
+    const response = errorResponseFor(
+      identity,
+      "mutate",
       failureCode(error, "handlerFailed"),
       error,
       []
