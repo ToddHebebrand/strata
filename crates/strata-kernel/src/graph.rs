@@ -10,6 +10,11 @@ pub struct GraphGeneration {
     nodes: BTreeMap<String, NodeRecord>,
     references_from: BTreeMap<String, ReferenceRecord>,
     references_to: BTreeMap<String, BTreeSet<ReferenceRecord>>,
+    /// parent node id → child node ids (sorted by id, since they are inserted
+    /// in `nodes`' BTreeMap iteration order). Built once per generation so
+    /// membership queries never materialize a full snapshot (the measured
+    /// O(R·N) gate-3 scope-build cost; plan 2026-07-23, Task 1).
+    children_of: BTreeMap<String, Vec<String>>,
     digest: String,
 }
 
@@ -116,6 +121,20 @@ impl GraphGeneration {
         self.references_to.get(node_id).into_iter().flatten()
     }
 
+    /// A node's immediate children (index-backed, sorted by child id), without
+    /// materializing any snapshot.
+    pub fn children_of(&self, parent_id: &str) -> impl Iterator<Item = &NodeRecord> {
+        self.children_of
+            .get(parent_id)
+            .into_iter()
+            .flatten()
+            .map(|child_id| {
+                self.nodes
+                    .get(child_id)
+                    .expect("children_of index references a node absent from the graph")
+            })
+    }
+
     /// Returns an explicitly bounded projection of a node's immediate children.
     ///
     /// This intentionally does not expose or materialize the full graph snapshot.
@@ -123,12 +142,7 @@ impl GraphGeneration {
         if limit == 0 {
             bail!("child projection limit must be positive");
         }
-        let mut children = self
-            .nodes
-            .values()
-            .filter(|node| node.parent_id.as_deref() == Some(parent_id))
-            .take(limit + 1)
-            .collect::<Vec<_>>();
+        let mut children = self.children_of(parent_id).take(limit + 1).collect::<Vec<_>>();
         if children.len() > limit {
             bail!("immediate child projection exceeds {limit} item bound");
         }
@@ -163,11 +177,23 @@ impl GraphGeneration {
                 .insert(reference.clone());
         }
 
+        // BTreeMap iteration is id-ordered, so each child list is sorted by id.
+        let mut children_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for node in nodes.values() {
+            if let Some(parent_id) = node.parent_id.as_deref() {
+                children_of
+                    .entry(parent_id.to_owned())
+                    .or_default()
+                    .push(node.id.clone());
+            }
+        }
+
         let mut graph = Self {
             generation,
             nodes,
             references_from,
             references_to,
+            children_of,
             digest: String::new(),
         };
         let encoded = serde_json::to_vec(&graph.snapshot())?;
