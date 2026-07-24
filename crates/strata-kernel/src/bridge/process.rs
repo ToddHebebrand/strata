@@ -16,6 +16,16 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
+/// Byte bounds shared by the one-shot transport below and the persistent
+/// multi-frame transport (`persistent.rs`). The asymmetry is deliberate and
+/// review-pinned (bridge-persistence plan v2, Global Constraints): requests
+/// are bounded at 32 MiB and responses at 16 MiB — the request bound is
+/// never applied to response frames.
+pub(crate) const MAX_REQUEST_FRAME_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_RESPONSE_FRAME_BYTES: usize = 16 * 1024 * 1024;
+/// Default stderr capture bound for spawned bridge workers (both transports).
+pub(crate) const DEFAULT_MAX_STDERR_BYTES: usize = 64 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct NodeBridgeConfig {
     pub(crate) executable: PathBuf,
@@ -48,9 +58,9 @@ impl NodeBridgeConfig {
             executable: executable.into(),
             arguments,
             deadline,
-            max_request_bytes: 32 * 1024 * 1024,
-            max_response_bytes: 16 * 1024 * 1024,
-            max_stderr_bytes: 64 * 1024,
+            max_request_bytes: MAX_REQUEST_FRAME_BYTES,
+            max_response_bytes: MAX_RESPONSE_FRAME_BYTES,
+            max_stderr_bytes: DEFAULT_MAX_STDERR_BYTES,
             max_diagnostics_bytes: 64 * 1024,
             validation_profile: ValidationProfile::tsc_only(
                 source_root.to_string_lossy(),

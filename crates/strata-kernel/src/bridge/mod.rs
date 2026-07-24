@@ -3,6 +3,7 @@
 
 pub(crate) mod executor;
 pub(crate) mod observer;
+pub(crate) mod persistent;
 pub(crate) mod process;
 pub(crate) mod protocol;
 pub(crate) mod provider;
