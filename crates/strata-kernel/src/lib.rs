@@ -4,6 +4,7 @@ mod graph;
 mod kernel;
 mod model;
 mod storage;
+mod sync_digest;
 
 pub use bridge::{NodeBridgeConfig, WorkerRunMetrics, WorkerSelfMetrics};
 
@@ -46,3 +47,4 @@ pub use model::{
 pub use model::{FenceClaim, Publication};
 #[cfg(feature = "redb-spike-api")]
 pub use storage::{CoordinatedPublishFailpoint, DurableStore, PublishOutcome};
+pub use sync_digest::canonical_sync_digest;

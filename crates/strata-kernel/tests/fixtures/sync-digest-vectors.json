@@ -1,0 +1,287 @@
+[
+  {
+    "name": "empty-graph",
+    "generation": "0",
+    "nodes": [],
+    "references": [],
+    "expectedDigest": "fd4e03352b0b0a737aa0c976643337c8e4f2b454d71563428db2408f53b94c99"
+  },
+  {
+    "name": "single-node",
+    "generation": "1",
+    "nodes": [
+      {
+        "id": "module-a",
+        "kind": "Module",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "export const a = 1;"
+      }
+    ],
+    "references": [],
+    "expectedDigest": "b0898b50a6392fe210031007a28c54a387bab62af14215eb0dc88c075f3a4055"
+  },
+  {
+    "name": "node-sort-utf8-bytes-vs-utf16-units",
+    "generation": "2",
+    "nodes": [
+      {
+        "id": "𐀀",
+        "kind": "Identifier",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "U+10000 sorts last in UTF-8 bytes but before U+FF61 in UTF-16 code units"
+      },
+      {
+        "id": "~",
+        "kind": "Identifier",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "tilde"
+      },
+      {
+        "id": "｡",
+        "kind": "Identifier",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "U+FF61 sorts before U+10000 in UTF-8 bytes, after it in UTF-16 code units"
+      },
+      {
+        "id": "z",
+        "kind": "Identifier",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "ascii"
+      }
+    ],
+    "references": [],
+    "expectedDigest": "b492d96d7129ad11404777e63bb498dc0537d87904805970d9ac6b07a365c8de"
+  },
+  {
+    "name": "equal-child-index-id-tiebreak",
+    "generation": "3",
+    "nodes": [
+      {
+        "id": "parent",
+        "kind": "Module",
+        "parentId": null,
+        "childIndex": null,
+        "payload": ""
+      },
+      {
+        "id": "child-b",
+        "kind": "Statement",
+        "parentId": "parent",
+        "childIndex": 0,
+        "payload": "b"
+      },
+      {
+        "id": "child-a",
+        "kind": "Statement",
+        "parentId": "parent",
+        "childIndex": 0,
+        "payload": "a"
+      },
+      {
+        "id": "child-c",
+        "kind": "Statement",
+        "parentId": "parent",
+        "childIndex": 0,
+        "payload": "c"
+      }
+    ],
+    "references": [],
+    "expectedDigest": "10552003395a133c72995171312301499584c9f16f4cef4ba62774ac3c14b37e"
+  },
+  {
+    "name": "hostile-payload-escapes",
+    "generation": "4",
+    "nodes": [
+      {
+        "id": "quotes",
+        "kind": "Text",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "say \"hi\" to \\ and /"
+      },
+      {
+        "id": "newline",
+        "kind": "Text",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "line1\nline2\r\ttabbed"
+      },
+      {
+        "id": "separators",
+        "kind": "Text",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "ls ps end"
+      },
+      {
+        "id": "control",
+        "kind": "Text",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "low-controls\u0001\u001fend"
+      }
+    ],
+    "references": [],
+    "expectedDigest": "fa09003a6a41527c90d1c359f52149c9db58888790f9b7ae21c79737197bb770"
+  },
+  {
+    "name": "non-bmp-ids-and-payloads",
+    "generation": "5",
+    "nodes": [
+      {
+        "id": "😀-grin",
+        "kind": "Emoji",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "grin 😀 payload"
+      },
+      {
+        "id": "𝔘nicode",
+        "kind": "Math",
+        "parentId": "😀-grin",
+        "childIndex": 1,
+        "payload": "𝔘 fraktur"
+      }
+    ],
+    "references": [
+      {
+        "fromNodeId": "𝔘nicode",
+        "toNodeId": "😀-grin",
+        "kind": "value"
+      }
+    ],
+    "expectedDigest": "d7b00579ce090ee65abda813c6c51878b44d6a90b06437025e0dca4a56290e98"
+  },
+  {
+    "name": "generation-u64-max",
+    "generation": "18446744073709551615",
+    "nodes": [
+      {
+        "id": "n",
+        "kind": "Identifier",
+        "parentId": null,
+        "childIndex": 7,
+        "payload": "max generation"
+      }
+    ],
+    "references": [],
+    "expectedDigest": "43b86c31cef8c81fac2cb7c5c903a324c37c2c5859167ac47e6c6646544e7951"
+  },
+  {
+    "name": "child-index-extremes",
+    "generation": "6",
+    "nodes": [
+      {
+        "id": "max-safe",
+        "kind": "Identifier",
+        "parentId": "root",
+        "childIndex": 9007199254740991,
+        "payload": "Number.MAX_SAFE_INTEGER"
+      },
+      {
+        "id": "negative-one",
+        "kind": "Identifier",
+        "parentId": "root",
+        "childIndex": -1,
+        "payload": "negative"
+      },
+      {
+        "id": "min-safe",
+        "kind": "Identifier",
+        "parentId": "root",
+        "childIndex": -9007199254740991,
+        "payload": "-Number.MAX_SAFE_INTEGER"
+      },
+      {
+        "id": "root",
+        "kind": "Module",
+        "parentId": null,
+        "childIndex": 0,
+        "payload": ""
+      }
+    ],
+    "references": [],
+    "expectedDigest": "f4b51440b85f9cff9e6c51309314297c921eef4b27f8e09a6e3ee6ab9aec8af8"
+  },
+  {
+    "name": "reference-sort-forcing",
+    "generation": "7",
+    "nodes": [
+      {
+        "id": "f",
+        "kind": "Identifier",
+        "parentId": null,
+        "childIndex": null,
+        "payload": ""
+      },
+      {
+        "id": "g",
+        "kind": "Identifier",
+        "parentId": null,
+        "childIndex": null,
+        "payload": ""
+      }
+    ],
+    "references": [
+      {
+        "fromNodeId": "f",
+        "toNodeId": "𐀀",
+        "kind": "type"
+      },
+      {
+        "fromNodeId": "g",
+        "toNodeId": "a",
+        "kind": "value"
+      },
+      {
+        "fromNodeId": "f",
+        "toNodeId": "｡",
+        "kind": "value"
+      },
+      {
+        "fromNodeId": "f",
+        "toNodeId": "a",
+        "kind": "namespace"
+      }
+    ],
+    "expectedDigest": "0db4f0ddcdce510655aa33f4bba91f6e09e839965fc4250a5f279727cc008e70"
+  },
+  {
+    "name": "combined-hostile",
+    "generation": "9007199254740993",
+    "nodes": [
+      {
+        "id": "｡-halfwidth",
+        "kind": "K\"ind",
+        "parentId": "𐀀-astral",
+        "childIndex": -42,
+        "payload": "p q\\r\"s\nt😀"
+      },
+      {
+        "id": "𐀀-astral",
+        "kind": "Module",
+        "parentId": null,
+        "childIndex": 9007199254740991,
+        "payload": " "
+      }
+    ],
+    "references": [
+      {
+        "fromNodeId": "｡-halfwidth",
+        "toNodeId": "𐀀-astral",
+        "kind": "va\"lue\\"
+      },
+      {
+        "fromNodeId": "𐀀-astral",
+        "toNodeId": "｡-halfwidth",
+        "kind": "type"
+      }
+    ],
+    "expectedDigest": "b25dd116557caf6eaf3887653ac88214ed7981d2827c5c809a6b89b47d986509"
+  }
+]
