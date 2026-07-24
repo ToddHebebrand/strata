@@ -141,7 +141,26 @@ itself goes to decisions.md).
 - [ ] **Step 1: Measure.** Step-0 driver, release binary: `--copies 46 --n 1` and `--copies 1 --n 1` (1-copy = medium-scale indicative profile). Preserve artifacts.
 - [ ] **Step 2: Recompute the projection top-down.** big1k: measured post-Task-1 window minus the persistence saving (Node spawn/hydrate/deserialize + daemon per-trip snapshot build/serialize, re-derived from the NEW workerRun records, not v1's 4.2 s). Medium: measured 1-copy window minus the same; compare against allowances (big1k ≈2.5 s; medium cold ≈0.70 s / warm ≈0.85 s).
 - [ ] **Step 3: Decide, honestly.** (a) Projected big1k ≤ allowance AND projected medium within reach (≤ allowance + memoization headroom) → proceed to Task 2. (b) Irreducible candidate+publication work (validate/render/tsc + journal fsyncs + items 5–6) already exceeds the medium allowance → **STOP: report to the operator** with the numbers (options: design amendment for another profiled lever; or accept the split now). Do NOT proceed to protocol work on hope.
-- [ ] **Step 4: Commit** the artifacts + the recorded decision. `git add -A && git commit -m "docs(spike): post-task1 go/no-go — <proceed|stop>: <numbers>"`
+- [x] **Step 4: Commit** the artifacts + the recorded decision. `git add -A && git commit -m "docs(spike): post-task1 go/no-go — <proceed|stop>: <numbers>"`
+
+**CHECKPOINT RECORD (2026-07-24): PROCEED.** Measured (release, N=1,
+step-0 driver, artifacts in `docs/spikes/bridge-persistence-step0/
+post-task1{,-medium}/`):
+- big1k: 6.80 s (submit 1.83 + advance 4.97; trips 5.63, residual 1.16).
+  Top-down persistence projection: trips → ≈1.96 s (analyze 5×≈0.12 +
+  candidate validate/export ≈1.36) + residual → ≈0.56 s (snapshotBuild+
+  serialize 6×≈0.105 removed) ≈ **2.5 s vs 2.50 s allowance** — at the
+  line; memoization headroom → ≈2.0 s.
+- medium-scale (1 copy): 1.86 s (submit 0.50 + advance 1.37). Dominant cost
+  is 6×≈0.2 s spawn/transport — precisely what persistence removes.
+  Projection ≈ **0.55 s vs 0.697 s cold allowance** (candidate validate
+  0.378 s + analyze ≈0.06 + residual ≈0.11) — under allowance with ~20%
+  margin. (Note: candidate validate measured 378 ms here vs the 786 ms
+  gate-2-era figure quoted in the charter — the earlier number was a
+  debug-binary measurement.)
+- No irreducible floor exceeds an allowance → protocol work is justified.
+  Both margins are thin; the exit gate remains honestly winnable-or-losable
+  and the stopping rule stands.
 
 ---
 
