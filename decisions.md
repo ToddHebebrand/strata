@@ -7,6 +7,55 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-23 — Step-0 decomposition + plan v1→review→v2; execution blocked on operator A3
+
+**Step-0 findings (spike `docs/spikes/bridge-persistence-step0.md`, commit
+a0f32ed; N=1 big1k metrics-on, debug run ties out to gate-3's recorded p95s
+within 1%):**
+1. The chartered mechanism model was wrong in attribution: the six worker
+   trips sum to only ~5.7 s of the 26.3 s debug window. The dominant cost is
+   daemon-side — `children_resource` clones the FULL graph (all 1012 node
+   payloads) per touched node inside `intent_analysis_from_facts`
+   (`resources.rs`, O(R·N), ≈6.5–7 s of the release residual; an unused
+   non-cloning `children_bounded` projection already existed). Worker
+   persistence alone cannot reach the allowance.
+2. Gate 3 measured a `target/debug` (unoptimized) kernel daemon by harness
+   default against production-optimized SQLite. Release binary alone halves
+   the window (26.3 → 14.1 s). The recorded gate-3 FAIL stands as recorded;
+   the binary policy becomes an explicit exit-gate configuration (A2).
+3. redb I/O is NOT the bottleneck (persistence 16 ms); the residual is
+   in-memory cloning/serialization/hashing.
+
+**Plan round (chartered process, complete):** plan v1
+(`docs/superpowers/plans/2026-07-23-bridge-persistence-slice.md`, bd77e77) →
+independent Codex methodology review (gpt-5.6-sol, xhigh, read-only; brief +
+archived output at `docs/superpowers/specs/2026-07-23-bridge-persistence-
+plan-review-{brief,codex}.md`) → v2. All 11 findings (3 blockers, 6 majors,
+2 minors) source-verified before acceptance; two of the review's citation
+paths corrected during verification (crate name, spike path). Load-bearing:
+- **B1 (verified):** the unchanged gate-3 harness can never exit 0 —
+  `mediumMemoryPlaceholder` hardcodes INCONCLUSIVE into medium's corpus
+  state. The chartered exit-gate term ("unchanged harness, PASS = exit 0")
+  is internally unsatisfiable. → amendment **A3** (below).
+- **B2 (verified):** publication runs readiness planning against the
+  speculative unpublished `next` graph; the persistent mirror must sync
+  published generations only, speculative analysis stays one-shot.
+- **B3 (verified):** thread-per-connection daemon → sync+dispatch must be
+  one atomic single-flight `request_at`.
+- **M4 (recomputed):** v1's 2.4 s projection was bottom-up optimistic;
+  top-down gives ≈2.9–3.4 s pre-memoization vs the ≈2.5 s big1k allowance —
+  borderline-to-over. v2 adds a hard go/no-go checkpoint (Task 1b) after the
+  scope-builder fix, before any protocol work; medium (allowance ≈0.70 s,
+  candidate validate alone 786 ms) remains the live honest-fail risk.
+
+**Amendments:** A1 (scope-builder O(R·N) fix in scope — review adjudicated
+no operator approval needed), A2 (exit-gate kernel binary pinned to release
+via `STRATA_KERNEL_SERVICE_BIN`, disclosed; adjudicated fair), **A3 (exit
+verdict keeps wall/lifecycle/schedule/thresholds exactly as recorded but
+replaces the impossible placeholder memory component with a true-process RSS
+predicate — REQUIRES operator approval; if rejected, the slice stops and
+that is recorded).** Build does not start until the operator rules on A3.
+
 ## 2026-07-22 — Bridge-persistence slice chartered (operator-delegated direction call after gate-3 FAIL)
 
 **Decision:** of the three recorded post-falsifier-5 options (narrow scope /
