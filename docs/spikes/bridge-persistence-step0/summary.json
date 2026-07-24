@@ -1,0 +1,195 @@
+{
+  "generatedBy": "packages/live-compare/src/gate3/step0-stage-decomposition.ts",
+  "options": {
+    "copies": 46,
+    "n": 1
+  },
+  "binaryPath": "/Users/toddhebebrand/Strata/target/debug/strata-kernel-service",
+  "corpus": {
+    "moduleCount": 1012,
+    "copies": 46,
+    "corpusDigest": "845af2a91899690e849cefb4e4cbdc93eb2926ba3e8fc58aac709a94b5a69401"
+  },
+  "corpusBuildNs": 201365375,
+  "serviceStartNs": 4118367500,
+  "iterations": [
+    {
+      "iteration": 0,
+      "requests": [
+        {
+          "action": "begin_change_set",
+          "wallNs": 29202916,
+          "publishing": false,
+          "publication": null,
+          "trips": [],
+          "tripBridgeWallSumNs": 0,
+          "coordinationResidualNs": 29202916,
+          "seq": 3
+        },
+        {
+          "action": "add_intent",
+          "wallNs": 29236416,
+          "publishing": false,
+          "publication": null,
+          "trips": [],
+          "tripBridgeWallSumNs": 0,
+          "coordinationResidualNs": 29236416,
+          "seq": 4
+        },
+        {
+          "action": "submit_change_set",
+          "wallNs": 8987226917,
+          "publishing": false,
+          "publication": null,
+          "trips": [
+            {
+              "requestKind": "analyzeIntent",
+              "phase": "submitAnalysis",
+              "outcome": "ok",
+              "bridgeWallNs": 752048667,
+              "snapshotBuildNs": 285458375,
+              "requestSerializeNs": 498933708,
+              "spawnAndTransportNs": 0,
+              "snapshotBytes": 10981871,
+              "totalRequestBytes": 10982404,
+              "responseBytes": 4068,
+              "workerHydrateNs": 321189000,
+              "workerAnalyzeNs": 101240042,
+              "workerMutateNs": null,
+              "workerValidateNs": null,
+              "workerExportNs": null,
+              "workerTotalNs": 520424417,
+              "workerPeakRssBytes": 391118848,
+              "seq": 5
+            },
+            {
+              "requestKind": "analyzeIntent",
+              "phase": "unattributed",
+              "outcome": "ok",
+              "bridgeWallNs": 722838750,
+              "snapshotBuildNs": 277081084,
+              "requestSerializeNs": 488832584,
+              "spawnAndTransportNs": 0,
+              "snapshotBytes": 10981871,
+              "totalRequestBytes": 10982404,
+              "responseBytes": 4068,
+              "workerHydrateNs": 311259375,
+              "workerAnalyzeNs": 101486917,
+              "workerMutateNs": null,
+              "workerValidateNs": null,
+              "workerExportNs": null,
+              "workerTotalNs": 512118084,
+              "workerPeakRssBytes": 395640832,
+              "seq": 6
+            }
+          ],
+          "tripBridgeWallSumNs": 1474887417,
+          "coordinationResidualNs": 7512339500,
+          "seq": 7
+        },
+        {
+          "action": "advance_change_set",
+          "wallNs": 17287460750,
+          "publishing": true,
+          "publication": {
+            "generation": 1,
+            "preCandidateAnalysisNs": 4625041958,
+            "postCandidateAnalysisNs": 4306905708,
+            "candidateNs": 3016302958,
+            "persistenceNs": 16521375,
+            "memoryPublishNs": 2166,
+            "coreGraphRecordValueBytes": 13050,
+            "alreadyPublished": false
+          },
+          "trips": [
+            {
+              "requestKind": "analyzeIntent",
+              "phase": "claimAnalysis",
+              "outcome": "ok",
+              "bridgeWallNs": 773859000,
+              "snapshotBuildNs": 310243833,
+              "requestSerializeNs": 511447541,
+              "spawnAndTransportNs": 0,
+              "snapshotBytes": 10981871,
+              "totalRequestBytes": 10982404,
+              "responseBytes": 4068,
+              "workerHydrateNs": 326883250,
+              "workerAnalyzeNs": 124587250,
+              "workerMutateNs": null,
+              "workerValidateNs": null,
+              "workerExportNs": null,
+              "workerTotalNs": 544347208,
+              "workerPeakRssBytes": 405848064,
+              "seq": 8
+            },
+            {
+              "requestKind": "analyzeIntent",
+              "phase": "preCandidateAnalysis",
+              "outcome": "ok",
+              "bridgeWallNs": 771405125,
+              "snapshotBuildNs": 271850250,
+              "requestSerializeNs": 525322709,
+              "spawnAndTransportNs": 0,
+              "snapshotBytes": 10981871,
+              "totalRequestBytes": 10982404,
+              "responseBytes": 4068,
+              "workerHydrateNs": 322605458,
+              "workerAnalyzeNs": 120482916,
+              "workerMutateNs": null,
+              "workerValidateNs": null,
+              "workerExportNs": null,
+              "workerTotalNs": 549001583,
+              "workerPeakRssBytes": 413859840,
+              "seq": 9
+            },
+            {
+              "requestKind": "buildValidateCandidate",
+              "phase": "candidate",
+              "outcome": "ok",
+              "bridgeWallNs": 1981931125,
+              "snapshotBuildNs": 301002042,
+              "requestSerializeNs": 486353042,
+              "spawnAndTransportNs": 0,
+              "snapshotBytes": 10981871,
+              "totalRequestBytes": 10983112,
+              "responseBytes": 11464,
+              "workerHydrateNs": 303166667,
+              "workerAnalyzeNs": null,
+              "workerMutateNs": 3602667,
+              "workerValidateNs": 1104295291,
+              "workerExportNs": 165240751,
+              "workerTotalNs": 1752990917,
+              "workerPeakRssBytes": 507723776,
+              "seq": 10
+            },
+            {
+              "requestKind": "analyzeIntent",
+              "phase": "postCandidateAnalysis",
+              "outcome": "ok",
+              "bridgeWallNs": 721184708,
+              "snapshotBuildNs": 267524542,
+              "requestSerializeNs": 477470208,
+              "spawnAndTransportNs": 0,
+              "snapshotBytes": 10981871,
+              "totalRequestBytes": 10982404,
+              "responseBytes": 4068,
+              "workerHydrateNs": 300415208,
+              "workerAnalyzeNs": 110285375,
+              "workerMutateNs": null,
+              "workerValidateNs": null,
+              "workerExportNs": null,
+              "workerTotalNs": 514262042,
+              "workerPeakRssBytes": 409976832,
+              "seq": 11
+            }
+          ],
+          "tripBridgeWallSumNs": 4248379958,
+          "coordinationResidualNs": 13039080792,
+          "seq": 12
+        }
+      ],
+      "totalRequestWallNs": 26333126999,
+      "tripCount": 6
+    }
+  ]
+}
