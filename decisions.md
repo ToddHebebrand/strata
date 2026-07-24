@@ -56,6 +56,9 @@ replaces the impossible placeholder memory component with a true-process RSS
 predicate — REQUIRES operator approval; if rejected, the slice stops and
 that is recorded).** Build does not start until the operator rules on A3.
 
+**2026-07-24 addendum:** the operator approved A3 (and acknowledged A1/A2).
+Execution begins at Task 1 with the Task 1b go/no-go checkpoint in force.
+
 ## 2026-07-22 — Bridge-persistence slice chartered (operator-delegated direction call after gate-3 FAIL)
 
 **Decision:** of the three recorded post-falsifier-5 options (narrow scope /

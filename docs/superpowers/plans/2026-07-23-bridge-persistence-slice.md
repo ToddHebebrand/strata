@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
-> **STATUS: v2 — execution BLOCKED on operator approval of amendment A3**
-> (and acknowledgment of A1/A2). Everything else in the chartered
-> v1 → independent review → v2 sequence is complete.
+> **STATUS: v2 — APPROVED FOR EXECUTION.** The operator approved A3 (and
+> acknowledged A1/A2) on 2026-07-24. The chartered v1 → independent review
+> → v2 sequence is complete; Task 11 Step 0's gate is satisfied.
 
 **v2 (2026-07-23):** revised after the independent Codex review (gpt-5.6-sol,
 xhigh, read-only; output archived at
