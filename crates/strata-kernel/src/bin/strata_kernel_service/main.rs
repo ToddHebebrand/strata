@@ -43,8 +43,9 @@ fn run() -> Result<()> {
 fn serve(arguments: &[OsString]) -> Result<()> {
     // `--persistent-bridge` is the one bare (valueless) serve flag: extract it
     // before the strict `--name value` pair parse. Default OFF; when present
-    // the daemon owns one persistent bridge worker for the session (Task 5
-    // scaffold) and one-shot spawning becomes the per-request fallback.
+    // the daemon owns one persistent bridge worker for the session — eagerly
+    // hydrated at startup and kept exact by published-only attested delta
+    // sync (Task 6) — and one-shot spawning becomes the per-request fallback.
     let mut arguments = arguments.to_vec();
     let argument_count = arguments.len();
     arguments.retain(|argument| argument != "--persistent-bridge");

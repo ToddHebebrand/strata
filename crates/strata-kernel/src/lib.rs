@@ -47,4 +47,4 @@ pub use model::{
 pub use model::{FenceClaim, Publication};
 #[cfg(feature = "redb-spike-api")]
 pub use storage::{CoordinatedPublishFailpoint, DurableStore, PublishOutcome};
-pub use sync_digest::canonical_sync_digest;
+pub use sync_digest::{canonical_sync_digest, canonical_sync_digest_refs};

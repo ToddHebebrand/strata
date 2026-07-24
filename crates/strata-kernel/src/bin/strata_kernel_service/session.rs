@@ -153,6 +153,14 @@ impl ServiceSession {
         self.recovered
     }
 
+    /// Eager persistent-mirror hydration (Task 6): run after seed/recovery,
+    /// BEFORE the stdout readiness line. `Ok(false)` when the daemon runs
+    /// without `--persistent-bridge`. Failures are the caller's to log —
+    /// startup must continue (the first mirror request lazily retries).
+    pub fn eager_hydrate_persistent_bridge(&self) -> Result<bool> {
+        self.kernel.eager_hydrate_persistent_bridge()
+    }
+
     pub fn handle_frame(&self, bytes: &[u8]) -> LocalServiceResponse {
         let started = Instant::now();
         let parsed = self

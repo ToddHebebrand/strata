@@ -33,6 +33,20 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
 
     // Recovery is intentionally complete before the authority becomes reachable.
     let (session, service_epoch) = ServiceSession::open(config)?;
+    // Eager persistent-mirror hydration (Task 6): after seed/recovery,
+    // strictly BEFORE the readiness line below, so a ready daemon already
+    // holds an attested mirror and the first analyze trip is snapshot-free.
+    // A hydration failure must NOT kill the service: log and continue — the
+    // first mirror-routed request lazily retries the sync (documented
+    // startup contract; the gate-3 child times only submit+advance, so this
+    // cost is out-of-window for both arms and disclosed in the exit
+    // artifact's service-start wall).
+    if let Err(error) = session.eager_hydrate_persistent_bridge() {
+        eprintln!(
+            "persistent bridge eager hydration failed; continuing with lazy retry on \
+             first use: {error:#}"
+        );
+    }
     let listener = bind_private_socket(&socket_path)?;
     let ready = Readiness {
         protocol_version: 1,

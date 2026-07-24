@@ -33,9 +33,21 @@ pub fn canonical_sync_digest(
     nodes: &[NodeRecord],
     references: &[ReferenceRecord],
 ) -> String {
-    let mut sorted_nodes: Vec<&NodeRecord> = nodes.iter().collect();
+    canonical_sync_digest_refs(generation, nodes.iter(), references.iter())
+}
+
+/// Borrowed-iterator variant of [`canonical_sync_digest`], so callers holding
+/// a live [`crate::GraphGeneration`] (whose maps already own the records) can
+/// digest a published generation without snapshot-cloning it (Task 6). The
+/// encoding and sort contract are identical; input order remains irrelevant.
+pub fn canonical_sync_digest_refs<'a>(
+    generation: u64,
+    nodes: impl Iterator<Item = &'a NodeRecord>,
+    references: impl Iterator<Item = &'a ReferenceRecord>,
+) -> String {
+    let mut sorted_nodes: Vec<&NodeRecord> = nodes.collect();
     sorted_nodes.sort_by(|a, b| a.id.as_bytes().cmp(b.id.as_bytes()));
-    let mut sorted_references: Vec<&ReferenceRecord> = references.iter().collect();
+    let mut sorted_references: Vec<&ReferenceRecord> = references.collect();
     sorted_references.sort_by(|a, b| {
         a.from_node_id
             .as_bytes()

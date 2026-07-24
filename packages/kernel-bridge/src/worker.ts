@@ -1,4 +1,4 @@
-import { analyzeIntent } from "./analyze";
+import { analyzeIntent, analyzeIntentInDb } from "./analyze";
 import { buildValidateCandidate } from "./candidate";
 import {
   MAX_REQUEST_FRAME_BYTES,
@@ -11,12 +11,22 @@ import {
   bridgeRequestSchema,
   bridgeResponseSchema,
   type AnalyzeIntentRequest,
+  type BridgeBinding,
   type BridgeDiagnostic,
   type BridgeErrorPayload,
+  type BridgeKind,
   type BridgeRequest,
   type BridgeResponse,
   type BuildValidateCandidateRequest
 } from "./protocol";
+import {
+  MirrorState,
+  hydrateFrameSchema,
+  mirrorAnalyzeRequestSchema,
+  syncFrameSchema,
+  type MirrorAnalyzeRequest,
+  type SyncOutcome
+} from "./sync";
 
 export const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 export const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
@@ -86,7 +96,7 @@ export async function runOneShotWorker(
 
   try {
     const response = dispatch(request, handlers, recorder);
-    await emitResponse(response, request, recorder);
+    await emitResponse(response, responseIdentityOf(request), recorder);
   } catch (error) {
     const response = requestErrorResponse(
       request,
@@ -95,41 +105,52 @@ export async function runOneShotWorker(
       error,
       []
     );
-    await emitResponse(response, request, recorder);
+    await emitResponse(response, responseIdentityOf(request), recorder);
     writeOperationalError(response.error.code, error);
   }
 }
 
 /**
- * Persistent mode (bridge-persistence slice, Task 4): a strictly serial
+ * Persistent mode (bridge-persistence slice, Tasks 4+6): a strictly serial
  * request loop over the u32-LE length-prefixed frame transport the Rust host
  * (`bridge/persistent.rs`) speaks — the worker-side mirror of the host's
  * single-flight discipline. One frame is read, exactly one response frame
  * carrying the request's `requestId` is written, and only then is the next
  * frame read.
  *
- * Semantic kinds (`analyzeIntent` / `buildValidateCandidate`) route through
- * the SAME `dispatch` the one-shot path uses, with a fresh per-request
- * `StageRecorder` under the same `--emit-metrics` opt-in — so `workerRun`
- * metrics stay per-trip comparable across the two transports. `sync` is the
- * mirror-sync task's (Task 6): until it lands, a structured
- * `{kind:"error", code:"unsupported"}` frame — never a crash. `shutdown`
- * is acked then exits 0; stdin EOF (the host's clean-shutdown contract) also
- * exits 0. A failure inside one request answers THAT request with an error
- * frame and keeps serving; process exit stays reserved for unrecoverable
- * transport states (oversized/truncated inbound frame → the fatal handler).
+ * The loop owns ONE long-lived `:memory:` mirror database ([`MirrorState`],
+ * sync.ts) kept exact by the daemon's attested, published-only sync frames:
+ * `hydrate` replaces it, `sync` applies ordered published deltas
+ * transactionally, and `analyzeIntentMirror` requests analyze against it
+ * with NO in-band snapshot (the worker refuses when its attested identity
+ * does not match the frame's). Snapshot-carrying semantic kinds
+ * (`analyzeIntent` / `buildValidateCandidate`) still route through the SAME
+ * `dispatch` the one-shot path uses over their own throwaway scratch
+ * databases — candidates stay off the mirror until Task 7's savepoint
+ * isolation lands. Per-request `StageRecorder` under the same
+ * `--emit-metrics` opt-in keeps `workerRun` metrics per-trip comparable
+ * across transports. `shutdown` is acked then exits 0; stdin EOF (the
+ * host's clean-shutdown contract) also exits 0. A failure inside one
+ * request answers THAT request and keeps serving; process exit stays
+ * reserved for unrecoverable transport states.
  */
 export async function runPersistentWorker(
   handlers: WorkerHandlers = defaultHandlers
 ): Promise<void> {
   const emitMetrics = process.argv.includes("--emit-metrics");
-  for await (const body of readFrames(process.stdin, MAX_REQUEST_FRAME_BYTES)) {
-    const shutdown = await servePersistentFrame(body, handlers, emitMetrics);
-    if (shutdown) {
-      // The ack write above has been handed to the OS pipe; exiting here
-      // honors "respond, then exit 0" without waiting on open stdin.
-      process.exit(0);
+  const mirror = new MirrorState();
+  try {
+    for await (const body of readFrames(process.stdin, MAX_REQUEST_FRAME_BYTES)) {
+      const shutdown = await servePersistentFrame(body, handlers, emitMetrics, mirror);
+      if (shutdown) {
+        // The ack write above has been handed to the OS pipe; exiting here
+        // honors "respond, then exit 0" without waiting on open stdin.
+        mirror.close();
+        process.exit(0);
+      }
     }
+  } finally {
+    mirror.close();
   }
 }
 
@@ -137,7 +158,8 @@ export async function runPersistentWorker(
 async function servePersistentFrame(
   body: Buffer,
   handlers: WorkerHandlers,
-  emitMetrics: boolean
+  emitMetrics: boolean,
+  mirror: MirrorState
 ): Promise<boolean> {
   let value: unknown;
   try {
@@ -162,12 +184,25 @@ async function servePersistentFrame(
     await writePersistentFrame({ requestId, kind: "shutdownAck" });
     return true;
   }
-  if (kind === "sync") {
-    await writeLoopErrorFrame(
-      requestId,
-      "unsupported",
-      new Error("sync frames are not supported until mirror sync lands (Task 6)")
-    );
+  if (kind === "hydrate" || kind === "sync") {
+    let outcome: SyncOutcome;
+    try {
+      outcome =
+        kind === "hydrate"
+          ? mirror.handleHydrate(hydrateFrameSchema.parse(value))
+          : mirror.handleSync(syncFrameSchema.parse(value));
+    } catch (error) {
+      // A schema-invalid sync frame from our own daemon is a protocol bug;
+      // the error frame makes the host poison (kill + rehydrate), which is
+      // the correct fail-closed outcome.
+      await writeLoopErrorFrame(requestId, "invalidSyncFrame", error);
+      return false;
+    }
+    await writePersistentFrame({ requestId, ...outcome });
+    return false;
+  }
+  if (kind === "analyzeIntentMirror") {
+    await serveMirrorAnalyze(value, requestId, emitMetrics, mirror);
     return false;
   }
   if (kind !== "analyzeIntent" && kind !== "buildValidateCandidate") {
@@ -194,7 +229,7 @@ async function servePersistentFrame(
   }
   try {
     const response = dispatch(request, handlers, recorder);
-    await writePersistentResponse(response, request, recorder);
+    await writePersistentResponse(response, responseIdentityOf(request), recorder);
   } catch (error) {
     const response = requestErrorResponse(
       request,
@@ -203,10 +238,102 @@ async function servePersistentFrame(
       error,
       []
     );
-    await writePersistentResponse(response, request, recorder);
+    await writePersistentResponse(response, responseIdentityOf(request), recorder);
     writeOperationalError(response.error.code, error);
   }
   return false;
+}
+
+/**
+ * Serves one `analyzeIntentMirror` frame against the persistent mirror
+ * (Task 6): no snapshot, no hydration — the request's graph identity must
+ * equal the mirror's attested identity, else the worker refuses and the
+ * host falls back one-shot. Success/error responses are byte-shaped exactly
+ * like snapshot-served analyzeIntent responses (same schema, same binding
+ * echo), so the daemon-side validation path is shared.
+ */
+async function serveMirrorAnalyze(
+  value: unknown,
+  requestId: string,
+  emitMetrics: boolean,
+  mirror: MirrorState
+): Promise<void> {
+  const recorder = emitMetrics ? new StageRecorder(process.hrtime.bigint()) : undefined;
+  let request: MirrorAnalyzeRequest;
+  try {
+    request = mirrorAnalyzeRequestSchema.parse(value);
+  } catch (error) {
+    await writeLoopErrorFrame(requestId, "invalidRequest", error);
+    return;
+  }
+  const db = mirror.databaseFor(request.identity);
+  if (db === null) {
+    await writePersistentFrame({
+      requestId: request.requestId,
+      kind: "refuse",
+      reason: mirror.mismatchReason(request.identity),
+      have: mirror.attested()
+    });
+    return;
+  }
+  const identity = analyzeResponseIdentity(request.requestId, request.binding);
+  try {
+    const result = recorder
+      ? recorder.time("analyze", () => analyzeIntentInDb(db, request.intent))
+      : analyzeIntentInDb(db, request.intent);
+    const response =
+      "facts" in result
+        ? bridgeResponseSchema.parse({
+            protocolVersion: 1,
+            requestId: request.requestId,
+            kind: "analyzeIntent",
+            binding: request.binding,
+            ok: true,
+            result
+          })
+        : errorResponseFor(identity, result.stage, result.code, result.message, result.diagnostics);
+    await writePersistentResponse(response, identity, recorder);
+  } catch (error) {
+    const response = errorResponseFor(
+      identity,
+      "analyze",
+      failureCode(error, "handlerFailed"),
+      error,
+      []
+    );
+    await writePersistentResponse(response, identity, recorder);
+    writeOperationalError(response.error.code, error);
+  }
+}
+
+/**
+ * The identity a response is bound to: the request's id/kind plus the exact
+ * binding echo the response schema requires. Extracted so mirror-served
+ * requests (which have no full `BridgeRequest`) share one error/bounding
+ * path with snapshot-served requests.
+ */
+interface ResponseIdentity {
+  requestId: string;
+  kind: BridgeKind;
+  binding: BridgeBinding | ReturnType<typeof candidateBinding>;
+}
+
+function responseIdentityOf(request: BridgeRequest): ResponseIdentity {
+  return {
+    requestId: request.requestId,
+    kind: request.kind,
+    binding:
+      request.kind === "buildValidateCandidate"
+        ? candidateBinding(request)
+        : request.binding
+  };
+}
+
+function analyzeResponseIdentity(
+  requestId: string,
+  binding: BridgeBinding
+): ResponseIdentity {
+  return { requestId, kind: "analyzeIntent", binding };
 }
 
 /**
@@ -216,12 +343,12 @@ async function servePersistentFrame(
  */
 async function writePersistentResponse(
   response: BridgeResponse,
-  request: BridgeRequest,
+  identity: ResponseIdentity,
   recorder?: StageRecorder
 ): Promise<void> {
   await writeFrame(
     process.stdout,
-    Buffer.from(boundedResponseFrame(response, request, recorder), "utf8"),
+    Buffer.from(boundedResponseFrame(response, identity, recorder), "utf8"),
     MAX_RESPONSE_FRAME_BYTES
   );
 }
@@ -328,10 +455,10 @@ function dispatch(
 
 async function emitResponse(
   response: BridgeResponse,
-  request: BridgeRequest | undefined,
+  identity: ResponseIdentity | undefined,
   recorder?: StageRecorder
 ): Promise<void> {
-  await writeStdout(boundedResponseFrame(response, request, recorder));
+  await writeStdout(boundedResponseFrame(response, identity, recorder));
 }
 
 /**
@@ -345,19 +472,19 @@ async function emitResponse(
  */
 function boundedResponseFrame(
   response: BridgeResponse,
-  request: BridgeRequest | undefined,
+  identity: ResponseIdentity | undefined,
   recorder?: StageRecorder
 ): string {
   let finalResponse = response;
   let frame = serializeFrame(finalResponse);
   if (Buffer.byteLength(frame) > MAX_RESPONSE_BYTES) {
-    finalResponse = request === undefined
+    finalResponse = identity === undefined
       ? fallbackErrorResponse(
           "responseTooLarge",
           new Error(`response exceeds ${MAX_RESPONSE_BYTES} bytes`)
         )
-      : requestErrorResponse(
-          request,
+      : errorResponseFor(
+          identity,
           "protocol",
           "responseTooLarge",
           `response exceeds ${MAX_RESPONSE_BYTES} bytes`,
@@ -393,14 +520,21 @@ function requestErrorResponse(
   error: unknown,
   diagnostics: readonly BridgeDiagnostic[]
 ): Extract<BridgeResponse, { ok: false }> {
+  return errorResponseFor(responseIdentityOf(request), stage, code, error, diagnostics);
+}
+
+function errorResponseFor(
+  identity: ResponseIdentity,
+  stage: BridgeErrorPayload["stage"],
+  code: string,
+  error: unknown,
+  diagnostics: readonly BridgeDiagnostic[]
+): Extract<BridgeResponse, { ok: false }> {
   return bridgeResponseSchema.parse({
     protocolVersion: 1,
-    requestId: request.requestId,
-    kind: request.kind,
-    binding:
-      request.kind === "buildValidateCandidate"
-        ? candidateBinding(request)
-        : request.binding,
+    requestId: identity.requestId,
+    kind: identity.kind,
+    binding: identity.binding,
     ok: false,
     error: normalizeError(stage, code, error, diagnostics)
   }) as Extract<BridgeResponse, { ok: false }>;

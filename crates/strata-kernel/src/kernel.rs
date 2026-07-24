@@ -8,7 +8,8 @@ use anyhow::{Context, Result, bail, ensure};
 
 use crate::bridge::{
     CandidateExecutor, NodeBridgeClient, NodeBridgeConfig, NodeCandidateExecutor,
-    NodeSemanticProvider, PersistentScaffoldRouter, WorkerRunMetrics, confirmed_declaration_name,
+    NodeSemanticProvider, PersistentBridgeRouter, SyncShared, WorkerRunMetrics,
+    confirmed_declaration_name,
 };
 use crate::coordination::{
     CoordinationError, DependencyVersion, ResourceClockSnapshot, SemanticProvider,
@@ -154,12 +155,17 @@ pub struct Kernel {
     /// observability accessors can reach its spawn counter and run-record
     /// buffer; the provider and executor share this exact instance.
     node_bridge_client: Option<Arc<NodeBridgeClient>>,
-    /// The session's ONE persistent scaffold worker host (`--persistent-bridge`,
-    /// Task 5), when enabled. Held so `worker_starts_total` can sum its spawn
+    /// The session's ONE persistent bridge worker router (`--persistent-bridge`),
+    /// when enabled. Held so `worker_starts_total` can sum its spawn
     /// counter with the one-shot client's; the provider and executor share
     /// this exact instance for routing. Dropping the kernel kills + reaps the
     /// child via the host's own drop.
-    persistent_router: Option<Arc<PersistentScaffoldRouter>>,
+    persistent_router: Option<Arc<PersistentBridgeRouter>>,
+    /// Published-sync state for the persistent mirror (Task 6): the current
+    /// PUBLISHED identity plus the bounded delta log. `Some` ONLY when the
+    /// persistent bridge is enabled, so the flag-off publication path never
+    /// pays the canonical-sync-digest cost (one-shot arm stays untouched).
+    sync_shared: Option<Arc<SyncShared>>,
 }
 
 impl Kernel {
@@ -181,9 +187,9 @@ impl Kernel {
     }
 
     /// Shared bridge wiring for the create/open paths: one shared one-shot
-    /// client for provider + executor, plus — under the Task-5
-    /// `--persistent-bridge` scaffold flag — the session's ONE persistent
-    /// worker host, spawned EAGERLY here so a broken worker path fails daemon
+    /// client for provider + executor, plus — under `--persistent-bridge` —
+    /// the session's ONE persistent worker host with its published-sync
+    /// state, spawned EAGERLY here so a broken worker path fails daemon
     /// startup loudly rather than on the first request (lazy respawn after a
     /// poison remains the host's own behavior).
     fn wire_node_bridge(
@@ -191,13 +197,19 @@ impl Kernel {
         config: NodeBridgeConfig,
         service_epoch: u64,
     ) -> Result<()> {
-        let router = if config.persistent_scaffold {
-            Some(Arc::new(PersistentScaffoldRouter::spawn(
+        let (router, sync_shared) = if config.persistent_scaffold {
+            // Seed the published-sync identity from the seed/recovery-time
+            // graph, so the delta log's base identity is known before any
+            // publication (Task 6). Only the flag-on path pays this digest.
+            let sync = Arc::new(SyncShared::seed(kernel.snapshot()));
+            let router = Arc::new(PersistentBridgeRouter::spawn(
                 &config,
                 service_epoch,
-            )?))
+                Arc::clone(&sync),
+            )?);
+            (Some(router), Some(sync))
         } else {
-            None
+            (None, None)
         };
         let client = Arc::new(NodeBridgeClient::new(config));
         kernel.semantic_provider = Some(Arc::new(
@@ -210,7 +222,53 @@ impl Kernel {
         ));
         kernel.node_bridge_client = Some(client);
         kernel.persistent_router = router;
+        kernel.sync_shared = sync_shared;
         Ok(())
+    }
+
+    /// Records one published generation step into the persistent-mirror sync
+    /// state (published identity + delta log). Called from the publication
+    /// path ONLY after `PublishOutcome::Published` and the in-memory swap.
+    /// A no-op without `--persistent-bridge`. Infallible: the publication is
+    /// already durable and live, so sync bookkeeping must never fail it.
+    pub(crate) fn record_published_sync(
+        &self,
+        next: &Arc<GraphGeneration>,
+        delta: &crate::GraphDelta,
+    ) {
+        if let Some(shared) = &self.sync_shared {
+            shared.record_published(next, delta);
+        }
+    }
+
+    /// Eager persistent-mirror hydration (service start, before the stdout
+    /// readiness line). Returns `Ok(false)` when no persistent bridge is
+    /// configured. A failure must NOT kill the service: the caller logs and
+    /// continues — the first mirror-routed request lazily retries the sync.
+    pub fn eager_hydrate_persistent_bridge(&self) -> Result<bool> {
+        match &self.persistent_router {
+            Some(router) => router.eager_hydrate().map(|()| true),
+            None => Ok(false),
+        }
+    }
+
+    /// Test observability for the published-sync state: `(published
+    /// generation, published sync digest, retained delta-log generations)`,
+    /// or `None` when sync tracking is off.
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_published_sync_state(&self) -> Option<(u64, String, Vec<u64>)> {
+        self.sync_shared.as_ref().map(|shared| shared.test_state())
+    }
+
+    /// Enables published-sync tracking without a bridge/router (test seam for
+    /// the speculative-publication failpoint gate): seeds the identity from
+    /// the CURRENT live graph exactly as `wire_node_bridge` does under
+    /// `--persistent-bridge`.
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_enable_published_sync_tracking(&mut self) {
+        self.sync_shared = Some(Arc::new(SyncShared::seed(self.snapshot())));
     }
 
     #[cfg(feature = "coordination-test-api")]
@@ -431,7 +489,7 @@ impl Kernel {
 
     /// Total worker children the wired Node bridge has successfully spawned, or
     /// 0 when no bridge is wired. Counts regardless of metrics collection.
-    /// Sums both transports: one-shot spawns plus the persistent scaffold
+    /// Sums both transports: one-shot spawns plus the persistent bridge
     /// host's spawns (1 for the whole session unless a poison forced a
     /// respawn) — so a persistent-bridge daemon that served a full mutation
     /// without fallback reports exactly 1 here.
@@ -817,6 +875,9 @@ impl Kernel {
                     .write()
                     .map_err(|_| anyhow::anyhow!("live generation lock is poisoned"))? =
                     next.clone();
+                // Published-only mirror sync (Task 6): the delta enters the
+                // log strictly after Published + the in-memory swap above.
+                self.record_published_sync(&next, &publication.delta);
                 if failpoint == PublishFailpoint::AfterMemoryPublish {
                     std::process::abort();
                 }
@@ -1075,6 +1136,7 @@ impl Kernel {
             candidate_executor,
             node_bridge_client: None,
             persistent_router: None,
+            sync_shared: None,
         }
     }
 }

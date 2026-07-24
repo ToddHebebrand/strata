@@ -15,8 +15,10 @@
 //!   semantic request/response exchange all happen inside ONE mutex-held
 //!   critical section, so a second caller's sync can never interleave
 //!   between another caller's sync and its semantic frame (the G/G+1 race
-//!   gate below). There is no public `sync()` or `last_attestation()`;
-//!   attestation state is host-internal.
+//!   gate below). There is no public `last_attestation()`; attestation
+//!   state is host-internal. `hydrate_at` (Task 6 eager hydration) is
+//!   sync-ONLY — it dispatches nothing and runs the identical locked path,
+//!   so it introduces no second sync surface or interleaving window.
 //! - **Queue wait counts against the caller's deadline.** The clock starts
 //!   before the state mutex is acquired; a caller whose deadline lapses
 //!   while queued gets a deadline error WITHOUT the worker being touched
@@ -45,10 +47,14 @@
 //!   [`PersistentWorkerHost::epoch`] so the coordinator can compare-and-kill
 //!   on epoch change (wired in Task 6).
 //!
-//! Sync MECHANICS (delta selection/hydration) are Task 6's; here the host
-//! owns only the attestation state and the verification of the worker's
-//! attest/refusal response. The caller supplies a [`SyncPlanner`] seam that
-//! yields the sync frame to send whenever the recorded attestation is stale.
+//! Sync MECHANICS (delta selection/hydration) live in the [`SyncPlanner`]
+//! implementation backed by `sync_state.rs` (Task 6); here the host owns
+//! only the attestation state and the verification of the worker's
+//! attest/refusal response. Refusal semantics (Task 6): `gap`/`digest-
+//! mismatch` clear the attestation and retry once with a full-hydrate plan;
+//! `ahead` clears and errors without any hydrate (forward-only — the mirror
+//! is never rolled back for a request); every refusal path leaves the
+//! worker alive and falls back one-shot for the failed request.
 //!
 //! Threading matches the daemon's model (thread-per-connection std threads,
 //! `server.rs`): plain `std::sync::Mutex` + per-worker I/O threads, no async
@@ -212,6 +218,19 @@ impl PersistentWorkerHost {
         deadline: Duration,
         planner: &dyn SyncPlanner,
     ) -> Result<Value> {
+        self.request_at_with_size(identity, frame, deadline, planner)
+            .map(|(value, _response_bytes)| value)
+    }
+
+    /// [`Self::request_at`] plus the raw response frame length, for callers
+    /// that record per-trip observability (the router's `workerRun` records).
+    pub fn request_at_with_size(
+        &self,
+        identity: &GraphIdentity,
+        frame: Value,
+        deadline: Duration,
+        planner: &dyn SyncPlanner,
+    ) -> Result<(Value, u64)> {
         let started = Instant::now();
         let mut state = lock_state(&self.state);
         let deadline_at = started
@@ -236,7 +255,50 @@ impl PersistentWorkerHost {
             self.sync_locked(&mut state, identity, planner, deadline_at)?;
         }
 
-        self.exchange_locked(&mut state, &semantic_id, semantic_frame, deadline_at)
+        let (bytes, value) =
+            self.exchange_raw_locked(&mut state, &semantic_id, semantic_frame, deadline_at)?;
+        if value.get("kind").and_then(Value::as_str) == Some("refuse") {
+            // A semantic-frame refusal (attested-identity assertion failed in
+            // the worker) means host and worker attestation state diverged —
+            // possible only via bugs. The worker is healthy and its mirror
+            // untouched: clear the (evidently wrong) attestation so the next
+            // request resyncs, and serve THIS request one-shot. Not a poison.
+            state.last_attestation = None;
+            let reason = value
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("unspecified")
+                .to_owned();
+            bail!(
+                "persistent bridge worker refused the mirror-served request ({reason}); \
+                 attestation cleared, the request must be served one-shot"
+            );
+        }
+        Ok((value, bytes.len() as u64))
+    }
+
+    /// Sync-only entry for eager hydration at service start (and lazy
+    /// re-hydration): brings the worker's attestation to `identity` without
+    /// dispatching any semantic frame. Runs under the SAME state mutex and
+    /// sync/verification path as `request_at` — no second sync surface, no
+    /// interleaving window (B3 is about the sync+dispatch pair of a request;
+    /// a standalone sync has no dispatch to interleave with).
+    pub fn hydrate_at(
+        &self,
+        identity: &GraphIdentity,
+        deadline: Duration,
+        planner: &dyn SyncPlanner,
+    ) -> Result<()> {
+        let started = Instant::now();
+        let mut state = lock_state(&self.state);
+        let deadline_at = started
+            .checked_add(deadline)
+            .ok_or_else(|| anyhow!("persistent bridge hydration deadline is too large"))?;
+        self.ensure_healthy_worker(&mut state)?;
+        if state.last_attestation.as_ref() != Some(identity) {
+            self.sync_locked(&mut state, identity, planner, deadline_at)?;
+        }
+        Ok(())
     }
 
     /// Task-5 SCAFFOLD entry point: dispatch one already-serialized bridge
@@ -248,8 +310,10 @@ impl PersistentWorkerHost {
     /// bytes the one-shot transport writes to a fresh child's stdin), so the
     /// request is self-contained — the worker holds no mirror state that
     /// could be stale, and there is no graph identity to attest. Task 6
-    /// (delta sync + eager hydration) retires or restricts this entry point
-    /// to the sync-attested `request_at` path; do not add new callers.
+    /// restricted this entry point to `buildValidateCandidate` (candidate
+    /// execution mutates worker scratch state and stays off the shared
+    /// mirror until Task 7's savepoint isolation); Task 7 retires it. Do not
+    /// add new callers.
     ///
     /// Every single-flight/poison invariant of `request_at` holds unchanged:
     /// the whole exchange runs inside the one state-mutex critical section,
@@ -381,10 +445,17 @@ impl PersistentWorkerHost {
         }
     }
 
-    /// Runs the sync exchange for `target` and verifies the worker's answer:
-    /// a matching attest updates the recorded attestation; a refusal is an
-    /// error WITHOUT poison (worker healthy, mirror not advanced); anything
-    /// else is a protocol violation and poisons.
+    /// Runs the sync exchange for `target` and verifies the worker's answer.
+    /// A matching attest updates the recorded attestation. A refusal is NEVER
+    /// poison (the worker is healthy; its mirror did not advance):
+    /// - `gap` / `digest-mismatch` (or any unknown reason) → the recorded
+    ///   attestation was wrong: clear it and retry ONCE with a full-hydrate
+    ///   plan (`plan_sync(None, target)`); a second refusal errors so the
+    ///   caller serves the request one-shot;
+    /// - `ahead` → forward-only (plan v2): clear the (evidently wrong)
+    ///   attestation and error WITHOUT any hydrate attempt — the mirror must
+    ///   not be rolled back for this request; the caller serves it one-shot.
+    /// Anything other than attest/refuse is a protocol violation and poisons.
     fn sync_locked(
         &self,
         state: &mut HostState,
@@ -392,36 +463,66 @@ impl PersistentWorkerHost {
         planner: &dyn SyncPlanner,
         deadline_at: Instant,
     ) -> Result<()> {
-        let payload = planner
-            .plan_sync(state.last_attestation.as_ref(), target)
-            .context("sync planner failed to produce a sync frame")?;
-        let (sync_id, sync_frame) = encode_frame(&self.config, &mut state.next_request_id, payload)?;
-        let response = self.exchange_locked(state, &sync_id, sync_frame, deadline_at)?;
+        let mut hydrate_retry = false;
+        loop {
+            let attested = if hydrate_retry {
+                None
+            } else {
+                state.last_attestation.clone()
+            };
+            let payload = planner
+                .plan_sync(attested.as_ref(), target)
+                .context("sync planner failed to produce a sync frame")?;
+            let (sync_id, sync_frame) =
+                encode_frame(&self.config, &mut state.next_request_id, payload)?;
+            let response = self.exchange_locked(state, &sync_id, sync_frame, deadline_at)?;
 
-        match response.get("kind").and_then(Value::as_str) {
-            Some("attest") => match parse_wire_identity(response.get("identity")) {
-                Some(attested) if attested == *target => {
-                    state.last_attestation = Some(target.clone());
-                    Ok(())
+            match response.get("kind").and_then(Value::as_str) {
+                Some("attest") => match parse_wire_identity(response.get("identity")) {
+                    Some(attested) if attested == *target => {
+                        state.last_attestation = Some(target.clone());
+                        return Ok(());
+                    }
+                    Some(_) => {
+                        return Err(self.poison(
+                            state,
+                            "worker attested an identity different from the sync target",
+                        ));
+                    }
+                    None => {
+                        return Err(
+                            self.poison(state, "attest response carries no parseable identity")
+                        );
+                    }
+                },
+                Some("refuse") => {
+                    let reason = response
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unspecified")
+                        .to_owned();
+                    state.last_attestation = None;
+                    if reason == "ahead" {
+                        bail!(
+                            "persistent bridge worker refused sync (ahead); forward-only — \
+                             the mirror is not rolled back and the request must be served \
+                             one-shot"
+                        );
+                    }
+                    if hydrate_retry {
+                        bail!(
+                            "persistent bridge worker refused sync after the full-hydrate \
+                             retry ({reason}); the request must be served one-shot"
+                        );
+                    }
+                    hydrate_retry = true;
                 }
-                Some(_) => Err(self.poison(
-                    state,
-                    "worker attested an identity different from the sync target",
-                )),
-                None => Err(self.poison(state, "attest response carries no parseable identity")),
-            },
-            Some("refuse") => {
-                let reason = response
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unspecified")
-                    .to_owned();
-                bail!(
-                    "persistent bridge worker refused sync ({reason}); \
-                     the request must be served one-shot"
-                )
+                _ => {
+                    return Err(
+                        self.poison(state, "sync response kind was neither attest nor refuse")
+                    );
+                }
             }
-            _ => Err(self.poison(state, "sync response kind was neither attest nor refuse")),
         }
     }
 
@@ -888,7 +989,7 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::time::Duration;
@@ -1221,30 +1322,203 @@ mod tests {
         assert_eq!(host.worker_pid_for_test(), None);
     }
 
+    /// Planner that mirrors the real Task-6 planner's shape decision — a
+    /// delta-sync frame while an attestation exists, a full-hydrate frame
+    /// otherwise — and records the attested-ness sequence it was called with.
+    struct PhasePlanner {
+        tag: &'static str,
+        attested_sequence: Mutex<Vec<bool>>,
+    }
+
+    impl PhasePlanner {
+        fn new(tag: &'static str) -> Self {
+            Self {
+                tag,
+                attested_sequence: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn attested_sequence(&self) -> Vec<bool> {
+            self.attested_sequence.lock().unwrap().clone()
+        }
+    }
+
+    impl SyncPlanner for PhasePlanner {
+        fn plan_sync(
+            &self,
+            attested: Option<&GraphIdentity>,
+            target: &GraphIdentity,
+        ) -> Result<Value> {
+            self.attested_sequence.lock().unwrap().push(attested.is_some());
+            Ok(json!({
+                "kind": if attested.is_some() { "sync" } else { "hydrate" },
+                "tag": self.tag,
+                "target": {
+                    "generation": target.generation.to_string(),
+                    "digest": target.digest.clone(),
+                },
+            }))
+        }
+    }
+
     #[test]
-    fn sync_refusal_is_an_error_without_poison() {
-        // A refusal is a healthy-worker outcome: mirror not advanced, worker
-        // alive, attestation unchanged (Task 6 wires the one-shot fallback).
+    fn sync_refusal_clears_attestation_and_retries_once_with_full_hydrate() {
+        // A refusal is a healthy-worker outcome: the host clears the (wrong)
+        // attestation and retries ONCE with a hydrate plan; a second refusal
+        // errors so the caller serves one-shot. Never a poison.
         let host =
             PersistentWorkerHost::spawn(fake_worker_config(&["--mode=refuse".into()])).unwrap();
-        let planner = CountingPlanner::new("A");
+        let planner = PhasePlanner::new("A");
         let id = identity(1, "digest-a");
 
         let error = host
             .request_at(&id, json!({"tag": "A"}), GENEROUS, &planner)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("refused sync"), "{error}");
+        assert!(error.contains("refused sync after the full-hydrate retry"), "{error}");
         assert!(!error.contains("poisoned"), "{error}");
         assert!(host.worker_pid_for_test().is_some(), "worker stays alive");
         assert_eq!(host.last_attestation_for_test(), None);
+        // No prior attestation: first plan already hydrates, retry re-hydrates.
+        assert_eq!(planner.attested_sequence(), vec![false, false]);
+    }
+
+    #[test]
+    fn refusal_triggered_hydrate_retry_recovers_the_request() {
+        // Worker refuses delta syncs but accepts hydration: after an attested
+        // state goes stale, the one hydrate retry must complete the request.
+        let host = PersistentWorkerHost::spawn(fake_worker_config(&[
+            "--mode=refuse-sync-attest-hydrate".into(),
+        ]))
+        .unwrap();
+        let planner = PhasePlanner::new("A");
+
+        // Cold start: no attestation → hydrate → attest → semantic ok.
+        let first_id = identity(1, "digest-a");
+        host.request_at(&first_id, json!({"tag": "A"}), GENEROUS, &planner)
+            .unwrap();
+        assert_eq!(host.last_attestation_for_test(), Some(first_id));
+        assert_eq!(planner.attested_sequence(), vec![false]);
+
+        // Stale attestation → delta sync refused → hydrate retry attests.
+        let second_id = identity(2, "digest-b");
+        let response = host
+            .request_at(&second_id, json!({"tag": "A"}), GENEROUS, &planner)
+            .unwrap();
+        assert_eq!(response.get("ok"), Some(&Value::Bool(true)));
+        assert_eq!(host.last_attestation_for_test(), Some(second_id));
+        assert_eq!(planner.attested_sequence(), vec![false, true, false]);
+    }
+
+    #[test]
+    fn ahead_refusal_serves_one_shot_without_hydrate_rollback() {
+        // Gate (e), transport half: forward-only. An `ahead` refusal must NOT
+        // trigger the hydrate retry (that would roll the mirror back); the
+        // request errors so the caller serves it one-shot, worker untouched.
+        let host = PersistentWorkerHost::spawn(fake_worker_config(&[
+            "--mode=refuse-ahead".into(),
+        ]))
+        .unwrap();
+        let planner = PhasePlanner::new("A");
+        let id = identity(1, "digest-a");
 
         let error = host
             .request_at(&id, json!({"tag": "A"}), GENEROUS, &planner)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("refused sync"), "{error}");
-        assert_eq!(planner.calls(), 2, "still stale: sync attempted again");
+        assert!(error.contains("ahead"), "{error}");
+        assert!(error.contains("one-shot"), "{error}");
+        assert!(!error.contains("poisoned"), "{error}");
+        assert!(host.worker_pid_for_test().is_some(), "worker stays alive");
+        assert_eq!(host.last_attestation_for_test(), None);
+        assert_eq!(
+            planner.attested_sequence(),
+            vec![false],
+            "no hydrate retry may follow an ahead refusal"
+        );
+    }
+
+    #[test]
+    fn crash_mid_sync_respawns_and_full_hydrates_on_the_next_request() {
+        // Gate (i): the worker dies while a sync frame is in flight; the next
+        // request lazily respawns, must full-hydrate (attestation cleared),
+        // and attests correctly.
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join("crashed-during-sync");
+        let host = PersistentWorkerHost::spawn(fake_worker_config(&[
+            "--mode=crash-on-sync-once".into(),
+            format!("--marker={}", marker.display()),
+        ]))
+        .unwrap();
+        let first_pid = host.worker_pid_for_test().unwrap();
+        let planner = PhasePlanner::new("A");
+        let id = identity(3, "digest-c");
+
+        let error = host
+            .request_at(&id, json!({"tag": "A"}), GENEROUS, &planner)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("poisoned"), "{error}");
+        assert_eq!(host.worker_pid_for_test(), None);
+        assert_eq!(host.last_attestation_for_test(), None);
+
+        let response = host
+            .request_at(&id, json!({"tag": "A"}), GENEROUS, &planner)
+            .unwrap();
+        assert_eq!(response.get("ok"), Some(&Value::Bool(true)));
+        assert_ne!(host.worker_pid_for_test().unwrap(), first_pid);
+        assert_eq!(host.last_attestation_for_test(), Some(id));
+        assert_eq!(host.spawns_total(), 2);
+        assert_eq!(
+            planner.attested_sequence(),
+            vec![false, false],
+            "the respawned worker must be re-hydrated from scratch"
+        );
+    }
+
+    #[test]
+    fn semantic_frame_refusal_clears_attestation_without_poison() {
+        // Host/worker attestation divergence seam: a refusal to a SEMANTIC
+        // mirror frame clears the host's attestation and errors (one-shot
+        // fallback) without killing the healthy worker.
+        let host = PersistentWorkerHost::spawn(fake_worker_config(&[
+            "--mode=refuse-semantic".into(),
+        ]))
+        .unwrap();
+        let planner = PhasePlanner::new("A");
+        let id = identity(1, "digest-a");
+
+        let error = host
+            .request_at(&id, json!({"tag": "A"}), GENEROUS, &planner)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("refused the mirror-served request"), "{error}");
+        assert!(!error.contains("poisoned"), "{error}");
+        assert!(host.worker_pid_for_test().is_some(), "worker stays alive");
+        assert_eq!(host.last_attestation_for_test(), None);
+    }
+
+    #[test]
+    fn hydrate_at_attests_without_dispatching_a_semantic_frame() {
+        // Eager-hydration entry: sync-only, same locked path, no semantic
+        // frame; an already-attested identity is a no-op.
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("frames.log");
+        let host = PersistentWorkerHost::spawn(fake_worker_config(&[
+            "--mode=echo".into(),
+            format!("--log={}", log_path.display()),
+        ]))
+        .unwrap();
+        let planner = PhasePlanner::new("H");
+        let id = identity(5, "digest-e");
+
+        host.hydrate_at(&id, GENEROUS, &planner).unwrap();
+        assert_eq!(host.last_attestation_for_test(), Some(id.clone()));
+        host.hydrate_at(&id, GENEROUS, &planner).unwrap();
+        assert_eq!(planner.attested_sequence(), vec![false], "second call no-ops");
+
+        let content = fs::read_to_string(&log_path).unwrap();
+        assert_eq!(content.lines().collect::<Vec<_>>(), vec!["hydrate:H"]);
     }
 
     #[test]

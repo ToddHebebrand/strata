@@ -8,7 +8,10 @@ import {
   type KernelSnapshotV1
 } from "@strata-code/ingest";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AnalyzeIntentRequest } from "../src/index";
+import type { AnalyzeIntentRequest, KernelGraphDeltaV1 } from "../src/index";
+import { applyDelta, diffSnapshots } from "../src/snapshot";
+import { canonicalSyncDigest } from "../src/sync-digest";
+import type { GraphIdentity } from "../src/sync";
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(currentDir, "..");
@@ -162,16 +165,20 @@ describe("persistent worker loop", () => {
         ok: true
       });
 
-      // sync is Task 6: a structured unsupported error, not a crash.
+      // A sync with no attested mirror refuses with `gap` (Task 6); the loop
+      // keeps serving.
       const sync = await client.roundTrip({
         requestId: "persistent-req-2",
         kind: "sync",
-        target: { generation: "8", digest: "d".repeat(64) }
+        base: { generation: "7", digest: "c".repeat(64) },
+        target: { generation: "8", digest: "d".repeat(64) },
+        deltas: [{ schemaVersion: 1, baseGeneration: "7", changes: [] }]
       });
-      expect(sync).toMatchObject({
+      expect(sync).toEqual({
         requestId: "persistent-req-2",
-        kind: "error",
-        code: "unsupported"
+        kind: "refuse",
+        reason: "gap",
+        have: null
       });
 
       // Unknown kinds get an error frame with the same requestId.
@@ -239,6 +246,124 @@ describe("persistent worker loop", () => {
     await client.nextResponse();
     expect((await client.exit).code).toBe(0);
   }, 60_000);
+
+  it(
+    "hydrates a long-lived mirror, serves snapshot-free analyzes, and syncs deltas (Task 6)",
+    async () => {
+      client = spawnPersistentWorker();
+
+      const g0 = tinySnapshot();
+      const identityOf = (snapshot: KernelSnapshotV1): GraphIdentity => ({
+        generation: snapshot.generation,
+        digest: canonicalSyncDigest(snapshot.generation, snapshot.nodes, snapshot.references)
+      });
+      const base = identityOf(g0);
+
+      // Eager hydration: the mirror attests the exact target identity.
+      const hydrated = await client.roundTrip({
+        requestId: "mirror-hydrate",
+        kind: "hydrate",
+        target: base,
+        snapshot: g0
+      });
+      expect(hydrated).toEqual({
+        requestId: "mirror-hydrate",
+        kind: "attest",
+        identity: base
+      });
+
+      // Snapshot-free analyze against the mirror: same facts, same response
+      // shape as the snapshot-served request (compared below).
+      const snapshotServed = analyzeRequest("mirror-baseline");
+      const intent = {
+        ...snapshotServed.intent,
+        intentId: "mirror-intent",
+        changeSetId: "mirror-change-set"
+      };
+      const binding = snapshotServed.binding;
+      const viaMirror = await client.roundTrip({
+        protocolVersion: 1,
+        requestId: "mirror-analyze-0",
+        kind: "analyzeIntentMirror",
+        binding,
+        identity: base,
+        intent
+      });
+      expect(viaMirror).toMatchObject({
+        requestId: "mirror-analyze-0",
+        kind: "analyzeIntent",
+        ok: true
+      });
+      const viaSnapshot = await client.roundTrip({
+        ...snapshotServed,
+        requestId: "mirror-analyze-1",
+        intent: { ...intent }
+      });
+      expect(viaSnapshot.ok).toBe(true);
+      expect(viaMirror.result).toEqual(viaSnapshot.result);
+
+      // One published delta: sync advances the mirror and attests G+1.
+      const patched: KernelSnapshotV1 = {
+        ...g0,
+        generation: parseCanonicalU64("8"),
+        nodes: g0.nodes.map((node) =>
+          /export interface User\s*\{/.test(node.payload)
+            ? { ...node, payload: `${node.payload}// synced\n` }
+            : node
+        )
+      };
+      const delta: KernelGraphDeltaV1 = diffSnapshots(g0, patched);
+      const g1 = applyDelta(g0, delta);
+      const next = identityOf(g1);
+      const synced = await client.roundTrip({
+        requestId: "mirror-sync",
+        kind: "sync",
+        base,
+        target: next,
+        deltas: [delta]
+      });
+      expect(synced).toEqual({
+        requestId: "mirror-sync",
+        kind: "attest",
+        identity: next
+      });
+
+      // The OLD identity now refuses (worker is ahead of it); the new one
+      // serves.
+      const stale = await client.roundTrip({
+        protocolVersion: 1,
+        requestId: "mirror-analyze-stale",
+        kind: "analyzeIntentMirror",
+        binding,
+        identity: base,
+        intent
+      });
+      expect(stale).toEqual({
+        requestId: "mirror-analyze-stale",
+        kind: "refuse",
+        reason: "ahead",
+        have: next
+      });
+      const fresh = await client.roundTrip({
+        protocolVersion: 1,
+        requestId: "mirror-analyze-fresh",
+        kind: "analyzeIntentMirror",
+        binding: { ...binding, graphGeneration: next.generation },
+        identity: next,
+        intent: { ...intent, baseGeneration: next.generation }
+      });
+      expect(fresh).toMatchObject({
+        requestId: "mirror-analyze-fresh",
+        kind: "analyzeIntent",
+        ok: true
+      });
+
+      client.send({ requestId: "mirror-shutdown", kind: "shutdown" });
+      await client.nextResponse();
+      expect((await client.exit).code).toBe(0);
+    },
+    60_000
+  );
 
   it("exits 0 on stdin EOF without a shutdown frame", async () => {
     client = spawnPersistentWorker();

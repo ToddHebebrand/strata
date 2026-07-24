@@ -5,7 +5,7 @@ use anyhow::{Context, Result, ensure};
 
 use super::observer;
 use super::process::NodeBridgeClient;
-use super::scaffold::PersistentScaffoldRouter;
+use super::router::PersistentBridgeRouter;
 use super::protocol::{
     BridgeBinding, BridgeKind, BridgeRequest, BuildValidateCandidateRequest, ChangeSet, Hash64,
     PROTOCOL_VERSION, ValidationProfile, WireGraphDelta, WireSnapshot, WireU64,
@@ -21,10 +21,13 @@ pub(crate) trait CandidateExecutor: Send + Sync {
 pub(crate) struct NodeCandidateExecutor {
     client: Arc<NodeBridgeClient>,
     service_epoch: u64,
-    /// Task-5 scaffold: when set, candidate requests route through the
-    /// session's ONE persistent worker (full snapshot still in-band) with
-    /// transparent one-shot fallback; `None` is the one-shot path, untouched.
-    persistent: Option<Arc<PersistentScaffoldRouter>>,
+    /// Task-5 scaffold path, deliberately retained for candidates (see the
+    /// router module docs): candidate requests route through the session's
+    /// ONE persistent worker with the full snapshot still in-band, because
+    /// candidate execution mutates worker state and the shared mirror needs
+    /// Task 7's savepoint isolation first. Transparent one-shot fallback;
+    /// `None` is the one-shot path, untouched.
+    persistent: Option<Arc<PersistentBridgeRouter>>,
 }
 
 impl NodeCandidateExecutor {
@@ -38,7 +41,7 @@ impl NodeCandidateExecutor {
 
     pub(crate) fn with_persistent_router(
         mut self,
-        router: Option<Arc<PersistentScaffoldRouter>>,
+        router: Option<Arc<PersistentBridgeRouter>>,
     ) -> Self {
         self.persistent = router;
         self
@@ -134,7 +137,7 @@ impl CandidateExecutor for NodeCandidateExecutor {
 
         // The protocol parser rejects request/kind/epoch/generation/digest/attempt/scope
         // mismatches before exposing the worker delta (both transports).
-        let wire_delta = super::scaffold::run_with_persistent_fallback(
+        let wire_delta = super::router::run_with_persistent_fallback(
             self.persistent.as_ref(),
             &self.client,
             &request,

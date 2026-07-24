@@ -113,6 +113,18 @@ impl GraphGeneration {
         self.nodes.get(node_id)
     }
 
+    /// All nodes, id-ordered (BTreeMap iteration), without cloning. Exists so
+    /// the sync-digest computation over a published generation never
+    /// materializes a snapshot (bridge-persistence slice, Task 6).
+    pub fn nodes(&self) -> impl Iterator<Item = &NodeRecord> {
+        self.nodes.values()
+    }
+
+    /// All references, from-node-id-ordered, without cloning. See [`Self::nodes`].
+    pub fn references(&self) -> impl Iterator<Item = &ReferenceRecord> {
+        self.references_from.values()
+    }
+
     pub fn reference_from(&self, from_node_id: &str) -> Option<&ReferenceRecord> {
         self.references_from.get(from_node_id)
     }

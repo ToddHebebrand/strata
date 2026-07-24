@@ -819,6 +819,17 @@ impl Kernel {
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) = next_resource_clocks;
                 let memory_publish_ns = memory_started.elapsed().as_nanos();
                 *scheduler = prepared_publication.next_scheduler;
+                // Published-only mirror sync (Task 6, review B2): the exact
+                // delta that was durably committed enters the persistent
+                // bridge's delta log HERE — strictly after
+                // `PublishOutcome::Published` AND the in-memory publication
+                // swap above, and nowhere else. Invalidated/speculative
+                // publications never reach this line, so their generations
+                // can never be served to the mirror.
+                self.record_published_sync(
+                    &prepared_publication.next_graph,
+                    &commit.publication.delta,
+                );
                 #[cfg(feature = "redb-spike-api")]
                 if crash_failpoint == PublishFailpoint::AfterMemoryPublish {
                     std::process::abort();

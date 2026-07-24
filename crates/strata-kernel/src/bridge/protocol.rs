@@ -237,6 +237,20 @@ impl WireNode {
             payload: self.payload.clone(),
         }
     }
+
+    fn from_node_record(node: &NodeRecord) -> Result<Self> {
+        let child_index = node
+            .child_index
+            .map(|value| u64::try_from(value).context("node childIndex must not be negative"))
+            .transpose()?;
+        Ok(Self {
+            id: node.id.clone(),
+            kind: node.kind.clone(),
+            parent_id: node.parent_id.clone(),
+            child_index,
+            payload: node.payload.clone(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,21 +291,7 @@ impl WireSnapshot {
         let nodes = snapshot
             .nodes
             .iter()
-            .map(|node| {
-                let child_index = node
-                    .child_index
-                    .map(|value| {
-                        u64::try_from(value).context("node childIndex must not be negative")
-                    })
-                    .transpose()?;
-                Ok(WireNode {
-                    id: node.id.clone(),
-                    kind: node.kind.clone(),
-                    parent_id: node.parent_id.clone(),
-                    child_index,
-                    payload: node.payload.clone(),
-                })
-            })
+            .map(WireNode::from_node_record)
             .collect::<Result<Vec<_>>>()?;
         let wire = Self {
             schema_version: snapshot.schema_version,
@@ -898,6 +898,47 @@ impl WireGraphDelta {
                 .collect(),
         })
     }
+
+    /// Wire-shape conversion of an internal delta, used by the published
+    /// delta log (Task 6): the serialized form is exactly the
+    /// `KernelGraphDeltaV1` JSON the Node worker's sync path parses.
+    pub(crate) fn from_graph_delta(delta: &GraphDelta) -> Result<Self> {
+        let changes = delta
+            .changes
+            .iter()
+            .map(|change| {
+                Ok(match change {
+                    GraphChange::UpsertNode { node } => WireGraphChange::UpsertNode {
+                        node: WireNode::from_node_record(node)?,
+                    },
+                    GraphChange::DeleteNode { node_id } => WireGraphChange::DeleteNode {
+                        node_id: node_id.clone(),
+                    },
+                    GraphChange::UpsertReference { reference } => {
+                        WireGraphChange::UpsertReference {
+                            reference: WireReference {
+                                from_node_id: reference.from_node_id.clone(),
+                                to_node_id: reference.to_node_id.clone(),
+                                kind: reference.kind.clone(),
+                            },
+                        }
+                    }
+                    GraphChange::DeleteReference { from_node_id } => {
+                        WireGraphChange::DeleteReference {
+                            from_node_id: from_node_id.clone(),
+                        }
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let wire = Self {
+            schema_version: delta.schema_version,
+            base_generation: WireU64::new(delta.base_generation),
+            changes,
+        };
+        wire.validate()?;
+        Ok(wire)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1174,6 +1215,53 @@ pub(crate) fn parse_bridge_response(
 
 pub(crate) fn serialize_bridge_response(response: &BridgeResponse) -> Result<Vec<u8>> {
     serde_json::to_vec(response).context("serialize bridge response")
+}
+
+/// Binds a mirror-served analyze response (Task 6: `analyzeIntentMirror`
+/// frames carry no snapshot; the worker analyzes its attested mirror) before
+/// exposing the facts. The transport (`request_at`) has already correlated
+/// the `requestId`; this validates protocol version, kind, the exact binding
+/// echo, and the facts payload — the same checks `parse_bridge_response`
+/// runs for the snapshot-carrying request, minus the request struct it
+/// binds against (a mirror frame deliberately has no `WireSnapshot`).
+pub(crate) fn parse_mirror_analyze_facts(
+    value: serde_json::Value,
+    expected_binding: &BridgeBinding,
+) -> Result<SemanticFacts> {
+    let response: BridgeResponse =
+        serde_json::from_value(value).context("invalid mirror analyze response")?;
+    match response {
+        BridgeResponse::AnalyzeSuccess(inner) => {
+            ensure!(
+                inner.protocol_version == PROTOCOL_VERSION,
+                "unsupported response protocol version {}",
+                inner.protocol_version
+            );
+            ensure!(
+                inner.kind == BridgeKind::AnalyzeIntent,
+                "mirror analyze response kind mismatch"
+            );
+            ensure!(
+                &inner.binding == expected_binding,
+                "mirror analyze response binding mismatch"
+            );
+            inner.result.facts.validate()?;
+            Ok(inner.result.facts)
+        }
+        BridgeResponse::AnalyzeError(inner) => {
+            ensure!(
+                &inner.binding == expected_binding,
+                "mirror analyze error binding mismatch"
+            );
+            bail!(
+                "Node bridge mirror analysis failed at {:?}/{}: {}",
+                inner.error.stage,
+                inner.error.code,
+                inner.error.message
+            )
+        }
+        _ => bail!("mirror analyze response is not an analyzeIntent response"),
+    }
 }
 
 fn validate_id_array(context: &str, values: &[String]) -> Result<()> {

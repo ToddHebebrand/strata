@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use super::observer;
 use super::process::NodeBridgeClient;
-use super::scaffold::PersistentScaffoldRouter;
+use super::router::PersistentBridgeRouter;
 use super::protocol::{
     AnalyzeIntentRequest, BridgeBinding, BridgeKind, BridgeRequest, Hash64,
     IntentParameters as WireIntentParameters, IntentRecord as WireIntentRecord, PROTOCOL_VERSION,
@@ -23,10 +23,12 @@ use crate::{GraphGeneration, NodeRecord, ReferenceRecord};
 pub(crate) struct NodeSemanticProvider {
     client: Arc<NodeBridgeClient>,
     service_epoch: u64,
-    /// Task-5 scaffold: when set, requests route through the session's ONE
-    /// persistent worker (full snapshot still in-band) with transparent
-    /// one-shot fallback; `None` is the one-shot path, untouched.
-    persistent: Option<Arc<PersistentScaffoldRouter>>,
+    /// When set (`--persistent-bridge`), analyze requests whose graph
+    /// identity IS the current published identity are served from the
+    /// worker's synced mirror with NO in-band snapshot (Task 6); everything
+    /// else — speculative graphs (review B2) and any mirror failure — is
+    /// served one-shot with its own snapshot, byte-identical to before.
+    persistent: Option<Arc<PersistentBridgeRouter>>,
 }
 
 impl NodeSemanticProvider {
@@ -40,7 +42,7 @@ impl NodeSemanticProvider {
 
     pub(crate) fn with_persistent_router(
         mut self,
-        router: Option<Arc<PersistentScaffoldRouter>>,
+        router: Option<Arc<PersistentBridgeRouter>>,
     ) -> Self {
         self.persistent = router;
         self
@@ -49,6 +51,25 @@ impl NodeSemanticProvider {
 
 impl SemanticProvider for NodeSemanticProvider {
     fn analyze(&self, graph: &GraphGeneration, intent: &IntentRecord) -> Result<IntentAnalysis> {
+        // Synced-mirror route first (Task 6): decided BEFORE any snapshot is
+        // built — skipping that build is the measured point of the route.
+        // The routing predicate is structural (published-identity equality,
+        // review B2) and lives in the router, not here.
+        if let Some(router) = &self.persistent {
+            match router.analyze_via_mirror(&self.client, graph, intent, self.service_epoch) {
+                Ok(Some(facts)) => return intent_analysis_from_facts(graph, intent, facts),
+                Ok(None) => {} // not published (speculative) or disabled → one-shot below
+                Err(error) => {
+                    // Same operational convention as every persistent-path
+                    // fallback: bounded stderr line, request served one-shot.
+                    eprintln!(
+                        "persistent mirror analyze failed; serving this request one-shot: \
+                         {error:#}"
+                    );
+                }
+            }
+        }
+
         let build_start = Instant::now();
         let request = analyze_request(self.service_epoch, graph, intent)?;
         if self.client.collects_metrics() {
@@ -63,12 +84,7 @@ impl SemanticProvider for NodeSemanticProvider {
             };
             observer::set_request_build(snapshot_bytes, snapshot_build_ns);
         }
-        let facts = super::scaffold::run_with_persistent_fallback(
-            self.persistent.as_ref(),
-            &self.client,
-            &request,
-        )?
-        .into_analyze_result()?;
+        let facts = self.client.run(&request)?.into_analyze_result()?;
         intent_analysis_from_facts(graph, intent, facts)
     }
 }

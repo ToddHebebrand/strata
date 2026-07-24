@@ -13,7 +13,8 @@
 //
 // Behavior is selected via argv (the host passes config arguments through):
 //   --mode=echo|extra-frame|wrong-id|silent|slow|stderr-flood|crash-once|
-//          oversize-response|malformed|refuse
+//          oversize-response|malformed|refuse|refuse-sync-attest-hydrate|
+//          refuse-ahead|crash-on-sync-once|refuse-semantic
 //   --log=<path>          append one line per received frame: "<kind>:<tag>"
 //                         (kind falls back to "semantic" for kindless frames)
 //   --delay-ms=<n>        slow mode: response delay in milliseconds
@@ -75,9 +76,13 @@ function logFrame(frame) {
   fs.appendFileSync(options.log, `${kind}:${tag}\n`);
 }
 
+function isSyncKind(frame) {
+  return frame.kind === 'sync' || frame.kind === 'hydrate';
+}
+
 function echoResponse(frame) {
-  if (frame.kind === 'sync') {
-    // Attest exactly the identity the sync frame targeted.
+  if (isSyncKind(frame)) {
+    // Attest exactly the identity the sync/hydrate frame targeted.
     writeFrame({ requestId: frame.requestId, kind: 'attest', identity: frame.target });
   } else {
     writeFrame({ requestId: frame.requestId, ok: true, echo: frame.tag ?? null });
@@ -128,7 +133,7 @@ function handleFrame(frame) {
       writeRaw(16, Buffer.from('this is not json', 'utf8'));
       break;
     case 'refuse':
-      if (frame.kind === 'sync') {
+      if (isSyncKind(frame)) {
         writeFrame({
           requestId: frame.requestId,
           kind: 'refuse',
@@ -137,6 +142,58 @@ function handleFrame(frame) {
         });
       } else {
         echoResponse(frame);
+      }
+      break;
+    case 'refuse-sync-attest-hydrate':
+      // Refuses delta syncs but accepts full hydration: the host's one
+      // refusal-triggered hydrate retry must recover the request.
+      if (frame.kind === 'sync') {
+        writeFrame({
+          requestId: frame.requestId,
+          kind: 'refuse',
+          reason: 'digest-mismatch',
+          have: { generation: '0', digest: '' },
+        });
+      } else {
+        echoResponse(frame);
+      }
+      break;
+    case 'refuse-ahead':
+      // Claims to be ahead of every sync target (forward-only gate): the
+      // host must NOT attempt a hydrate and must serve one-shot.
+      if (isSyncKind(frame)) {
+        writeFrame({
+          requestId: frame.requestId,
+          kind: 'refuse',
+          reason: 'ahead',
+          have: { generation: '999', digest: 'f'.repeat(64) },
+        });
+      } else {
+        echoResponse(frame);
+      }
+      break;
+    case 'crash-on-sync-once':
+      // Dies mid-sync exactly once (marker-guarded); respawned instances
+      // behave like echo — the lazy respawn must full-hydrate and attest.
+      if (isSyncKind(frame) && options.marker && !fs.existsSync(options.marker)) {
+        fs.writeFileSync(options.marker, 'crashed');
+        process.exit(1);
+      }
+      echoResponse(frame);
+      break;
+    case 'refuse-semantic':
+      // Attests syncs but refuses semantic frames (host/worker attestation
+      // divergence seam): the host must clear its attestation and serve
+      // one-shot without poisoning.
+      if (isSyncKind(frame)) {
+        echoResponse(frame);
+      } else {
+        writeFrame({
+          requestId: frame.requestId,
+          kind: 'refuse',
+          reason: 'digest-mismatch',
+          have: { generation: '1', digest: 'a'.repeat(64) },
+        });
       }
       break;
     default:
