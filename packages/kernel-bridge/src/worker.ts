@@ -1,5 +1,11 @@
 import { analyzeIntent } from "./analyze";
 import { buildValidateCandidate } from "./candidate";
+import {
+  MAX_REQUEST_FRAME_BYTES,
+  MAX_RESPONSE_FRAME_BYTES,
+  readFrames,
+  writeFrame
+} from "./frames";
 import { StageRecorder } from "./metrics";
 import {
   bridgeRequestSchema,
@@ -94,6 +100,161 @@ export async function runOneShotWorker(
   }
 }
 
+/**
+ * Persistent mode (bridge-persistence slice, Task 4): a strictly serial
+ * request loop over the u32-LE length-prefixed frame transport the Rust host
+ * (`bridge/persistent.rs`) speaks — the worker-side mirror of the host's
+ * single-flight discipline. One frame is read, exactly one response frame
+ * carrying the request's `requestId` is written, and only then is the next
+ * frame read.
+ *
+ * Semantic kinds (`analyzeIntent` / `buildValidateCandidate`) route through
+ * the SAME `dispatch` the one-shot path uses, with a fresh per-request
+ * `StageRecorder` under the same `--emit-metrics` opt-in — so `workerRun`
+ * metrics stay per-trip comparable across the two transports. `sync` is the
+ * mirror-sync task's (Task 6): until it lands, a structured
+ * `{kind:"error", code:"unsupported"}` frame — never a crash. `shutdown`
+ * is acked then exits 0; stdin EOF (the host's clean-shutdown contract) also
+ * exits 0. A failure inside one request answers THAT request with an error
+ * frame and keeps serving; process exit stays reserved for unrecoverable
+ * transport states (oversized/truncated inbound frame → the fatal handler).
+ */
+export async function runPersistentWorker(
+  handlers: WorkerHandlers = defaultHandlers
+): Promise<void> {
+  const emitMetrics = process.argv.includes("--emit-metrics");
+  for await (const body of readFrames(process.stdin, MAX_REQUEST_FRAME_BYTES)) {
+    const shutdown = await servePersistentFrame(body, handlers, emitMetrics);
+    if (shutdown) {
+      // The ack write above has been handed to the OS pipe; exiting here
+      // honors "respond, then exit 0" without waiting on open stdin.
+      process.exit(0);
+    }
+  }
+}
+
+/** Serves one inbound frame; returns true only for an acked `shutdown`. */
+async function servePersistentFrame(
+  body: Buffer,
+  handlers: WorkerHandlers,
+  emitMetrics: boolean
+): Promise<boolean> {
+  let value: unknown;
+  try {
+    value = JSON.parse(body.toString("utf8"));
+  } catch (error) {
+    // No parseable requestId exists; the host treats the mismatch as its
+    // poison signal, which is the correct outcome for a mangled frame.
+    await writeLoopErrorFrame("unbound-request", "invalidJson", error);
+    return false;
+  }
+  const frame =
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const requestId =
+    typeof frame.requestId === "string" && frame.requestId.length > 0
+      ? frame.requestId
+      : "unbound-request";
+  const kind = typeof frame.kind === "string" ? frame.kind : "";
+
+  if (kind === "shutdown") {
+    await writePersistentFrame({ requestId, kind: "shutdownAck" });
+    return true;
+  }
+  if (kind === "sync") {
+    await writeLoopErrorFrame(
+      requestId,
+      "unsupported",
+      new Error("sync frames are not supported until mirror sync lands (Task 6)")
+    );
+    return false;
+  }
+  if (kind !== "analyzeIntent" && kind !== "buildValidateCandidate") {
+    await writeLoopErrorFrame(
+      requestId,
+      "unknownKind",
+      new Error(`unknown frame kind ${JSON.stringify(kind)}`)
+    );
+    return false;
+  }
+
+  // Per-request recorder, exactly as the one-shot path constructs one per
+  // process: absent the opt-in flag no recorder exists at all.
+  const recorder = emitMetrics ? new StageRecorder() : undefined;
+  let request: BridgeRequest;
+  try {
+    request = bridgeRequestSchema.parse(value);
+  } catch (error) {
+    await writeLoopErrorFrame(requestId, "invalidRequest", error);
+    return false;
+  }
+  try {
+    const response = dispatch(request, handlers, recorder);
+    await writePersistentResponse(response, request, recorder);
+  } catch (error) {
+    const response = requestErrorResponse(
+      request,
+      request.kind === "analyzeIntent" ? "analyze" : "mutate",
+      failureCode(error, "handlerFailed"),
+      error,
+      []
+    );
+    await writePersistentResponse(response, request, recorder);
+    writeOperationalError(response.error.code, error);
+  }
+  return false;
+}
+
+/**
+ * Frames a semantic response for the persistent transport. The body is the
+ * exact newline-terminated string the one-shot path would write (bound
+ * already enforced inside), so the length-prefixed write can never overflow.
+ */
+async function writePersistentResponse(
+  response: BridgeResponse,
+  request: BridgeRequest,
+  recorder?: StageRecorder
+): Promise<void> {
+  await writeFrame(
+    process.stdout,
+    Buffer.from(boundedResponseFrame(response, request, recorder), "utf8"),
+    MAX_RESPONSE_FRAME_BYTES
+  );
+}
+
+/**
+ * Loop-level error frame for requests that never reached a semantic handler
+ * (mangled JSON, unsupported/unknown kinds, schema-rejected requests):
+ * `{requestId, kind:"error", code, message}` with the same message bounding
+ * as bridge error payloads. Also mirrors the one-shot path's bounded
+ * operational stderr line.
+ */
+async function writeLoopErrorFrame(
+  requestId: string,
+  code: string,
+  error: unknown
+): Promise<void> {
+  await writePersistentFrame({
+    requestId,
+    kind: "error",
+    code,
+    message: truncateUtf8(
+      normalizeText(error instanceof Error ? error.message : String(error)),
+      MAX_ERROR_MESSAGE_BYTES
+    )
+  });
+  writeOperationalError(code, error);
+}
+
+async function writePersistentFrame(value: unknown): Promise<void> {
+  await writeFrame(
+    process.stdout,
+    Buffer.from(JSON.stringify(value), "utf8"),
+    MAX_RESPONSE_FRAME_BYTES
+  );
+}
+
 async function readBoundedInput(): Promise<string> {
   const chunks: Buffer[] = [];
   let bytes = 0;
@@ -167,10 +328,23 @@ async function emitResponse(
   request: BridgeRequest | undefined,
   recorder?: StageRecorder
 ): Promise<void> {
-  // The semantic decision — which frame is the response — is settled here,
-  // exactly as before metrics existed. `finalResponse`/`frame` are the
-  // bound-checked semantic result; metrics are only ever appended on top,
-  // never allowed to change which semantic frame was chosen.
+  await writeStdout(boundedResponseFrame(response, request, recorder));
+}
+
+/**
+ * Settles the semantic decision — which frame is the response — exactly as
+ * before metrics existed: `finalResponse`/`frame` are the bound-checked
+ * semantic result; metrics are only ever appended on top, never allowed to
+ * change which semantic frame was chosen. Shared verbatim by the one-shot
+ * path (which writes the string raw) and the persistent loop (which wraps
+ * the identical bytes in a length prefix), so both transports carry
+ * byte-identical response bodies.
+ */
+function boundedResponseFrame(
+  response: BridgeResponse,
+  request: BridgeRequest | undefined,
+  recorder?: StageRecorder
+): string {
   let finalResponse = response;
   let frame = serializeFrame(finalResponse);
   if (Buffer.byteLength(frame) > MAX_RESPONSE_BYTES) {
@@ -202,7 +376,7 @@ async function emitResponse(
     }
   }
 
-  await writeStdout(frame);
+  return frame;
 }
 
 function serializeFrame(response: BridgeResponse): string {
@@ -425,7 +599,12 @@ async function writeStdout(frame: string): Promise<void> {
 }
 
 if (require.main === module) {
-  runOneShotWorker().catch((error) => {
+  // `--persistent` selects the serial frame loop; otherwise the entry is
+  // exactly the one-shot worker it has always been.
+  const runWorker = process.argv.includes("--persistent")
+    ? runPersistentWorker
+    : runOneShotWorker;
+  runWorker().catch((error) => {
     process.exitCode = 1;
     writeOperationalError("workerFatal", error);
   });
