@@ -180,8 +180,11 @@ async function servePersistentFrame(
   }
 
   // Per-request recorder, exactly as the one-shot path constructs one per
-  // process: absent the opt-in flag no recorder exists at all.
-  const recorder = emitMetrics ? new StageRecorder() : undefined;
+  // process: absent the opt-in flag no recorder exists at all. Anchored to
+  // "now" (this request's frame is in hand) rather than the recorder's
+  // process-start default so `totalNs` is THIS trip's serve duration —
+  // per-trip comparable with one-shot records, not cumulative uptime.
+  const recorder = emitMetrics ? new StageRecorder(process.hrtime.bigint()) : undefined;
   let request: BridgeRequest;
   try {
     request = bridgeRequestSchema.parse(value);

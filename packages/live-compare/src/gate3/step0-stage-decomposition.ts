@@ -18,7 +18,8 @@
 //
 // Usage:
 //   node packages/live-compare/dist/gate3/step0-stage-decomposition.js \
-//     [--copies 46] [--n 1] [--out docs/spikes/bridge-persistence-step0]
+//     [--copies 46] [--n 1] [--out docs/spikes/bridge-persistence-step0] \
+//     [--daemon-arg --persistent-bridge]   # repeatable; appended to serve argv
 import { randomUUID } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,12 +52,18 @@ interface CliOptions {
   copies: number;
   n: number;
   outDir: string;
+  /** Extra argv appended to the daemon's `serve` invocation (repeatable
+   * `--daemon-arg VALUE`, added for the Task-5 persistent-bridge ablation:
+   * `--daemon-arg --persistent-bridge` runs the same measurement against a
+   * persistent-bridge daemon). */
+  daemonArgs: string[];
 }
 
 function parseCli(argv: readonly string[]): CliOptions {
   let copies = BIG1K_COPIES;
   let n = 1;
   let outDir = resolve(repoRoot, "docs", "spikes", "bridge-persistence-step0");
+  const daemonArgs: string[] = [];
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
@@ -64,11 +71,12 @@ function parseCli(argv: readonly string[]): CliOptions {
     if (flag === "--copies") copies = Number(value);
     else if (flag === "--n") n = Number(value);
     else if (flag === "--out") outDir = resolve(value);
+    else if (flag === "--daemon-arg") daemonArgs.push(value);
     else throw new Error(`step0: unknown flag ${flag}`);
   }
   if (!Number.isInteger(copies) || copies < 1) throw new Error(`step0: bad --copies ${copies}`);
   if (!Number.isInteger(n) || n < 1) throw new Error(`step0: bad --n ${n}`);
-  return { copies, n, outDir };
+  return { copies, n, outDir, daemonArgs };
 }
 
 /** One workerRun trip, decomposed. `spawnAndTransportNs` is the residual of the daemon-observed bridge wall not accounted for by snapshot build, request serialize, or the worker's self-reported stage total: child spawn + module load + stdin write + response read + worker-side non-staged overhead. */
@@ -250,7 +258,7 @@ async function main(): Promise<void> {
     binaryPath: kernelServiceBinary(),
     env: credentialFreeEnv(),
     directory: serviceDir,
-    extraArgs: ["--metrics", metricsPath]
+    extraArgs: ["--metrics", metricsPath, ...options.daemonArgs]
   });
   const serviceStartNs = Number(process.hrtime.bigint() - serviceStart);
   console.log(`daemon: ingest+seed+ready in ${ms(serviceStartNs)} ms (${kernelServiceBinary()})`);
@@ -317,7 +325,7 @@ async function main(): Promise<void> {
 
   const summary = {
     generatedBy: "packages/live-compare/src/gate3/step0-stage-decomposition.ts",
-    options: { copies: options.copies, n: options.n },
+    options: { copies: options.copies, n: options.n, daemonArgs: options.daemonArgs },
     binaryPath: kernelServiceBinary(),
     corpus: { moduleCount: corpus.moduleCount, copies: corpus.copies, corpusDigest: corpus.corpusDigest },
     corpusBuildNs,

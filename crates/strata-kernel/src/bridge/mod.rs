@@ -7,6 +7,7 @@ pub(crate) mod persistent;
 pub(crate) mod process;
 pub(crate) mod protocol;
 pub(crate) mod provider;
+pub(crate) mod scaffold;
 
 pub(crate) use executor::{CandidateExecutor, NodeCandidateExecutor};
 pub use observer::WorkerRunMetrics;
@@ -14,5 +15,6 @@ pub(crate) use process::NodeBridgeClient;
 pub use process::NodeBridgeConfig;
 pub use protocol::WorkerSelfMetrics;
 pub(crate) use provider::NodeSemanticProvider;
+pub(crate) use scaffold::PersistentScaffoldRouter;
 pub(crate) use provider::confirmed_declaration_name;
 pub(crate) use provider::declaration_name;

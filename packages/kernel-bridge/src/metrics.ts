@@ -24,6 +24,20 @@ const WORKER_STARTED = process.hrtime.bigint();
  */
 export class StageRecorder {
   private readonly stageNs = new Map<StageName, bigint>();
+  private readonly startedAt: bigint;
+
+  /**
+   * `startedAt` anchors `finish().totalNs`. The default — worker process
+   * start — is the one-shot transport's semantics, where process == request
+   * so "since process start" IS the request's lifetime (module load and
+   * stdin read included). The persistent loop passes the moment the request
+   * frame was received instead, so each trip's total is that request's serve
+   * duration rather than cumulative process uptime; one-shot callers pass
+   * nothing and are byte-identical to before this parameter existed.
+   */
+  constructor(startedAt: bigint = WORKER_STARTED) {
+    this.startedAt = startedAt;
+  }
 
   time<T>(stage: StageName, fn: () => T): T {
     const start = process.hrtime.bigint();
@@ -37,7 +51,7 @@ export class StageRecorder {
 
   finish(): WorkerStageMetrics {
     const metrics: WorkerStageMetrics = {
-      totalNs: Number(process.hrtime.bigint() - WORKER_STARTED),
+      totalNs: Number(process.hrtime.bigint() - this.startedAt),
       // Node's resourceUsage().maxRSS is reported in KiB on all platforms.
       peakRssBytes: process.resourceUsage().maxRSS * 1024
     };

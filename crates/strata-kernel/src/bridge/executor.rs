@@ -5,6 +5,7 @@ use anyhow::{Context, Result, ensure};
 
 use super::observer;
 use super::process::NodeBridgeClient;
+use super::scaffold::PersistentScaffoldRouter;
 use super::protocol::{
     BridgeBinding, BridgeKind, BridgeRequest, BuildValidateCandidateRequest, ChangeSet, Hash64,
     PROTOCOL_VERSION, ValidationProfile, WireGraphDelta, WireSnapshot, WireU64,
@@ -20,6 +21,10 @@ pub(crate) trait CandidateExecutor: Send + Sync {
 pub(crate) struct NodeCandidateExecutor {
     client: Arc<NodeBridgeClient>,
     service_epoch: u64,
+    /// Task-5 scaffold: when set, candidate requests route through the
+    /// session's ONE persistent worker (full snapshot still in-band) with
+    /// transparent one-shot fallback; `None` is the one-shot path, untouched.
+    persistent: Option<Arc<PersistentScaffoldRouter>>,
 }
 
 impl NodeCandidateExecutor {
@@ -27,7 +32,16 @@ impl NodeCandidateExecutor {
         Self {
             client,
             service_epoch,
+            persistent: None,
         }
+    }
+
+    pub(crate) fn with_persistent_router(
+        mut self,
+        router: Option<Arc<PersistentScaffoldRouter>>,
+    ) -> Self {
+        self.persistent = router;
+        self
     }
 }
 
@@ -119,8 +133,13 @@ impl CandidateExecutor for NodeCandidateExecutor {
         }
 
         // The protocol parser rejects request/kind/epoch/generation/digest/attempt/scope
-        // mismatches before exposing the worker delta.
-        let wire_delta = self.client.run(&request)?.into_candidate_result()?;
+        // mismatches before exposing the worker delta (both transports).
+        let wire_delta = super::scaffold::run_with_persistent_fallback(
+            self.persistent.as_ref(),
+            &self.client,
+            &request,
+        )?
+        .into_candidate_result()?;
         candidate_envelope(prepared, wire_delta)
     }
 }

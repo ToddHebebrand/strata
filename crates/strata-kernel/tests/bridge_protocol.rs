@@ -99,6 +99,7 @@ fn default_config(script: &str) -> NodeBridgeConfig {
         max_diagnostics_bytes: MAX_DIAGNOSTIC_BYTES,
         validation_profile: ValidationProfile::tsc_only("/project/src", "/project", true),
         collect_metrics: false,
+        persistent_scaffold: false,
     }
 }
 

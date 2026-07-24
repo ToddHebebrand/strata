@@ -41,7 +41,15 @@ fn run() -> Result<()> {
 }
 
 fn serve(arguments: &[OsString]) -> Result<()> {
-    let values = parse_named(arguments)?;
+    // `--persistent-bridge` is the one bare (valueless) serve flag: extract it
+    // before the strict `--name value` pair parse. Default OFF; when present
+    // the daemon owns one persistent bridge worker for the session (Task 5
+    // scaffold) and one-shot spawning becomes the per-request fallback.
+    let mut arguments = arguments.to_vec();
+    let argument_count = arguments.len();
+    arguments.retain(|argument| argument != "--persistent-bridge");
+    let persistent_bridge = arguments.len() != argument_count;
+    let values = parse_named(&arguments)?;
     // Built as a Vec so the two test-only flags are appended per cfg. Both the
     // journal-stage failpoint (`--test-failpoint`, coordination-test-api) and
     // the publication-boundary failpoint (`--test-publish-failpoint`,
@@ -120,6 +128,9 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     // without `--metrics` never appends `--emit-metrics` to worker argv.
     if metrics_path.is_some() {
         bridge_config = bridge_config.with_metrics_collection(true);
+    }
+    if persistent_bridge {
+        bridge_config = bridge_config.with_persistent_bridge(true);
     }
     server::serve(
         ServiceConfig {
@@ -246,6 +257,6 @@ fn print_help() {
     // `local_service_sealing::default_build_service_has_no_test_authority_surface`.
     // They are parsed in `serve` but never advertised.
     println!(
-        "strata-kernel-service\n\nCommands:\n  serve --db PATH --snapshot PATH --bridge-worker PATH --source-root PATH --corpus-root PATH --socket-token TOKEN --audit PATH\n  validate-socket --socket PATH\n  export-snapshot --db PATH --out PATH [--state-out PATH]"
+        "strata-kernel-service\n\nCommands:\n  serve --db PATH --snapshot PATH --bridge-worker PATH --source-root PATH --corpus-root PATH --socket-token TOKEN --audit PATH [--metrics PATH] [--persistent-bridge]\n  validate-socket --socket PATH\n  export-snapshot --db PATH --out PATH [--state-out PATH]"
     );
 }

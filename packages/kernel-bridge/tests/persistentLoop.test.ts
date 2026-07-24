@@ -219,12 +219,21 @@ describe("persistent worker loop", () => {
     client = spawnPersistentWorker(["--emit-metrics"]);
 
     const first = await client.roundTrip(analyzeRequest("metrics-req-0"));
+    const beforeSecond = process.hrtime.bigint();
     const second = await client.roundTrip(analyzeRequest("metrics-req-1"));
+    const secondWindowNs = Number(process.hrtime.bigint() - beforeSecond);
     for (const response of [first, second]) {
       expect(response.ok).toBe(true);
       expect(response.metrics).toBeDefined();
       expect(response.metrics.totalNs).toBeGreaterThan(0);
     }
+    // totalNs must be THIS request's serve duration, not cumulative process
+    // uptime (the one-shot transport's process == request identity does not
+    // hold on the persistent loop). The recorder starts after the second
+    // request's frame arrives, so its total is strictly inside the client's
+    // own send->receive window for that request; a cumulative measurement
+    // would include the first trip plus worker module load and blow past it.
+    expect(second.metrics.totalNs).toBeLessThanOrEqual(secondWindowNs);
 
     client.send({ requestId: "metrics-req-2", kind: "shutdown" });
     await client.nextResponse();

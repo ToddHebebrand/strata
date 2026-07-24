@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail, ensure};
 
 use crate::bridge::{
     CandidateExecutor, NodeBridgeClient, NodeBridgeConfig, NodeCandidateExecutor,
-    NodeSemanticProvider, WorkerRunMetrics, confirmed_declaration_name,
+    NodeSemanticProvider, PersistentScaffoldRouter, WorkerRunMetrics, confirmed_declaration_name,
 };
 use crate::coordination::{
     CoordinationError, DependencyVersion, ResourceClockSnapshot, SemanticProvider,
@@ -154,6 +154,12 @@ pub struct Kernel {
     /// observability accessors can reach its spawn counter and run-record
     /// buffer; the provider and executor share this exact instance.
     node_bridge_client: Option<Arc<NodeBridgeClient>>,
+    /// The session's ONE persistent scaffold worker host (`--persistent-bridge`,
+    /// Task 5), when enabled. Held so `worker_starts_total` can sum its spawn
+    /// counter with the one-shot client's; the provider and executor share
+    /// this exact instance for routing. Dropping the kernel kills + reaps the
+    /// child via the host's own drop.
+    persistent_router: Option<Arc<PersistentScaffoldRouter>>,
 }
 
 impl Kernel {
@@ -170,17 +176,41 @@ impl Kernel {
         config: NodeBridgeConfig,
     ) -> Result<(Self, RecoveryReport)> {
         let (mut kernel, report) = Self::create_inner(path, initial, None, None)?;
-        let client = Arc::new(NodeBridgeClient::new(config));
-        kernel.semantic_provider = Some(Arc::new(NodeSemanticProvider::new(
-            client.clone(),
-            report.service_epoch,
-        )));
-        kernel.candidate_executor = Some(Arc::new(NodeCandidateExecutor::new(
-            client.clone(),
-            report.service_epoch,
-        )));
-        kernel.node_bridge_client = Some(client);
+        Self::wire_node_bridge(&mut kernel, config, report.service_epoch)?;
         Ok((kernel, report))
+    }
+
+    /// Shared bridge wiring for the create/open paths: one shared one-shot
+    /// client for provider + executor, plus — under the Task-5
+    /// `--persistent-bridge` scaffold flag — the session's ONE persistent
+    /// worker host, spawned EAGERLY here so a broken worker path fails daemon
+    /// startup loudly rather than on the first request (lazy respawn after a
+    /// poison remains the host's own behavior).
+    fn wire_node_bridge(
+        kernel: &mut Self,
+        config: NodeBridgeConfig,
+        service_epoch: u64,
+    ) -> Result<()> {
+        let router = if config.persistent_scaffold {
+            Some(Arc::new(PersistentScaffoldRouter::spawn(
+                &config,
+                service_epoch,
+            )?))
+        } else {
+            None
+        };
+        let client = Arc::new(NodeBridgeClient::new(config));
+        kernel.semantic_provider = Some(Arc::new(
+            NodeSemanticProvider::new(client.clone(), service_epoch)
+                .with_persistent_router(router.clone()),
+        ));
+        kernel.candidate_executor = Some(Arc::new(
+            NodeCandidateExecutor::new(client.clone(), service_epoch)
+                .with_persistent_router(router.clone()),
+        ));
+        kernel.node_bridge_client = Some(client);
+        kernel.persistent_router = router;
+        Ok(())
     }
 
     #[cfg(feature = "coordination-test-api")]
@@ -255,16 +285,7 @@ impl Kernel {
         config: NodeBridgeConfig,
     ) -> Result<(Self, RecoveryReport)> {
         let (mut kernel, report) = Self::open_inner(path, None, None)?;
-        let client = Arc::new(NodeBridgeClient::new(config));
-        kernel.semantic_provider = Some(Arc::new(NodeSemanticProvider::new(
-            client.clone(),
-            report.service_epoch,
-        )));
-        kernel.candidate_executor = Some(Arc::new(NodeCandidateExecutor::new(
-            client.clone(),
-            report.service_epoch,
-        )));
-        kernel.node_bridge_client = Some(client);
+        Self::wire_node_bridge(&mut kernel, config, report.service_epoch)?;
         kernel.plan_and_apply_readiness(0, crate::coordination::TransitionCause::Restart, None)?;
         Ok((kernel, report))
     }
@@ -410,10 +431,20 @@ impl Kernel {
 
     /// Total worker children the wired Node bridge has successfully spawned, or
     /// 0 when no bridge is wired. Counts regardless of metrics collection.
+    /// Sums both transports: one-shot spawns plus the persistent scaffold
+    /// host's spawns (1 for the whole session unless a poison forced a
+    /// respawn) — so a persistent-bridge daemon that served a full mutation
+    /// without fallback reports exactly 1 here.
     pub fn worker_starts_total(&self) -> u64 {
-        self.node_bridge_client
+        let one_shot = self
+            .node_bridge_client
             .as_ref()
-            .map_or(0, |client| client.worker_starts_total())
+            .map_or(0, |client| client.worker_starts_total());
+        let persistent = self
+            .persistent_router
+            .as_ref()
+            .map_or(0, |router| router.spawns_total());
+        one_shot.saturating_add(persistent)
     }
 
     /// Finds named declarations by exact name, optionally narrowed to one product
@@ -1043,6 +1074,7 @@ impl Kernel {
             semantic_provider,
             candidate_executor,
             node_bridge_client: None,
+            persistent_router: None,
         }
     }
 }

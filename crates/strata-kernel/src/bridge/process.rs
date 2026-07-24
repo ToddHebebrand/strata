@@ -41,6 +41,13 @@ pub struct NodeBridgeConfig {
     /// child. Default false: nothing is buffered and the argv is unchanged
     /// (spawn counting still happens — it is only an atomic increment).
     pub(crate) collect_metrics: bool,
+    /// Task-5 scaffold flag (`--persistent-bridge`, default false): when set,
+    /// the kernel additionally spawns ONE persistent worker for the session
+    /// and routes bridge requests through it, with this one-shot transport as
+    /// the per-request fallback. This config only CARRIES the operator's
+    /// choice from the service flag to the kernel wiring; nothing in the
+    /// one-shot client reads it.
+    pub(crate) persistent_scaffold: bool,
 }
 
 impl NodeBridgeConfig {
@@ -68,6 +75,7 @@ impl NodeBridgeConfig {
                 strict_src_only_tsc_scope,
             ),
             collect_metrics: false,
+            persistent_scaffold: false,
         }
     }
 
@@ -76,6 +84,14 @@ impl NodeBridgeConfig {
     /// spawned child produces one terminal [`WorkerRunMetrics`] record.
     pub fn with_metrics_collection(mut self, collect: bool) -> Self {
         self.collect_metrics = collect;
+        self
+    }
+
+    /// Opts the kernel into the Task-5 persistent-bridge scaffold (service
+    /// flag `--persistent-bridge`). Default off; the one-shot transport is
+    /// byte-identical either way and remains the per-request fallback.
+    pub fn with_persistent_bridge(mut self, persistent: bool) -> Self {
+        self.persistent_scaffold = persistent;
         self
     }
 
@@ -149,6 +165,17 @@ impl NodeBridgeClient {
     /// Total worker children successfully spawned over this client's lifetime.
     pub(crate) fn worker_starts_total(&self) -> u64 {
         self.worker_starts.load(Ordering::SeqCst)
+    }
+
+    /// Appends one externally produced run record to the shared buffer. Used
+    /// by the persistent scaffold router (`scaffold.rs`) so persistent-path
+    /// trips surface through the SAME drain (`take_worker_run_metrics`) and
+    /// sink as one-shot runs. Best-effort like the in-run recording: a
+    /// poisoned buffer lock is skipped, never surfaced.
+    pub(crate) fn record_run_metrics(&self, record: WorkerRunMetrics) {
+        if let Ok(mut buffer) = self.run_metrics.lock() {
+            buffer.push(record);
+        }
     }
 
     pub(crate) fn run(&self, request: &BridgeRequest) -> Result<BridgeResponse> {
@@ -474,7 +501,9 @@ impl SpawnedOutcome {
 
 /// Saturating nanosecond elapsed helper: `Instant::elapsed` is `u128`; a run
 /// exceeding `u64::MAX` ns (~584 years) clamps rather than truncating.
-fn elapsed_ns(start: Instant) -> u64 {
+/// Shared with the persistent scaffold router so both transports measure
+/// their run-record durations identically.
+pub(crate) fn elapsed_ns(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
@@ -757,6 +786,7 @@ mod tests {
                 max_diagnostics_bytes: 64 * 1024,
                 validation_profile: ValidationProfile::tsc_only("/project/src", "/project", true),
                 collect_metrics,
+                persistent_scaffold: false,
             }
         }
 

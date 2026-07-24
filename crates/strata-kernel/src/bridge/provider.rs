@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::observer;
 use super::process::NodeBridgeClient;
+use super::scaffold::PersistentScaffoldRouter;
 use super::protocol::{
     AnalyzeIntentRequest, BridgeBinding, BridgeKind, BridgeRequest, Hash64,
     IntentParameters as WireIntentParameters, IntentRecord as WireIntentRecord, PROTOCOL_VERSION,
@@ -22,6 +23,10 @@ use crate::{GraphGeneration, NodeRecord, ReferenceRecord};
 pub(crate) struct NodeSemanticProvider {
     client: Arc<NodeBridgeClient>,
     service_epoch: u64,
+    /// Task-5 scaffold: when set, requests route through the session's ONE
+    /// persistent worker (full snapshot still in-band) with transparent
+    /// one-shot fallback; `None` is the one-shot path, untouched.
+    persistent: Option<Arc<PersistentScaffoldRouter>>,
 }
 
 impl NodeSemanticProvider {
@@ -29,7 +34,16 @@ impl NodeSemanticProvider {
         Self {
             client,
             service_epoch,
+            persistent: None,
         }
+    }
+
+    pub(crate) fn with_persistent_router(
+        mut self,
+        router: Option<Arc<PersistentScaffoldRouter>>,
+    ) -> Self {
+        self.persistent = router;
+        self
     }
 }
 
@@ -49,7 +63,12 @@ impl SemanticProvider for NodeSemanticProvider {
             };
             observer::set_request_build(snapshot_bytes, snapshot_build_ns);
         }
-        let facts = self.client.run(&request)?.into_analyze_result()?;
+        let facts = super::scaffold::run_with_persistent_fallback(
+            self.persistent.as_ref(),
+            &self.client,
+            &request,
+        )?
+        .into_analyze_result()?;
         intent_analysis_from_facts(graph, intent, facts)
     }
 }

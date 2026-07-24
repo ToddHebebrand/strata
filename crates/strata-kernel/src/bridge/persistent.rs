@@ -63,7 +63,7 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -160,6 +160,12 @@ impl PersistentWorkerConfig {
 pub struct PersistentWorkerHost {
     config: PersistentWorkerConfig,
     state: Mutex<HostState>,
+    /// Monotonic host-lifetime count of successfully spawned worker children
+    /// (initial spawn + every lazy respawn after a poison/crash). The daemon's
+    /// spawn-anchored `workerStartsTotal` observability counter sums this with
+    /// the one-shot client's counter, so "exactly one child served the whole
+    /// session" is directly assertable from metrics.
+    spawns_total: AtomicU64,
 }
 
 struct HostState {
@@ -180,7 +186,14 @@ impl PersistentWorkerHost {
                 last_attestation: None,
                 next_request_id: 0,
             }),
+            spawns_total: AtomicU64::new(1),
         })
+    }
+
+    /// Total worker children this host has successfully spawned (initial spawn
+    /// plus lazy respawns). Purely observational.
+    pub fn spawns_total(&self) -> u64 {
+        self.spawns_total.load(Ordering::SeqCst)
     }
 
     /// The service epoch this host was spawned under. Task 6's coordinator
@@ -224,6 +237,71 @@ impl PersistentWorkerHost {
         }
 
         self.exchange_locked(&mut state, &semantic_id, semantic_frame, deadline_at)
+    }
+
+    /// Task-5 SCAFFOLD entry point: dispatch one already-serialized bridge
+    /// request over the persistent transport WITHOUT any attestation check or
+    /// sync exchange, returning the worker's raw response frame bytes.
+    ///
+    /// Why skipping attestation is sound HERE and only here: the scaffold
+    /// still sends the FULL SNAPSHOT inside every request body (exactly the
+    /// bytes the one-shot transport writes to a fresh child's stdin), so the
+    /// request is self-contained — the worker holds no mirror state that
+    /// could be stale, and there is no graph identity to attest. Task 6
+    /// (delta sync + eager hydration) retires or restricts this entry point
+    /// to the sync-attested `request_at` path; do not add new callers.
+    ///
+    /// Every single-flight/poison invariant of `request_at` holds unchanged:
+    /// the whole exchange runs inside the one state-mutex critical section,
+    /// queue wait counts against `deadline` (a caller expiring while queued
+    /// gets an error without the worker being touched), an oversized request
+    /// is refused host-side before anything is written, and every abnormal
+    /// response outcome poisons (kill + reap + cleared attestation + lazy
+    /// respawn on the next call). Correlation uses the request's OWN
+    /// `requestId` (already unique per one-shot convention and verified
+    /// against the response frame) instead of a host-stamped one, so the
+    /// bytes on the wire are byte-identical to the one-shot request body.
+    pub fn request_unattested(
+        &self,
+        request_id: &str,
+        body: &[u8],
+        deadline: Duration,
+    ) -> Result<Vec<u8>> {
+        ensure!(
+            !request_id.is_empty(),
+            "persistent bridge scaffold request must carry a non-empty requestId"
+        );
+        let started = Instant::now();
+        let mut state = lock_state(&self.state);
+        let deadline_at = started
+            .checked_add(deadline)
+            .ok_or_else(|| anyhow!("persistent bridge request deadline is too large"))?;
+        if Instant::now() >= deadline_at {
+            // The worker was never touched; explicitly not a poison.
+            bail!(
+                "persistent bridge request deadline elapsed while queued for the worker \
+                 (worker untouched)"
+            );
+        }
+        // Same host-side request bound as `encode_frame`: refused before any
+        // write, worker untouched, never a poison.
+        ensure!(
+            body.len() <= self.config.max_request_bytes,
+            "bridge request frame of {} bytes exceeds the {}-byte request bound; \
+             refused host-side before writing (worker untouched)",
+            body.len(),
+            self.config.max_request_bytes
+        );
+        let length = u32::try_from(body.len())
+            .map_err(|_| anyhow!("bridge frame length does not fit the u32 prefix"))?;
+        let mut framed = Vec::with_capacity(4 + body.len());
+        framed.extend_from_slice(&length.to_le_bytes());
+        framed.extend_from_slice(body);
+
+        self.ensure_healthy_worker(&mut state)?;
+        let (bytes, _value) =
+            self.exchange_raw_locked(&mut state, request_id, framed, deadline_at)?;
+        Ok(bytes)
     }
 
     /// Clean shutdown: close stdin (EOF is the contract — the worker loop
@@ -297,6 +375,7 @@ impl PersistentWorkerHost {
                 state.worker = None;
                 state.last_attestation = None;
                 state.worker = Some(spawn_worker(&self.config)?);
+                self.spawns_total.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }
         }
@@ -346,8 +425,8 @@ impl PersistentWorkerHost {
         }
     }
 
-    /// One single-flight exchange: write the frame, await the one correlated
-    /// response. Every abnormal outcome poisons.
+    /// One single-flight exchange returning the parsed response value; see
+    /// [`Self::exchange_raw_locked`] for the transport semantics.
     fn exchange_locked(
         &self,
         state: &mut HostState,
@@ -355,6 +434,22 @@ impl PersistentWorkerHost {
         framed: Vec<u8>,
         deadline_at: Instant,
     ) -> Result<Value> {
+        self.exchange_raw_locked(state, request_id, framed, deadline_at)
+            .map(|(_bytes, value)| value)
+    }
+
+    /// One single-flight exchange: write the frame, await the one correlated
+    /// response. Every abnormal outcome poisons. Returns both the raw
+    /// response frame bytes (for the scaffold path, which hands them to the
+    /// one-shot response parser unchanged) and the parsed JSON value that was
+    /// used for `requestId` correlation.
+    fn exchange_raw_locked(
+        &self,
+        state: &mut HostState,
+        request_id: &str,
+        framed: Vec<u8>,
+        deadline_at: Instant,
+    ) -> Result<(Vec<u8>, Value)> {
         let sent = state
             .worker
             .as_ref()
@@ -417,7 +512,7 @@ impl PersistentWorkerHost {
             .and_then(Value::as_str)
             .map(str::to_owned);
         match response_id {
-            Some(id) if id == request_id => Ok(value),
+            Some(id) if id == request_id => Ok((bytes, value)),
             Some(other) => Err(self.poison(
                 state,
                 &format!(

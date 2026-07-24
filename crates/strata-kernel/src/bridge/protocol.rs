@@ -621,7 +621,10 @@ impl BridgeRequest {
         Ok(())
     }
 
-    fn request_id(&self) -> &str {
+    /// The request's own correlation id. `pub(crate)` for the persistent
+    /// scaffold transport, which correlates frames on this id so the wire
+    /// request body stays byte-identical to the one-shot path's.
+    pub(crate) fn request_id(&self) -> &str {
         match self {
             Self::AnalyzeIntent(request) => &request.request_id,
             Self::BuildValidateCandidate(request) => &request.request_id,
