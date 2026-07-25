@@ -143,6 +143,15 @@ export interface Gate3Report {
   medium: Gate3CorpusReport;
   big1k?: Gate3CorpusReport;
   verdict: RatioVerdictState;
+  /**
+   * Task 11 (bridge-persistence exit gate): the `--exit-gate` provenance
+   * block (binary profile, persistent-bridge configuration, A3 constants and
+   * memory measurements), attached by `run-big.ts` ONLY in exit-gate mode and
+   * serialized verbatim into the JSON artifact. Typed `unknown` here so this
+   * pure module stays decoupled from the exit-gate wiring; ALWAYS absent on
+   * the default gate-3 path.
+   */
+  exitGate?: unknown;
 }
 
 /**
@@ -435,7 +444,16 @@ export function renderGate3Markdown(report: Gate3Report): string {
 export function writeGate3Artifacts(
   report: Gate3Report,
   outDir: string,
-  options?: { deterministicName?: boolean; requireRawPairs?: boolean }
+  options?: {
+    deterministicName?: boolean;
+    requireRawPairs?: boolean;
+    /**
+     * Task 11: explicit artifact base name (e.g.
+     * `bridge-persistence-exit-gate`), overriding both default naming rules
+     * when provided. Absent -> naming behavior identical to before Task 11.
+     */
+    artifactBase?: string;
+  }
 ): { jsonPath: string; markdownPath: string } {
   // Task 8 (Task-7 review obligation 2): on the REAL artifact path
   // (`run-big.ts` passes `requireRawPairs: true`), every present corpus MUST
@@ -454,9 +472,11 @@ export function writeGate3Artifacts(
     }
   }
   mkdirSync(outDir, { recursive: true });
-  const base = options?.deterministicName
-    ? "gate3-noninferiority-profile"
-    : `gate3-profile-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  const base =
+    options?.artifactBase ??
+    (options?.deterministicName
+      ? "gate3-noninferiority-profile"
+      : `gate3-profile-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   const jsonPath = join(outDir, `${base}.json`);
   const markdownPath = join(outDir, `${base}.md`);
   writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");

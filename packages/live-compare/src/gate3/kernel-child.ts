@@ -159,9 +159,16 @@ async function runPlan(
 ): Promise<void> {
   const service = await startKernelService(corpusRoot, {
     binaryPath: kernelServiceBinary(),
-    env: credentialFreeEnv()
-    // No extraArgs: `--metrics` is deliberately never passed, so the daemon
-    // never opens a metrics sink for this timed run.
+    env: credentialFreeEnv(),
+    // `--metrics` is deliberately never passed, so the daemon never opens a
+    // metrics sink for this timed run (metrics stay OFF either way).
+    // Task 11 (exit-gate): when run-big.ts runs in `--exit-gate persistence`
+    // mode it sets GATE3_PERSISTENT_BRIDGE=1 in its own env, which reaches
+    // this child via the runners' `credentialFreeEnv()` pass-through — the
+    // one existing parent->child configuration channel — and turns on the
+    // daemon's persistent bridge worker. Absent the env var, extraArgs is []
+    // and the daemon starts exactly as it always has.
+    extraArgs: process.env.GATE3_PERSISTENT_BRIDGE === "1" ? ["--persistent-bridge"] : []
   });
   const client = new CoordinationClient({
     socketPath: service.socketPath,

@@ -190,6 +190,26 @@ function commandOf(pid: number): string {
 }
 
 /**
+ * Task 11 (exit-gate) addition: discover ONE direct child of `parentPid`
+ * whose command line contains `needle`. Used by the exit-gate big1k warm
+ * sampler to walk run-big -> kernel-child -> daemon from the OS without any
+ * new protocol surface (the same pattern `discoverPersistentWorkerPid`
+ * already uses for daemon -> worker). Returns null when no child matches;
+ * throws when more than one matches (ambiguous — the caller's process-tree
+ * assumption is wrong and sampling must not guess).
+ */
+export function discoverChildPidByCommand(parentPid: number, needle: string): number | null {
+  const matches = childPids(parentPid).filter((pid) => commandOf(pid).includes(needle));
+  if (matches.length > 1) {
+    throw new PidContinuityViolation(
+      `parent ${parentPid} has ${matches.length} children matching ${JSON.stringify(needle)} ` +
+        `(${matches.join(", ")}); expected at most one`
+    );
+  }
+  return matches[0] ?? null;
+}
+
+/**
  * Discover the daemon's persistent bridge worker from the OS: the ONE direct
  * child whose argv carries the `--persistent` worker flag (the daemon spawns
  * it as `node .../worker.js --persistent`; bridge/persistent.rs). Returns
