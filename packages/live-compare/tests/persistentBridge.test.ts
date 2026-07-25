@@ -243,7 +243,12 @@ function expectMirrorServedMutation(outcome: MutationOutcome): void {
   const analyzes = analyzeRuns(outcome);
   expect(analyzes.length).toBe(5);
   for (const run of analyzes) {
-    expect(run.worker!.analyzeNs).toBeGreaterThan(0);
+    // Task 10: the repeat analyzes at one generation are memo hits, whose
+    // timed "analyze" stage is just the memo lookup — a tiny, possibly
+    // sub-microsecond duration. Presence (a number, not null) still proves
+    // the analyze stage ran on every trip; only the >0 bound is relaxed.
+    expect(typeof run.worker!.analyzeNs).toBe("number");
+    expect(run.worker!.analyzeNs).toBeGreaterThanOrEqual(0);
   }
 
   // The candidate trip runs the real pipeline on the mirror inside the

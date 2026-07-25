@@ -29,6 +29,7 @@
 
 import { z } from "zod";
 import type { Db } from "@strata-code/store";
+import { AnalyzeMemo } from "./analyze-memo";
 import { canonicalSyncDigest, type MirrorNode, type MirrorReference } from "./sync-digest";
 import { hydrateSnapshot } from "./snapshot";
 import {
@@ -195,8 +196,29 @@ export class MirrorState {
   private attestedIdentity: GraphIdentity | null = null;
   private poisonDetail: string | null = null;
 
+  /**
+   * Task-10 memo for mirror-served analyzeIntent responses. Owned here so
+   * invalidation is structurally tied to the mirror it caches over: EVERY
+   * attestation change flows through `setAttested` (hydrate, successful
+   * sync, close) and clears it; `markPoisoned` clears it too. Consulted only
+   * by `serveMirrorAnalyzeCore` (worker.ts) — candidate requests are never
+   * memoized.
+   */
+  readonly analyzeMemo = new AnalyzeMemo();
+
   attested(): GraphIdentity | null {
     return this.attestedIdentity;
+  }
+
+  /**
+   * The SINGLE choke point through which the attested identity ever changes.
+   * Any change to what the mirror attests invalidates every memoized analyze
+   * response (Task 10): entries are only valid for the exact attested
+   * (generation, digest) they were computed under.
+   */
+  private setAttested(identity: GraphIdentity | null): void {
+    this.attestedIdentity = identity;
+    this.analyzeMemo.clear();
   }
 
   /**
@@ -212,6 +234,9 @@ export class MirrorState {
 
   markPoisoned(detail: string): void {
     this.poisonDetail = detail;
+    // A poisoned mirror's content can no longer be trusted; neither can any
+    // response memoized from it.
+    this.analyzeMemo.clear();
   }
 
   /** The mirror database, ONLY if the attested identity equals `identity`. */
@@ -239,7 +264,7 @@ export class MirrorState {
   }
 
   close(): void {
-    this.attestedIdentity = null;
+    this.setAttested(null);
     if (this.db !== null) {
       try {
         this.db.close();
@@ -266,8 +291,9 @@ export class MirrorState {
       return { kind: "refuse", reason: "digest-mismatch", have: null };
     }
     this.db = db;
-    this.attestedIdentity = { ...frame.target };
-    return { kind: "attest", identity: this.attestedIdentity };
+    const identity = { ...frame.target };
+    this.setAttested(identity);
+    return { kind: "attest", identity };
   }
 
   /**
@@ -316,8 +342,9 @@ export class MirrorState {
         return { kind: "refuse", reason: "digest-mismatch", have };
       }
       db.exec("COMMIT");
-      this.attestedIdentity = { ...frame.target };
-      return { kind: "attest", identity: this.attestedIdentity };
+      const identity = { ...frame.target };
+      this.setAttested(identity);
+      return { kind: "attest", identity };
     } catch (error) {
       try {
         db.exec("ROLLBACK");

@@ -29,8 +29,10 @@ import {
   mirrorAnalyzeRequestSchema,
   mirrorCandidateRequestSchema,
   syncFrameSchema,
+  type GraphIdentity,
   type MirrorAnalyzeRequest,
   type MirrorCandidateRequest,
+  type RefusalReason,
   type SyncOutcome
 } from "./sync";
 
@@ -291,33 +293,19 @@ async function serveMirrorAnalyze(
     await writeLoopErrorFrame(requestId, "invalidRequest", error);
     return;
   }
-  const db = mirror.databaseFor(request.identity);
-  if (db === null) {
-    await writePersistentFrame({
-      requestId: request.requestId,
-      kind: "refuse",
-      reason: mirror.mismatchReason(request.identity),
-      have: mirror.attested()
-    });
-    return;
-  }
   const identity = analyzeResponseIdentity(request.requestId, request.binding);
   try {
-    const result = recorder
-      ? recorder.time("analyze", () => analyzeIntentInDb(db, request.intent))
-      : analyzeIntentInDb(db, request.intent);
-    const response =
-      "facts" in result
-        ? bridgeResponseSchema.parse({
-            protocolVersion: 1,
-            requestId: request.requestId,
-            kind: "analyzeIntent",
-            binding: request.binding,
-            ok: true,
-            result
-          })
-        : errorResponseFor(identity, result.stage, result.code, result.message, result.diagnostics);
-    await writePersistentResponse(response, identity, recorder);
+    const outcome = serveMirrorAnalyzeCore(mirror, request, recorder);
+    if (outcome.kind === "refuse") {
+      await writePersistentFrame({
+        requestId: request.requestId,
+        kind: "refuse",
+        reason: outcome.reason,
+        have: outcome.have
+      });
+      return;
+    }
+    await writePersistentResponse(outcome.response, identity, recorder);
   } catch (error) {
     const response = errorResponseFor(
       identity,
@@ -329,6 +317,71 @@ async function serveMirrorAnalyze(
     await writePersistentResponse(response, identity, recorder);
     writeOperationalError(response.error.code, error);
   }
+}
+
+/** Outcome of the mirror-analyze semantic core: a refusal (identity not
+ * attested) or a full semantic response plus whether it was a memo hit. */
+export type MirrorAnalyzeServeOutcome =
+  | { kind: "refuse"; reason: RefusalReason; have: GraphIdentity | null }
+  | { kind: "serve"; response: BridgeResponse; memoHit: boolean };
+
+/**
+ * The semantic core of `serveMirrorAnalyze`, transport-free and exported for
+ * the Task-10 memo gates: identity check, memo consult, analysis, response
+ * build, memo store. The memo (`MirrorState.analyzeMemo` — see
+ * analyze-memo.ts for the full key/value/invalidation contract) is consulted
+ * ONLY here, only AFTER `databaseFor` proved the request identity equals the
+ * attested identity; a hit re-binds the memoized semantic response to this
+ * request's id and skips `analyzeIntentInDb` entirely, so under the recorder
+ * the "analyze" stage of a hit is just the memo lookup — a tiny (possibly
+ * sub-microsecond) duration, with no metrics-schema change. Semantic analyze
+ * errors are memoized alongside successes (both are deterministic in
+ * (mirror, request)); unexpected exceptions propagate to the caller
+ * unmemoized. Candidate requests never reach this function and are never
+ * memoized.
+ */
+export function serveMirrorAnalyzeCore(
+  mirror: MirrorState,
+  request: MirrorAnalyzeRequest,
+  recorder?: StageRecorder
+): MirrorAnalyzeServeOutcome {
+  const db = mirror.databaseFor(request.identity);
+  if (db === null) {
+    return {
+      kind: "refuse",
+      reason: mirror.mismatchReason(request.identity),
+      have: mirror.attested()
+    };
+  }
+  const memo = mirror.analyzeMemo;
+  const key = memo.keyFor(request);
+  const cached = recorder
+    ? recorder.time("analyze", () => memo.lookup(key))
+    : memo.lookup(key);
+  if (cached !== undefined) {
+    return {
+      kind: "serve",
+      memoHit: true,
+      response: { ...cached, requestId: request.requestId } as BridgeResponse
+    };
+  }
+  const identity = analyzeResponseIdentity(request.requestId, request.binding);
+  const result = recorder
+    ? recorder.time("analyze", () => analyzeIntentInDb(db, request.intent))
+    : analyzeIntentInDb(db, request.intent);
+  const response =
+    "facts" in result
+      ? bridgeResponseSchema.parse({
+          protocolVersion: 1,
+          requestId: request.requestId,
+          kind: "analyzeIntent",
+          binding: request.binding,
+          ok: true,
+          result
+        })
+      : errorResponseFor(identity, result.stage, result.code, result.message, result.diagnostics);
+  memo.store(key, response);
+  return { kind: "serve", memoHit: false, response };
 }
 
 /**
