@@ -41,6 +41,33 @@ further larger-N pre-registration; (c) accept the standing INCONCLUSIVE
 record as the slice outcome and move on. This entry deliberately does not
 choose.
 
+**2026-07-31 addendum — run 3 (quiet machine) recorded; slice CLOSED on the
+standing outcome.** The launcher's idleness condition fired at loadavg 3.80
+(vs ~46–52 for runs 1–2); the identical run completed in ~4.5 min (idle
+machine ≈10× faster in absolute walls). Result
+(`docs/spikes/bridge-persistence-exit-gate-run3-inconclusive.{json,md,head}`):
+**big1k PASS both modes** (cold 1.116, UCB95 1.130; warm 1.214, UCB95 1.240 —
+third consecutive big1k warm PASS), **medium warm PASS** (0.879, UCB95
+0.979), medium cold the lone straddle — point 1.214 with CI [0.934, 1.784]:
+at sub-second absolute walls (kernel p95 0.867 s vs SQLite 0.714 s),
+per-sample jitter is enormous in relative terms. A3 memory PASS both corpora
+(third time); lifecycle 4/4. Machine verdict exit 1, INCONCLUSIVE, driven
+solely by medium cold.
+
+**Closing determination (per the pre-stated default after a
+controlled-environment third straddle):** the slice outcome stands as —
+built, all seven deterministic gates green, exit gate formally INCONCLUSIVE
+with 3/4 corpus-mode components PASS on the controlled run and the ~1k
+corpus (the coordination thesis's subject) PASS in every mode; the
+falsifier-5 regime (4.2–12.9×) is decisively reversed. The remaining
+medium-cold straddle is a measurement-resolution limit of that mode
+(sub-second walls), not an open kernel question; resolving it would need a
+differently-designed, separately pre-registered measurement (e.g. paired
+absolute-difference test) — out of this slice's charter. The stopping rule
+never fired; no thresholds were touched at any point. The persistent-bridge
+path remains flag-gated (`--persistent-bridge`, default OFF) with the SQLite
+product path fully supported, per the hard boundaries.
+
 **2026-07-25 addendum — operator chose (a), quiet-machine re-run.**
 Pre-registered BEFORE launch: run 3 is byte-identical to run 2 (same binary
 sha, `--exit-gate persistence --n-medium 24`, same seeds/windows/thresholds);

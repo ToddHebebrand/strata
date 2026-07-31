@@ -1,14 +1,18 @@
 # Bridge-persistence slice — design (post gate-3 falsifier-5)
 
-**Status (2026-07-25):** BUILT — all seven deterministic gates green (plan
-`docs/superpowers/plans/2026-07-23-bridge-persistence-slice.md`, Tasks 1–11;
-amendments A1/A2/A3 operator-approved). Exit gate formally **INCONCLUSIVE**
-after two pre-registered runs (N=12 then N=24 medium): 7/8 corpus-mode ratio
-points at or below 1.25 (median ≈0.72), big1k warm PASS both runs (UCB95
-0.749/0.683), A3 memory PASS both runs, falsifier-5 regime reversed — but
-ambient-load-driven CI straddles moved between runs; see decisions.md
-2026-07-25 entries. Operator decision pending on further measurement vs
-accepting the standing record.
+**Status (2026-07-31): CLOSED.** BUILT — all seven deterministic gates green
+(plan `docs/superpowers/plans/2026-07-23-bridge-persistence-slice.md`, Tasks
+1–11; amendments A1/A2/A3 operator-approved). Exit gate: three pre-registered
+runs (N=12 loaded, N=24 loaded, N=24 quiet-machine), all formally
+INCONCLUSIVE, but the controlled run 3 PASSes 3/4 components — **big1k PASS
+both modes (UCB95 1.130 cold / 1.240 warm; big1k warm PASS in all three
+runs), medium warm PASS (UCB95 0.979)** — with medium cold the lone straddle
+(point 1.214, a sub-second-wall measurement-resolution limit, not an open
+kernel question). A3 memory PASS ×3; lifecycle 4/4 ×3; the falsifier-5
+regime (4.2–12.9×) is decisively reversed; the stopping rule never fired.
+See decisions.md 2026-07-25 + 2026-07-31 entries. The persistent bridge
+stays flag-gated (`--persistent-bridge`, default OFF); the SQLite product
+path remains fully supported.
 
 Originally chartered 2026-07-22 (operator-delegated direction call).
 Independent design review completed BEFORE this spec was written: brief at
