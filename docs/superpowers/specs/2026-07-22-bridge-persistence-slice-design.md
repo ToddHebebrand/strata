@@ -1,13 +1,20 @@
 # Bridge-persistence slice — design (post gate-3 falsifier-5)
 
-**Status:** chartered 2026-07-22 (operator delegated the direction call; see
-decisions.md 2026-07-22 chartering entry). Independent design review completed
-BEFORE this spec was written: brief at
+**Status (2026-07-25):** BUILT — all seven deterministic gates green (plan
+`docs/superpowers/plans/2026-07-23-bridge-persistence-slice.md`, Tasks 1–11;
+amendments A1/A2/A3 operator-approved). Exit gate formally **INCONCLUSIVE**
+after two pre-registered runs (N=12 then N=24 medium): 7/8 corpus-mode ratio
+points at or below 1.25 (median ≈0.72), big1k warm PASS both runs (UCB95
+0.749/0.683), A3 memory PASS both runs, falsifier-5 regime reversed — but
+ambient-load-driven CI straddles moved between runs; see decisions.md
+2026-07-25 entries. Operator decision pending on further measurement vs
+accepting the standing record.
+
+Originally chartered 2026-07-22 (operator-delegated direction call).
+Independent design review completed BEFORE this spec was written: brief at
 `2026-07-22-bridge-optimization-review-brief.md`, Codex gpt-5.6-sol xhigh
 read-only output archived at `2026-07-22-bridge-optimization-review-codex.md`.
-All pivotal review claims source-verified in-session (worker-trip counts,
-one-shot EOF transport, commit-materialization, characterizer stage-timing
-discard). Implementation plan: not yet written — this spec governs it.
+All pivotal review claims source-verified in-session.
 
 ## Why this slice exists
 

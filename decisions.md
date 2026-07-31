@@ -7,6 +7,40 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-25 — Exit gate run 2 (pre-registered N=24 medium): INCONCLUSIVE again — measurement environment is now the bottleneck; standing record made, operator to decide next
+
+**Run 2 (`docs/spikes/bridge-persistence-exit-gate-run2-inconclusive.{json,md,head}`;
+identical to run 1 except the pre-registered medium N=24, argv recorded in
+the artifact):** medium cold point **0.911** CI [0.671, 1.656] INCONCLUSIVE;
+medium warm 1.121 [0.673, 1.488] INCONCLUSIVE; big1k cold 0.763
+[0.614, **1.253**] INCONCLUSIVE (straddles by 0.003); **big1k warm PASS**
+0.610 (UCB95 0.683). A3 memory PASS both corpora again (big1k peak 957 MB /
+1400 MB cap); lifecycle 4/4. Machine verdict exit 1.
+
+**The honest combined read (both runs, 8 corpus-mode ratio measurements):**
+7 of 8 point estimates are at or below 1.25 (0.53–1.12, median ≈0.72; the
+one above is run-1 medium cold 1.435 under heavy load); **big1k warm — the
+highest-signal mode — PASSed BOTH runs** (UCB95 0.749 and 0.683); the gate-3
+falsifier-5 regime (12.2–12.9×) is decisively reversed. But WHICH components
+straddle 1.25 moves between runs, and run 2's CIs are wider at larger N —
+the bootstrap CIs are tracking ambient machine-load drift across the
+~90-minute runs, not the kernel. Absolute walls swung 3–5× in both arms
+between runs (e.g. SQLite medium cold p95 2.85 s → 1.55 s). Conclusion:
+further same-environment re-runs chase noise; the pre-registered exit-1
+branch ("larger pre-registered N re-run") has been exercised once as
+chartered and is not prescribed to loop. No thresholds were touched; the
+stopping rule (which fires only on FAIL) has not fired.
+
+**Standing status:** slice built and green through all seven deterministic
+gates (protocol, sync, isolation, oracle, chain, memory, plus the A3
+predicates PASSing in both dispositive runs); exit gate formally
+INCONCLUSIVE after two pre-registered runs. Options recorded for the
+operator: (a) one controlled quiet-machine re-run (procedural only — no
+code/threshold/N change; run when the machine is otherwise idle); (b) a
+further larger-N pre-registration; (c) accept the standing INCONCLUSIVE
+record as the slice outcome and move on. This entry deliberately does not
+choose.
+
 ## 2026-07-25 — Bridge-persistence exit gate run 1: INCONCLUSIVE (medium cold CI straddle); larger-N re-run pre-registered
 
 **Run 1 (artifacts preserved at
