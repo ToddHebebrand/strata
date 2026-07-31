@@ -621,6 +621,21 @@ async function main(): Promise<void> {
     // fixed-overhead anchor); no separate big1k baseline is needed.
     const baselineRss = await measureBaselineRss(baseline, GATE3_MEDIUM_BASELINE_SEED, sizing.nBaseline);
 
+    // --- Task 11 (exit-gate mode only): A3 medium leak check, FIRST ---------
+    // Operator-approved execution-order amendment (2026-07-25, recorded in the
+    // decisions entry): the N=12 leak check runs BEFORE the corpus schedules,
+    // not after. The Task-11 smoke runs showed the predicate is load-coupled —
+    // run after the heavy schedules, Node GC laziness under machine load
+    // inflates mid-series RSS and false-fails the (unchanged) first-4 vs
+    // tail-4 x1.15 windows; a quiet-machine N=32 diagnostic shows a stable,
+    // declining series that PASSES as registered. No threshold, window, N, or
+    // predicate change — only when the check executes.
+    let mediumLeak: Awaited<ReturnType<typeof runMediumLeakCheck>> | null = null;
+    if (cli.exitGate !== null) {
+      process.stderr.write(`[run-big] exit-gate: medium N=${MEDIUM_LEAK_ITERATIONS} persistent-bridge leak check (pre-schedule)...\n`);
+      mediumLeak = await runMediumLeakCheck(mediumRoot);
+    }
+
     // --- medium leg ----------------------------------------------------------
     const mediumCorpus: RunnerCorpus = { corpusRoot: mediumRoot, corpus: "medium", target: MEDIUM_TARGET };
     const mediumRun = await runCorpus(
@@ -682,8 +697,7 @@ async function main(): Promise<void> {
     // placeholder + cross-corpus memory verdicts exactly as before.
     let a3: A3MemoryAssembly | null = null;
     if (cli.exitGate !== null) {
-      process.stderr.write(`[run-big] exit-gate: medium N=${MEDIUM_LEAK_ITERATIONS} persistent-bridge leak check...\n`);
-      const mediumLeak = await runMediumLeakCheck(mediumRoot);
+      if (mediumLeak === null) throw new Error("exit-gate mode: medium leak check did not run");
       a3 = assembleA3Memory({
         mediumLeak,
         big1kWarm: big1kRun.warmSampling ?? {
