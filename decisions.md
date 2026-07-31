@@ -41,6 +41,15 @@ further larger-N pre-registration; (c) accept the standing INCONCLUSIVE
 record as the slice outcome and move on. This entry deliberately does not
 choose.
 
+**2026-07-25 addendum — operator chose (a), quiet-machine re-run.**
+Pre-registered BEFORE launch: run 3 is byte-identical to run 2 (same binary
+sha, `--exit-gate persistence --n-medium 24`, same seeds/windows/thresholds);
+the ONLY condition is environmental — a detached launcher fires the run when
+the 5-minute load average is < 8.0 on two consecutive checks 5 minutes apart
+(at decision time the load average was ~52; launching then would reproduce
+run 1/2's noise). The launcher logs load-average checks and `uptime` before
+and after the run alongside the harness output. No code changes.
+
 ## 2026-07-25 — Bridge-persistence exit gate run 1: INCONCLUSIVE (medium cold CI straddle); larger-N re-run pre-registered
 
 **Run 1 (artifacts preserved at
