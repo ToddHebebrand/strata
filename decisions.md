@@ -7,6 +7,46 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-31 — Roadmap item B chartered (discovery worldview + behavioral gate), two slices, post-review
+
+**Decision:** with the bridge-persistence slice closed, the operator directed
+proceeding to the next step; roadmap item B is chartered as TWO independently
+green slices — **B-1 bounded discovery surface** (list_modules with a
+fail-closed corpus-relative path projection, list_module_declarations,
+module-scoped find_declarations, pageable get_references — all under a
+uniform collection contract: graphGeneration stamp, deterministic ordering,
+cursor+hasMore instead of fail-past-the-cap) and **B-2 behavioral gate**
+(typed CandidateRejected carrying the worker's real bounded diagnostics;
+a committed digested per-corpus validation manifest with a startup
+seed-green invariant; nested subprocess/bridge/client deadlines; savepoint
+timeout-recovery gates; a manifest-pinned registered-fixture reader).
+Design: `docs/superpowers/specs/2026-07-31-item-b-design.md`.
+
+**Process:** per the different-class-lever rule, an independent Codex review
+(gpt-5.6-sol, xhigh, read-only) ran BEFORE the spec was written (brief +
+archived output alongside). Verdict was "re-ground first"; its three
+contract corrections are constitutive of the spec: (1) the Rust candidate
+path DISCARDS worker diagnostics and fabricates one generic
+`candidate_validation_failed` for every failure, semantic or operational
+(verified `bridge/protocol.rs:1084-1092`, `session.rs:775-805`) → typed
+rejection taxonomy; (2) a plain per-daemon fixture list recreates the
+RECORDED whole-suite satisfiability failure (2026-05 entry: co-located
+fail-before fixtures made the behavioral gate structurally unsatisfiable) →
+seed-green immutable manifest, red-by-design task fixtures stay out; (3)
+Module payloads can be physical ABSOLUTE paths (recorded Task-5 harness
+precedent; the product normalizes defensively) → derived, validated,
+fail-closed path projection; raw payloads never cross the wire. Also
+incorporated: the argv parser rejects repeated flags (single
+`--validation-manifest` option), Rust never required non-empty fixtures
+(now a construction invariant), 30 s bridge deadline vs unbounded
+spawnSync (nested deadline contract), and `list_module_exports`' actual
+include-non-exported semantics (renamed honestly).
+
+**Deliberately deferred, recorded:** semantic_search (embeddings), general
+file reads, item-C stable IDs, N>1 workers, any change to recorded gate
+artifacts. Next step: B-1 implementation plan v1 → independent methodology
+review → v2 before any build.
+
 ## 2026-07-25 — Exit gate run 2 (pre-registered N=24 medium): INCONCLUSIVE again — measurement environment is now the bottleneck; standing record made, operator to decide next
 
 **Run 2 (`docs/spikes/bridge-persistence-exit-gate-run2-inconclusive.{json,md,head}`;

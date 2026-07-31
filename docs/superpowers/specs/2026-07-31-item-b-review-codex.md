@@ -1,0 +1,61 @@
+# Independent design review — roadmap item B (Codex output, archived verbatim)
+
+**Model:** gpt-5.6-sol, reasoning `xhigh`, sandbox read-only, repo-grounded.
+**Brief:** `2026-07-31-item-b-review-brief.md`. **Date:** 2026-07-31.
+
+**In-session source verification (2026-07-31), per repo rule — all pivotal
+claims CONFIRMED:** `into_candidate_result` discards worker diagnostics
+(`bridge/protocol.rs:1084-1092`) and the session fabricates a single generic
+`candidate_validation_failed` diagnostic for EVERY candidate error, semantic
+or operational (`session.rs:775-805`); `parse_named` rejects duplicate
+option names so a repeatable fixture flag cannot parse (`main.rs:209-220`);
+Rust `ValidationProfile::Behavioral` validation never requires a non-empty
+fixture list (`bridge/protocol.rs:494-511`); the shared whole-suite
+behavioral-gate satisfiability failure is recorded house history
+(decisions.md 2026-05 entry: co-located fail-before fixtures made the gate
+structurally unsatisfiable for other tasks; scope fix left undecided);
+Module payloads can be physical ABSOLUTE paths (decisions.md Task-5 entry;
+`packages/agent/src/moduleIndex.ts:38-49` normalizes both forms), so a
+list_modules path must be derived + validated, fail-closed.
+
+---
+
+## Findings
+
+- **Blocker — Behavioral diagnostics cannot reach `advance_change_set` through the current Rust path.** The worker returns bounded diagnostics (`crates/strata-kernel/src/bridge/protocol.rs:955-977`), but `into_candidate_result` discards them (`crates/strata-kernel/src/bridge/protocol.rs:1084-1092`). The service then ignores the resulting error and fabricates one generic diagnostic before cancelling the change set (`crates/strata-kernel/src/bin/strata_kernel_service/session.rs:775-805`). This also misclassifies timeouts, bridge failures, and invariant failures as semantic validation failures. B-2 therefore cannot leave the existing branch “unchanged.” Define a typed `CandidateRejected` carrying bounded diagnostics separately from operational failure; only the former should produce `ValidationFailed`. The service diagnostic schema also needs an explicit mapping for the bridge’s `modulePath`, which it currently lacks (`crates/strata-kernel/src/bin/strata_kernel_service/protocol.rs:371-377`).
+
+- **Blocker — Per-daemon fixtures need a satisfiability contract.** This repository has already demonstrated that a shared whole-suite gate over red-by-design task fixtures makes unrelated changes impossible to publish (`decisions.md:2645-2649`) and concluded that the gate must be task-scoped, corpus-isolated, or baseline-relative (`decisions.md:2662-2666`). A plain per-daemon fixture list can recreate that defect. For B, define the daemon profile as a shared, seed-green regression suite and verify it before accepting clients. Task success predicates remain separate final acceptance. Supporting red-by-design task fixtures would require a trusted task-scope or baseline-relative design and should not be smuggled into client-selected change-set configuration.
+
+- **Major — Behavioral subprocess and bridge deadlines are not safely nested.** The daemon hard-codes 30 seconds (`crates/strata-kernel/src/bin/strata_kernel_service/main.rs:120-127`), while both `tsc` and Vitest use `spawnSync` without timeouts (`packages/verify/src/corpusRun.ts:116-120`, `packages/verify/src/corpusRun.ts:225-230`). Persistent requests are single-flight and include queue time (`crates/strata-kernel/src/bridge/persistent.rs:210-259`); timeout poisoning kills only the Node worker, not an explicit process group (`crates/strata-kernel/src/bridge/persistent.rs:706-720`). Meanwhile validation runs while the mirror savepoint remains open (`packages/kernel-bridge/src/candidate.ts:253-305`). Add inner tsc/Vitest timeouts and cleanup, a distinct behavioral-candidate bridge deadline, a larger client deadline, and timeout recovery gates. Do not automatically replay a known validation timeout through the one-shot fallback.
+
+- **Major — `list_modules.path` cannot safely copy `Module.payload`.** Kernel fixtures have used physical absolute module paths because IDs derive from the ingested path (`decisions.md:1533-1543`), and the product explicitly normalizes either absolute or relative payloads before display (`packages/agent/src/moduleIndex.ts:38-49`). Generic inspection blanks module payloads for this reason (`crates/strata-kernel/tests/local_service_hardening.rs:290-321`). The new endpoint must derive and validate a corpus-relative POSIX display path against the configured corpus root, fail closed on escape or non-representable paths, and never expose the raw payload. `moduleId` remains the authority and mutation key.
+
+- **Major — “Bounded” discovery is incomplete without continuation and generation semantics.** `list_module_exports` has neither a limit nor cursor in the proposal, `get_references` has a limit but no continuation, and current global declaration search fails outright after 64 matches (`crates/strata-kernel/src/kernel.rs:560-569`). `inspect_nodes` similarly fails rather than truncating when relationships exceed its cap (`crates/strata-kernel/src/bin/strata_kernel_service/session.rs:925-935`). Every collection needs deterministic ID ordering, a cursor/`hasMore` contract, and `graphGeneration`; clients should restart pagination if generations differ. `get_references` remains justified because it provides a pageable replacement for the inspection failure mode.
+
+- **Major — The proposed repeatable fixture CLI is incompatible with the parser, and Rust still permits empty Behavioral profiles.** `parse_named` stores one value per name and rejects duplicates (`crates/strata-kernel/src/bin/strata_kernel_service/main.rs:209-220`), so repeatable `--behavioral-fixture` cannot work as proposed. Rust’s Behavioral validation bounds and validates entries but never requires at least one (`crates/strata-kernel/src/bridge/protocol.rs:494-511`); only the worker rejects empty lists later (`packages/kernel-bridge/src/candidate.ts:436-468`). Use a single corpus validation-manifest option and make non-empty fixtures a Rust construction/startup invariant as well as a worker check.
+
+- **Major — The behavioral contract is not readable from the proposed kernel worldview.** The product exposes test filenames in its startup index and directs the agent to `read_test_file` (`packages/agent/src/moduleIndex.ts:85-120`); the tool exists specifically because a failing test can be the specification (`packages/agent/src/tools.ts:161-204`). B should add a narrow registered-fixture surface: list configured fixtures and read bounded chunks by fixture ID, pinned to the manifest digest. This is not a general filesystem tool and does not make source files first-class.
+
+- **Minor — `list_module_exports` must document its actual shape.** The product implementation returns all supported top-level declarations, including non-exported ones, and permits `name: null` (`packages/store/src/discovery.ts:11-25`, `packages/store/src/discovery.ts:78-115`). Either call the kernel operation `list_module_declarations` or preserve the product name while specifying those semantics. Define `declarationCount` using the same supported declaration-kind set.
+
+## Answers to the eight questions
+
+1. **T03: yes; item E: conditionally.** A named T03 target can already be found globally, so the bootstrap gate should deliberately exercise `list_modules → list_module_exports/scoped find_declarations → get_references/inspect_nodes` without global lookup or supplied IDs. The four structural calls are sufficient for the supported top-level rename/add-parameter classes once pagination and generation handling are added. `semantic_search` remains appropriately deferred. Scoped find is somewhat redundant with export listing but valuable for direct module/name lookup; `get_references` should remain. Item E additionally needs the registered-fixture read surface. `declarationCount` is optional rather than necessary.
+
+2. **Expose a derived relative path.** “Files are not first-class” means paths do not identify mutation scope, reservations, or canonical authority; it does not prohibit display metadata. Keep `inspect_nodes` redaction, expose only a validated corpus-relative POSIX path through the explicit module-discovery endpoint, and require `moduleId` in every structural operation. The three layers are then coherent: raw internal render payload, redacted generic projection, safe explicit display path.
+
+3. **Add a narrow reader in B, not a general `read_test_file`.** The agent should be able to inspect the exact registered fixture bytes that define its validation contract. Provide `list_validation_fixtures` and a bounded/chunked `read_validation_fixture` keyed by fixture ID and manifest digest. Arbitrary filesystem reads remain forbidden. Deferring this to E would leave B’s claimed arbitrary-task prerequisite incomplete.
+
+4. **Use a per-corpus manifest loaded immutably per daemon.** This combines corpus governance with the honest operational behavior that every agent pays the same gate. Do not let change sets select a weaker profile or fixture subset. Disclose validation duration, persistent-worker queue wait, fallback/rehydration, and timeout counts—not merely raw Vitest runtime—because the single worker creates head-of-line cost.
+
+5. **Commit and digest the validation manifest.** It should define mode, normalized unique fixture entries and digests, strict tsc scope, and subprocess deadlines. Rust validates it before binding the service; the worker repeats realpath, containment, file-kind, and extension checks. Behavioral mode must be unconstructible with zero fixtures. Run the manifest once against generation zero and refuse startup if the shared regression suite is red. Record the manifest digest in startup/audit/hello metadata.
+
+6. **No intrinsic SQLite deadlock is evident, but the timeout lifecycle is unsafe.** Vitest reads a materialized tree and never opens the mirror; the savepoint is held only inside the worker. Configure inner `tscTimeoutMs` and `vitestTimeoutMs`, then derive a behavioral candidate deadline large enough for materialization, both subprocesses, rollback, fingerprinting, and cleanup. Keep the fast analyze deadline separate, and require the client deadline to exceed the candidate deadline plus queue allowance. Timeout gates must prove generation unchanged, savepoint rollback, fingerprint equality, temp/process cleanup, and healthy rehydration.
+
+7. **Gate order:** first dual-language protocol/schema units for bounds, pagination, generations, relative paths, manifest parsing, empty rejection, and unchanged tsc-only defaults; second a new zero-ID discovery-bootstrap gate; third behavioral startup-baseline, wrong-mutation rejection/product parity, exact diagnostic propagation, clean publication, and timeout/savepoint recovery; fourth the full existing key-free chain plus the new gates. The discovery gate must sit beside the sealed Phase-6 manifests. Their registered prompts contain IDs and their digest is intentionally frozen (`packages/live-compare/src/tasks.ts:10-11`, `packages/live-compare/src/tasks.ts:269-275`, `packages/live-compare/src/tasks.ts:483-502`).
+
+8. **Two independently green slices, B-1 first.** B-1 is additive protocol/query/client-wrapper work and unblocks item D. B-2 has the larger correctness surface—validation policy, failure taxonomy, subprocess lifetime, savepoint recovery, and fixture governance—and should land separately with default tsc-only behavior byte-identical. Put the registered-fixture reader in B-2 because it is bound to that profile.
+
+## Verdict
+
+Re-ground first. The structural-discovery direction is sound, but the current candidate cannot yet be transcribed into a spec: it assumes module payloads are safely relative when the repository permits absolute authority paths, assumes behavioral diagnostics can surface through a Rust path that discards them, and omits the known shared-fixture satisfiability failure. Resolve those three contracts—safe module projection, typed candidate rejection, and a seed-green immutable validation manifest—then write B as two independently gated slices with the pagination and timeout corrections above.
