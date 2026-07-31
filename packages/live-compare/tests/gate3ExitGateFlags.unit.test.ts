@@ -31,18 +31,19 @@ const MB = 1024 * 1024;
 
 describe("parseRunBigArgs", () => {
   it("no flags -> all defaults (the byte-identical default path)", () => {
-    expect(parseRunBigArgs([])).toEqual({ smoke: false, exitGate: null, artifactBase: null });
+    expect(parseRunBigArgs([])).toEqual({ smoke: false, exitGate: null, artifactBase: null, nMedium: null });
   });
 
   it("--smoke alone stays exactly the pre-Task-11 smoke mode", () => {
-    expect(parseRunBigArgs(["--smoke"])).toEqual({ smoke: true, exitGate: null, artifactBase: null });
+    expect(parseRunBigArgs(["--smoke"])).toEqual({ smoke: true, exitGate: null, artifactBase: null, nMedium: null });
   });
 
   it("--exit-gate persistence turns on exit-gate mode and defaults the artifact base", () => {
     expect(parseRunBigArgs(["--exit-gate", "persistence"])).toEqual({
       smoke: false,
       exitGate: "persistence",
-      artifactBase: EXIT_GATE_DEFAULT_ARTIFACT_BASE
+      artifactBase: EXIT_GATE_DEFAULT_ARTIFACT_BASE,
+      nMedium: null
     });
     expect(EXIT_GATE_DEFAULT_ARTIFACT_BASE).toBe("bridge-persistence-exit-gate");
   });
@@ -51,7 +52,8 @@ describe("parseRunBigArgs", () => {
     expect(parseRunBigArgs(["--smoke", "--exit-gate", "persistence"])).toEqual({
       smoke: true,
       exitGate: "persistence",
-      artifactBase: EXIT_GATE_DEFAULT_ARTIFACT_BASE
+      artifactBase: EXIT_GATE_DEFAULT_ARTIFACT_BASE,
+      nMedium: null
     });
   });
 
@@ -59,7 +61,8 @@ describe("parseRunBigArgs", () => {
     expect(parseRunBigArgs(["--exit-gate", "persistence", "--artifact-base", "bridge-persistence-exit-gate"])).toEqual({
       smoke: false,
       exitGate: "persistence",
-      artifactBase: "bridge-persistence-exit-gate"
+      artifactBase: "bridge-persistence-exit-gate",
+      nMedium: null
     });
   });
 
@@ -67,7 +70,8 @@ describe("parseRunBigArgs", () => {
     expect(parseRunBigArgs(["--artifact-base", "my-profile"])).toEqual({
       smoke: false,
       exitGate: null,
-      artifactBase: "my-profile"
+      artifactBase: "my-profile",
+      nMedium: null
     });
   });
 
@@ -81,6 +85,18 @@ describe("parseRunBigArgs", () => {
     expect(() => parseRunBigArgs(["--artifact-base", "--smoke"])).toThrow(/required/);
     expect(() => parseRunBigArgs(["--artifact-base", "../escape"])).toThrow(/path/);
     expect(() => parseRunBigArgs(["--artifact-base", "a/b"])).toThrow(/path/);
+  });
+
+  it("--n-medium is exit-gate-only and must be an integer >= 2 (the INCONCLUSIVE re-run sizing)", () => {
+    expect(parseRunBigArgs(["--exit-gate", "persistence", "--n-medium", "24"])).toEqual({
+      smoke: false,
+      exitGate: "persistence",
+      artifactBase: EXIT_GATE_DEFAULT_ARTIFACT_BASE,
+      nMedium: 24
+    });
+    expect(() => parseRunBigArgs(["--n-medium", "24"])).toThrow(/exit-gate/);
+    expect(() => parseRunBigArgs(["--exit-gate", "persistence", "--n-medium", "1"])).toThrow(/>= 2/);
+    expect(() => parseRunBigArgs(["--exit-gate", "persistence", "--n-medium", "abc"])).toThrow(/>= 2/);
   });
 });
 

@@ -1,0 +1,4433 @@
+{
+  "provenance": {
+    "headSha": "f87d5c29a31d037f1fd1221b67ab4da410965a7e",
+    "dirty": false,
+    "harnessDigest": "2661421e556bb395b012b1a3dc97521ef99a02c99aeb242ad2bd88a1e02a405f",
+    "daemonBinarySha": "f2d0e2826a2b062a76fb65f0f0608e0b25f28501d5ce7ffe1dc66ff47ec9a26a",
+    "os": "darwin 25.6.0",
+    "cpu": "Apple M4 Pro",
+    "nodeVersion": "v26.5.0",
+    "rustVersion": "rustc 1.89.0 (29483883e 2025-08-04)",
+    "scheduleSeed": 20260722200,
+    "timestamp": "2026-07-31T18:08:54.552Z",
+    "metricsMode": "timing:off;characterization:on"
+  },
+  "medium": {
+    "cold": {
+      "p95Kernel": 4085653958,
+      "p95Sqlite": 2847511542,
+      "pointRatio": 1.434815591697433,
+      "ucb95": 1.434815591697433,
+      "lcb95": 1.1245188061830325,
+      "state": "INCONCLUSIVE"
+    },
+    "warm": {
+      "p95Kernel": 1754453000,
+      "p95Sqlite": 3327394292,
+      "pointRatio": 0.5272753530347163,
+      "ucb95": 0.7851304525612938,
+      "lcb95": 0.2933155290151589,
+      "state": "PASS"
+    },
+    "warmTrend": {
+      "firstHalfP95Ratio": 0.6452117066059171,
+      "lastHalfP95Ratio": 0.5272753530347163
+    },
+    "memory": {
+      "kernel": {
+        "arm": "kernel",
+        "medium": 270827520,
+        "big1k": 270827520,
+        "baseline": 0,
+        "absoluteCapPass": true,
+        "growthAdjusted": -1,
+        "growthPass": false,
+        "state": "PASS"
+      },
+      "sqlite": {
+        "arm": "sqlite",
+        "medium": 372408320,
+        "big1k": 372408320,
+        "baseline": 288178176,
+        "absoluteCapPass": true,
+        "growthAdjusted": -1,
+        "growthPass": false,
+        "state": "PASS"
+      }
+    },
+    "lifecycle": {
+      "kernel": 4,
+      "sqlite": 4
+    },
+    "server": {
+      "submit": {
+        "n": 8,
+        "min": 418303750,
+        "p50": 636776375,
+        "p95": 4757705917,
+        "p99": 4757705917,
+        "max": 4757705917,
+        "mean": 1649551864.625,
+        "samples": [
+          4757705917,
+          1856513583,
+          418303750,
+          3965642959,
+          452607875,
+          471533625,
+          637330833,
+          636776375
+        ]
+      },
+      "advance": {
+        "n": 8,
+        "min": 1507339708,
+        "p50": 2205523625,
+        "p95": 8606230291,
+        "p99": 8606230291,
+        "max": 8606230291,
+        "mean": 3740127869.625,
+        "samples": [
+          8606230291,
+          4922370833,
+          5397825583,
+          3913449750,
+          2205523625,
+          1857694959,
+          1510588208,
+          1507339708
+        ]
+      },
+      "daemonRss": 11747328,
+      "workerRss": 247169024
+    },
+    "coldPairs": [
+      {
+        "pairId": 0,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 792540416,
+          "childMaxRssBytes": 166313984,
+          "published": true,
+          "childPid": 99113,
+          "pairId": 0,
+          "order": "BA",
+          "iteration": 0
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1806819833,
+          "childMaxRssBytes": 263094272,
+          "published": true,
+          "childPid": 98873,
+          "pairId": 0,
+          "order": "BA",
+          "iteration": 0
+        }
+      },
+      {
+        "pairId": 1,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2417558875,
+          "childMaxRssBytes": 139575296,
+          "published": true,
+          "childPid": 99422,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1578683750,
+          "childMaxRssBytes": 284508160,
+          "published": true,
+          "childPid": 99214,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        }
+      },
+      {
+        "pairId": 2,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 4085653958,
+          "childMaxRssBytes": 129597440,
+          "published": true,
+          "childPid": 748,
+          "pairId": 2,
+          "order": "BA",
+          "iteration": 2
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2847511542,
+          "childMaxRssBytes": 274366464,
+          "published": true,
+          "childPid": 404,
+          "pairId": 2,
+          "order": "BA",
+          "iteration": 2
+        }
+      },
+      {
+        "pairId": 3,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1985718625,
+          "childMaxRssBytes": 154615808,
+          "published": true,
+          "childPid": 3280,
+          "pairId": 3,
+          "order": "BA",
+          "iteration": 3
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2327802666,
+          "childMaxRssBytes": 252493824,
+          "published": true,
+          "childPid": 1592,
+          "pairId": 3,
+          "order": "BA",
+          "iteration": 3
+        }
+      },
+      {
+        "pairId": 4,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 3793694333,
+          "childMaxRssBytes": 148946944,
+          "published": true,
+          "childPid": 3644,
+          "pairId": 4,
+          "order": "AB",
+          "iteration": 4
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2796987458,
+          "childMaxRssBytes": 286539776,
+          "published": true,
+          "childPid": 4513,
+          "pairId": 4,
+          "order": "AB",
+          "iteration": 4
+        }
+      },
+      {
+        "pairId": 5,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1202619250,
+          "childMaxRssBytes": 140443648,
+          "published": true,
+          "childPid": 5440,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1958170541,
+          "childMaxRssBytes": 280231936,
+          "published": true,
+          "childPid": 5117,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        }
+      },
+      {
+        "pairId": 6,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2106123125,
+          "childMaxRssBytes": 146325504,
+          "published": true,
+          "childPid": 5665,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2017182333,
+          "childMaxRssBytes": 231079936,
+          "published": true,
+          "childPid": 6034,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        }
+      },
+      {
+        "pairId": 7,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2063622792,
+          "childMaxRssBytes": 132562944,
+          "published": true,
+          "childPid": 6169,
+          "pairId": 7,
+          "order": "AB",
+          "iteration": 7
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1014063291,
+          "childMaxRssBytes": 291012608,
+          "published": true,
+          "childPid": 6505,
+          "pairId": 7,
+          "order": "AB",
+          "iteration": 7
+        }
+      },
+      {
+        "pairId": 8,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 2617657875,
+          "childMaxRssBytes": 147718144,
+          "published": true,
+          "childPid": 6690,
+          "pairId": 8,
+          "order": "BA",
+          "iteration": 8
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1321784250,
+          "childMaxRssBytes": 284098560,
+          "published": true,
+          "childPid": 6583,
+          "pairId": 8,
+          "order": "BA",
+          "iteration": 8
+        }
+      },
+      {
+        "pairId": 9,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1463981709,
+          "childMaxRssBytes": 131694592,
+          "published": true,
+          "childPid": 7449,
+          "pairId": 9,
+          "order": "BA",
+          "iteration": 9
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 991363459,
+          "childMaxRssBytes": 276398080,
+          "published": true,
+          "childPid": 7167,
+          "pairId": 9,
+          "order": "BA",
+          "iteration": 9
+        }
+      },
+      {
+        "pairId": 10,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1566986750,
+          "childMaxRssBytes": 166297600,
+          "published": true,
+          "childPid": 7781,
+          "pairId": 10,
+          "order": "AB",
+          "iteration": 10
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1341317625,
+          "childMaxRssBytes": 292618240,
+          "published": true,
+          "childPid": 7934,
+          "pairId": 10,
+          "order": "AB",
+          "iteration": 10
+        }
+      },
+      {
+        "pairId": 11,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 672976042,
+          "childMaxRssBytes": 135610368,
+          "published": true,
+          "childPid": 8317,
+          "pairId": 11,
+          "order": "BA",
+          "iteration": 11
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "cold",
+          "callerWallNs": 1751268875,
+          "childMaxRssBytes": 286687232,
+          "published": true,
+          "childPid": 8064,
+          "pairId": 11,
+          "order": "BA",
+          "iteration": 11
+        }
+      }
+    ],
+    "warmPairs": [
+      {
+        "pairId": 0,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 509106583,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 0,
+          "order": "BA",
+          "iteration": 0
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2357549250,
+          "childMaxRssBytes": 284131328,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 0,
+          "order": "BA",
+          "iteration": 0
+        }
+      },
+      {
+        "pairId": 1,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 1521118375,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 427548459,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        }
+      },
+      {
+        "pairId": 2,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 615075584,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 2,
+          "order": "BA",
+          "iteration": 2
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 2234600625,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 2,
+          "order": "BA",
+          "iteration": 2
+        }
+      },
+      {
+        "pairId": 3,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 416287125,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 1345934084,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        }
+      },
+      {
+        "pairId": 4,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 738315584,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 1181240958,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        }
+      },
+      {
+        "pairId": 5,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 495225417,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 584206375,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        }
+      },
+      {
+        "pairId": 6,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 811267583,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 506340541,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        }
+      },
+      {
+        "pairId": 7,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 708893792,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 7,
+          "order": "BA",
+          "iteration": 7
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 795524500,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 7,
+          "order": "BA",
+          "iteration": 7
+        }
+      },
+      {
+        "pairId": 8,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 379681084,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 8,
+          "order": "AB",
+          "iteration": 8
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 3327394292,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 8,
+          "order": "AB",
+          "iteration": 8
+        }
+      },
+      {
+        "pairId": 9,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 975976417,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 9,
+          "order": "AB",
+          "iteration": 9
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 1962323666,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 9,
+          "order": "AB",
+          "iteration": 9
+        }
+      },
+      {
+        "pairId": 10,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 557638042,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 10,
+          "order": "BA",
+          "iteration": 10
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 1313408333,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 10,
+          "order": "BA",
+          "iteration": 10
+        }
+      },
+      {
+        "pairId": 11,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 1754453000,
+          "childMaxRssBytes": 139296768,
+          "published": true,
+          "childPid": 8512,
+          "pairId": 11,
+          "order": "BA",
+          "iteration": 11
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "medium",
+          "mode": "warm",
+          "callerWallNs": 1770345333,
+          "childMaxRssBytes": 372408320,
+          "published": true,
+          "childPid": 8513,
+          "pairId": 11,
+          "order": "BA",
+          "iteration": 11
+        }
+      }
+    ],
+    "corpusInfo": {
+      "digest": "b808cda8f020972643d62268e686e8322ef2130ed64abc90a0a8d430a82379e8",
+      "moduleCount": 22,
+      "copies": 1
+    },
+    "schedules": {
+      "cold": {
+        "seed": 20260722200,
+        "n": 12,
+        "realizedOrder": [
+          "BA",
+          "BA",
+          "BA",
+          "BA",
+          "AB",
+          "BA",
+          "AB",
+          "AB",
+          "BA",
+          "BA",
+          "AB",
+          "BA"
+        ]
+      },
+      "warm": {
+        "seed": 20260722201,
+        "n": 12,
+        "realizedOrder": [
+          "BA",
+          "BA",
+          "BA",
+          "AB",
+          "BA",
+          "BA",
+          "AB",
+          "BA",
+          "AB",
+          "AB",
+          "BA",
+          "BA"
+        ]
+      }
+    }
+  },
+  "big1k": {
+    "cold": {
+      "p95Kernel": 5507040125,
+      "p95Sqlite": 8736940958,
+      "pointRatio": 0.6303167380291687,
+      "ucb95": 0.8661240146037177,
+      "lcb95": 0.4675199223201618,
+      "state": "PASS"
+    },
+    "warm": {
+      "p95Kernel": 5072494917,
+      "p95Sqlite": 7044012958,
+      "pointRatio": 0.7201143648151704,
+      "ucb95": 0.7488113131810871,
+      "lcb95": 0.6513466568498042,
+      "state": "PASS"
+    },
+    "warmTrend": {
+      "firstHalfP95Ratio": 0.6990148111343958,
+      "lastHalfP95Ratio": 0.7201143648151704
+    },
+    "memory": {
+      "kernel": {
+        "arm": "kernel",
+        "medium": 270827520,
+        "big1k": 960315392,
+        "baseline": 0,
+        "absoluteCapPass": true,
+        "growthAdjusted": -1,
+        "growthPass": false,
+        "state": "PASS"
+      },
+      "sqlite": {
+        "arm": "sqlite",
+        "medium": 372408320,
+        "big1k": 527417344,
+        "baseline": 288178176,
+        "absoluteCapPass": true,
+        "growthAdjusted": -1,
+        "growthPass": false,
+        "state": "PASS"
+      }
+    },
+    "lifecycle": {
+      "kernel": 4,
+      "sqlite": 4
+    },
+    "server": {
+      "submit": {
+        "n": 8,
+        "min": 1878647791,
+        "p50": 2597542667,
+        "p95": 3182384000,
+        "p99": 3182384000,
+        "max": 3182384000,
+        "mean": 2535644541.75,
+        "samples": [
+          2597542667,
+          2038509834,
+          2644630000,
+          2828338125,
+          3182384000,
+          3156871750,
+          1958232167,
+          1878647791
+        ]
+      },
+      "advance": {
+        "n": 8,
+        "min": 6090025208,
+        "p50": 7115298792,
+        "p95": 9588518541,
+        "p99": 9588518541,
+        "max": 9588518541,
+        "mean": 7577112067.5,
+        "samples": [
+          7785588000,
+          9588518541,
+          6910191875,
+          9315057583,
+          7115298792,
+          7309352958,
+          6090025208,
+          6502863583
+        ]
+      },
+      "daemonRss": 187957248,
+      "workerRss": 450396160
+    },
+    "coldPairs": [
+      {
+        "pairId": 0,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 2539854583,
+          "childMaxRssBytes": 368214016,
+          "published": true,
+          "childPid": 16103,
+          "pairId": 0,
+          "order": "AB",
+          "iteration": 0
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 1932002167,
+          "childMaxRssBytes": 493371392,
+          "published": true,
+          "childPid": 16337,
+          "pairId": 0,
+          "order": "AB",
+          "iteration": 0
+        }
+      },
+      {
+        "pairId": 1,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 2576438750,
+          "childMaxRssBytes": 373194752,
+          "published": true,
+          "childPid": 16554,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 2579408250,
+          "childMaxRssBytes": 421543936,
+          "published": true,
+          "childPid": 16496,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        }
+      },
+      {
+        "pairId": 2,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 2789802875,
+          "childMaxRssBytes": 370950144,
+          "published": true,
+          "childPid": 16896,
+          "pairId": 2,
+          "order": "AB",
+          "iteration": 2
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 6358258208,
+          "childMaxRssBytes": 374833152,
+          "published": true,
+          "childPid": 17130,
+          "pairId": 2,
+          "order": "AB",
+          "iteration": 2
+        }
+      },
+      {
+        "pairId": 3,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 4449829709,
+          "childMaxRssBytes": 395460608,
+          "published": true,
+          "childPid": 18643,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 3170466250,
+          "childMaxRssBytes": 481230848,
+          "published": true,
+          "childPid": 19465,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        }
+      },
+      {
+        "pairId": 4,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 4084693958,
+          "childMaxRssBytes": 374177792,
+          "published": true,
+          "childPid": 20508,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 6844465667,
+          "childMaxRssBytes": 436600832,
+          "published": true,
+          "childPid": 19974,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        }
+      },
+      {
+        "pairId": 5,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 3223575084,
+          "childMaxRssBytes": 367869952,
+          "published": true,
+          "childPid": 21055,
+          "pairId": 5,
+          "order": "AB",
+          "iteration": 5
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 8736940958,
+          "childMaxRssBytes": 378306560,
+          "published": true,
+          "childPid": 21493,
+          "pairId": 5,
+          "order": "AB",
+          "iteration": 5
+        }
+      },
+      {
+        "pairId": 6,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 5507040125,
+          "childMaxRssBytes": 344326144,
+          "published": true,
+          "childPid": 22238,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 5145588167,
+          "childMaxRssBytes": 421085184,
+          "published": true,
+          "childPid": 22944,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        }
+      },
+      {
+        "pairId": 7,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 3586569958,
+          "childMaxRssBytes": 367738880,
+          "published": true,
+          "childPid": 23581,
+          "pairId": 7,
+          "order": "AB",
+          "iteration": 7
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "cold",
+          "callerWallNs": 5622392833,
+          "childMaxRssBytes": 527417344,
+          "published": true,
+          "childPid": 24400,
+          "pairId": 7,
+          "order": "AB",
+          "iteration": 7
+        }
+      }
+    ],
+    "warmPairs": [
+      {
+        "pairId": 0,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 3991005958,
+          "childMaxRssBytes": 358318080,
+          "published": true,
+          "childPid": 25250,
+          "pairId": 0,
+          "order": "AB",
+          "iteration": 0
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 5709472667,
+          "childMaxRssBytes": 402653184,
+          "published": true,
+          "childPid": 25251,
+          "pairId": 0,
+          "order": "AB",
+          "iteration": 0
+        }
+      },
+      {
+        "pairId": 1,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 3746343708,
+          "childMaxRssBytes": 358318080,
+          "published": true,
+          "childPid": 25250,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 4550484375,
+          "childMaxRssBytes": 500039680,
+          "published": true,
+          "childPid": 25251,
+          "pairId": 1,
+          "order": "BA",
+          "iteration": 1
+        }
+      },
+      {
+        "pairId": 2,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 2818086166,
+          "childMaxRssBytes": 358318080,
+          "published": true,
+          "childPid": 25250,
+          "pairId": 2,
+          "order": "AB",
+          "iteration": 2
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 3364383083,
+          "childMaxRssBytes": 514588672,
+          "published": true,
+          "childPid": 25251,
+          "pairId": 2,
+          "order": "AB",
+          "iteration": 2
+        }
+      },
+      {
+        "pairId": 3,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 3301500417,
+          "childMaxRssBytes": 358318080,
+          "published": true,
+          "childPid": 25250,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 4783073791,
+          "childMaxRssBytes": 514588672,
+          "published": true,
+          "childPid": 25251,
+          "pairId": 3,
+          "order": "AB",
+          "iteration": 3
+        }
+      },
+      {
+        "pairId": 4,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 4674016917,
+          "childMaxRssBytes": 358318080,
+          "published": true,
+          "childPid": 25250,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 5541702041,
+          "childMaxRssBytes": 514588672,
+          "published": true,
+          "childPid": 25251,
+          "pairId": 4,
+          "order": "BA",
+          "iteration": 4
+        }
+      },
+      {
+        "pairId": 5,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 3716538875,
+          "childMaxRssBytes": 358318080,
+          "published": true,
+          "childPid": 25250,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 7044012958,
+          "childMaxRssBytes": 514588672,
+          "published": true,
+          "childPid": 25251,
+          "pairId": 5,
+          "order": "BA",
+          "iteration": 5
+        }
+      },
+      {
+        "pairId": 6,
+        "order": "AB",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 4588094291,
+          "childMaxRssBytes": 358318080,
+          "published": true,
+          "childPid": 25250,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 6882727292,
+          "childMaxRssBytes": 514588672,
+          "published": true,
+          "childPid": 25251,
+          "pairId": 6,
+          "order": "AB",
+          "iteration": 6
+        }
+      },
+      {
+        "pairId": 7,
+        "order": "BA",
+        "kernel": {
+          "arm": "kernel",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 5072494917,
+          "childMaxRssBytes": 358318080,
+          "published": true,
+          "childPid": 25250,
+          "pairId": 7,
+          "order": "BA",
+          "iteration": 7
+        },
+        "sqlite": {
+          "arm": "sqlite",
+          "corpus": "big1k",
+          "mode": "warm",
+          "callerWallNs": 6774062875,
+          "childMaxRssBytes": 514588672,
+          "published": true,
+          "childPid": 25251,
+          "pairId": 7,
+          "order": "BA",
+          "iteration": 7
+        }
+      }
+    ],
+    "corpusInfo": {
+      "digest": "845af2a91899690e849cefb4e4cbdc93eb2926ba3e8fc58aac709a94b5a69401",
+      "moduleCount": 1012,
+      "copies": 46
+    },
+    "schedules": {
+      "cold": {
+        "seed": 20260722210,
+        "n": 8,
+        "realizedOrder": [
+          "AB",
+          "BA",
+          "AB",
+          "AB",
+          "BA",
+          "AB",
+          "AB",
+          "AB"
+        ]
+      },
+      "warm": {
+        "seed": 20260722211,
+        "n": 8,
+        "realizedOrder": [
+          "AB",
+          "BA",
+          "AB",
+          "AB",
+          "BA",
+          "BA",
+          "AB",
+          "BA"
+        ]
+      }
+    }
+  },
+  "verdict": "INCONCLUSIVE",
+  "exitGate": {
+    "mode": "persistence",
+    "binaryProfile": "release",
+    "kernelServiceBin": "/Users/toddhebebrand/Strata/target/release/strata-kernel-service",
+    "persistentBridge": true,
+    "memoizationEnabled": true,
+    "characterizationPersistentBridge": false,
+    "argv": [
+      "/opt/homebrew/Cellar/node/26.5.0/bin/node",
+      "/Users/toddhebebrand/Strata/packages/live-compare/dist/gate3/run-big.js",
+      "--",
+      "--exit-gate",
+      "persistence"
+    ],
+    "constants": {
+      "leakFactor": 1.15,
+      "persistent1kRssCapBytes": 1468006400,
+      "mediumLeakIterations": 12,
+      "quiescenceMs": 200
+    },
+    "memory": {
+      "medium": {
+        "state": "PASS",
+        "continuityHeld": true,
+        "highWaterBytes": [
+          210190336,
+          262766592,
+          261160960,
+          266059776,
+          262389760,
+          268795904,
+          270827520,
+          267419648,
+          270352384,
+          270647296,
+          250707968,
+          256950272
+        ],
+        "samples": [
+          {
+            "label": "iteration-1",
+            "phase": "post-publish",
+            "atMs": 1852,
+            "daemonRss": 10076160,
+            "workerRss": 200114176,
+            "combined": 210190336
+          },
+          {
+            "label": "iteration-1",
+            "phase": "quiescence",
+            "atMs": 2220,
+            "daemonRss": 9699328,
+            "workerRss": 166494208,
+            "combined": 176193536
+          },
+          {
+            "label": "iteration-2",
+            "phase": "post-publish",
+            "atMs": 3066,
+            "daemonRss": 11124736,
+            "workerRss": 251641856,
+            "combined": 262766592
+          },
+          {
+            "label": "iteration-2",
+            "phase": "quiescence",
+            "atMs": 3434,
+            "daemonRss": 10207232,
+            "workerRss": 228311040,
+            "combined": 238518272
+          },
+          {
+            "label": "iteration-3",
+            "phase": "post-publish",
+            "atMs": 4072,
+            "daemonRss": 10960896,
+            "workerRss": 250200064,
+            "combined": 261160960
+          },
+          {
+            "label": "iteration-3",
+            "phase": "quiescence",
+            "atMs": 4425,
+            "daemonRss": 10518528,
+            "workerRss": 240205824,
+            "combined": 250724352
+          },
+          {
+            "label": "iteration-4",
+            "phase": "post-publish",
+            "atMs": 5128,
+            "daemonRss": 10993664,
+            "workerRss": 255066112,
+            "combined": 266059776
+          },
+          {
+            "label": "iteration-4",
+            "phase": "quiescence",
+            "atMs": 5513,
+            "daemonRss": 10452992,
+            "workerRss": 238977024,
+            "combined": 249430016
+          },
+          {
+            "label": "iteration-5",
+            "phase": "post-publish",
+            "atMs": 6076,
+            "daemonRss": 10960896,
+            "workerRss": 251428864,
+            "combined": 262389760
+          },
+          {
+            "label": "iteration-5",
+            "phase": "quiescence",
+            "atMs": 6461,
+            "daemonRss": 10584064,
+            "workerRss": 192479232,
+            "combined": 203063296
+          },
+          {
+            "label": "iteration-6",
+            "phase": "post-publish",
+            "atMs": 7129,
+            "daemonRss": 10977280,
+            "workerRss": 257818624,
+            "combined": 268795904
+          },
+          {
+            "label": "iteration-6",
+            "phase": "quiescence",
+            "atMs": 7478,
+            "daemonRss": 10862592,
+            "workerRss": 257146880,
+            "combined": 268009472
+          },
+          {
+            "label": "iteration-7",
+            "phase": "post-publish",
+            "atMs": 8043,
+            "daemonRss": 11042816,
+            "workerRss": 259784704,
+            "combined": 270827520
+          },
+          {
+            "label": "iteration-7",
+            "phase": "quiescence",
+            "atMs": 8503,
+            "daemonRss": 6471680,
+            "workerRss": 100974592,
+            "combined": 107446272
+          },
+          {
+            "label": "iteration-8",
+            "phase": "post-publish",
+            "atMs": 9121,
+            "daemonRss": 10944512,
+            "workerRss": 256475136,
+            "combined": 267419648
+          },
+          {
+            "label": "iteration-8",
+            "phase": "quiescence",
+            "atMs": 9468,
+            "daemonRss": 10780672,
+            "workerRss": 232734720,
+            "combined": 243515392
+          },
+          {
+            "label": "iteration-9",
+            "phase": "post-publish",
+            "atMs": 9990,
+            "daemonRss": 11436032,
+            "workerRss": 258916352,
+            "combined": 270352384
+          },
+          {
+            "label": "iteration-9",
+            "phase": "quiescence",
+            "atMs": 10355,
+            "daemonRss": 11436032,
+            "workerRss": 258916352,
+            "combined": 270352384
+          },
+          {
+            "label": "iteration-10",
+            "phase": "post-publish",
+            "atMs": 10887,
+            "daemonRss": 11223040,
+            "workerRss": 259424256,
+            "combined": 270647296
+          },
+          {
+            "label": "iteration-10",
+            "phase": "quiescence",
+            "atMs": 11253,
+            "daemonRss": 10059776,
+            "workerRss": 211779584,
+            "combined": 221839360
+          },
+          {
+            "label": "iteration-11",
+            "phase": "post-publish",
+            "atMs": 11815,
+            "daemonRss": 11321344,
+            "workerRss": 239386624,
+            "combined": 250707968
+          },
+          {
+            "label": "iteration-11",
+            "phase": "quiescence",
+            "atMs": 12177,
+            "daemonRss": 11321344,
+            "workerRss": 232521728,
+            "combined": 243843072
+          },
+          {
+            "label": "iteration-12",
+            "phase": "post-publish",
+            "atMs": 12721,
+            "daemonRss": 11599872,
+            "workerRss": 245350400,
+            "combined": 256950272
+          },
+          {
+            "label": "iteration-12",
+            "phase": "quiescence",
+            "atMs": 13087,
+            "daemonRss": 11304960,
+            "workerRss": 237404160,
+            "combined": 248709120
+          }
+        ],
+        "daemonPid": 96150,
+        "workerPid": 96154,
+        "leakVerdict": {
+          "leakPass": true,
+          "state": "pass",
+          "baselineHighWaterBytes": 266059776,
+          "tailHighWaterBytes": 270647296,
+          "leakLimitBytes": 305968742.4
+        }
+      },
+      "big1k": {
+        "state": "PASS",
+        "continuityHeld": true,
+        "combinedBytes": [
+          344555520,
+          730955776,
+          912703488,
+          879214592,
+          960315392,
+          928727040,
+          813498368,
+          447381504,
+          420642816,
+          474267648,
+          485523456,
+          485572608,
+          487325696,
+          508182528,
+          406388736,
+          397885440,
+          406044672,
+          384434176,
+          393101312,
+          397328384,
+          461717504,
+          616103936,
+          630833152,
+          577257472,
+          557826048,
+          539721728,
+          503447552,
+          446971904,
+          439173120,
+          439173120,
+          426131456,
+          385630208,
+          354680832,
+          352583680,
+          308527104,
+          182550528,
+          130252800,
+          107003904,
+          48545792,
+          47628288,
+          47628288,
+          47595520,
+          47611904,
+          47611904,
+          47611904,
+          47611904,
+          47595520,
+          47595520,
+          47562752,
+          47562752,
+          47562752,
+          47415296,
+          47382528,
+          47300608,
+          47300608,
+          47300608,
+          47300608,
+          47284224,
+          47300608,
+          47300608,
+          47300608,
+          47300608,
+          47300608,
+          49807360,
+          316784640,
+          408403968,
+          487424000,
+          515293184,
+          497057792,
+          497057792,
+          528302080,
+          494125056,
+          492748800,
+          496353280,
+          467484672,
+          389070848,
+          406306816,
+          560496640,
+          586661888,
+          619003904,
+          638976000,
+          685342720,
+          614596608,
+          634503168,
+          640122880,
+          645414912,
+          651853824,
+          599982080,
+          611123200,
+          613957632,
+          659652608,
+          657162240,
+          631963648,
+          625393664,
+          593084416,
+          585547776,
+          582828032,
+          579174400,
+          532398080,
+          500039680,
+          497516544,
+          487997440,
+          303087616,
+          288522240,
+          257163264,
+          410845184,
+          421675008,
+          453197824,
+          488882176,
+          477970432,
+          477118464,
+          460685312,
+          488423424,
+          515211264,
+          518488064,
+          517816320,
+          534855680,
+          599474176,
+          655540224,
+          646971392,
+          540950528,
+          351109120,
+          340393984,
+          254066688,
+          156729344,
+          128679936,
+          106102784,
+          47562752,
+          47497216,
+          47464448,
+          47448064,
+          47448064,
+          47448064,
+          47448064,
+          47431680,
+          47431680,
+          47415296,
+          47398912,
+          47398912,
+          47398912,
+          47398912,
+          47333376,
+          47333376,
+          47349760,
+          47349760,
+          47349760,
+          47349760,
+          47366144,
+          47366144,
+          47366144,
+          47366144,
+          48398336,
+          48381952,
+          48381952,
+          48365568,
+          48365568,
+          48349184,
+          48349184,
+          242122752,
+          307494912,
+          370098176,
+          443334656,
+          465043456,
+          459292672,
+          460226560,
+          450215936,
+          389414912,
+          384827392,
+          369983488,
+          361758720,
+          379928576,
+          453689344,
+          530563072,
+          480362496,
+          427556864,
+          422903808,
+          374046720,
+          300171264,
+          262946816,
+          177209344,
+          119095296,
+          95322112,
+          62717952,
+          48562176,
+          48562176,
+          48562176,
+          48398336,
+          48398336,
+          48381952,
+          47366144,
+          47349760,
+          47366144,
+          47349760,
+          47349760,
+          47316992,
+          47333376,
+          47333376,
+          47300608,
+          47300608,
+          47316992,
+          47316992,
+          47300608,
+          47316992,
+          68255744,
+          315375616,
+          372883456,
+          427163648,
+          431243264,
+          431243264,
+          456540160,
+          461963264,
+          437141504,
+          372686848,
+          372932608,
+          391561216,
+          394919936,
+          424509440,
+          558252032,
+          562003968,
+          617316352,
+          557219840,
+          598704128,
+          577536000,
+          559235072,
+          552845312,
+          441303040,
+          409370624,
+          320978944,
+          352337920,
+          361398272,
+          357613568,
+          238895104,
+          241385472,
+          345030656,
+          379781120,
+          502120448,
+          344686592,
+          87392256,
+          47497216,
+          47513600,
+          47513600,
+          47513600,
+          47513600,
+          47431680,
+          47366144,
+          47316992,
+          48283648,
+          48332800,
+          48332800,
+          48332800,
+          48332800,
+          48332800,
+          48332800,
+          47284224,
+          47333376,
+          47333376,
+          47333376,
+          47333376,
+          47333376,
+          47333376,
+          47333376,
+          47333376,
+          47333376,
+          47333376,
+          47333376,
+          47333376,
+          47316992,
+          47316992,
+          47316992,
+          47316992,
+          47316992,
+          47316992,
+          47284224,
+          47284224,
+          47316992,
+          47316992,
+          47316992,
+          47316992,
+          48316416,
+          48316416,
+          48316416,
+          48283648,
+          48316416,
+          48316416,
+          48316416,
+          48316416,
+          48316416,
+          48316416,
+          51429376,
+          344637440,
+          419184640,
+          490602496,
+          499875840,
+          499875840,
+          474480640,
+          501055488,
+          511311872,
+          525991936,
+          532103168,
+          532119552,
+          303808512,
+          347766784,
+          376225792,
+          376438784,
+          376242176,
+          399392768,
+          467812352,
+          567607296
+        ],
+        "samples": [
+          {
+            "label": "warm-tick-1",
+            "phase": "post-publish",
+            "atMs": 179,
+            "daemonRss": 242466816,
+            "workerRss": 102088704,
+            "combined": 344555520
+          },
+          {
+            "label": "warm-tick-2",
+            "phase": "post-publish",
+            "atMs": 417,
+            "daemonRss": 162529280,
+            "workerRss": 568426496,
+            "combined": 730955776
+          },
+          {
+            "label": "warm-tick-3",
+            "phase": "post-publish",
+            "atMs": 664,
+            "daemonRss": 164790272,
+            "workerRss": 747913216,
+            "combined": 912703488
+          },
+          {
+            "label": "warm-tick-4",
+            "phase": "post-publish",
+            "atMs": 920,
+            "daemonRss": 164790272,
+            "workerRss": 714424320,
+            "combined": 879214592
+          },
+          {
+            "label": "warm-tick-5",
+            "phase": "post-publish",
+            "atMs": 1169,
+            "daemonRss": 119488512,
+            "workerRss": 840826880,
+            "combined": 960315392
+          },
+          {
+            "label": "warm-tick-6",
+            "phase": "post-publish",
+            "atMs": 1366,
+            "daemonRss": 122896384,
+            "workerRss": 805830656,
+            "combined": 928727040
+          },
+          {
+            "label": "warm-tick-7",
+            "phase": "post-publish",
+            "atMs": 1632,
+            "daemonRss": 50774016,
+            "workerRss": 762724352,
+            "combined": 813498368
+          },
+          {
+            "label": "warm-tick-8",
+            "phase": "post-publish",
+            "atMs": 1860,
+            "daemonRss": 72712192,
+            "workerRss": 374669312,
+            "combined": 447381504
+          },
+          {
+            "label": "warm-tick-9",
+            "phase": "post-publish",
+            "atMs": 2143,
+            "daemonRss": 75169792,
+            "workerRss": 345473024,
+            "combined": 420642816
+          },
+          {
+            "label": "warm-tick-10",
+            "phase": "post-publish",
+            "atMs": 2494,
+            "daemonRss": 73629696,
+            "workerRss": 400637952,
+            "combined": 474267648
+          },
+          {
+            "label": "warm-tick-11",
+            "phase": "post-publish",
+            "atMs": 2685,
+            "daemonRss": 73629696,
+            "workerRss": 411893760,
+            "combined": 485523456
+          },
+          {
+            "label": "warm-tick-12",
+            "phase": "post-publish",
+            "atMs": 2905,
+            "daemonRss": 73629696,
+            "workerRss": 411942912,
+            "combined": 485572608
+          },
+          {
+            "label": "warm-tick-13",
+            "phase": "post-publish",
+            "atMs": 3159,
+            "daemonRss": 73351168,
+            "workerRss": 413974528,
+            "combined": 487325696
+          },
+          {
+            "label": "warm-tick-14",
+            "phase": "post-publish",
+            "atMs": 3431,
+            "daemonRss": 72368128,
+            "workerRss": 435814400,
+            "combined": 508182528
+          },
+          {
+            "label": "warm-tick-15",
+            "phase": "post-publish",
+            "atMs": 3647,
+            "daemonRss": 71925760,
+            "workerRss": 334462976,
+            "combined": 406388736
+          },
+          {
+            "label": "warm-tick-16",
+            "phase": "post-publish",
+            "atMs": 3897,
+            "daemonRss": 71925760,
+            "workerRss": 325959680,
+            "combined": 397885440
+          },
+          {
+            "label": "warm-tick-17",
+            "phase": "post-publish",
+            "atMs": 4155,
+            "daemonRss": 71860224,
+            "workerRss": 334184448,
+            "combined": 406044672
+          },
+          {
+            "label": "warm-tick-18",
+            "phase": "post-publish",
+            "atMs": 4414,
+            "daemonRss": 34619392,
+            "workerRss": 349814784,
+            "combined": 384434176
+          },
+          {
+            "label": "warm-tick-19",
+            "phase": "post-publish",
+            "atMs": 4682,
+            "daemonRss": 25853952,
+            "workerRss": 367247360,
+            "combined": 393101312
+          },
+          {
+            "label": "warm-tick-20",
+            "phase": "post-publish",
+            "atMs": 4921,
+            "daemonRss": 20824064,
+            "workerRss": 376504320,
+            "combined": 397328384
+          },
+          {
+            "label": "warm-tick-21",
+            "phase": "post-publish",
+            "atMs": 5171,
+            "daemonRss": 20463616,
+            "workerRss": 441253888,
+            "combined": 461717504
+          },
+          {
+            "label": "warm-tick-22",
+            "phase": "post-publish",
+            "atMs": 5446,
+            "daemonRss": 137265152,
+            "workerRss": 478838784,
+            "combined": 616103936
+          },
+          {
+            "label": "warm-tick-23",
+            "phase": "post-publish",
+            "atMs": 5665,
+            "daemonRss": 152616960,
+            "workerRss": 478216192,
+            "combined": 630833152
+          },
+          {
+            "label": "warm-tick-24",
+            "phase": "post-publish",
+            "atMs": 5993,
+            "daemonRss": 141852672,
+            "workerRss": 435404800,
+            "combined": 577257472
+          },
+          {
+            "label": "warm-tick-25",
+            "phase": "post-publish",
+            "atMs": 6152,
+            "daemonRss": 140918784,
+            "workerRss": 416907264,
+            "combined": 557826048
+          },
+          {
+            "label": "warm-tick-26",
+            "phase": "post-publish",
+            "atMs": 6404,
+            "daemonRss": 140345344,
+            "workerRss": 399376384,
+            "combined": 539721728
+          },
+          {
+            "label": "warm-tick-27",
+            "phase": "post-publish",
+            "atMs": 6716,
+            "daemonRss": 140345344,
+            "workerRss": 363102208,
+            "combined": 503447552
+          },
+          {
+            "label": "warm-tick-28",
+            "phase": "post-publish",
+            "atMs": 7009,
+            "daemonRss": 140279808,
+            "workerRss": 306692096,
+            "combined": 446971904
+          },
+          {
+            "label": "warm-tick-29",
+            "phase": "post-publish",
+            "atMs": 7160,
+            "daemonRss": 140279808,
+            "workerRss": 298893312,
+            "combined": 439173120
+          },
+          {
+            "label": "warm-tick-30",
+            "phase": "post-publish",
+            "atMs": 7422,
+            "daemonRss": 140279808,
+            "workerRss": 298893312,
+            "combined": 439173120
+          },
+          {
+            "label": "warm-tick-31",
+            "phase": "post-publish",
+            "atMs": 7661,
+            "daemonRss": 127238144,
+            "workerRss": 298893312,
+            "combined": 426131456
+          },
+          {
+            "label": "warm-tick-32",
+            "phase": "post-publish",
+            "atMs": 7931,
+            "daemonRss": 127172608,
+            "workerRss": 258457600,
+            "combined": 385630208
+          },
+          {
+            "label": "warm-tick-33",
+            "phase": "post-publish",
+            "atMs": 8175,
+            "daemonRss": 127172608,
+            "workerRss": 227508224,
+            "combined": 354680832
+          },
+          {
+            "label": "warm-tick-34",
+            "phase": "post-publish",
+            "atMs": 8449,
+            "daemonRss": 127172608,
+            "workerRss": 225411072,
+            "combined": 352583680
+          },
+          {
+            "label": "warm-tick-35",
+            "phase": "post-publish",
+            "atMs": 8655,
+            "daemonRss": 127172608,
+            "workerRss": 181354496,
+            "combined": 308527104
+          },
+          {
+            "label": "warm-tick-36",
+            "phase": "post-publish",
+            "atMs": 8923,
+            "daemonRss": 80297984,
+            "workerRss": 102252544,
+            "combined": 182550528
+          },
+          {
+            "label": "warm-tick-37",
+            "phase": "post-publish",
+            "atMs": 9216,
+            "daemonRss": 49676288,
+            "workerRss": 80576512,
+            "combined": 130252800
+          },
+          {
+            "label": "warm-tick-38",
+            "phase": "post-publish",
+            "atMs": 9416,
+            "daemonRss": 49676288,
+            "workerRss": 57327616,
+            "combined": 107003904
+          },
+          {
+            "label": "warm-tick-39",
+            "phase": "post-publish",
+            "atMs": 9673,
+            "daemonRss": 4702208,
+            "workerRss": 43843584,
+            "combined": 48545792
+          },
+          {
+            "label": "warm-tick-40",
+            "phase": "post-publish",
+            "atMs": 9935,
+            "daemonRss": 3784704,
+            "workerRss": 43843584,
+            "combined": 47628288
+          },
+          {
+            "label": "warm-tick-41",
+            "phase": "post-publish",
+            "atMs": 10273,
+            "daemonRss": 3784704,
+            "workerRss": 43843584,
+            "combined": 47628288
+          },
+          {
+            "label": "warm-tick-42",
+            "phase": "post-publish",
+            "atMs": 10458,
+            "daemonRss": 3768320,
+            "workerRss": 43827200,
+            "combined": 47595520
+          },
+          {
+            "label": "warm-tick-43",
+            "phase": "post-publish",
+            "atMs": 10676,
+            "daemonRss": 3784704,
+            "workerRss": 43827200,
+            "combined": 47611904
+          },
+          {
+            "label": "warm-tick-44",
+            "phase": "post-publish",
+            "atMs": 10928,
+            "daemonRss": 3784704,
+            "workerRss": 43827200,
+            "combined": 47611904
+          },
+          {
+            "label": "warm-tick-45",
+            "phase": "post-publish",
+            "atMs": 11213,
+            "daemonRss": 3784704,
+            "workerRss": 43827200,
+            "combined": 47611904
+          },
+          {
+            "label": "warm-tick-46",
+            "phase": "post-publish",
+            "atMs": 11428,
+            "daemonRss": 3784704,
+            "workerRss": 43827200,
+            "combined": 47611904
+          },
+          {
+            "label": "warm-tick-47",
+            "phase": "post-publish",
+            "atMs": 11712,
+            "daemonRss": 3784704,
+            "workerRss": 43810816,
+            "combined": 47595520
+          },
+          {
+            "label": "warm-tick-48",
+            "phase": "post-publish",
+            "atMs": 11932,
+            "daemonRss": 3784704,
+            "workerRss": 43810816,
+            "combined": 47595520
+          },
+          {
+            "label": "warm-tick-49",
+            "phase": "post-publish",
+            "atMs": 12183,
+            "daemonRss": 3784704,
+            "workerRss": 43778048,
+            "combined": 47562752
+          },
+          {
+            "label": "warm-tick-50",
+            "phase": "post-publish",
+            "atMs": 12434,
+            "daemonRss": 3784704,
+            "workerRss": 43778048,
+            "combined": 47562752
+          },
+          {
+            "label": "warm-tick-51",
+            "phase": "post-publish",
+            "atMs": 12689,
+            "daemonRss": 3784704,
+            "workerRss": 43778048,
+            "combined": 47562752
+          },
+          {
+            "label": "warm-tick-52",
+            "phase": "post-publish",
+            "atMs": 12943,
+            "daemonRss": 3702784,
+            "workerRss": 43712512,
+            "combined": 47415296
+          },
+          {
+            "label": "warm-tick-53",
+            "phase": "post-publish",
+            "atMs": 13174,
+            "daemonRss": 3670016,
+            "workerRss": 43712512,
+            "combined": 47382528
+          },
+          {
+            "label": "warm-tick-54",
+            "phase": "post-publish",
+            "atMs": 13580,
+            "daemonRss": 3620864,
+            "workerRss": 43679744,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-55",
+            "phase": "post-publish",
+            "atMs": 13744,
+            "daemonRss": 3620864,
+            "workerRss": 43679744,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-56",
+            "phase": "post-publish",
+            "atMs": 13986,
+            "daemonRss": 3620864,
+            "workerRss": 43679744,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-57",
+            "phase": "post-publish",
+            "atMs": 14267,
+            "daemonRss": 3620864,
+            "workerRss": 43679744,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-58",
+            "phase": "post-publish",
+            "atMs": 14483,
+            "daemonRss": 3604480,
+            "workerRss": 43679744,
+            "combined": 47284224
+          },
+          {
+            "label": "warm-tick-59",
+            "phase": "post-publish",
+            "atMs": 14748,
+            "daemonRss": 3620864,
+            "workerRss": 43679744,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-60",
+            "phase": "post-publish",
+            "atMs": 14998,
+            "daemonRss": 3620864,
+            "workerRss": 43679744,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-61",
+            "phase": "post-publish",
+            "atMs": 15249,
+            "daemonRss": 3620864,
+            "workerRss": 43679744,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-62",
+            "phase": "post-publish",
+            "atMs": 15496,
+            "daemonRss": 3620864,
+            "workerRss": 43679744,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-63",
+            "phase": "post-publish",
+            "atMs": 15769,
+            "daemonRss": 3620864,
+            "workerRss": 43679744,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-64",
+            "phase": "post-publish",
+            "atMs": 16003,
+            "daemonRss": 6127616,
+            "workerRss": 43679744,
+            "combined": 49807360
+          },
+          {
+            "label": "warm-tick-65",
+            "phase": "post-publish",
+            "atMs": 16252,
+            "daemonRss": 6619136,
+            "workerRss": 310165504,
+            "combined": 316784640
+          },
+          {
+            "label": "warm-tick-66",
+            "phase": "post-publish",
+            "atMs": 16485,
+            "daemonRss": 72892416,
+            "workerRss": 335511552,
+            "combined": 408403968
+          },
+          {
+            "label": "warm-tick-67",
+            "phase": "post-publish",
+            "atMs": 16850,
+            "daemonRss": 73220096,
+            "workerRss": 414203904,
+            "combined": 487424000
+          },
+          {
+            "label": "warm-tick-68",
+            "phase": "post-publish",
+            "atMs": 17012,
+            "daemonRss": 73187328,
+            "workerRss": 442105856,
+            "combined": 515293184
+          },
+          {
+            "label": "warm-tick-69",
+            "phase": "post-publish",
+            "atMs": 17250,
+            "daemonRss": 64552960,
+            "workerRss": 432504832,
+            "combined": 497057792
+          },
+          {
+            "label": "warm-tick-70",
+            "phase": "post-publish",
+            "atMs": 17507,
+            "daemonRss": 64552960,
+            "workerRss": 432504832,
+            "combined": 497057792
+          },
+          {
+            "label": "warm-tick-71",
+            "phase": "post-publish",
+            "atMs": 17763,
+            "daemonRss": 63700992,
+            "workerRss": 464601088,
+            "combined": 528302080
+          },
+          {
+            "label": "warm-tick-72",
+            "phase": "post-publish",
+            "atMs": 18043,
+            "daemonRss": 61374464,
+            "workerRss": 432750592,
+            "combined": 494125056
+          },
+          {
+            "label": "warm-tick-73",
+            "phase": "post-publish",
+            "atMs": 18275,
+            "daemonRss": 61374464,
+            "workerRss": 431374336,
+            "combined": 492748800
+          },
+          {
+            "label": "warm-tick-74",
+            "phase": "post-publish",
+            "atMs": 18523,
+            "daemonRss": 61374464,
+            "workerRss": 434978816,
+            "combined": 496353280
+          },
+          {
+            "label": "warm-tick-75",
+            "phase": "post-publish",
+            "atMs": 18826,
+            "daemonRss": 58736640,
+            "workerRss": 408748032,
+            "combined": 467484672
+          },
+          {
+            "label": "warm-tick-76",
+            "phase": "post-publish",
+            "atMs": 19033,
+            "daemonRss": 32473088,
+            "workerRss": 356597760,
+            "combined": 389070848
+          },
+          {
+            "label": "warm-tick-77",
+            "phase": "post-publish",
+            "atMs": 19266,
+            "daemonRss": 16826368,
+            "workerRss": 389480448,
+            "combined": 406306816
+          },
+          {
+            "label": "warm-tick-78",
+            "phase": "post-publish",
+            "atMs": 19569,
+            "daemonRss": 66125824,
+            "workerRss": 494370816,
+            "combined": 560496640
+          },
+          {
+            "label": "warm-tick-79",
+            "phase": "post-publish",
+            "atMs": 19753,
+            "daemonRss": 146636800,
+            "workerRss": 440025088,
+            "combined": 586661888
+          },
+          {
+            "label": "warm-tick-80",
+            "phase": "post-publish",
+            "atMs": 20017,
+            "daemonRss": 146784256,
+            "workerRss": 472219648,
+            "combined": 619003904
+          },
+          {
+            "label": "warm-tick-81",
+            "phase": "post-publish",
+            "atMs": 20259,
+            "daemonRss": 139657216,
+            "workerRss": 499318784,
+            "combined": 638976000
+          },
+          {
+            "label": "warm-tick-82",
+            "phase": "post-publish",
+            "atMs": 20529,
+            "daemonRss": 138739712,
+            "workerRss": 546603008,
+            "combined": 685342720
+          },
+          {
+            "label": "warm-tick-83",
+            "phase": "post-publish",
+            "atMs": 20789,
+            "daemonRss": 138182656,
+            "workerRss": 476413952,
+            "combined": 614596608
+          },
+          {
+            "label": "warm-tick-84",
+            "phase": "post-publish",
+            "atMs": 21039,
+            "daemonRss": 138182656,
+            "workerRss": 496320512,
+            "combined": 634503168
+          },
+          {
+            "label": "warm-tick-85",
+            "phase": "post-publish",
+            "atMs": 21289,
+            "daemonRss": 137281536,
+            "workerRss": 502841344,
+            "combined": 640122880
+          },
+          {
+            "label": "warm-tick-86",
+            "phase": "post-publish",
+            "atMs": 21514,
+            "daemonRss": 137281536,
+            "workerRss": 508133376,
+            "combined": 645414912
+          },
+          {
+            "label": "warm-tick-87",
+            "phase": "post-publish",
+            "atMs": 21775,
+            "daemonRss": 137248768,
+            "workerRss": 514605056,
+            "combined": 651853824
+          },
+          {
+            "label": "warm-tick-88",
+            "phase": "post-publish",
+            "atMs": 22008,
+            "daemonRss": 137248768,
+            "workerRss": 462733312,
+            "combined": 599982080
+          },
+          {
+            "label": "warm-tick-89",
+            "phase": "post-publish",
+            "atMs": 22275,
+            "daemonRss": 137248768,
+            "workerRss": 473874432,
+            "combined": 611123200
+          },
+          {
+            "label": "warm-tick-90",
+            "phase": "post-publish",
+            "atMs": 22524,
+            "daemonRss": 126812160,
+            "workerRss": 487145472,
+            "combined": 613957632
+          },
+          {
+            "label": "warm-tick-91",
+            "phase": "post-publish",
+            "atMs": 22809,
+            "daemonRss": 156680192,
+            "workerRss": 502972416,
+            "combined": 659652608
+          },
+          {
+            "label": "warm-tick-92",
+            "phase": "post-publish",
+            "atMs": 23028,
+            "daemonRss": 156565504,
+            "workerRss": 500596736,
+            "combined": 657162240
+          },
+          {
+            "label": "warm-tick-93",
+            "phase": "post-publish",
+            "atMs": 23306,
+            "daemonRss": 156188672,
+            "workerRss": 475774976,
+            "combined": 631963648
+          },
+          {
+            "label": "warm-tick-94",
+            "phase": "post-publish",
+            "atMs": 23509,
+            "daemonRss": 149618688,
+            "workerRss": 475774976,
+            "combined": 625393664
+          },
+          {
+            "label": "warm-tick-95",
+            "phase": "post-publish",
+            "atMs": 23829,
+            "daemonRss": 118734848,
+            "workerRss": 474349568,
+            "combined": 593084416
+          },
+          {
+            "label": "warm-tick-96",
+            "phase": "post-publish",
+            "atMs": 24022,
+            "daemonRss": 111230976,
+            "workerRss": 474316800,
+            "combined": 585547776
+          },
+          {
+            "label": "warm-tick-97",
+            "phase": "post-publish",
+            "atMs": 24285,
+            "daemonRss": 108625920,
+            "workerRss": 474202112,
+            "combined": 582828032
+          },
+          {
+            "label": "warm-tick-98",
+            "phase": "post-publish",
+            "atMs": 24527,
+            "daemonRss": 108167168,
+            "workerRss": 471007232,
+            "combined": 579174400
+          },
+          {
+            "label": "warm-tick-99",
+            "phase": "post-publish",
+            "atMs": 24795,
+            "daemonRss": 104955904,
+            "workerRss": 427442176,
+            "combined": 532398080
+          },
+          {
+            "label": "warm-tick-100",
+            "phase": "post-publish",
+            "atMs": 25091,
+            "daemonRss": 103088128,
+            "workerRss": 396951552,
+            "combined": 500039680
+          },
+          {
+            "label": "warm-tick-101",
+            "phase": "post-publish",
+            "atMs": 25285,
+            "daemonRss": 100745216,
+            "workerRss": 396771328,
+            "combined": 497516544
+          },
+          {
+            "label": "warm-tick-102",
+            "phase": "post-publish",
+            "atMs": 25537,
+            "daemonRss": 99876864,
+            "workerRss": 388120576,
+            "combined": 487997440
+          },
+          {
+            "label": "warm-tick-103",
+            "phase": "post-publish",
+            "atMs": 25835,
+            "daemonRss": 99876864,
+            "workerRss": 203210752,
+            "combined": 303087616
+          },
+          {
+            "label": "warm-tick-104",
+            "phase": "post-publish",
+            "atMs": 26029,
+            "daemonRss": 99876864,
+            "workerRss": 188645376,
+            "combined": 288522240
+          },
+          {
+            "label": "warm-tick-105",
+            "phase": "post-publish",
+            "atMs": 26291,
+            "daemonRss": 99876864,
+            "workerRss": 157286400,
+            "combined": 257163264
+          },
+          {
+            "label": "warm-tick-106",
+            "phase": "post-publish",
+            "atMs": 26701,
+            "daemonRss": 91324416,
+            "workerRss": 319520768,
+            "combined": 410845184
+          },
+          {
+            "label": "warm-tick-107",
+            "phase": "post-publish",
+            "atMs": 26875,
+            "daemonRss": 91176960,
+            "workerRss": 330498048,
+            "combined": 421675008
+          },
+          {
+            "label": "warm-tick-108",
+            "phase": "post-publish",
+            "atMs": 27109,
+            "daemonRss": 91308032,
+            "workerRss": 361889792,
+            "combined": 453197824
+          },
+          {
+            "label": "warm-tick-109",
+            "phase": "post-publish",
+            "atMs": 27374,
+            "daemonRss": 73891840,
+            "workerRss": 414990336,
+            "combined": 488882176
+          },
+          {
+            "label": "warm-tick-110",
+            "phase": "post-publish",
+            "atMs": 27607,
+            "daemonRss": 67649536,
+            "workerRss": 410320896,
+            "combined": 477970432
+          },
+          {
+            "label": "warm-tick-111",
+            "phase": "post-publish",
+            "atMs": 27847,
+            "daemonRss": 66813952,
+            "workerRss": 410304512,
+            "combined": 477118464
+          },
+          {
+            "label": "warm-tick-112",
+            "phase": "post-publish",
+            "atMs": 28105,
+            "daemonRss": 66650112,
+            "workerRss": 394035200,
+            "combined": 460685312
+          },
+          {
+            "label": "warm-tick-113",
+            "phase": "post-publish",
+            "atMs": 28354,
+            "daemonRss": 66650112,
+            "workerRss": 421773312,
+            "combined": 488423424
+          },
+          {
+            "label": "warm-tick-114",
+            "phase": "post-publish",
+            "atMs": 28612,
+            "daemonRss": 60407808,
+            "workerRss": 454803456,
+            "combined": 515211264
+          },
+          {
+            "label": "warm-tick-115",
+            "phase": "post-publish",
+            "atMs": 28852,
+            "daemonRss": 60227584,
+            "workerRss": 458260480,
+            "combined": 518488064
+          },
+          {
+            "label": "warm-tick-116",
+            "phase": "post-publish",
+            "atMs": 29125,
+            "daemonRss": 59293696,
+            "workerRss": 458522624,
+            "combined": 517816320
+          },
+          {
+            "label": "warm-tick-117",
+            "phase": "post-publish",
+            "atMs": 29401,
+            "daemonRss": 59293696,
+            "workerRss": 475561984,
+            "combined": 534855680
+          },
+          {
+            "label": "warm-tick-118",
+            "phase": "post-publish",
+            "atMs": 29646,
+            "daemonRss": 79511552,
+            "workerRss": 519962624,
+            "combined": 599474176
+          },
+          {
+            "label": "warm-tick-119",
+            "phase": "post-publish",
+            "atMs": 29886,
+            "daemonRss": 137625600,
+            "workerRss": 517914624,
+            "combined": 655540224
+          },
+          {
+            "label": "warm-tick-120",
+            "phase": "post-publish",
+            "atMs": 30145,
+            "daemonRss": 137625600,
+            "workerRss": 509345792,
+            "combined": 646971392
+          },
+          {
+            "label": "warm-tick-121",
+            "phase": "post-publish",
+            "atMs": 30432,
+            "daemonRss": 134021120,
+            "workerRss": 406929408,
+            "combined": 540950528
+          },
+          {
+            "label": "warm-tick-122",
+            "phase": "post-publish",
+            "atMs": 30639,
+            "daemonRss": 85344256,
+            "workerRss": 265764864,
+            "combined": 351109120
+          },
+          {
+            "label": "warm-tick-123",
+            "phase": "post-publish",
+            "atMs": 30894,
+            "daemonRss": 74924032,
+            "workerRss": 265469952,
+            "combined": 340393984
+          },
+          {
+            "label": "warm-tick-124",
+            "phase": "post-publish",
+            "atMs": 31319,
+            "daemonRss": 67846144,
+            "workerRss": 186220544,
+            "combined": 254066688
+          },
+          {
+            "label": "warm-tick-125",
+            "phase": "post-publish",
+            "atMs": 31883,
+            "daemonRss": 58114048,
+            "workerRss": 98615296,
+            "combined": 156729344
+          },
+          {
+            "label": "warm-tick-126",
+            "phase": "post-publish",
+            "atMs": 32067,
+            "daemonRss": 42991616,
+            "workerRss": 85688320,
+            "combined": 128679936
+          },
+          {
+            "label": "warm-tick-127",
+            "phase": "post-publish",
+            "atMs": 32319,
+            "daemonRss": 42991616,
+            "workerRss": 63111168,
+            "combined": 106102784
+          },
+          {
+            "label": "warm-tick-128",
+            "phase": "post-publish",
+            "atMs": 32552,
+            "daemonRss": 3768320,
+            "workerRss": 43794432,
+            "combined": 47562752
+          },
+          {
+            "label": "warm-tick-129",
+            "phase": "post-publish",
+            "atMs": 32824,
+            "daemonRss": 3719168,
+            "workerRss": 43778048,
+            "combined": 47497216
+          },
+          {
+            "label": "warm-tick-130",
+            "phase": "post-publish",
+            "atMs": 33088,
+            "daemonRss": 3719168,
+            "workerRss": 43745280,
+            "combined": 47464448
+          },
+          {
+            "label": "warm-tick-131",
+            "phase": "post-publish",
+            "atMs": 33393,
+            "daemonRss": 3719168,
+            "workerRss": 43728896,
+            "combined": 47448064
+          },
+          {
+            "label": "warm-tick-132",
+            "phase": "post-publish",
+            "atMs": 33542,
+            "daemonRss": 3719168,
+            "workerRss": 43728896,
+            "combined": 47448064
+          },
+          {
+            "label": "warm-tick-133",
+            "phase": "post-publish",
+            "atMs": 33870,
+            "daemonRss": 3719168,
+            "workerRss": 43728896,
+            "combined": 47448064
+          },
+          {
+            "label": "warm-tick-134",
+            "phase": "post-publish",
+            "atMs": 34068,
+            "daemonRss": 3719168,
+            "workerRss": 43728896,
+            "combined": 47448064
+          },
+          {
+            "label": "warm-tick-135",
+            "phase": "post-publish",
+            "atMs": 34303,
+            "daemonRss": 3702784,
+            "workerRss": 43728896,
+            "combined": 47431680
+          },
+          {
+            "label": "warm-tick-136",
+            "phase": "post-publish",
+            "atMs": 34564,
+            "daemonRss": 3702784,
+            "workerRss": 43728896,
+            "combined": 47431680
+          },
+          {
+            "label": "warm-tick-137",
+            "phase": "post-publish",
+            "atMs": 34800,
+            "daemonRss": 3702784,
+            "workerRss": 43712512,
+            "combined": 47415296
+          },
+          {
+            "label": "warm-tick-138",
+            "phase": "post-publish",
+            "atMs": 35091,
+            "daemonRss": 3686400,
+            "workerRss": 43712512,
+            "combined": 47398912
+          },
+          {
+            "label": "warm-tick-139",
+            "phase": "post-publish",
+            "atMs": 35289,
+            "daemonRss": 3686400,
+            "workerRss": 43712512,
+            "combined": 47398912
+          },
+          {
+            "label": "warm-tick-140",
+            "phase": "post-publish",
+            "atMs": 35629,
+            "daemonRss": 3686400,
+            "workerRss": 43712512,
+            "combined": 47398912
+          },
+          {
+            "label": "warm-tick-141",
+            "phase": "post-publish",
+            "atMs": 35861,
+            "daemonRss": 3686400,
+            "workerRss": 43712512,
+            "combined": 47398912
+          },
+          {
+            "label": "warm-tick-142",
+            "phase": "post-publish",
+            "atMs": 36055,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-143",
+            "phase": "post-publish",
+            "atMs": 36305,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-144",
+            "phase": "post-publish",
+            "atMs": 36606,
+            "daemonRss": 3653632,
+            "workerRss": 43696128,
+            "combined": 47349760
+          },
+          {
+            "label": "warm-tick-145",
+            "phase": "post-publish",
+            "atMs": 36898,
+            "daemonRss": 3653632,
+            "workerRss": 43696128,
+            "combined": 47349760
+          },
+          {
+            "label": "warm-tick-146",
+            "phase": "post-publish",
+            "atMs": 37081,
+            "daemonRss": 3653632,
+            "workerRss": 43696128,
+            "combined": 47349760
+          },
+          {
+            "label": "warm-tick-147",
+            "phase": "post-publish",
+            "atMs": 37302,
+            "daemonRss": 3653632,
+            "workerRss": 43696128,
+            "combined": 47349760
+          },
+          {
+            "label": "warm-tick-148",
+            "phase": "post-publish",
+            "atMs": 37755,
+            "daemonRss": 3670016,
+            "workerRss": 43696128,
+            "combined": 47366144
+          },
+          {
+            "label": "warm-tick-149",
+            "phase": "post-publish",
+            "atMs": 37938,
+            "daemonRss": 3670016,
+            "workerRss": 43696128,
+            "combined": 47366144
+          },
+          {
+            "label": "warm-tick-150",
+            "phase": "post-publish",
+            "atMs": 38305,
+            "daemonRss": 3670016,
+            "workerRss": 43696128,
+            "combined": 47366144
+          },
+          {
+            "label": "warm-tick-151",
+            "phase": "post-publish",
+            "atMs": 38470,
+            "daemonRss": 3670016,
+            "workerRss": 43696128,
+            "combined": 47366144
+          },
+          {
+            "label": "warm-tick-152",
+            "phase": "post-publish",
+            "atMs": 38698,
+            "daemonRss": 3670016,
+            "workerRss": 44728320,
+            "combined": 48398336
+          },
+          {
+            "label": "warm-tick-153",
+            "phase": "post-publish",
+            "atMs": 39057,
+            "daemonRss": 3653632,
+            "workerRss": 44728320,
+            "combined": 48381952
+          },
+          {
+            "label": "warm-tick-154",
+            "phase": "post-publish",
+            "atMs": 39254,
+            "daemonRss": 3653632,
+            "workerRss": 44728320,
+            "combined": 48381952
+          },
+          {
+            "label": "warm-tick-155",
+            "phase": "post-publish",
+            "atMs": 39472,
+            "daemonRss": 3637248,
+            "workerRss": 44728320,
+            "combined": 48365568
+          },
+          {
+            "label": "warm-tick-156",
+            "phase": "post-publish",
+            "atMs": 39730,
+            "daemonRss": 3637248,
+            "workerRss": 44728320,
+            "combined": 48365568
+          },
+          {
+            "label": "warm-tick-157",
+            "phase": "post-publish",
+            "atMs": 40027,
+            "daemonRss": 3620864,
+            "workerRss": 44728320,
+            "combined": 48349184
+          },
+          {
+            "label": "warm-tick-158",
+            "phase": "post-publish",
+            "atMs": 40238,
+            "daemonRss": 3620864,
+            "workerRss": 44728320,
+            "combined": 48349184
+          },
+          {
+            "label": "warm-tick-159",
+            "phase": "post-publish",
+            "atMs": 40680,
+            "daemonRss": 7094272,
+            "workerRss": 235028480,
+            "combined": 242122752
+          },
+          {
+            "label": "warm-tick-160",
+            "phase": "post-publish",
+            "atMs": 40864,
+            "daemonRss": 7110656,
+            "workerRss": 300384256,
+            "combined": 307494912
+          },
+          {
+            "label": "warm-tick-161",
+            "phase": "post-publish",
+            "atMs": 41118,
+            "daemonRss": 75579392,
+            "workerRss": 294518784,
+            "combined": 370098176
+          },
+          {
+            "label": "warm-tick-162",
+            "phase": "post-publish",
+            "atMs": 41372,
+            "daemonRss": 75595776,
+            "workerRss": 367738880,
+            "combined": 443334656
+          },
+          {
+            "label": "warm-tick-163",
+            "phase": "post-publish",
+            "atMs": 41580,
+            "daemonRss": 73973760,
+            "workerRss": 391069696,
+            "combined": 465043456
+          },
+          {
+            "label": "warm-tick-164",
+            "phase": "post-publish",
+            "atMs": 41868,
+            "daemonRss": 73744384,
+            "workerRss": 385548288,
+            "combined": 459292672
+          },
+          {
+            "label": "warm-tick-165",
+            "phase": "post-publish",
+            "atMs": 42083,
+            "daemonRss": 73744384,
+            "workerRss": 386482176,
+            "combined": 460226560
+          },
+          {
+            "label": "warm-tick-166",
+            "phase": "post-publish",
+            "atMs": 42340,
+            "daemonRss": 70483968,
+            "workerRss": 379731968,
+            "combined": 450215936
+          },
+          {
+            "label": "warm-tick-167",
+            "phase": "post-publish",
+            "atMs": 42679,
+            "daemonRss": 70500352,
+            "workerRss": 318914560,
+            "combined": 389414912
+          },
+          {
+            "label": "warm-tick-168",
+            "phase": "post-publish",
+            "atMs": 42884,
+            "daemonRss": 70500352,
+            "workerRss": 314327040,
+            "combined": 384827392
+          },
+          {
+            "label": "warm-tick-169",
+            "phase": "post-publish",
+            "atMs": 43146,
+            "daemonRss": 32456704,
+            "workerRss": 337526784,
+            "combined": 369983488
+          },
+          {
+            "label": "warm-tick-170",
+            "phase": "post-publish",
+            "atMs": 43376,
+            "daemonRss": 10174464,
+            "workerRss": 351584256,
+            "combined": 361758720
+          },
+          {
+            "label": "warm-tick-171",
+            "phase": "post-publish",
+            "atMs": 44540,
+            "daemonRss": 3997696,
+            "workerRss": 375930880,
+            "combined": 379928576
+          },
+          {
+            "label": "warm-tick-172",
+            "phase": "post-publish",
+            "atMs": 44744,
+            "daemonRss": 3997696,
+            "workerRss": 449691648,
+            "combined": 453689344
+          },
+          {
+            "label": "warm-tick-173",
+            "phase": "post-publish",
+            "atMs": 44995,
+            "daemonRss": 86949888,
+            "workerRss": 443613184,
+            "combined": 530563072
+          },
+          {
+            "label": "warm-tick-174",
+            "phase": "post-publish",
+            "atMs": 45236,
+            "daemonRss": 141115392,
+            "workerRss": 339247104,
+            "combined": 480362496
+          },
+          {
+            "label": "warm-tick-175",
+            "phase": "post-publish",
+            "atMs": 45474,
+            "daemonRss": 136003584,
+            "workerRss": 291553280,
+            "combined": 427556864
+          },
+          {
+            "label": "warm-tick-176",
+            "phase": "post-publish",
+            "atMs": 45811,
+            "daemonRss": 135970816,
+            "workerRss": 286932992,
+            "combined": 422903808
+          },
+          {
+            "label": "warm-tick-177",
+            "phase": "post-publish",
+            "atMs": 45983,
+            "daemonRss": 132890624,
+            "workerRss": 241156096,
+            "combined": 374046720
+          },
+          {
+            "label": "warm-tick-178",
+            "phase": "post-publish",
+            "atMs": 46214,
+            "daemonRss": 132874240,
+            "workerRss": 167297024,
+            "combined": 300171264
+          },
+          {
+            "label": "warm-tick-179",
+            "phase": "post-publish",
+            "atMs": 46497,
+            "daemonRss": 132874240,
+            "workerRss": 130072576,
+            "combined": 262946816
+          },
+          {
+            "label": "warm-tick-180",
+            "phase": "post-publish",
+            "atMs": 46771,
+            "daemonRss": 77905920,
+            "workerRss": 99303424,
+            "combined": 177209344
+          },
+          {
+            "label": "warm-tick-181",
+            "phase": "post-publish",
+            "atMs": 46982,
+            "daemonRss": 52985856,
+            "workerRss": 66109440,
+            "combined": 119095296
+          },
+          {
+            "label": "warm-tick-182",
+            "phase": "post-publish",
+            "atMs": 47234,
+            "daemonRss": 50462720,
+            "workerRss": 44859392,
+            "combined": 95322112
+          },
+          {
+            "label": "warm-tick-183",
+            "phase": "post-publish",
+            "atMs": 47554,
+            "daemonRss": 18006016,
+            "workerRss": 44711936,
+            "combined": 62717952
+          },
+          {
+            "label": "warm-tick-184",
+            "phase": "post-publish",
+            "atMs": 47737,
+            "daemonRss": 3850240,
+            "workerRss": 44711936,
+            "combined": 48562176
+          },
+          {
+            "label": "warm-tick-185",
+            "phase": "post-publish",
+            "atMs": 47966,
+            "daemonRss": 3850240,
+            "workerRss": 44711936,
+            "combined": 48562176
+          },
+          {
+            "label": "warm-tick-186",
+            "phase": "post-publish",
+            "atMs": 48222,
+            "daemonRss": 3850240,
+            "workerRss": 44711936,
+            "combined": 48562176
+          },
+          {
+            "label": "warm-tick-187",
+            "phase": "post-publish",
+            "atMs": 48523,
+            "daemonRss": 3686400,
+            "workerRss": 44711936,
+            "combined": 48398336
+          },
+          {
+            "label": "warm-tick-188",
+            "phase": "post-publish",
+            "atMs": 48741,
+            "daemonRss": 3686400,
+            "workerRss": 44711936,
+            "combined": 48398336
+          },
+          {
+            "label": "warm-tick-189",
+            "phase": "post-publish",
+            "atMs": 49017,
+            "daemonRss": 3686400,
+            "workerRss": 44695552,
+            "combined": 48381952
+          },
+          {
+            "label": "warm-tick-190",
+            "phase": "post-publish",
+            "atMs": 49248,
+            "daemonRss": 3653632,
+            "workerRss": 43712512,
+            "combined": 47366144
+          },
+          {
+            "label": "warm-tick-191",
+            "phase": "post-publish",
+            "atMs": 49490,
+            "daemonRss": 3653632,
+            "workerRss": 43696128,
+            "combined": 47349760
+          },
+          {
+            "label": "warm-tick-192",
+            "phase": "post-publish",
+            "atMs": 49756,
+            "daemonRss": 3670016,
+            "workerRss": 43696128,
+            "combined": 47366144
+          },
+          {
+            "label": "warm-tick-193",
+            "phase": "post-publish",
+            "atMs": 50023,
+            "daemonRss": 3653632,
+            "workerRss": 43696128,
+            "combined": 47349760
+          },
+          {
+            "label": "warm-tick-194",
+            "phase": "post-publish",
+            "atMs": 50284,
+            "daemonRss": 3653632,
+            "workerRss": 43696128,
+            "combined": 47349760
+          },
+          {
+            "label": "warm-tick-195",
+            "phase": "post-publish",
+            "atMs": 50505,
+            "daemonRss": 3637248,
+            "workerRss": 43679744,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-196",
+            "phase": "post-publish",
+            "atMs": 50741,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-197",
+            "phase": "post-publish",
+            "atMs": 51025,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-198",
+            "phase": "post-publish",
+            "atMs": 51255,
+            "daemonRss": 3604480,
+            "workerRss": 43696128,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-199",
+            "phase": "post-publish",
+            "atMs": 51499,
+            "daemonRss": 3604480,
+            "workerRss": 43696128,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-200",
+            "phase": "post-publish",
+            "atMs": 52017,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-201",
+            "phase": "post-publish",
+            "atMs": 52157,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-202",
+            "phase": "post-publish",
+            "atMs": 52416,
+            "daemonRss": 3620864,
+            "workerRss": 43679744,
+            "combined": 47300608
+          },
+          {
+            "label": "warm-tick-203",
+            "phase": "post-publish",
+            "atMs": 52677,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-204",
+            "phase": "post-publish",
+            "atMs": 52915,
+            "daemonRss": 7159808,
+            "workerRss": 61095936,
+            "combined": 68255744
+          },
+          {
+            "label": "warm-tick-205",
+            "phase": "post-publish",
+            "atMs": 53171,
+            "daemonRss": 14794752,
+            "workerRss": 300580864,
+            "combined": 315375616
+          },
+          {
+            "label": "warm-tick-206",
+            "phase": "post-publish",
+            "atMs": 53442,
+            "daemonRss": 75497472,
+            "workerRss": 297385984,
+            "combined": 372883456
+          },
+          {
+            "label": "warm-tick-207",
+            "phase": "post-publish",
+            "atMs": 53680,
+            "daemonRss": 75497472,
+            "workerRss": 351666176,
+            "combined": 427163648
+          },
+          {
+            "label": "warm-tick-208",
+            "phase": "post-publish",
+            "atMs": 54011,
+            "daemonRss": 65568768,
+            "workerRss": 365674496,
+            "combined": 431243264
+          },
+          {
+            "label": "warm-tick-209",
+            "phase": "post-publish",
+            "atMs": 54203,
+            "daemonRss": 65568768,
+            "workerRss": 365674496,
+            "combined": 431243264
+          },
+          {
+            "label": "warm-tick-210",
+            "phase": "post-publish",
+            "atMs": 54507,
+            "daemonRss": 65568768,
+            "workerRss": 390971392,
+            "combined": 456540160
+          },
+          {
+            "label": "warm-tick-211",
+            "phase": "post-publish",
+            "atMs": 54674,
+            "daemonRss": 65568768,
+            "workerRss": 396394496,
+            "combined": 461963264
+          },
+          {
+            "label": "warm-tick-212",
+            "phase": "post-publish",
+            "atMs": 54976,
+            "daemonRss": 62259200,
+            "workerRss": 374882304,
+            "combined": 437141504
+          },
+          {
+            "label": "warm-tick-213",
+            "phase": "post-publish",
+            "atMs": 55174,
+            "daemonRss": 17678336,
+            "workerRss": 355008512,
+            "combined": 372686848
+          },
+          {
+            "label": "warm-tick-214",
+            "phase": "post-publish",
+            "atMs": 55473,
+            "daemonRss": 8699904,
+            "workerRss": 364232704,
+            "combined": 372932608
+          },
+          {
+            "label": "warm-tick-215",
+            "phase": "post-publish",
+            "atMs": 55685,
+            "daemonRss": 8732672,
+            "workerRss": 382828544,
+            "combined": 391561216
+          },
+          {
+            "label": "warm-tick-216",
+            "phase": "post-publish",
+            "atMs": 55937,
+            "daemonRss": 3915776,
+            "workerRss": 391004160,
+            "combined": 394919936
+          },
+          {
+            "label": "warm-tick-217",
+            "phase": "post-publish",
+            "atMs": 56218,
+            "daemonRss": 3915776,
+            "workerRss": 420593664,
+            "combined": 424509440
+          },
+          {
+            "label": "warm-tick-218",
+            "phase": "post-publish",
+            "atMs": 56430,
+            "daemonRss": 78233600,
+            "workerRss": 480018432,
+            "combined": 558252032
+          },
+          {
+            "label": "warm-tick-219",
+            "phase": "post-publish",
+            "atMs": 56696,
+            "daemonRss": 147783680,
+            "workerRss": 414220288,
+            "combined": 562003968
+          },
+          {
+            "label": "warm-tick-220",
+            "phase": "post-publish",
+            "atMs": 56950,
+            "daemonRss": 134283264,
+            "workerRss": 483033088,
+            "combined": 617316352
+          },
+          {
+            "label": "warm-tick-221",
+            "phase": "post-publish",
+            "atMs": 57204,
+            "daemonRss": 139804672,
+            "workerRss": 417415168,
+            "combined": 557219840
+          },
+          {
+            "label": "warm-tick-222",
+            "phase": "post-publish",
+            "atMs": 57538,
+            "daemonRss": 137428992,
+            "workerRss": 461275136,
+            "combined": 598704128
+          },
+          {
+            "label": "warm-tick-223",
+            "phase": "post-publish",
+            "atMs": 57741,
+            "daemonRss": 137183232,
+            "workerRss": 440352768,
+            "combined": 577536000
+          },
+          {
+            "label": "warm-tick-224",
+            "phase": "post-publish",
+            "atMs": 57941,
+            "daemonRss": 137183232,
+            "workerRss": 422051840,
+            "combined": 559235072
+          },
+          {
+            "label": "warm-tick-225",
+            "phase": "post-publish",
+            "atMs": 58212,
+            "daemonRss": 137183232,
+            "workerRss": 415662080,
+            "combined": 552845312
+          },
+          {
+            "label": "warm-tick-226",
+            "phase": "post-publish",
+            "atMs": 58548,
+            "daemonRss": 39239680,
+            "workerRss": 402063360,
+            "combined": 441303040
+          },
+          {
+            "label": "warm-tick-227",
+            "phase": "post-publish",
+            "atMs": 58705,
+            "daemonRss": 39108608,
+            "workerRss": 370262016,
+            "combined": 409370624
+          },
+          {
+            "label": "warm-tick-228",
+            "phase": "post-publish",
+            "atMs": 59007,
+            "daemonRss": 9961472,
+            "workerRss": 311017472,
+            "combined": 320978944
+          },
+          {
+            "label": "warm-tick-229",
+            "phase": "post-publish",
+            "atMs": 59246,
+            "daemonRss": 3899392,
+            "workerRss": 348438528,
+            "combined": 352337920
+          },
+          {
+            "label": "warm-tick-230",
+            "phase": "post-publish",
+            "atMs": 59452,
+            "daemonRss": 3899392,
+            "workerRss": 357498880,
+            "combined": 361398272
+          },
+          {
+            "label": "warm-tick-231",
+            "phase": "post-publish",
+            "atMs": 60032,
+            "daemonRss": 3948544,
+            "workerRss": 353665024,
+            "combined": 357613568
+          },
+          {
+            "label": "warm-tick-232",
+            "phase": "post-publish",
+            "atMs": 60218,
+            "daemonRss": 3883008,
+            "workerRss": 235012096,
+            "combined": 238895104
+          },
+          {
+            "label": "warm-tick-233",
+            "phase": "post-publish",
+            "atMs": 60544,
+            "daemonRss": 3883008,
+            "workerRss": 237502464,
+            "combined": 241385472
+          },
+          {
+            "label": "warm-tick-234",
+            "phase": "post-publish",
+            "atMs": 60710,
+            "daemonRss": 3883008,
+            "workerRss": 341147648,
+            "combined": 345030656
+          },
+          {
+            "label": "warm-tick-235",
+            "phase": "post-publish",
+            "atMs": 60990,
+            "daemonRss": 3833856,
+            "workerRss": 375947264,
+            "combined": 379781120
+          },
+          {
+            "label": "warm-tick-236",
+            "phase": "post-publish",
+            "atMs": 61237,
+            "daemonRss": 133201920,
+            "workerRss": 368918528,
+            "combined": 502120448
+          },
+          {
+            "label": "warm-tick-237",
+            "phase": "post-publish",
+            "atMs": 61977,
+            "daemonRss": 139411456,
+            "workerRss": 205275136,
+            "combined": 344686592
+          },
+          {
+            "label": "warm-tick-238",
+            "phase": "post-publish",
+            "atMs": 62294,
+            "daemonRss": 43565056,
+            "workerRss": 43827200,
+            "combined": 87392256
+          },
+          {
+            "label": "warm-tick-239",
+            "phase": "post-publish",
+            "atMs": 62546,
+            "daemonRss": 3670016,
+            "workerRss": 43827200,
+            "combined": 47497216
+          },
+          {
+            "label": "warm-tick-240",
+            "phase": "post-publish",
+            "atMs": 62770,
+            "daemonRss": 3686400,
+            "workerRss": 43827200,
+            "combined": 47513600
+          },
+          {
+            "label": "warm-tick-241",
+            "phase": "post-publish",
+            "atMs": 62963,
+            "daemonRss": 3686400,
+            "workerRss": 43827200,
+            "combined": 47513600
+          },
+          {
+            "label": "warm-tick-242",
+            "phase": "post-publish",
+            "atMs": 63198,
+            "daemonRss": 3686400,
+            "workerRss": 43827200,
+            "combined": 47513600
+          },
+          {
+            "label": "warm-tick-243",
+            "phase": "post-publish",
+            "atMs": 63465,
+            "daemonRss": 3686400,
+            "workerRss": 43827200,
+            "combined": 47513600
+          },
+          {
+            "label": "warm-tick-244",
+            "phase": "post-publish",
+            "atMs": 63751,
+            "daemonRss": 3686400,
+            "workerRss": 43745280,
+            "combined": 47431680
+          },
+          {
+            "label": "warm-tick-245",
+            "phase": "post-publish",
+            "atMs": 63986,
+            "daemonRss": 3670016,
+            "workerRss": 43696128,
+            "combined": 47366144
+          },
+          {
+            "label": "warm-tick-246",
+            "phase": "post-publish",
+            "atMs": 64267,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-247",
+            "phase": "post-publish",
+            "atMs": 64489,
+            "daemonRss": 3604480,
+            "workerRss": 44679168,
+            "combined": 48283648
+          },
+          {
+            "label": "warm-tick-248",
+            "phase": "post-publish",
+            "atMs": 64752,
+            "daemonRss": 3637248,
+            "workerRss": 44695552,
+            "combined": 48332800
+          },
+          {
+            "label": "warm-tick-249",
+            "phase": "post-publish",
+            "atMs": 65105,
+            "daemonRss": 3637248,
+            "workerRss": 44695552,
+            "combined": 48332800
+          },
+          {
+            "label": "warm-tick-250",
+            "phase": "post-publish",
+            "atMs": 65369,
+            "daemonRss": 3637248,
+            "workerRss": 44695552,
+            "combined": 48332800
+          },
+          {
+            "label": "warm-tick-251",
+            "phase": "post-publish",
+            "atMs": 65531,
+            "daemonRss": 3637248,
+            "workerRss": 44695552,
+            "combined": 48332800
+          },
+          {
+            "label": "warm-tick-252",
+            "phase": "post-publish",
+            "atMs": 65806,
+            "daemonRss": 3637248,
+            "workerRss": 44695552,
+            "combined": 48332800
+          },
+          {
+            "label": "warm-tick-253",
+            "phase": "post-publish",
+            "atMs": 66182,
+            "daemonRss": 3637248,
+            "workerRss": 44695552,
+            "combined": 48332800
+          },
+          {
+            "label": "warm-tick-254",
+            "phase": "post-publish",
+            "atMs": 66455,
+            "daemonRss": 3604480,
+            "workerRss": 43679744,
+            "combined": 47284224
+          },
+          {
+            "label": "warm-tick-255",
+            "phase": "post-publish",
+            "atMs": 66693,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-256",
+            "phase": "post-publish",
+            "atMs": 66873,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-257",
+            "phase": "post-publish",
+            "atMs": 67107,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-258",
+            "phase": "post-publish",
+            "atMs": 67348,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-259",
+            "phase": "post-publish",
+            "atMs": 67615,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-260",
+            "phase": "post-publish",
+            "atMs": 67851,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-261",
+            "phase": "post-publish",
+            "atMs": 68118,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-262",
+            "phase": "post-publish",
+            "atMs": 68389,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-263",
+            "phase": "post-publish",
+            "atMs": 68632,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-264",
+            "phase": "post-publish",
+            "atMs": 68921,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-265",
+            "phase": "post-publish",
+            "atMs": 69147,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-266",
+            "phase": "post-publish",
+            "atMs": 69412,
+            "daemonRss": 3637248,
+            "workerRss": 43696128,
+            "combined": 47333376
+          },
+          {
+            "label": "warm-tick-267",
+            "phase": "post-publish",
+            "atMs": 69673,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-268",
+            "phase": "post-publish",
+            "atMs": 69977,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-269",
+            "phase": "post-publish",
+            "atMs": 70262,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-270",
+            "phase": "post-publish",
+            "atMs": 70522,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-271",
+            "phase": "post-publish",
+            "atMs": 70698,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-272",
+            "phase": "post-publish",
+            "atMs": 71050,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-273",
+            "phase": "post-publish",
+            "atMs": 71223,
+            "daemonRss": 3604480,
+            "workerRss": 43679744,
+            "combined": 47284224
+          },
+          {
+            "label": "warm-tick-274",
+            "phase": "post-publish",
+            "atMs": 71488,
+            "daemonRss": 3604480,
+            "workerRss": 43679744,
+            "combined": 47284224
+          },
+          {
+            "label": "warm-tick-275",
+            "phase": "post-publish",
+            "atMs": 71696,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-276",
+            "phase": "post-publish",
+            "atMs": 72043,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-277",
+            "phase": "post-publish",
+            "atMs": 72208,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-278",
+            "phase": "post-publish",
+            "atMs": 72485,
+            "daemonRss": 3620864,
+            "workerRss": 43696128,
+            "combined": 47316992
+          },
+          {
+            "label": "warm-tick-279",
+            "phase": "post-publish",
+            "atMs": 72719,
+            "daemonRss": 3620864,
+            "workerRss": 44695552,
+            "combined": 48316416
+          },
+          {
+            "label": "warm-tick-280",
+            "phase": "post-publish",
+            "atMs": 72995,
+            "daemonRss": 3620864,
+            "workerRss": 44695552,
+            "combined": 48316416
+          },
+          {
+            "label": "warm-tick-281",
+            "phase": "post-publish",
+            "atMs": 73285,
+            "daemonRss": 3620864,
+            "workerRss": 44695552,
+            "combined": 48316416
+          },
+          {
+            "label": "warm-tick-282",
+            "phase": "post-publish",
+            "atMs": 73483,
+            "daemonRss": 3604480,
+            "workerRss": 44679168,
+            "combined": 48283648
+          },
+          {
+            "label": "warm-tick-283",
+            "phase": "post-publish",
+            "atMs": 73720,
+            "daemonRss": 3620864,
+            "workerRss": 44695552,
+            "combined": 48316416
+          },
+          {
+            "label": "warm-tick-284",
+            "phase": "post-publish",
+            "atMs": 73962,
+            "daemonRss": 3620864,
+            "workerRss": 44695552,
+            "combined": 48316416
+          },
+          {
+            "label": "warm-tick-285",
+            "phase": "post-publish",
+            "atMs": 74246,
+            "daemonRss": 3620864,
+            "workerRss": 44695552,
+            "combined": 48316416
+          },
+          {
+            "label": "warm-tick-286",
+            "phase": "post-publish",
+            "atMs": 74481,
+            "daemonRss": 3620864,
+            "workerRss": 44695552,
+            "combined": 48316416
+          },
+          {
+            "label": "warm-tick-287",
+            "phase": "post-publish",
+            "atMs": 74716,
+            "daemonRss": 3620864,
+            "workerRss": 44695552,
+            "combined": 48316416
+          },
+          {
+            "label": "warm-tick-288",
+            "phase": "post-publish",
+            "atMs": 74979,
+            "daemonRss": 3620864,
+            "workerRss": 44695552,
+            "combined": 48316416
+          },
+          {
+            "label": "warm-tick-289",
+            "phase": "post-publish",
+            "atMs": 75225,
+            "daemonRss": 6733824,
+            "workerRss": 44695552,
+            "combined": 51429376
+          },
+          {
+            "label": "warm-tick-290",
+            "phase": "post-publish",
+            "atMs": 75451,
+            "daemonRss": 10338304,
+            "workerRss": 334299136,
+            "combined": 344637440
+          },
+          {
+            "label": "warm-tick-291",
+            "phase": "post-publish",
+            "atMs": 75711,
+            "daemonRss": 73760768,
+            "workerRss": 345423872,
+            "combined": 419184640
+          },
+          {
+            "label": "warm-tick-292",
+            "phase": "post-publish",
+            "atMs": 76025,
+            "daemonRss": 73760768,
+            "workerRss": 416841728,
+            "combined": 490602496
+          },
+          {
+            "label": "warm-tick-293",
+            "phase": "post-publish",
+            "atMs": 76214,
+            "daemonRss": 73760768,
+            "workerRss": 426115072,
+            "combined": 499875840
+          },
+          {
+            "label": "warm-tick-294",
+            "phase": "post-publish",
+            "atMs": 76498,
+            "daemonRss": 73760768,
+            "workerRss": 426115072,
+            "combined": 499875840
+          },
+          {
+            "label": "warm-tick-295",
+            "phase": "post-publish",
+            "atMs": 76872,
+            "daemonRss": 71417856,
+            "workerRss": 403062784,
+            "combined": 474480640
+          },
+          {
+            "label": "warm-tick-296",
+            "phase": "post-publish",
+            "atMs": 77028,
+            "daemonRss": 71417856,
+            "workerRss": 429637632,
+            "combined": 501055488
+          },
+          {
+            "label": "warm-tick-297",
+            "phase": "post-publish",
+            "atMs": 77359,
+            "daemonRss": 71417856,
+            "workerRss": 439894016,
+            "combined": 511311872
+          },
+          {
+            "label": "warm-tick-298",
+            "phase": "post-publish",
+            "atMs": 77545,
+            "daemonRss": 71417856,
+            "workerRss": 454574080,
+            "combined": 525991936
+          },
+          {
+            "label": "warm-tick-299",
+            "phase": "post-publish",
+            "atMs": 77801,
+            "daemonRss": 71417856,
+            "workerRss": 460685312,
+            "combined": 532103168
+          },
+          {
+            "label": "warm-tick-300",
+            "phase": "post-publish",
+            "atMs": 78160,
+            "daemonRss": 71417856,
+            "workerRss": 460701696,
+            "combined": 532119552
+          },
+          {
+            "label": "warm-tick-301",
+            "phase": "post-publish",
+            "atMs": 78364,
+            "daemonRss": 25640960,
+            "workerRss": 278167552,
+            "combined": 303808512
+          },
+          {
+            "label": "warm-tick-302",
+            "phase": "post-publish",
+            "atMs": 78565,
+            "daemonRss": 25640960,
+            "workerRss": 322125824,
+            "combined": 347766784
+          },
+          {
+            "label": "warm-tick-303",
+            "phase": "post-publish",
+            "atMs": 78882,
+            "daemonRss": 25640960,
+            "workerRss": 350584832,
+            "combined": 376225792
+          },
+          {
+            "label": "warm-tick-304",
+            "phase": "post-publish",
+            "atMs": 79242,
+            "daemonRss": 3883008,
+            "workerRss": 372555776,
+            "combined": 376438784
+          },
+          {
+            "label": "warm-tick-305",
+            "phase": "post-publish",
+            "atMs": 79397,
+            "daemonRss": 3883008,
+            "workerRss": 372359168,
+            "combined": 376242176
+          },
+          {
+            "label": "warm-tick-306",
+            "phase": "post-publish",
+            "atMs": 79702,
+            "daemonRss": 3899392,
+            "workerRss": 395493376,
+            "combined": 399392768
+          },
+          {
+            "label": "warm-tick-307",
+            "phase": "post-publish",
+            "atMs": 79923,
+            "daemonRss": 3899392,
+            "workerRss": 463912960,
+            "combined": 467812352
+          },
+          {
+            "label": "warm-tick-308",
+            "phase": "post-publish",
+            "atMs": 80311,
+            "daemonRss": 144621568,
+            "workerRss": 422985728,
+            "combined": 567607296
+          }
+        ],
+        "pids": {
+          "daemon": 26139,
+          "worker": 26371
+        },
+        "peakBytes": 960315392,
+        "capPass": true,
+        "capBytes": 1468006400
+      }
+    }
+  }
+}

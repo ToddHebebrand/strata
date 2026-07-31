@@ -164,6 +164,13 @@ export interface RunBigCliOptions {
   exitGate: "persistence" | null;
   /** `--artifact-base <name>`; defaults to `EXIT_GATE_DEFAULT_ARTIFACT_BASE` in exit-gate mode (so an exit-gate run can never overwrite the recorded gate-3 artifact), null otherwise. */
   artifactBase: string | null;
+  /**
+   * `--n-medium <n>` — exit-gate mode ONLY: the larger pre-registered medium N
+   * for an INCONCLUSIVE re-run (plan Task 11 exit-1 branch; pre-registered in
+   * decisions.md BEFORE the re-run). Rejected outside exit-gate mode so the
+   * default path's recorded N_MEDIUM can never be overridden. null = config N.
+   */
+  nMedium: number | null;
 }
 
 /**
@@ -200,7 +207,20 @@ export function parseRunBigArgs(argv: readonly string[]): RunBigCliOptions {
   }
   if (exitGate !== null && artifactBase === null) artifactBase = EXIT_GATE_DEFAULT_ARTIFACT_BASE;
 
-  return { smoke, exitGate, artifactBase };
+  let nMedium: number | null = null;
+  const nMediumIndex = argv.indexOf("--n-medium");
+  if (nMediumIndex !== -1) {
+    if (exitGate === null) {
+      throw new Error("--n-medium is only valid with --exit-gate (the default path's pre-registered N is immutable)");
+    }
+    const value = Number(argv[nMediumIndex + 1]);
+    if (!Number.isInteger(value) || value < 2) {
+      throw new Error(`--n-medium: expected an integer >= 2, got ${JSON.stringify(argv[nMediumIndex + 1])}`);
+    }
+    nMedium = value;
+  }
+
+  return { smoke, exitGate, artifactBase, nMedium };
 }
 
 // ---------------------------------------------------------------------------
@@ -597,6 +617,14 @@ async function main(): Promise<void> {
   const cli = parseRunBigArgs(process.argv.slice(2));
   const smoke = cli.smoke;
   const sizing = resolveSizing(smoke);
+  if (cli.nMedium !== null) {
+    // Exit-gate INCONCLUSIVE re-run at a larger pre-registered medium N (plan
+    // Task 11 exit-1 branch; the value is recorded in decisions.md before the
+    // run and lands in the artifact's exitGate.argv). Cold and warm both use
+    // it; every other size, seed, window, and threshold stays as recorded.
+    sizing.nMediumCold = cli.nMedium;
+    sizing.nMediumWarm = cli.nMedium;
+  }
   if (cli.exitGate !== null) {
     // Task 11: the ONLY kernel-arm configuration change in exit-gate mode —
     // kernel-child.ts reads this and passes `--persistent-bridge` to its

@@ -7,6 +7,45 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-07-25 — Bridge-persistence exit gate run 1: INCONCLUSIVE (medium cold CI straddle); larger-N re-run pre-registered
+
+**Run 1 (artifacts preserved at
+`docs/spikes/bridge-persistence-exit-gate-run1-inconclusive.{json,md,head}`,
+release binary sha256 f2d0e282…, `--persistent-bridge`, memoization on, A3
+memory wiring, recorded N/seeds/windows/thresholds):**
+- **big1k: PASS both modes, decisively** — cold p95 kernel 5.51 s vs SQLite
+  8.74 s (ratio 0.630, UCB95 0.866), warm 5.07 s vs 7.04 s (0.720, UCB95
+  0.749). The gate-3 falsifier-5 regime (12.2–12.9×) is reversed: the kernel
+  arm is now FASTER than the SQLite arm at 1012 modules.
+- **medium: warm PASS** (0.527, UCB95 0.785); **cold INCONCLUSIVE** — point
+  1.435, CI [1.125, 1.435] straddles 1.25 at N=12.
+- **A3 memory: PASS both corpora** (big1k combined peak 960 MB vs the
+  pre-registered 1400 MB cap, 308 continuity-held samples; medium N=12 leak
+  check PASS). Lifecycle 4/4 both. Machine verdict exit 1 → INCONCLUSIVE per
+  the pre-registered tri-state; the stopping rule does NOT fire on
+  INCONCLUSIVE.
+- Environmental caveat, recorded: the whole run saw ~4–5× absolute inflation
+  in BOTH arms vs the gate-3 recording (e.g. SQLite medium cold p95 2.85 s
+  vs 0.56 s recorded) — ambient machine load; the balanced-paired design
+  absorbs it in the ratio point estimates but widens small-N CIs, which is
+  exactly the medium-cold straddle.
+
+**Execution-order amendment (operator-approved 2026-07-25, commit f87d5c2):**
+the A3 medium leak check runs BEFORE the corpus schedules. The Task-11 smoke
+runs showed the check is load-coupled (run after the heavy schedules, GC
+laziness under load inflates mid-series RSS and false-fails the unchanged
+windows ×1.15 predicate; a quiet-machine N=32 diagnostic is stable/declining
+and PASSES as registered). No threshold/window/N/predicate change.
+
+**Pre-registered re-run (per the plan's Task 11 exit-1 branch: "larger
+pre-registered N re-run before any conclusion"):** medium N = 24 (cold and
+warm; was 12), everything else IDENTICAL — same seeds, windows, thresholds,
+bootstrap, big1k N=8, same binary sha, same flags. Mechanism: a new
+`--n-medium` flag on `run-big.ts`, valid ONLY with `--exit-gate` (the
+default path's recorded N is not overridable), value recorded in the
+artifact's `exitGate.argv`. This entry is written and committed BEFORE the
+re-run executes.
+
 ## 2026-07-23 — Step-0 decomposition + plan v1→review→v2; execution blocked on operator A3
 
 **Step-0 findings (spike `docs/spikes/bridge-persistence-step0.md`, commit
