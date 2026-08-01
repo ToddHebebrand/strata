@@ -367,7 +367,7 @@ export const responseResultSchema = z.discriminatedUnion("type", [
           z
             .object({
               nodeId: opaqueIdSchema,
-              name: z.string().min(1).nullable(),
+              name: boundedString(MAX_ID_BYTES).nullable(),
               kind: discoveryStatementKindSchema,
               exported: z.boolean()
             })
