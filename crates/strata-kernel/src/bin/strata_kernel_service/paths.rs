@@ -30,6 +30,11 @@ pub(super) fn project_module_path(
         bail!("module payload contains a backslash");
     }
     let relative = if let Some(stripped) = payload.strip_prefix('/') {
+        // A corpus root of `/` (filesystem root) is unsupported by this
+        // prefix chain by design: `std::fs::canonicalize` never returns a
+        // trailing slash for a non-root path, so the `strip_prefix('/')`
+        // boundary check below assumes `root != "/"` to distinguish "is the
+        // root" from "is a proper descendant."
         let root = canonical_corpus_root
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("corpus root is not valid UTF-8"))?;
@@ -107,6 +112,13 @@ mod tests {
     #[test]
     fn root_itself_fails_closed() {
         assert!(project_module_path(&root(), root().to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn sibling_directory_sharing_a_name_prefix_fails_closed() {
+        let root = root();
+        let sibling = format!("{}-sibling/src/x.ts", root.to_str().unwrap());
+        assert!(project_module_path(&root, &sibling).is_err());
     }
 
     #[test]
