@@ -18,11 +18,13 @@ use super::audit::{
     AuditEvent, FollowUp, PendingRequest, RequestJournal, RequestLedgerEntry, ServiceAudit,
     action_body_hash, client_hash, request_identity,
 };
+use super::paths::project_module_path;
 use super::protocol::{
     CancelledState, ChangeSetState, DeclarationSummary, Diagnostic, InspectedNode, Intent,
-    LocalServiceProtocolContext, LocalServiceRequest, LocalServiceResponse, NodeRelationship,
-    OperationIntentSummary, OperationRenameTransition, RenamedSymbol, RequestAction,
-    ResponseResult, ServiceEvent, ServiceEventKind, TicketState, WireU64, parse_request_frame,
+    LocalServiceProtocolContext, LocalServiceRequest, LocalServiceResponse,
+    ModuleDeclarationSummary, ModuleSummary, NodeRelationship, OperationIntentSummary,
+    OperationRenameTransition, ReferenceSummary, RenamedSymbol, RequestAction, ResponseResult,
+    ServiceEvent, ServiceEventKind, TicketState, WireU64, parse_request_frame,
 };
 
 const MAX_INTENTS: usize = 256;
@@ -73,8 +75,7 @@ pub(super) struct ServiceSession {
     delivered_events: Mutex<BTreeMap<String, u64>>,
     protocol: Mutex<LocalServiceProtocolContext>,
     /// Canonicalized once at `open`; consumed by `paths::project_module_path`
-    /// starting in Task 4's `list_modules` handler.
-    #[allow(dead_code)]
+    /// in the `list_modules` read handler.
     canonical_corpus_root: PathBuf,
     failpoint: ServiceFailpoint,
     /// Present only under `--metrics`. Behind a `Mutex` because connections are
@@ -860,6 +861,69 @@ impl ServiceSession {
                             kind: declaration.kind,
                             name: declaration.name,
                             module_id: declaration.module_id,
+                        })
+                        .collect(),
+                    has_more,
+                })
+            }
+            RequestAction::ListModules { after_module_id, limit } => {
+                let (generation, entries, has_more) = self
+                    .kernel
+                    .list_modules(after_module_id.as_deref(), *limit as usize)?;
+                let modules = entries
+                    .into_iter()
+                    .map(|entry| {
+                        let path = project_module_path(&self.canonical_corpus_root, &entry.payload)
+                            .with_context(|| {
+                                format!("module {} has a non-projectable path payload", entry.module_id)
+                            })?;
+                        Ok(ModuleSummary {
+                            module_id: entry.module_id,
+                            path,
+                            declaration_count: entry.declaration_count,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(ResponseResult::Modules {
+                    graph_generation: WireU64::new(generation),
+                    modules,
+                    has_more,
+                })
+            }
+            RequestAction::ListModuleDeclarations { module_id, after_node_id, limit } => {
+                let (generation, entries, has_more) = self.kernel.list_module_declarations(
+                    module_id,
+                    after_node_id.as_deref(),
+                    *limit as usize,
+                )?;
+                Ok(ResponseResult::ModuleDeclarations {
+                    graph_generation: WireU64::new(generation),
+                    declarations: entries
+                        .into_iter()
+                        .map(|entry| ModuleDeclarationSummary {
+                            node_id: entry.node_id,
+                            name: entry.name,
+                            kind: entry.kind,
+                            exported: entry.exported,
+                        })
+                        .collect(),
+                    has_more,
+                })
+            }
+            RequestAction::GetReferences { node_id, after_reference_key, limit } => {
+                let (generation, references, has_more) = self.kernel.incoming_references(
+                    node_id,
+                    after_reference_key.as_deref(),
+                    *limit as usize,
+                )?;
+                Ok(ResponseResult::References {
+                    graph_generation: WireU64::new(generation),
+                    references: references
+                        .into_iter()
+                        .map(|reference| ReferenceSummary {
+                            from_node_id: reference.from_node_id,
+                            kind: reference.kind,
+                            module_id: reference.module_id,
                         })
                         .collect(),
                     has_more,

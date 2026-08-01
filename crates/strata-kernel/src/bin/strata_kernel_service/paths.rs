@@ -16,9 +16,6 @@ use super::protocol::MAX_MODULE_PATH_BYTES;
 /// deterministic for nodes whose rendered file does not currently exist,
 /// and an absolute payload that only matches the corpus root through a
 /// symlink alias fails closed by design.
-///
-/// Unused until Task 4 wires it into the `list_modules` handler.
-#[allow(dead_code)]
 pub(super) fn project_module_path(
     canonical_corpus_root: &Path,
     payload: &str,

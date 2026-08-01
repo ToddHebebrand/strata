@@ -62,6 +62,15 @@ fn accepted_value(name: &str) -> Value {
         .value
 }
 
+fn rejected_value(name: &str) -> Value {
+    fixture("rejected")
+        .cases
+        .into_iter()
+        .find(|entry| entry.name == name)
+        .unwrap()
+        .value
+}
+
 fn raw_rejected_frame(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../packages/live-compare/tests/fixtures/protocol-v1/raw-rejected")
@@ -226,7 +235,13 @@ impl Drop for RunningService {
 }
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    // Canonicalized (not just `.join("../..")`): module payloads built from
+    // this value (`localized_source_snapshot`) must match daemon-side
+    // `canonical_corpus_root` byte-for-byte, since `project_module_path` is a
+    // purely lexical prefix match against the canonicalized `--corpus-root`.
+    // An uncanonicalized `../..` literal in the payload string is not a
+    // realistic ingest payload and was never exercised before `list_modules`.
+    std::fs::canonicalize(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")).unwrap()
 }
 
 fn localized_source_snapshot(directory: &TempDir) -> PathBuf {
@@ -309,6 +324,91 @@ fn bridge_worker() -> PathBuf {
 
 fn start_service_with_worker(directory: &TempDir, token: &str, worker: PathBuf) -> RunningService {
     let snapshot = localized_source_snapshot(directory);
+    start_service_with_snapshot(directory, token, worker, snapshot)
+}
+
+/// One escaping-payload variant snapshot: same corpus-localization as
+/// `localized_source_snapshot`, except the FIRST module node encountered is
+/// rewritten to an absolute path OUTSIDE `examples/medium` (the tempdir
+/// itself) instead of being projected under the corpus root. Returns the
+/// snapshot path, the escaping module's ID, and its raw (off-corpus) payload
+/// so the caller can assert an error message names the ID but never the
+/// payload.
+fn localized_source_snapshot_with_escape(directory: &TempDir) -> (PathBuf, String, String) {
+    let mut snapshot: Value =
+        serde_json::from_str(include_str!("fixtures/examples-medium.snapshot.json")).unwrap();
+    let nodes = snapshot["nodes"].as_array().unwrap();
+    let mut retained = nodes
+        .iter()
+        .filter(|node| {
+            node["kind"] == "Module"
+                && node["payload"]
+                    .as_str()
+                    .is_some_and(|payload| payload.starts_with("/project/src/"))
+        })
+        .map(|node| node["id"].as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
+    loop {
+        let before = retained.len();
+        for node in nodes {
+            if node["parentId"]
+                .as_str()
+                .is_some_and(|parent| retained.contains(parent))
+            {
+                retained.insert(node["id"].as_str().unwrap().to_owned());
+            }
+        }
+        if before == retained.len() {
+            break;
+        }
+    }
+    snapshot["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|node| retained.contains(node["id"].as_str().unwrap()));
+    snapshot["references"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|reference| {
+            retained.contains(reference["fromNodeId"].as_str().unwrap())
+                && retained.contains(reference["toNodeId"].as_str().unwrap())
+        });
+    let corpus_root = repo_root().join("examples/medium");
+    let outside_payload = directory
+        .path()
+        .join("outside.ts")
+        .to_string_lossy()
+        .into_owned();
+    let mut escaped_module_id = None;
+    for module in snapshot["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .filter(|node| node["kind"] == "Module")
+    {
+        if escaped_module_id.is_none() {
+            escaped_module_id = Some(module["id"].as_str().unwrap().to_owned());
+            module["payload"] = json!(outside_payload);
+            continue;
+        }
+        let relative = module["payload"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("/project/")
+            .unwrap();
+        module["payload"] = json!(corpus_root.join(relative).to_string_lossy());
+    }
+    let path = directory.path().join("snapshot.json");
+    fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    (path, escaped_module_id.unwrap(), outside_payload)
+}
+
+fn start_service_with_snapshot(
+    directory: &TempDir,
+    token: &str,
+    worker: PathBuf,
+    snapshot: PathBuf,
+) -> RunningService {
     let audit = directory.path().join("service-audit.jsonl");
     let mut child = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
         .args([
@@ -776,4 +876,342 @@ fn daemon_rejects_unsafe_or_overlong_socket_paths_before_bind() {
         .unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("/tmp/strata-lc/"));
+}
+
+#[test]
+fn discovery_list_modules_projects_absolute_payloads_and_pages_deterministically() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = start_service(&directory, "discovery-list-modules-token");
+
+    // Walk the whole module list one item at a time, following afterModuleId,
+    // and track every graphGeneration seen along the way.
+    let mut walked: Vec<Value> = Vec::new();
+    let mut after: Option<String> = None;
+    let mut generations = BTreeSet::new();
+    loop {
+        let mut action = json!({"type":"list_modules","limit":1});
+        if let Some(after_id) = &after {
+            action["afterModuleId"] = json!(after_id);
+        }
+        let response = request(
+            &service,
+            &format!("request:list-modules:walk:{}", walked.len()),
+            "client:alpha",
+            None,
+            action,
+        );
+        assert_eq!(response["ok"], true, "{response}");
+        let result = &response["result"];
+        generations.insert(result["graphGeneration"].as_str().unwrap().to_owned());
+        let modules = result["modules"].as_array().unwrap();
+        assert_eq!(modules.len(), 1, "{response}");
+        let module = modules[0].clone();
+        after = Some(module["moduleId"].as_str().unwrap().to_owned());
+        let has_more = result["hasMore"].as_bool().unwrap();
+        walked.push(module);
+        if !has_more {
+            break;
+        }
+    }
+    assert!(!walked.is_empty());
+    assert_eq!(
+        generations.len(),
+        1,
+        "every page of the walk must report the same graphGeneration: {generations:?}"
+    );
+
+    for module in &walked {
+        let path = module["path"].as_str().unwrap();
+        assert!(path.starts_with("src/"), "path must be corpus-relative: {path}");
+        assert!(!path.starts_with('/'), "path must not be absolute: {path}");
+        assert!(!path.contains(".."), "path must not contain ..: {path}");
+        assert!(!path.contains('\\'), "path must not contain a backslash: {path}");
+    }
+
+    let single_page = request(
+        &service,
+        "request:list-modules:single-page",
+        "client:alpha",
+        None,
+        json!({"type":"list_modules","limit":64}),
+    );
+    assert_eq!(single_page["ok"], true, "{single_page}");
+    assert_eq!(single_page["result"]["hasMore"], false, "{single_page}");
+    assert_eq!(
+        single_page["result"]["modules"],
+        Value::Array(walked.clone()),
+        "one limit:64 page must equal the paged walk"
+    );
+
+    let user_module = walked
+        .iter()
+        .find(|module| module["path"] == "src/types/user.ts")
+        .expect("src/types/user.ts must be present in the walk");
+    assert!(
+        user_module["declarationCount"].as_u64().unwrap() >= 1,
+        "{user_module}"
+    );
+}
+
+#[test]
+fn discovery_list_module_declarations_matches_registered_target() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = start_service(&directory, "discovery-list-declarations-token");
+
+    let modules = request(
+        &service,
+        "request:list-modules",
+        "client:alpha",
+        None,
+        json!({"type":"list_modules","limit":64}),
+    );
+    assert_eq!(modules["ok"], true, "{modules}");
+    let user_module_id = modules["result"]["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|module| module["path"] == "src/types/user.ts")
+        .expect("src/types/user.ts must be present")["moduleId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let declarations = request(
+        &service,
+        "request:list-module-declarations",
+        "client:alpha",
+        None,
+        json!({"type":"list_module_declarations","moduleId":user_module_id,"limit":64}),
+    );
+    assert_eq!(declarations["ok"], true, "{declarations}");
+    let entries = declarations["result"]["declarations"].as_array().unwrap();
+    let user_entry = entries
+        .iter()
+        .find(|entry| entry["nodeId"] == USER_ID)
+        .unwrap_or_else(|| panic!("USER_ID missing from declarations: {entries:?}"));
+    assert_eq!(user_entry["name"], "User");
+    assert_eq!(user_entry["kind"], "InterfaceDeclaration");
+    assert_eq!(user_entry["exported"], true);
+}
+
+#[test]
+fn discovery_scoped_find_declarations_resolves_without_global_lookup() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = start_service(&directory, "discovery-scoped-find-token");
+
+    let modules_response = request(
+        &service,
+        "request:list-modules",
+        "client:alpha",
+        None,
+        json!({"type":"list_modules","limit":64}),
+    );
+    assert_eq!(modules_response["ok"], true, "{modules_response}");
+    let modules = modules_response["result"]["modules"].as_array().unwrap();
+    let user_module_id = modules
+        .iter()
+        .find(|module| module["path"] == "src/types/user.ts")
+        .expect("src/types/user.ts must be present")["moduleId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other_module_id = modules
+        .iter()
+        .find(|module| module["moduleId"].as_str().unwrap() != user_module_id)
+        .expect("a second module must exist for the negative control")["moduleId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let scoped = request(
+        &service,
+        "request:find:scoped",
+        "client:alpha",
+        None,
+        json!({"type":"find_declarations","name":"User","moduleId":user_module_id}),
+    );
+    assert_eq!(scoped["ok"], true, "{scoped}");
+    let matches = scoped["result"]["declarations"].as_array().unwrap();
+    assert_eq!(matches.len(), 1, "{scoped}");
+    assert_eq!(matches[0]["nodeId"], USER_ID);
+    assert_eq!(scoped["result"]["hasMore"], false, "{scoped}");
+
+    let wrong_module = request(
+        &service,
+        "request:find:wrong-module",
+        "client:alpha",
+        None,
+        json!({"type":"find_declarations","name":"User","moduleId":other_module_id}),
+    );
+    assert_eq!(wrong_module["ok"], true, "{wrong_module}");
+    assert_eq!(
+        wrong_module["result"]["declarations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "{wrong_module}"
+    );
+}
+
+#[test]
+fn discovery_get_references_pages_and_attributes_modules() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = start_service(&directory, "discovery-get-references-token");
+
+    let mut walked: Vec<Value> = Vec::new();
+    let mut after: Option<String> = None;
+    let mut generations = BTreeSet::new();
+    loop {
+        let mut action = json!({"type":"get_references","nodeId":USER_ID,"limit":1});
+        if let Some(after_key) = &after {
+            action["afterReferenceKey"] = json!(after_key);
+        }
+        let response = request(
+            &service,
+            &format!("request:get-references:walk:{}", walked.len()),
+            "client:alpha",
+            None,
+            action,
+        );
+        assert_eq!(response["ok"], true, "{response}");
+        let result = &response["result"];
+        generations.insert(result["graphGeneration"].as_str().unwrap().to_owned());
+        let references = result["references"].as_array().unwrap();
+        assert_eq!(references.len(), 1, "{response}");
+        let reference = references[0].clone();
+        after = Some(reference["fromNodeId"].as_str().unwrap().to_owned());
+        let has_more = result["hasMore"].as_bool().unwrap();
+        walked.push(reference);
+        if !has_more {
+            break;
+        }
+    }
+    assert!(
+        !walked.is_empty(),
+        "USER_ID must have at least one incoming (subtree) reference"
+    );
+    assert_eq!(
+        generations.len(),
+        1,
+        "every page of the walk must report the same graphGeneration: {generations:?}"
+    );
+
+    let single_page = request(
+        &service,
+        "request:get-references:single-page",
+        "client:alpha",
+        None,
+        json!({"type":"get_references","nodeId":USER_ID,"limit":256}),
+    );
+    assert_eq!(single_page["ok"], true, "{single_page}");
+    assert_eq!(single_page["result"]["hasMore"], false, "{single_page}");
+    assert_eq!(
+        single_page["result"]["references"],
+        Value::Array(walked.clone()),
+        "one limit:256 page must equal the paged walk"
+    );
+
+    let modules_response = request(
+        &service,
+        "request:list-modules:for-references",
+        "client:alpha",
+        None,
+        json!({"type":"list_modules","limit":64}),
+    );
+    assert_eq!(modules_response["ok"], true, "{modules_response}");
+    let module_ids = modules_response["result"]["modules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|module| module["moduleId"].as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
+    for reference in &walked {
+        let module_id = reference["moduleId"].as_str().unwrap();
+        assert!(
+            module_ids.contains(module_id),
+            "{module_id} referenced but missing from the list_modules walk"
+        );
+    }
+
+    let unknown = request(
+        &service,
+        "request:get-references:unknown",
+        "client:alpha",
+        None,
+        json!({"type":"get_references","nodeId":"node:does-not-exist","limit":256}),
+    );
+    assert_eq!(unknown["ok"], false, "{unknown}");
+    assert_eq!(unknown["error"]["code"], "request_failed", "{unknown}");
+}
+
+#[test]
+fn discovery_list_modules_fails_closed_on_escaping_module_payload() {
+    let directory = tempfile::tempdir().unwrap();
+    let (snapshot, escaped_module_id, escaped_payload) =
+        localized_source_snapshot_with_escape(&directory);
+    let worker = bridge_worker();
+    let service =
+        start_service_with_snapshot(&directory, "discovery-escape-token", worker, snapshot);
+
+    let failed = request(
+        &service,
+        "request:list-modules:escape",
+        "client:alpha",
+        None,
+        json!({"type":"list_modules","limit":64}),
+    );
+    assert_eq!(failed["ok"], false, "{failed}");
+    assert_eq!(failed["error"]["code"], "request_failed", "{failed}");
+    let message = failed["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains(&escaped_module_id),
+        "error message must name the offending module ID: {message}"
+    );
+    assert!(
+        !message.contains(&escaped_payload),
+        "error message must NOT leak the raw payload: {message}"
+    );
+
+    // Fail-closed is per-request, not per-daemon: hello and find_declarations
+    // still work on the exact same running service.
+    let hello = request(
+        &service,
+        "request:hello:escape",
+        "client:alpha",
+        None,
+        json!({"type":"hello"}),
+    );
+    assert_eq!(hello["ok"], true, "{hello}");
+
+    let found = request(
+        &service,
+        "request:find:escape",
+        "client:alpha",
+        None,
+        json!({"type":"find_declarations","name":"User","kind":"interface"}),
+    );
+    assert_eq!(found["ok"], true, "{found}");
+    assert_eq!(
+        found["result"]["declarations"].as_array().unwrap().len(),
+        1,
+        "{found}"
+    );
+}
+
+#[test]
+fn discovery_read_actions_reject_idempotency_keys() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = start_service(&directory, "discovery-idempotency-token");
+
+    let rejected = rejected_value("list-modules-request-idempotency-key");
+    let response = request(
+        &service,
+        rejected["requestId"].as_str().unwrap(),
+        rejected["clientId"].as_str().unwrap(),
+        rejected["idempotencyKey"].as_str(),
+        rejected["action"].clone(),
+    );
+    assert_eq!(response["ok"], false, "{response}");
+    assert_eq!(response["error"]["code"], "invalid_request", "{response}");
 }
