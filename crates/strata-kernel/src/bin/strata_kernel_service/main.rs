@@ -1,5 +1,6 @@
 mod audit;
 mod metrics;
+mod paths;
 mod protocol;
 mod server;
 mod session;
@@ -117,6 +118,10 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             })?
         }
     };
+    // Cloned before it moves into NodeBridgeConfig::tsc_only below; the
+    // canonical form (resolved at ServiceSession::open) backs module path
+    // projection (paths::project_module_path, Task 4).
+    let service_corpus_root = corpus_root.clone();
     let mut bridge_config = NodeBridgeConfig::tsc_only(
         "node",
         vec![worker.into_os_string()],
@@ -139,6 +144,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             snapshot_path,
             bridge_config,
             audit_path,
+            corpus_root: service_corpus_root,
             failpoint,
             metrics_path,
             #[cfg(feature = "redb-spike-api")]

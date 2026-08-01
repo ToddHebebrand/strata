@@ -46,6 +46,11 @@ pub(super) struct ServiceConfig {
     pub snapshot_path: PathBuf,
     pub bridge_config: NodeBridgeConfig,
     pub audit_path: PathBuf,
+    /// Corpus root as passed on argv (`--corpus-root`). Canonicalized once at
+    /// `ServiceSession::open` into `canonical_corpus_root`; module path
+    /// projection (`paths::project_module_path`) is lexical against that
+    /// canonical form.
+    pub corpus_root: PathBuf,
     pub failpoint: ServiceFailpoint,
     /// When set, per-request/recovery observability records are written to this
     /// JSONL sink. `None` (the default, no `--metrics`) is byte-identical
@@ -67,6 +72,10 @@ pub(super) struct ServiceSession {
     change_set_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     delivered_events: Mutex<BTreeMap<String, u64>>,
     protocol: Mutex<LocalServiceProtocolContext>,
+    /// Canonicalized once at `open`; consumed by `paths::project_module_path`
+    /// starting in Task 4's `list_modules` handler.
+    #[allow(dead_code)]
+    canonical_corpus_root: PathBuf,
     failpoint: ServiceFailpoint,
     /// Present only under `--metrics`. Behind a `Mutex` because connections are
     /// served on independent threads and each may emit records.
@@ -85,6 +94,12 @@ impl ServiceSession {
             None => None,
         };
         let existed = config.db_path.exists();
+        // Fail loudly if the corpus root does not resolve to a real directory —
+        // module path projection (paths::project_module_path, Task 4) is
+        // lexical against this canonical form and must never fall back to the
+        // raw (possibly relative, possibly symlinked) argv value.
+        let canonical_corpus_root = std::fs::canonicalize(&config.corpus_root)
+            .with_context(|| format!("canonicalize --corpus-root {}", config.corpus_root.display()))?;
         // Sanity-check wall around the whole open/create body. The recovery
         // report's own `open_ns` is authoritative; this bracket exists only so a
         // gross discrepancy is observable to a maintainer stepping through.
@@ -118,6 +133,7 @@ impl ServiceSession {
             change_set_locks: Mutex::new(BTreeMap::new()),
             delivered_events: Mutex::new(BTreeMap::new()),
             protocol: Mutex::new(LocalServiceProtocolContext::default()),
+            canonical_corpus_root,
             failpoint: config.failpoint,
             metrics,
             #[cfg(feature = "redb-spike-api")]
