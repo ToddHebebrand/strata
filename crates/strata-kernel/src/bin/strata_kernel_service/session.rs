@@ -649,6 +649,9 @@ impl ServiceSession {
             RequestAction::Hello { .. }
             | RequestAction::InspectNodes { .. }
             | RequestAction::FindDeclarations { .. }
+            | RequestAction::ListModules { .. }
+            | RequestAction::ListModuleDeclarations { .. }
+            | RequestAction::GetReferences { .. }
             | RequestAction::ReadEvents { .. }
             | RequestAction::ReadOperation { .. } => {
                 bail!("read-only action cannot be in the mutation journal")
@@ -820,7 +823,7 @@ impl ServiceSession {
         match action {
             RequestAction::Hello { .. } => Ok(ResponseResult::Ready {}),
             RequestAction::InspectNodes { node_ids } => self.inspect_nodes(node_ids),
-            RequestAction::FindDeclarations { name, kind } => {
+            RequestAction::FindDeclarations { name, kind, .. } => {
                 let (generation, matches) =
                     self.kernel.find_declarations(name, kind.as_deref())?;
                 Ok(ResponseResult::Declarations {
@@ -834,6 +837,10 @@ impl ServiceSession {
                             module_id: declaration.module_id,
                         })
                         .collect(),
+                    // Kernel still fails past MAX_DECLARATION_MATCHES, so a
+                    // successful response never has a further page. Task 3
+                    // replaces this with the kernel-reported value.
+                    has_more: false,
                 })
             }
             RequestAction::ReadEvents {

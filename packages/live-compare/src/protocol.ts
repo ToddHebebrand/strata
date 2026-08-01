@@ -14,6 +14,10 @@ const MAX_DIAGNOSTICS = 64;
 const MAX_EVENT_LIMIT = 256;
 const MAX_DECLARATION_MATCHES = 64;
 const MAX_OPERATION_INTENTS = 16;
+const MAX_MODULE_PAGE_ITEMS = 64;
+const MAX_MODULE_DECLARATION_PAGE_ITEMS = 64;
+const MAX_REFERENCE_PAGE_ITEMS = 256;
+const MAX_MODULE_PATH_BYTES = 512;
 const U64_MAX = 18_446_744_073_709_551_615n;
 
 const utf8 = new TextEncoder();
@@ -109,6 +113,27 @@ export const declarationKindFilterSchema = z.enum([
   "variable"
 ]);
 
+export const discoveryStatementKindSchema = z.enum([
+  "InterfaceDeclaration",
+  "TypeAliasDeclaration",
+  "ClassDeclaration",
+  "FunctionDeclaration",
+  "FirstStatement"
+]);
+
+const modulePathSchema = z.string().superRefine((value, context) => {
+  if (value.length === 0) context.addIssue({ code: "custom", message: "module path must not be empty" });
+  if (utf8Length(value) > MAX_MODULE_PATH_BYTES) {
+    context.addIssue({ code: "custom", message: `module path exceeds ${MAX_MODULE_PATH_BYTES} UTF-8 bytes` });
+  }
+  if (value.startsWith("/") || value.includes("\\")) {
+    context.addIssue({ code: "custom", message: "module path must be corpus-relative POSIX" });
+  }
+  if (value.split("/").some((segment) => segment === "" || segment === "." || segment === "..")) {
+    context.addIssue({ code: "custom", message: "module path contains an invalid segment" });
+  }
+});
+
 export const requestActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("hello") }).strict(),
   z
@@ -121,7 +146,32 @@ export const requestActionSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("find_declarations"),
       name: boundedString(MAX_ID_BYTES),
-      kind: declarationKindFilterSchema.optional()
+      kind: declarationKindFilterSchema.optional(),
+      moduleId: opaqueIdSchema.optional(),
+      afterNodeId: opaqueIdSchema.optional()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("list_modules"),
+      afterModuleId: opaqueIdSchema.optional(),
+      limit: z.number().int().min(1).max(MAX_MODULE_PAGE_ITEMS)
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("list_module_declarations"),
+      moduleId: opaqueIdSchema,
+      afterNodeId: opaqueIdSchema.optional(),
+      limit: z.number().int().min(1).max(MAX_MODULE_DECLARATION_PAGE_ITEMS)
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("get_references"),
+      nodeId: opaqueIdSchema,
+      afterReferenceKey: opaqueIdSchema.optional(),
+      limit: z.number().int().min(1).max(MAX_REFERENCE_PAGE_ITEMS)
     })
     .strict(),
   z.object({ type: z.literal("begin_change_set"), reasoning: reasoningSchema }).strict(),
@@ -286,7 +336,63 @@ export const responseResultSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("declarations"),
       graphGeneration: canonicalU64Schema,
-      declarations: z.array(declarationSummarySchema).max(MAX_DECLARATION_MATCHES)
+      declarations: z.array(declarationSummarySchema).max(MAX_DECLARATION_MATCHES),
+      hasMore: z.boolean()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("modules"),
+      graphGeneration: canonicalU64Schema,
+      modules: z
+        .array(
+          z
+            .object({
+              moduleId: opaqueIdSchema,
+              path: modulePathSchema,
+              declarationCount: z.number().int().min(0)
+            })
+            .strict()
+        )
+        .max(MAX_MODULE_PAGE_ITEMS),
+      hasMore: z.boolean()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("module_declarations"),
+      graphGeneration: canonicalU64Schema,
+      declarations: z
+        .array(
+          z
+            .object({
+              nodeId: opaqueIdSchema,
+              name: z.string().min(1).nullable(),
+              kind: discoveryStatementKindSchema,
+              exported: z.boolean()
+            })
+            .strict()
+        )
+        .max(MAX_MODULE_DECLARATION_PAGE_ITEMS),
+      hasMore: z.boolean()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("references"),
+      graphGeneration: canonicalU64Schema,
+      references: z
+        .array(
+          z
+            .object({
+              fromNodeId: opaqueIdSchema,
+              kind: boundedString(MAX_ID_BYTES),
+              moduleId: opaqueIdSchema
+            })
+            .strict()
+        )
+        .max(MAX_REFERENCE_PAGE_ITEMS),
+      hasMore: z.boolean()
     })
     .strict(),
   z

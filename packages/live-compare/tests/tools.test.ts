@@ -23,7 +23,12 @@ const changeSet = {
 
 function fakeClient(overrides: Partial<CoordinationClientApi> = {}): CoordinationClientApi {
   return {
-    findDeclarations: async () => ({ type: "declarations", graphGeneration: "0", declarations: [] }),
+    findDeclarations: async () => ({
+      type: "declarations",
+      graphGeneration: "0",
+      declarations: [],
+      hasMore: false
+    }),
     inspectNodes: async () => ({ type: "nodes", graphGeneration: "0", nodes: [] }),
     beginChangeSet: async () => changeSet,
     addIntent: async () => changeSet,

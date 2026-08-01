@@ -172,9 +172,76 @@ describe("local service protocol v1", () => {
     const result = responseResultSchema.parse({
       type: "declarations",
       graphGeneration: "3",
-      declarations: [{ nodeId: "a", kind: "interface", name: "User", moduleId: "m" }]
+      declarations: [{ nodeId: "a", kind: "interface", name: "User", moduleId: "m" }],
+      hasMore: false
     });
     expect(result.type).toBe("declarations");
+  });
+
+  it("round-trips a scoped find_declarations request with moduleId and afterNodeId", () => {
+    const action = requestActionSchema.parse({
+      type: "find_declarations",
+      name: "User",
+      moduleId: "module:user",
+      afterNodeId: "node:user"
+    });
+    expect(action).toEqual({
+      type: "find_declarations",
+      name: "User",
+      moduleId: "module:user",
+      afterNodeId: "node:user"
+    });
+  });
+
+  it("round-trips list_modules request and modules result", () => {
+    const action = requestActionSchema.parse({
+      type: "list_modules",
+      afterModuleId: "module:a",
+      limit: 32
+    });
+    expect(action).toEqual({ type: "list_modules", afterModuleId: "module:a", limit: 32 });
+    const result = responseResultSchema.parse({
+      type: "modules",
+      graphGeneration: "5",
+      modules: [{ moduleId: "module:a", path: "src/a.ts", declarationCount: 3 }],
+      hasMore: true
+    });
+    expect(result.type).toBe("modules");
+  });
+
+  it("round-trips list_module_declarations request and module_declarations result", () => {
+    const action = requestActionSchema.parse({
+      type: "list_module_declarations",
+      moduleId: "module:a",
+      limit: 32
+    });
+    expect(action).toEqual({ type: "list_module_declarations", moduleId: "module:a", limit: 32 });
+    const result = responseResultSchema.parse({
+      type: "module_declarations",
+      graphGeneration: "5",
+      declarations: [
+        { nodeId: "node:user", name: "User", kind: "InterfaceDeclaration", exported: true },
+        { nodeId: "node:local", name: null, kind: "FirstStatement", exported: false }
+      ],
+      hasMore: false
+    });
+    expect(result.type).toBe("module_declarations");
+  });
+
+  it("round-trips get_references request and references result", () => {
+    const action = requestActionSchema.parse({
+      type: "get_references",
+      nodeId: "node:user",
+      limit: 64
+    });
+    expect(action).toEqual({ type: "get_references", nodeId: "node:user", limit: 64 });
+    const result = responseResultSchema.parse({
+      type: "references",
+      graphGeneration: "5",
+      references: [{ fromNodeId: "node:format-user", kind: "call", moduleId: "module:a" }],
+      hasMore: false
+    });
+    expect(result.type).toBe("references");
   });
 
   it("round-trips read_operation request and operation result", () => {

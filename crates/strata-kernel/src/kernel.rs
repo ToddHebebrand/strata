@@ -125,6 +125,15 @@ const PRODUCT_KINDS: [(&str, &str); 5] = [
 /// Fail-closed cap on `find_declarations` results.
 pub const MAX_DECLARATION_MATCHES: usize = 64;
 
+/// Fail-closed cap on a single `list_modules` page.
+pub const MAX_MODULE_PAGE_ITEMS: usize = 64;
+
+/// Fail-closed cap on a single `list_module_declarations` page.
+pub const MAX_MODULE_DECLARATION_PAGE_ITEMS: usize = 64;
+
+/// Fail-closed cap on a single `get_references` page.
+pub const MAX_REFERENCE_PAGE_ITEMS: usize = 256;
+
 fn product_kind_to_statement_kind(kind: &str) -> Result<&'static str> {
     PRODUCT_KINDS
         .iter()

@@ -5,7 +5,10 @@ use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::fmt;
-use strata_kernel::MAX_DECLARATION_MATCHES;
+use strata_kernel::{
+    MAX_DECLARATION_MATCHES, MAX_MODULE_DECLARATION_PAGE_ITEMS, MAX_MODULE_PAGE_ITEMS,
+    MAX_REFERENCE_PAGE_ITEMS,
+};
 
 pub const PROTOCOL_VERSION: u8 = 1;
 pub const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
@@ -114,6 +117,27 @@ pub(super) enum RequestAction {
         name: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        module_id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        after_node_id: Option<String>,
+    },
+    ListModules {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        after_module_id: Option<String>,
+        limit: u32,
+    },
+    ListModuleDeclarations {
+        module_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        after_node_id: Option<String>,
+        limit: u32,
+    },
+    GetReferences {
+        node_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        after_reference_key: Option<String>,
+        limit: u32,
     },
     BeginChangeSet {
         reasoning: String,
@@ -255,6 +279,22 @@ pub(super) enum ResponseResult {
     Declarations {
         graph_generation: WireU64,
         declarations: Vec<DeclarationSummary>,
+        has_more: bool,
+    },
+    Modules {
+        graph_generation: WireU64,
+        modules: Vec<ModuleSummary>,
+        has_more: bool,
+    },
+    ModuleDeclarations {
+        graph_generation: WireU64,
+        declarations: Vec<ModuleDeclarationSummary>,
+        has_more: bool,
+    },
+    References {
+        graph_generation: WireU64,
+        references: Vec<ReferenceSummary>,
+        has_more: bool,
     },
     ChangeSet {
         change_set_id: String,
@@ -309,6 +349,31 @@ pub(super) struct DeclarationSummary {
     pub(super) node_id: String,
     pub(super) kind: String,
     pub(super) name: String,
+    pub(super) module_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ModuleSummary {
+    pub(super) module_id: String,
+    pub(super) path: String,
+    pub(super) declaration_count: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ModuleDeclarationSummary {
+    pub(super) node_id: String,
+    pub(super) name: Option<String>,
+    pub(super) kind: String,
+    pub(super) exported: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct ReferenceSummary {
+    pub(super) from_node_id: String,
+    pub(super) kind: String,
     pub(super) module_id: String,
 }
 
@@ -521,6 +586,9 @@ impl RequestAction {
             Self::Hello { .. } => "hello",
             Self::InspectNodes { .. } => "inspect_nodes",
             Self::FindDeclarations { .. } => "find_declarations",
+            Self::ListModules { .. } => "list_modules",
+            Self::ListModuleDeclarations { .. } => "list_module_declarations",
+            Self::GetReferences { .. } => "get_references",
             Self::BeginChangeSet { .. } => "begin_change_set",
             Self::AddIntent { .. } => "add_intent",
             Self::SubmitChangeSet { .. } => "submit_change_set",
@@ -541,11 +609,47 @@ impl RequestAction {
                     validate_string(node_id, MAX_ID_BYTES, false, "nodeId")?;
                 }
             }
-            Self::FindDeclarations { name, kind } => {
+            Self::FindDeclarations {
+                name,
+                kind,
+                module_id,
+                after_node_id,
+            } => {
                 validate_string(name, MAX_ID_BYTES, false, "name")?;
                 if let Some(kind) = kind {
                     validate_string(kind, MAX_ID_BYTES, false, "kind")?;
                 }
+                validate_optional_id(module_id, "moduleId")?;
+                validate_optional_id(after_node_id, "afterNodeId")?;
+            }
+            Self::ListModules {
+                after_module_id,
+                limit,
+            } => {
+                validate_optional_id(after_module_id, "afterModuleId")?;
+                validate_page_limit(*limit, MAX_MODULE_PAGE_ITEMS, "list_modules")?;
+            }
+            Self::ListModuleDeclarations {
+                module_id,
+                after_node_id,
+                limit,
+            } => {
+                validate_string(module_id, MAX_ID_BYTES, false, "moduleId")?;
+                validate_optional_id(after_node_id, "afterNodeId")?;
+                validate_page_limit(
+                    *limit,
+                    MAX_MODULE_DECLARATION_PAGE_ITEMS,
+                    "list_module_declarations",
+                )?;
+            }
+            Self::GetReferences {
+                node_id,
+                after_reference_key,
+                limit,
+            } => {
+                validate_string(node_id, MAX_ID_BYTES, false, "nodeId")?;
+                validate_optional_id(after_reference_key, "afterReferenceKey")?;
+                validate_page_limit(*limit, MAX_REFERENCE_PAGE_ITEMS, "get_references")?;
             }
             Self::BeginChangeSet { reasoning } => {
                 validate_string(reasoning, MAX_REASONING_BYTES, true, "reasoning")?;
@@ -716,6 +820,29 @@ impl ResponseResult {
                     declaration.validate()?;
                 }
             }
+            Self::Modules { modules, .. } => {
+                bounded_items(modules.len(), 0, MAX_MODULE_PAGE_ITEMS, "modules")?;
+                for module in modules {
+                    module.validate()?;
+                }
+            }
+            Self::ModuleDeclarations { declarations, .. } => {
+                bounded_items(
+                    declarations.len(),
+                    0,
+                    MAX_MODULE_DECLARATION_PAGE_ITEMS,
+                    "declarations",
+                )?;
+                for declaration in declarations {
+                    declaration.validate()?;
+                }
+            }
+            Self::References { references, .. } => {
+                bounded_items(references.len(), 0, MAX_REFERENCE_PAGE_ITEMS, "references")?;
+                for reference in references {
+                    reference.validate()?;
+                }
+            }
             Self::ChangeSet {
                 change_set_id,
                 operation_id,
@@ -820,6 +947,32 @@ impl DeclarationSummary {
         validate_string(&self.node_id, MAX_ID_BYTES, false, "nodeId")?;
         validate_string(&self.kind, MAX_ID_BYTES, false, "kind")?;
         validate_string(&self.name, MAX_ID_BYTES, false, "name")?;
+        validate_string(&self.module_id, MAX_ID_BYTES, false, "moduleId")
+    }
+}
+
+impl ModuleSummary {
+    fn validate(&self) -> Result<()> {
+        validate_string(&self.module_id, MAX_ID_BYTES, false, "moduleId")?;
+        validate_module_path(&self.path)
+    }
+}
+
+impl ModuleDeclarationSummary {
+    fn validate(&self) -> Result<()> {
+        validate_string(&self.node_id, MAX_ID_BYTES, false, "nodeId")?;
+        validate_optional_id(&self.name, "name")?;
+        if !DISCOVERY_STATEMENT_KINDS.contains(&self.kind.as_str()) {
+            bail!("kind is not a supported discovery statement kind");
+        }
+        Ok(())
+    }
+}
+
+impl ReferenceSummary {
+    fn validate(&self) -> Result<()> {
+        validate_string(&self.from_node_id, MAX_ID_BYTES, false, "fromNodeId")?;
+        validate_string(&self.kind, MAX_ID_BYTES, false, "kind")?;
         validate_string(&self.module_id, MAX_ID_BYTES, false, "moduleId")
     }
 }
@@ -994,6 +1147,45 @@ fn validate_digest(value: &str) -> Result<()> {
     Ok(())
 }
 
+pub const MAX_MODULE_PATH_BYTES: usize = 512;
+
+/// Persisted top-level statement kinds the discovery surface counts and
+/// lists — the same set `PRODUCT_KINDS` maps to in kernel.rs, mirrored from
+/// `packages/store/src/discovery.ts` DISCOVERY_KINDS.
+const DISCOVERY_STATEMENT_KINDS: [&str; 5] = [
+    "InterfaceDeclaration",
+    "TypeAliasDeclaration",
+    "ClassDeclaration",
+    "FunctionDeclaration",
+    "FirstStatement",
+];
+
+fn validate_page_limit(limit: u32, max: usize, action: &str) -> Result<()> {
+    if limit == 0 || limit as usize > max {
+        bail!("{action} limit is outside the supported bound");
+    }
+    Ok(())
+}
+
+fn validate_module_path(value: &str) -> Result<()> {
+    if value.is_empty() {
+        bail!("module path must not be empty");
+    }
+    if value.len() > MAX_MODULE_PATH_BYTES {
+        bail!("module path exceeds {MAX_MODULE_PATH_BYTES} UTF-8 bytes");
+    }
+    if value.starts_with('/') || value.contains('\\') {
+        bail!("module path must be corpus-relative POSIX");
+    }
+    if value
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        bail!("module path contains an invalid segment");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1041,5 +1233,93 @@ mod tests {
             .validate()
             .expect_err("response one past MAX_INTENTS must be rejected");
         assert!(error.to_string().contains("intents"));
+    }
+
+    #[test]
+    fn list_modules_request_rejects_zero_and_over_bound_limits() {
+        for limit in [0u32, 65] {
+            let action = RequestAction::ListModules {
+                after_module_id: None,
+                limit,
+            };
+            assert!(action.validate().is_err(), "limit {limit} must be rejected");
+        }
+        let action = RequestAction::ListModules {
+            after_module_id: None,
+            limit: 64,
+        };
+        action.validate().expect("limit 64 must validate");
+    }
+
+    #[test]
+    fn module_path_validator_fails_closed() {
+        for bad in [
+            "",
+            "/abs/path.ts",
+            "src\\win.ts",
+            "src/../escape.ts",
+            "src//x.ts",
+            "./src/x.ts",
+            "src/./x.ts",
+        ] {
+            assert!(
+                validate_module_path(bad).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+        validate_module_path("src/types/user.ts").expect("relative POSIX path must validate");
+    }
+
+    #[test]
+    fn module_declarations_response_rejects_unknown_kind() {
+        let result = ResponseResult::ModuleDeclarations {
+            graph_generation: WireU64::new(1),
+            declarations: vec![ModuleDeclarationSummary {
+                node_id: "n1".into(),
+                name: None,
+                kind: "EnumDeclaration".into(),
+                exported: false,
+            }],
+            has_more: false,
+        };
+        assert!(result.validate().is_err());
+    }
+
+    #[test]
+    fn get_references_request_bounds_limit_at_256() {
+        let ok = RequestAction::GetReferences {
+            node_id: "n".into(),
+            after_reference_key: None,
+            limit: 256,
+        };
+        ok.validate().expect("limit 256 must validate");
+        let over = RequestAction::GetReferences {
+            node_id: "n".into(),
+            after_reference_key: None,
+            limit: 257,
+        };
+        assert!(over.validate().is_err());
+    }
+
+    /// Pins the frame-headroom assumption from the plan review: a maximal
+    /// modules page (64 items, 512-byte paths) serializes well inside
+    /// MAX_RESPONSE_FRAME_BYTES.
+    #[test]
+    fn maximal_modules_page_fits_the_response_frame() {
+        let response = LocalServiceResponse::success(
+            "request:max-page",
+            ResponseResult::Modules {
+                graph_generation: WireU64::new(1),
+                modules: (0..64)
+                    .map(|index| ModuleSummary {
+                        module_id: format!("{index:016x}"),
+                        path: format!("src/{}.ts", "a".repeat(MAX_MODULE_PATH_BYTES - 7)),
+                        declaration_count: u32::MAX,
+                    })
+                    .collect(),
+                has_more: true,
+            },
+        );
+        serialize_response_frame(&response).expect("maximal modules page must fit the frame");
     }
 }
