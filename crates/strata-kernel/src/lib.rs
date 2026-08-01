@@ -37,8 +37,9 @@ pub use graph::GraphGeneration;
 #[cfg(feature = "redb-spike-api")]
 pub use kernel::PublishFailpoint;
 pub use kernel::{
-    DeclarationMatch, Kernel, MAX_DECLARATION_MATCHES, MAX_MODULE_DECLARATION_PAGE_ITEMS,
-    MAX_MODULE_PAGE_ITEMS, MAX_REFERENCE_PAGE_ITEMS, PublicationReport, RecoveryReport,
+    DeclarationMatch, IncomingReference, Kernel, MAX_DECLARATION_MATCHES,
+    MAX_MODULE_DECLARATION_PAGE_ITEMS, MAX_MODULE_PAGE_ITEMS, MAX_REFERENCE_PAGE_ITEMS,
+    ModuleDeclarationEntry, ModuleEntry, PublicationReport, RecoveryReport,
 };
 pub use model::{
     EventRecord, GraphChange, GraphDelta, GraphSnapshot, NodeRecord, OperationIntentRecord,

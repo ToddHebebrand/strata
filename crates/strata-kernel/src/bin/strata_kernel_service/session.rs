@@ -839,9 +839,18 @@ impl ServiceSession {
         match action {
             RequestAction::Hello { .. } => Ok(ResponseResult::Ready {}),
             RequestAction::InspectNodes { node_ids } => self.inspect_nodes(node_ids),
-            RequestAction::FindDeclarations { name, kind, .. } => {
-                let (generation, matches) =
-                    self.kernel.find_declarations(name, kind.as_deref())?;
+            RequestAction::FindDeclarations {
+                name,
+                kind,
+                module_id,
+                after_node_id,
+            } => {
+                let (generation, matches, has_more) = self.kernel.find_declarations(
+                    name,
+                    kind.as_deref(),
+                    module_id.as_deref(),
+                    after_node_id.as_deref(),
+                )?;
                 Ok(ResponseResult::Declarations {
                     graph_generation: WireU64::new(generation),
                     declarations: matches
@@ -853,10 +862,7 @@ impl ServiceSession {
                             module_id: declaration.module_id,
                         })
                         .collect(),
-                    // Kernel still fails past MAX_DECLARATION_MATCHES, so a
-                    // successful response never has a further page. Task 3
-                    // replaces this with the kernel-reported value.
-                    has_more: false,
+                    has_more,
                 })
             }
             RequestAction::ReadEvents {

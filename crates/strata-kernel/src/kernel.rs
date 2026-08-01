@@ -18,6 +18,7 @@ use crate::coordination::{
 use crate::coordination::{TestSemanticAdapter, TestSemanticProvider};
 use crate::model::NodeRecord;
 use crate::model::OperationRecord;
+use crate::model::ReferenceRecord;
 #[cfg(feature = "redb-spike-api")]
 use crate::model::{FenceClaim, Publication};
 use crate::storage::DurableStore;
@@ -149,6 +150,110 @@ pub struct DeclarationMatch {
     pub kind: String,
     pub name: String,
     pub module_id: String,
+}
+
+/// One module returned by `Kernel::list_modules`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleEntry {
+    pub module_id: String,
+    /// RAW payload — projection to a display path is the service's job.
+    pub payload: String,
+    pub declaration_count: u32,
+}
+
+/// One top-level declaration returned by `Kernel::list_module_declarations`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModuleDeclarationEntry {
+    pub node_id: String,
+    pub name: Option<String>,
+    pub kind: String,
+    pub exported: bool,
+}
+
+/// One qualifying referrer returned by `Kernel::incoming_references`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncomingReference {
+    pub from_node_id: String,
+    pub kind: String,
+    pub module_id: String,
+}
+
+/// True for the persisted top-level statement kinds the discovery surface
+/// lists and counts — exactly the kinds `PRODUCT_KINDS` maps to.
+fn is_discovery_statement_kind(kind: &str) -> bool {
+    PRODUCT_KINDS.iter().any(|(_, statement)| *statement == kind)
+}
+
+/// Mirrors `isExportedPayload` in packages/store/src/discovery.ts: skip
+/// leading whitespace and `//` / `/* */` comments, then test for a literal
+/// `export` prefix. Intentionally byte-for-byte the product semantics,
+/// including the absence of a word-boundary check.
+pub(crate) fn is_exported_payload(payload: &str) -> bool {
+    let mut rest = payload;
+    loop {
+        let trimmed = rest.trim_start_matches([' ', '\t', '\n', '\r']);
+        if let Some(after) = trimmed.strip_prefix("//") {
+            match after.find('\n') {
+                Some(index) => rest = &after[index + 1..],
+                None => return false,
+            }
+        } else if let Some(after) = trimmed.strip_prefix("/*") {
+            match after.find("*/") {
+                Some(index) => rest = &after[index + 2..],
+                None => return false,
+            }
+        } else {
+            return trimmed.starts_with("export");
+        }
+    }
+}
+
+/// Fail-closed cap on `module_ancestor`'s parent-chain walk.
+const MAX_MODULE_ANCESTOR_DEPTH: usize = 4_096;
+/// Fail-closed cap on `bounded_subtree`'s traversal.
+const MAX_REFERENCE_SUBTREE_NODES: usize = 65_536;
+
+/// Walks a node's `parent_id` chain to its root and confirms that root is a
+/// `Module`, returning the module's ID. Bounded fail-closed against a cyclic
+/// or pathologically deep parent chain.
+fn module_ancestor(graph: &GraphGeneration, node_id: &str) -> Result<String> {
+    let mut current = graph
+        .node(node_id)
+        .with_context(|| format!("node {node_id} does not exist"))?;
+    let mut steps = 0usize;
+    while let Some(parent_id) = current.parent_id.as_deref() {
+        steps += 1;
+        ensure!(
+            steps <= MAX_MODULE_ANCESTOR_DEPTH,
+            "node {node_id} parent chain exceeds the supported depth"
+        );
+        current = graph
+            .node(parent_id)
+            .with_context(|| format!("node {parent_id} is missing from the graph"))?;
+    }
+    ensure!(
+        current.kind == "Module",
+        "node {node_id} does not root at a Module"
+    );
+    Ok(current.id.clone())
+}
+
+/// The IDs of `root` and every transitive child, bounded fail-closed.
+fn bounded_subtree(graph: &GraphGeneration, root: &str) -> Result<BTreeSet<String>> {
+    let mut subtree = BTreeSet::from([root.to_owned()]);
+    let mut queue = vec![root.to_owned()];
+    while let Some(parent) = queue.pop() {
+        for child in graph.children_of(&parent) {
+            ensure!(
+                subtree.len() < MAX_REFERENCE_SUBTREE_NODES,
+                "node {root} subtree exceeds the supported bound"
+            );
+            if subtree.insert(child.id.clone()) {
+                queue.push(child.id.clone());
+            }
+        }
+    }
+    Ok(subtree)
 }
 
 pub struct Kernel {
@@ -514,14 +619,129 @@ impl Kernel {
         one_shot.saturating_add(persistent)
     }
 
+    /// Lists modules (nodes of kind `Module`) id-ordered, one page at a time.
+    /// `declaration_count` is the number of discovery-kind top-level children
+    /// (the same kind vocabulary `find_declarations`/`list_module_declarations`
+    /// use), not a count of all children. No snapshot clone: iterates the live
+    /// generation's node index directly.
+    pub fn list_modules(
+        &self,
+        after_module_id: Option<&str>,
+        limit: usize,
+    ) -> Result<(u64, Vec<ModuleEntry>, bool)> {
+        ensure!(
+            (1..=MAX_MODULE_PAGE_ITEMS).contains(&limit),
+            "list_modules limit must be between 1 and {MAX_MODULE_PAGE_ITEMS}"
+        );
+        let graph = self.snapshot();
+        let generation = graph.generation();
+
+        let mut entries = Vec::new();
+        let mut has_more = false;
+        for node in graph.nodes() {
+            if node.kind != "Module" {
+                continue;
+            }
+            if let Some(after) = after_module_id
+                && node.id.as_str() <= after
+            {
+                continue;
+            }
+            if entries.len() == limit {
+                has_more = true;
+                break;
+            }
+            let declaration_count = u32::try_from(
+                graph
+                    .children_of(&node.id)
+                    .filter(|child| is_discovery_statement_kind(&child.kind))
+                    .count(),
+            )
+            .context("module declaration count overflow")?;
+            entries.push(ModuleEntry {
+                module_id: node.id.clone(),
+                payload: node.payload.clone(),
+                declaration_count,
+            });
+        }
+        Ok((generation, entries, has_more))
+    }
+
+    /// Lists one module's top-level discovery-kind declarations (name, kind,
+    /// exported flag), id-ordered, one page at a time. `module_id` must name
+    /// an existing `Module` node.
+    pub fn list_module_declarations(
+        &self,
+        module_id: &str,
+        after_node_id: Option<&str>,
+        limit: usize,
+    ) -> Result<(u64, Vec<ModuleDeclarationEntry>, bool)> {
+        ensure!(
+            (1..=MAX_MODULE_DECLARATION_PAGE_ITEMS).contains(&limit),
+            "list_module_declarations limit must be between 1 and {MAX_MODULE_DECLARATION_PAGE_ITEMS}"
+        );
+        let graph = self.snapshot();
+        let generation = graph.generation();
+        let module = graph
+            .node(module_id)
+            .with_context(|| format!("module {module_id} does not exist"))?;
+        ensure!(
+            module.kind == "Module",
+            "node {module_id} is not a Module (kind={})",
+            module.kind
+        );
+
+        let candidates: Vec<&NodeRecord> = graph
+            .children_of(module_id)
+            .filter(|child| is_discovery_statement_kind(&child.kind))
+            .collect();
+
+        let mut entries = Vec::new();
+        let mut has_more = false;
+        for child in candidates {
+            if let Some(after) = after_node_id
+                && child.id.as_str() <= after
+            {
+                continue;
+            }
+            if entries.len() == limit {
+                has_more = true;
+                break;
+            }
+            let identifier_children: Vec<&NodeRecord> = graph
+                .children_of(&child.id)
+                .filter(|node| node.kind == "Identifier")
+                .collect();
+            let mut identifiers = BTreeMap::new();
+            identifiers.insert(child.id.as_str(), identifier_children);
+            let name = confirmed_declaration_name(child, &identifiers)
+                .ok()
+                .flatten();
+            entries.push(ModuleDeclarationEntry {
+                node_id: child.id.clone(),
+                name,
+                kind: child.kind.clone(),
+                exported: is_exported_payload(&child.payload),
+            });
+        }
+        Ok((generation, entries, has_more))
+    }
+
     /// Finds named declarations by exact name, optionally narrowed to one product
-    /// kind. This is the minimal discovery surface: clients otherwise only have
-    /// node IDs they already know. One full-graph pass: a single snapshot clone
-    /// plus a single prebuilt parent -> Identifier-children map, so cost is
-    /// O(nodes), not O(declarations * nodes). Candidates whose name cannot be
-    /// confirmed (malformed payload, missing/ambiguous name identifier) are
-    /// skipped rather than failing the whole query, mirroring the SQLite
-    /// `find_declarations` filter behavior in `packages/store/src/queries.ts`.
+    /// kind and/or one module. This is the minimal discovery surface: clients
+    /// otherwise only have node IDs they already know. The global (unscoped)
+    /// path is one full-graph pass: a single snapshot clone plus a single
+    /// prebuilt parent -> Identifier-children map, so cost is O(nodes), not
+    /// O(declarations * nodes). The module-scoped path never clones a snapshot,
+    /// restricting the candidate loop (and its identifier map) to the named
+    /// module's children. Candidates whose name cannot be confirmed (malformed
+    /// payload, missing/ambiguous name identifier) are skipped rather than
+    /// failing the whole query, mirroring the SQLite `find_declarations` filter
+    /// behavior in `packages/store/src/queries.ts`.
+    ///
+    /// Results are id-ascending and paged at `MAX_DECLARATION_MATCHES`: once
+    /// that many matches are collected, the scan stops and reports `has_more`
+    /// rather than failing — the 64-item bound is a page size, not a failure.
     ///
     /// Returns the generation of the snapshot that was actually scanned
     /// alongside the matches, so callers can report a generation that is
@@ -531,53 +751,176 @@ impl Kernel {
         &self,
         name: &str,
         kind: Option<&str>,
-    ) -> Result<(u64, Vec<DeclarationMatch>)> {
+        module_id: Option<&str>,
+        after_node_id: Option<&str>,
+    ) -> Result<(u64, Vec<DeclarationMatch>, bool)> {
         let graph = self.snapshot();
         let generation = graph.generation();
-        let snapshot = graph.snapshot(); // ONE clone for the whole query
         let statement_kinds: Vec<(&str, &str)> = match kind {
             Some(k) => vec![(k, product_kind_to_statement_kind(k)?)],
             None => PRODUCT_KINDS.to_vec(),
         };
-        // one pass: identifier children grouped by parent
-        let mut identifiers: BTreeMap<&str, Vec<&NodeRecord>> = BTreeMap::new();
-        for node in &snapshot.nodes {
-            if node.kind == "Identifier"
-                && let Some(parent) = node.parent_id.as_deref()
-            {
-                identifiers.entry(parent).or_default().push(node);
+
+        let mut matches = Vec::new();
+        let mut has_more = false;
+
+        if let Some(module_id) = module_id {
+            let module = graph
+                .node(module_id)
+                .with_context(|| format!("module {module_id} does not exist"))?;
+            ensure!(
+                module.kind == "Module",
+                "node {module_id} is not a Module (kind={})",
+                module.kind
+            );
+
+            let candidates: Vec<&NodeRecord> = graph.children_of(module_id).collect();
+            let mut identifiers: BTreeMap<&str, Vec<&NodeRecord>> = BTreeMap::new();
+            for candidate in &candidates {
+                for child in graph.children_of(candidate.id.as_str()) {
+                    if child.kind == "Identifier" {
+                        identifiers
+                            .entry(candidate.id.as_str())
+                            .or_default()
+                            .push(child);
+                    }
+                }
+            }
+            for node in candidates {
+                let Some((product_kind, _)) = statement_kinds
+                    .iter()
+                    .find(|(_, statement)| *statement == node.kind)
+                else {
+                    continue;
+                };
+                let Ok(Some(candidate_name)) = confirmed_declaration_name(node, &identifiers)
+                else {
+                    continue;
+                };
+                if candidate_name != name {
+                    continue;
+                }
+                if let Some(after) = after_node_id
+                    && node.id.as_str() <= after
+                {
+                    continue;
+                }
+                if matches.len() == MAX_DECLARATION_MATCHES {
+                    has_more = true;
+                    break;
+                }
+                matches.push(DeclarationMatch {
+                    node_id: node.id.clone(),
+                    kind: (*product_kind).to_string(),
+                    name: candidate_name,
+                    module_id: module_id.to_owned(),
+                });
+            }
+        } else {
+            let snapshot = graph.snapshot(); // ONE clone for the whole query
+            // one pass: identifier children grouped by parent
+            let mut identifiers: BTreeMap<&str, Vec<&NodeRecord>> = BTreeMap::new();
+            for node in &snapshot.nodes {
+                if node.kind == "Identifier"
+                    && let Some(parent) = node.parent_id.as_deref()
+                {
+                    identifiers.entry(parent).or_default().push(node);
+                }
+            }
+            for node in &snapshot.nodes {
+                let Some((product_kind, _)) = statement_kinds
+                    .iter()
+                    .find(|(_, statement)| *statement == node.kind)
+                else {
+                    continue;
+                };
+                // payload-only token; SKIP candidates that cannot be named
+                let Ok(Some(candidate_name)) = confirmed_declaration_name(node, &identifiers)
+                else {
+                    continue;
+                };
+                if candidate_name != name {
+                    continue;
+                }
+                let Some(node_module_id) = node.parent_id.clone() else {
+                    continue;
+                };
+                if let Some(after) = after_node_id
+                    && node.id.as_str() <= after
+                {
+                    continue;
+                }
+                if matches.len() == MAX_DECLARATION_MATCHES {
+                    has_more = true;
+                    break;
+                }
+                matches.push(DeclarationMatch {
+                    node_id: node.id.clone(),
+                    kind: (*product_kind).to_string(),
+                    name: candidate_name,
+                    module_id: node_module_id,
+                });
             }
         }
-        let mut matches = Vec::new();
-        for node in &snapshot.nodes {
-            let Some((product_kind, _)) = statement_kinds
-                .iter()
-                .find(|(_, statement)| *statement == node.kind)
-            else {
-                continue;
-            };
-            // payload-only token; SKIP candidates that cannot be named
-            let Ok(Some(candidate_name)) = confirmed_declaration_name(node, &identifiers) else {
-                continue;
-            };
-            if candidate_name != name {
+        Ok((generation, matches, has_more))
+    }
+
+    /// Finds every node from OUTSIDE `node_id`'s subtree that references
+    /// something INSIDE it. Ingest always targets a declaration's
+    /// name-identifier child, never the statement node, so this aggregates
+    /// `references_to` over the whole subtree rooted at `node_id` (bounded by
+    /// `MAX_REFERENCE_SUBTREE_NODES`) and excludes any reference whose
+    /// `from_node_id` is itself inside that subtree (a reference between two
+    /// nodes both under `node_id`, e.g. a self-reference, is not an incoming
+    /// reference from the outside). Each surviving `from_node_id` is unique
+    /// graph-wide (a node has at most one outgoing reference), so results are
+    /// globally ordered and paged by `from_node_id`.
+    pub fn incoming_references(
+        &self,
+        node_id: &str,
+        after_from_node_id: Option<&str>,
+        limit: usize,
+    ) -> Result<(u64, Vec<IncomingReference>, bool)> {
+        ensure!(
+            (1..=MAX_REFERENCE_PAGE_ITEMS).contains(&limit),
+            "incoming_references limit must be between 1 and {MAX_REFERENCE_PAGE_ITEMS}"
+        );
+        let graph = self.snapshot();
+        let generation = graph.generation();
+        graph
+            .node(node_id)
+            .with_context(|| format!("node {node_id} does not exist"))?;
+
+        let subtree = bounded_subtree(&graph, node_id)?;
+        let mut qualifying: BTreeMap<String, &ReferenceRecord> = BTreeMap::new();
+        for member in &subtree {
+            for reference in graph.references_to(member) {
+                if !subtree.contains(&reference.from_node_id) {
+                    qualifying.insert(reference.from_node_id.clone(), reference);
+                }
+            }
+        }
+
+        let mut entries = Vec::new();
+        let mut has_more = false;
+        for (from_node_id, reference) in &qualifying {
+            if let Some(after) = after_from_node_id
+                && from_node_id.as_str() <= after
+            {
                 continue;
             }
-            let Some(module_id) = node.parent_id.clone() else {
-                continue;
-            };
-            matches.push(DeclarationMatch {
-                node_id: node.id.clone(),
-                kind: (*product_kind).to_string(),
-                name: candidate_name,
+            if entries.len() == limit {
+                has_more = true;
+                break;
+            }
+            let module_id = module_ancestor(&graph, from_node_id)?;
+            entries.push(IncomingReference {
+                from_node_id: from_node_id.clone(),
+                kind: reference.kind.clone(),
                 module_id,
             });
-            ensure!(
-                matches.len() <= MAX_DECLARATION_MATCHES,
-                "declaration matches exceed {MAX_DECLARATION_MATCHES} bound"
-            );
         }
-        Ok((generation, matches))
+        Ok((generation, entries, has_more))
     }
 
     /// Reads the retained canonical digest for one exact graph generation.
