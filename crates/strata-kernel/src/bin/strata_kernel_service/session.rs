@@ -49,6 +49,60 @@ pub(super) enum ServiceFailpoint {
     AfterCompleted,
 }
 
+/// The daemon's active validation configuration, resolved once in `main.rs`
+/// from `--validation-manifest` (or its absence) and carried unchanged from
+/// then on. Consumed by Task 6 (deadline nesting into the bridge) and Task 9
+/// (savepoint/timeout gating) — nothing in this task reads it beyond storing
+/// it on the session.
+///
+/// Without `--validation-manifest`, this is exactly `tsc_only()`: mode
+/// `"tscOnly"`, no digest, no fixtures, the pre-B-2 default timeouts. That
+/// no-flag path must never change `NodeBridgeConfig::tsc_only`'s
+/// construction — the byte-identical guarantee every pre-existing suite
+/// depends on.
+// Fields are not yet read outside construction/tests (Tasks 6/9 read them);
+// this is a load-bearing return value threaded onto the session, not dead
+// code.
+#[allow(dead_code)]
+pub(super) struct ValidationSettings {
+    pub mode: &'static str,
+    pub manifest_digest: Option<String>,
+    /// (corpus-relative path, sha256) per fixture; empty in `tscOnly`.
+    pub fixtures: Vec<(String, String)>,
+    pub tsc_timeout_ms: u64,
+    pub vitest_timeout_ms: u64,
+}
+
+impl ValidationSettings {
+    pub(super) fn tsc_only() -> Self {
+        Self {
+            mode: "tscOnly",
+            manifest_digest: None,
+            fixtures: Vec::new(),
+            tsc_timeout_ms: super::manifest::DEFAULT_TSC_TIMEOUT_MS,
+            vitest_timeout_ms: super::manifest::DEFAULT_VITEST_TIMEOUT_MS,
+        }
+    }
+
+    pub(super) fn from_loaded_manifest(loaded: &super::manifest::LoadedManifest) -> Self {
+        Self {
+            mode: match loaded.manifest.mode {
+                super::manifest::ManifestMode::TscOnly => "tscOnly",
+                super::manifest::ManifestMode::Behavioral => "behavioral",
+            },
+            manifest_digest: Some(loaded.digest.clone()),
+            fixtures: loaded
+                .manifest
+                .fixtures
+                .iter()
+                .map(|fixture| (fixture.path.clone(), fixture.sha256.clone()))
+                .collect(),
+            tsc_timeout_ms: loaded.manifest.tsc_timeout_ms,
+            vitest_timeout_ms: loaded.manifest.vitest_timeout_ms,
+        }
+    }
+}
+
 pub(super) struct ServiceConfig {
     pub db_path: PathBuf,
     pub snapshot_path: PathBuf,
@@ -59,6 +113,10 @@ pub(super) struct ServiceConfig {
     /// projection (`paths::project_module_path`) is lexical against that
     /// canonical form.
     pub corpus_root: PathBuf,
+    /// Resolved once in `main.rs` from `--validation-manifest` (or its
+    /// absence). Stored on `ServiceSession` unchanged; not yet consumed by
+    /// any validation run (Tasks 6/9).
+    pub validation: ValidationSettings,
     pub failpoint: ServiceFailpoint,
     /// When set, per-request/recovery observability records are written to this
     /// JSONL sink. `None` (the default, no `--metrics`) is byte-identical
@@ -83,6 +141,11 @@ pub(super) struct ServiceSession {
     /// Canonicalized once at `open`; consumed by `paths::project_module_path`
     /// in the `list_modules` read handler.
     canonical_corpus_root: PathBuf,
+    /// Resolved once at `open` from `config.validation`. Not yet read by
+    /// anything (Tasks 6/9 consume it); `#[allow(dead_code)]` documents that
+    /// this is deliberate for this task, not an oversight.
+    #[allow(dead_code)]
+    validation: ValidationSettings,
     failpoint: ServiceFailpoint,
     /// Present only under `--metrics`. Behind a `Mutex` because connections are
     /// served on independent threads and each may emit records.
@@ -141,6 +204,7 @@ impl ServiceSession {
             delivered_events: Mutex::new(BTreeMap::new()),
             protocol: Mutex::new(LocalServiceProtocolContext::default()),
             canonical_corpus_root,
+            validation: config.validation,
             failpoint: config.failpoint,
             metrics,
             #[cfg(feature = "redb-spike-api")]

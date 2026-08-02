@@ -920,6 +920,31 @@ fn daemon_rejects_unsafe_or_overlong_socket_paths_before_bind() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("/tmp/strata-lc/"));
 }
 
+/// The single-flag pin for `--validation-manifest` (B-2 Task 5): the shared
+/// `parse_named` pair-parser in main.rs rejects ANY repeated `--name value`
+/// flag (not just this one) as soon as it sees the duplicate key, before
+/// `serve`'s own required-option checks run — so this fails fast even
+/// without `--db`/`--snapshot`/etc. supplied.
+#[test]
+fn serve_rejects_duplicate_validation_manifest_flag_before_required_options() {
+    let output = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
+        .args([
+            "serve",
+            "--validation-manifest",
+            "a",
+            "--validation-manifest",
+            "b",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("invalid or duplicate option"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn discovery_list_modules_projects_absolute_payloads_and_pages_deterministically() {
     let directory = tempfile::tempdir().unwrap();

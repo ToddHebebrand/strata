@@ -476,6 +476,30 @@ impl ValidationProfile {
         }
     }
 
+    /// The review-verified gap this closes: Rust never required a
+    /// behavioral profile to actually carry fixtures, so a caller could
+    /// construct (or deserialize) a `Behavioral` variant that validates
+    /// nothing beyond tsc. Both this constructor AND `validate()` enforce
+    /// non-empty fixtures, so the invariant holds for hand-built values too
+    /// (see `behavioral_profile_is_unconstructible_with_zero_fixtures`).
+    pub(crate) fn behavioral(
+        source_root: impl Into<String>,
+        corpus_root: impl Into<String>,
+        behavioral_fixtures: Vec<String>,
+        strict_src_only_tsc_scope: bool,
+    ) -> Result<Self> {
+        ensure!(
+            !behavioral_fixtures.is_empty(),
+            "behavioral validation profile requires at least one fixture"
+        );
+        Ok(Self::Behavioral {
+            source_root: source_root.into(),
+            corpus_root: corpus_root.into(),
+            behavioral_fixtures,
+            strict_src_only_tsc_scope,
+        })
+    }
+
     fn validate(&self) -> Result<()> {
         match self {
             Self::TscOnly {
@@ -499,6 +523,10 @@ impl ValidationProfile {
             } => {
                 non_empty(source_root, "validationProfile.sourceRoot")?;
                 non_empty(corpus_root, "validationProfile.corpusRoot")?;
+                ensure!(
+                    !behavioral_fixtures.is_empty(),
+                    "behavioral validation profile requires at least one fixture"
+                );
                 bounded_len(
                     "validationProfile.behavioralFixtures",
                     behavioral_fixtures.len(),
@@ -1644,5 +1672,20 @@ mod tests {
             }
             MirrorCandidateResponse::Delta(_) => panic!("expected Failed"),
         }
+    }
+
+    #[test]
+    fn behavioral_profile_is_unconstructible_with_zero_fixtures() {
+        assert!(ValidationProfile::behavioral("/c/src", "/c", Vec::new(), true).is_err());
+        let manual = ValidationProfile::Behavioral {
+            source_root: "/c/src".into(),
+            corpus_root: "/c".into(),
+            behavioral_fixtures: Vec::new(),
+            strict_src_only_tsc_scope: true,
+        };
+        assert!(
+            manual.validate().is_err(),
+            "validate() must also enforce the invariant"
+        );
     }
 }

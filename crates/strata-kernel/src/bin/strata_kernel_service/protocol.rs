@@ -1178,7 +1178,7 @@ fn validate_page_limit(limit: u32, max: usize, action: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_module_path(value: &str) -> Result<()> {
+pub(super) fn validate_module_path(value: &str) -> Result<()> {
     if value.is_empty() {
         bail!("module path must not be empty");
     }

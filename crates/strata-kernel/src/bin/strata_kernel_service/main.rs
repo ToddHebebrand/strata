@@ -1,4 +1,5 @@
 mod audit;
+mod manifest;
 mod metrics;
 mod paths;
 mod protocol;
@@ -12,7 +13,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use strata_kernel::NodeBridgeConfig;
 
-use session::{ServiceConfig, ServiceFailpoint};
+use session::{ServiceConfig, ServiceFailpoint, ValidationSettings};
 
 fn main() {
     if let Err(error) = run() {
@@ -71,6 +72,10 @@ fn serve(arguments: &[OsString]) -> Result<()> {
         // Opt-in observability sink. Unconditional (a production surface, not a
         // test-authority flag): a build without it rejects `--metrics`.
         "--metrics",
+        // Opt-in behavioral validation manifest (B-2). Absent: the session
+        // runs exactly as before B-2 (tscOnly, no fixtures, default
+        // timeouts) — the byte-identical no-flag guarantee.
+        "--validation-manifest",
     ];
     #[cfg(feature = "coordination-test-api")]
     allowed.push("--test-failpoint");
@@ -85,6 +90,23 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     let audit_path = required_path(&values, "--audit")?;
     let token = required_text(&values, "--socket-token")?;
     let metrics_path = optional_path(&values, "--metrics");
+    // Resolved BEFORE corpus_root moves into NodeBridgeConfig::tsc_only
+    // below. Nothing here changes bridge_config's construction (Task 6
+    // wires that); this only produces the ValidationSettings stored on the
+    // session.
+    let validation = match optional_path(&values, "--validation-manifest") {
+        Some(manifest_path) => {
+            let loaded = manifest::load_validation_manifest(&manifest_path, &corpus_root)
+                .with_context(|| {
+                    format!(
+                        "load validation manifest {}",
+                        manifest_path.display()
+                    )
+                })?;
+            ValidationSettings::from_loaded_manifest(&loaded)
+        }
+        None => ValidationSettings::tsc_only(),
+    };
     #[cfg(feature = "coordination-test-api")]
     let failpoint = match values.get("--test-failpoint") {
         None => ServiceFailpoint::None,
@@ -145,6 +167,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             bridge_config,
             audit_path,
             corpus_root: service_corpus_root,
+            validation,
             failpoint,
             metrics_path,
             #[cfg(feature = "redb-spike-api")]
@@ -264,6 +287,6 @@ fn print_help() {
     // `local_service_sealing::default_build_service_has_no_test_authority_surface`.
     // They are parsed in `serve` but never advertised.
     println!(
-        "strata-kernel-service\n\nCommands:\n  serve --db PATH --snapshot PATH --bridge-worker PATH --source-root PATH --corpus-root PATH --socket-token TOKEN --audit PATH [--metrics PATH] [--persistent-bridge]\n  validate-socket --socket PATH\n  export-snapshot --db PATH --out PATH [--state-out PATH]"
+        "strata-kernel-service\n\nCommands:\n  serve --db PATH --snapshot PATH --bridge-worker PATH --source-root PATH --corpus-root PATH --socket-token TOKEN --audit PATH [--metrics PATH] [--persistent-bridge] [--validation-manifest PATH]\n  validate-socket --socket PATH\n  export-snapshot --db PATH --out PATH [--state-out PATH]"
     );
 }
