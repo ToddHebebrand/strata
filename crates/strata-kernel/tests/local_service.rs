@@ -20,6 +20,9 @@ use tempfile::TempDir;
 
 const USER_ID: &str = "fc98295bca9efc3e";
 const FORMAT_TIMESTAMP_ID: &str = "9a25d67ed4b74807";
+/// The `greet` function declaration in the localized `examples/medium`
+/// snapshot every test in this file shares.
+const GREET_FUNCTION_ID: &str = "603b2ae524ee3c70";
 
 const RAW_REJECTED_FIXTURES: [&str; 4] = [
     "duplicate-key",
@@ -538,6 +541,47 @@ fn mutate_rename(
     )
 }
 
+/// Same begin/add/submit/advance shape as `mutate_rename`, for the one
+/// intent class that can be driven to a REAL `tsc` rejection from the wire:
+/// an `add_parameter` whose declared type does not exist anywhere in the
+/// corpus, so the worker's mutate stage succeeds and its validate stage
+/// fails with genuine compiler diagnostics.
+fn mutate_add_parameter(
+    service: &RunningService,
+    client: &str,
+    suffix: &str,
+    change_set_id: &str,
+    function_id: &str,
+    type_text: &str,
+) -> Value {
+    for (step, action) in [
+        (
+            "add",
+            json!({"type":"add_intent","changeSetId":change_set_id,"intent":{"type":"add_parameter","functionId":function_id,"name":"audit","typeText":type_text,"position":1,"value":"undefined as never"}}),
+        ),
+        (
+            "submit",
+            json!({"type":"submit_change_set","changeSetId":change_set_id}),
+        ),
+    ] {
+        let response = request(
+            service,
+            &format!("request:{suffix}:{step}"),
+            client,
+            Some(&format!("idem:{suffix}:{step}")),
+            action,
+        );
+        assert_eq!(response["ok"], true, "{response}");
+    }
+    request(
+        service,
+        &format!("request:{suffix}:advance"),
+        client,
+        Some(&format!("idem:{suffix}:advance")),
+        json!({"type":"advance_change_set","changeSetId":change_set_id}),
+    )
+}
+
 fn assert_no_authority_fields(value: &Value) {
     const FORBIDDEN: &[&str] = &[
         "scope",
@@ -696,8 +740,6 @@ fn find_declarations_returns_named_interface_and_rejects_unknown_kind() {
     // the `greet` function (with a JSDoc `@param {User} user` block ahead of its
     // declaration name in source) both live in the localized examples/medium
     // fixture snapshot every test in this file shares.
-    const GREET_FUNCTION_ID: &str = "603b2ae524ee3c70";
-
     let directory = tempfile::tempdir().unwrap();
     let service = start_service(&directory, "find-declarations-token");
 
@@ -1214,4 +1256,148 @@ fn discovery_read_actions_reject_idempotency_keys() {
     );
     assert_eq!(response["ok"], false, "{response}");
     assert_eq!(response["error"]["code"], "invalid_request", "{response}");
+}
+
+/// SEMANTIC arm of the candidate failure taxonomy (item-B2 Task 4). The
+/// worker evaluated the candidate and `tsc` rejected it — a verdict, not a
+/// transport failure — so the advance is a SUCCESS response carrying the
+/// state `validation_failed` and the REAL compiler diagnostics. Before B-2
+/// the service collapsed every candidate error into one fabricated
+/// `candidate_validation_failed` diagnostic, which told an agent nothing it
+/// could act on.
+#[test]
+fn taxonomy_semantic_rejection_carries_real_tsc_diagnostics() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = start_service(&directory, "taxonomy-semantic-tsc-token");
+    let change = begin(&service, "client:taxonomy", "taxonomy-semantic");
+    let response = mutate_add_parameter(
+        &service,
+        "client:taxonomy",
+        "taxonomy-semantic",
+        &change,
+        GREET_FUNCTION_ID,
+        "NoSuchType",
+    );
+
+    assert_eq!(
+        response["ok"], true,
+        "a semantic rejection is a verdict, not a failed request: {response}"
+    );
+    assert_eq!(
+        response["result"]["state"], "validation_failed",
+        "{response}"
+    );
+    let diagnostics = response["result"]["diagnostics"].as_array().unwrap();
+    assert!(
+        !diagnostics.is_empty(),
+        "validation_failed must never be diagnostic-free: {response}"
+    );
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic["code"]
+                .as_str()
+                .is_some_and(|code| code.starts_with("typescriptFailed:"))
+                && diagnostic["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("NoSuchType"))
+        }),
+        "expected real tsc text naming the missing type: {response}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["modulePath"].is_string()),
+        "the projected corpus-relative modulePath must reach the wire: {response}"
+    );
+    for diagnostic in diagnostics {
+        assert_ne!(
+            diagnostic["code"], "candidate_validation_failed",
+            "the fabricated diagnostic is retired: {response}"
+        );
+        if let Some(path) = diagnostic["modulePath"].as_str() {
+            assert!(
+                path.starts_with("src/"),
+                "modulePath must be corpus-relative, never a raw payload: {response}"
+            );
+        }
+    }
+    assert_no_authority_fields(&response);
+}
+
+/// The rejection half of the split keeps the pre-B-2 operational contract
+/// intact: audit kind `validation_failed`, and the cancel follow-up still
+/// releases the change set (so the claim it held cannot block later work).
+#[test]
+fn taxonomy_rejection_still_cancels_and_audits() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = start_service(&directory, "taxonomy-rejection-cancel-token");
+    let change = begin(&service, "client:taxonomy", "taxonomy-cancel");
+    let response = mutate_add_parameter(
+        &service,
+        "client:taxonomy",
+        "taxonomy-cancel",
+        &change,
+        GREET_FUNCTION_ID,
+        "NoSuchType",
+    );
+    assert_eq!(
+        response["result"]["state"], "validation_failed",
+        "{response}"
+    );
+
+    let events = request(
+        &service,
+        "request:taxonomy-cancel:events",
+        "client:taxonomy",
+        None,
+        json!({"type":"read_events","afterSequence":"0","limit":256}),
+    );
+    assert!(
+        events["result"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event["kind"] == "intent_cancelled" && event["changeSetId"] == json!(change)
+            }),
+        "the cancel follow-up must still run for a rejection: {events}"
+    );
+
+    let audit = fs::read_to_string(directory.path().join("service-audit.jsonl")).unwrap();
+    assert!(
+        audit.lines().any(|line| {
+            let entry: Value = serde_json::from_str(line).unwrap();
+            entry["event"]["kind"] == "validation_failed"
+                && entry["event"]["changeSetId"] == json!(change)
+        }),
+        "a rejection audits as validation_failed"
+    );
+    assert!(
+        !audit.contains("candidate_execution_failed"),
+        "a semantic rejection must not be audited as an operational failure"
+    );
+}
+
+/// Guard: the `Vec<Diagnostic>` refactor of `change_set_result` must not
+/// leak a diagnostic onto the clean path. A rename that validates green
+/// still publishes with an empty diagnostics array.
+#[test]
+fn taxonomy_diagnostics_survive_needs_decision_free_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let service = start_service(&directory, "taxonomy-clean-rename-token");
+    let change = begin(&service, "client:taxonomy", "taxonomy-clean");
+    let response = mutate_rename(
+        &service,
+        "client:taxonomy",
+        "taxonomy-clean",
+        &change,
+        USER_ID,
+        "Account",
+    );
+    assert_eq!(response["result"]["state"], "published", "{response}");
+    assert_eq!(
+        response["result"]["diagnostics"].as_array().unwrap().len(),
+        0,
+        "{response}"
+    );
 }

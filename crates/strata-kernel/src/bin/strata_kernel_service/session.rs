@@ -7,9 +7,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use strata_kernel::{
-    BeginChangeSet, ChangeSetState as KernelChangeSetState, ClaimOutcome, CoordinationError,
-    CoordinationEventKind, GraphSnapshot, IntentParameters, Kernel, NodeBridgeConfig,
-    PublicationReport, PublishClaimOutcome, TicketState as KernelTicketState,
+    BeginChangeSet, CandidateRejected, ChangeSetState as KernelChangeSetState, ClaimOutcome,
+    CoordinationError, CoordinationEventKind, GraphSnapshot, IntentParameters, Kernel,
+    NodeBridgeConfig, PublicationReport, PublishClaimOutcome, TicketState as KernelTicketState,
 };
 
 use super::metrics::{MetricsRecord, MetricsSink, peak_rss_bytes};
@@ -28,6 +28,12 @@ use super::protocol::{
 };
 
 const MAX_INTENTS: usize = 256;
+/// Wire cap on the diagnostics a single rejection may carry. Mirrors the
+/// protocol module's own `MAX_DIAGNOSTICS` (64), which every outbound frame
+/// is validated against — truncating here keeps a pathologically diagnostic-
+/// heavy candidate from failing frame validation instead of reporting its
+/// verdict.
+const MAX_WIRE_DIAGNOSTICS: usize = 64;
 const MAX_RELATIONSHIPS: usize = 256;
 const MIN_LOCAL_MUTATION_MS: u64 = 10;
 const MIN_BRIDGE_ANALYSIS_MS: u64 = 30_100;
@@ -534,7 +540,7 @@ impl ServiceSession {
                     .context("reconciled add intent has no change set")?;
                 ExecutedEffect::response(LocalServiceResponse::success(
                     "recovered",
-                    self.change_set_result(change_set_id, None, None)?,
+                    self.change_set_result(change_set_id, None, Vec::new())?,
                 ))
             } else {
                 self.execute_pending(&request, "recovered")
@@ -629,18 +635,18 @@ impl ServiceSession {
                     },
                     pending.tick,
                 )?;
-                self.change_set_result(&change_set_id, None, None)?
+                self.change_set_result(&change_set_id, None, Vec::new())?
             }
             RequestAction::AddIntent {
                 change_set_id,
                 intent,
             } => {
                 self.kernel.add_intent(change_set_id, wire_intent(intent))?;
-                self.change_set_result(change_set_id, None, None)?
+                self.change_set_result(change_set_id, None, Vec::new())?
             }
             RequestAction::SubmitChangeSet { change_set_id } => {
                 self.kernel.submit_change_set(change_set_id, pending.tick)?;
-                self.change_set_result(change_set_id, None, None)?
+                self.change_set_result(change_set_id, None, Vec::new())?
             }
             RequestAction::AdvanceChangeSet { change_set_id } => {
                 return self.advance(change_set_id, pending.tick, request_id);
@@ -660,7 +666,7 @@ impl ServiceSession {
                         state: CancelledState::Cancelled,
                     }
                 } else {
-                    self.change_set_result(change_set_id, None, None)?
+                    self.change_set_result(change_set_id, None, Vec::new())?
                 }
             }
             RequestAction::Hello { .. }
@@ -703,7 +709,7 @@ impl ServiceSession {
         if change_set.state != KernelChangeSetState::Ready {
             return Ok(ExecutedEffect::response(LocalServiceResponse::success(
                 request_id,
-                self.change_set_result(change_set_id, None, None)?,
+                self.change_set_result(change_set_id, None, Vec::new())?,
             )));
         }
         let offer = self
@@ -746,7 +752,11 @@ impl ServiceSession {
                     Ok(PublishClaimOutcome::Published(report)) => {
                         let response = LocalServiceResponse::success(
                             request_id,
-                            self.change_set_result(change_set_id, Some(report.digest.clone()), None)?,
+                            self.change_set_result(
+                                change_set_id,
+                                Some(report.digest.clone()),
+                                Vec::new(),
+                            )?,
                         );
                         // The report rides the effect to the emission point; no
                         // response bytes change (digest is the only wire field).
@@ -756,7 +766,7 @@ impl ServiceSession {
                     | Ok(PublishClaimOutcome::NeedsDecision { .. }) => {
                         Ok(ExecutedEffect::response(LocalServiceResponse::success(
                             request_id,
-                            self.change_set_result(change_set_id, None, None)?,
+                            self.change_set_result(change_set_id, None, Vec::new())?,
                         )))
                     }
                     Err(error)
@@ -769,8 +779,8 @@ impl ServiceSession {
                         // validation failure. The claim is intact and the change set
                         // is still executing; the older validating client was merely
                         // out-raced on the whole-scheduler-equality check. Report the
-                        // current non-terminal (`claimed`) state and do NOT fabricate a
-                        // `candidate_validation_failed` diagnostic or cancel the claim
+                        // current non-terminal (`claimed`) state and do NOT report a
+                        // `validation_failed` verdict, requeue, or cancel the claim
                         // (which is exactly what let younger overlapping work win).
                         // This response does NOT itself complete the operation: the
                         // change set stays claimed, so a subsequent advance early-returns
@@ -778,7 +788,7 @@ impl ServiceSession {
                         // Completion happens later via claim-lease expiry re-offering the
                         // work, then a further advance re-claiming and republishing.
                         // This arm's taxonomy — exhaustion => non-terminal state, an
-                        // uncancelled/intact claim, and no fabricated diagnostic — is not
+                        // uncancelled/intact claim, and no verdict on the wire — is not
                         // deterministically forceable through a spawned daemon (advance
                         // publishes via `execute_claimed`, which needs the real
                         // node-bridge executor, and forcing exhaustion needs the
@@ -789,10 +799,20 @@ impl ServiceSession {
                         // in tests/coordination_optimistic.rs.
                         Ok(ExecutedEffect::response(LocalServiceResponse::success(
                             request_id,
-                            self.change_set_result(change_set_id, None, None)?,
+                            self.change_set_result(change_set_id, None, Vec::new())?,
                         )))
                     }
-                    Err(_error) => {
+                    // SEMANTIC: the worker evaluated the candidate and the
+                    // candidate itself is wrong (tsc red, behavioral red, or an
+                    // intent that could not apply). That is a verdict, so it is
+                    // a SUCCESS response carrying `validation_failed` and the
+                    // worker's own diagnostics — never the pre-B-2 fabricated
+                    // `candidate_validation_failed` placeholder, which told an
+                    // agent nothing it could act on.
+                    Err(error) if error.downcast_ref::<CandidateRejected>().is_some() => {
+                        let rejected = error
+                            .downcast_ref::<CandidateRejected>()
+                            .expect("the guard just matched a CandidateRejected");
                         self.append_audit(AuditEvent {
                             kind: "validation_failed".into(),
                             tick: Some(tick.to_string()),
@@ -808,12 +828,7 @@ impl ServiceSession {
                             self.change_set_result(
                                 change_set_id,
                                 None,
-                                Some(Diagnostic {
-                                    code: "candidate_validation_failed".into(),
-                                    message: "candidate validation failed".into(),
-                                    node_id: None,
-                                    module_path: None,
-                                }),
+                                self.rejection_diagnostics(rejected),
                             )?
                             .with_state(ChangeSetState::ValidationFailed),
                         );
@@ -826,12 +841,53 @@ impl ServiceSession {
                             publication: None,
                         })
                     }
+                    // OPERATIONAL (the fail-closed default: every unknown or
+                    // future failure lands here). The worker never reached a
+                    // verdict — timeout, crash, transport, invariant — so the
+                    // candidate is NOT known-bad and the change set must not be
+                    // cancelled or labelled `validation_failed`. Release the
+                    // claim and requeue as one atomic lifecycle transition
+                    // FIRST, so `retryable: true` is honest: a later advance
+                    // genuinely re-drives this change set rather than waiting
+                    // out a claim lease. If the requeue itself fails, the `?`
+                    // falls through to the generic `request_failed` surface —
+                    // no response may claim a requeue that did not happen.
+                    Err(_error) => {
+                        self.kernel.release_claim_for_retry(change_set_id, tick)?;
+                        // Audit the state the requeue actually landed on rather
+                        // than a hard-coded label: the readiness pass inside the
+                        // same transition usually re-offers immediately (`ready`),
+                        // but a contended scope leaves it `queued`.
+                        let requeued_state = self
+                            .kernel
+                            .change_set(change_set_id)?
+                            .map(|record| {
+                                format!("{:?}", kernel_state(&record.state)).to_lowercase()
+                            });
+                        self.append_audit(AuditEvent {
+                            kind: "candidate_execution_failed".into(),
+                            tick: Some(tick.to_string()),
+                            request_hash: Some(client_hash(request_id)),
+                            client_hash: None,
+                            action: Some("advance_change_set".into()),
+                            change_set_id: Some(change_set_id.into()),
+                            state: requeued_state,
+                            graph_generation: self.kernel.snapshot().generation().to_string(),
+                        })?;
+                        Ok(ExecutedEffect::response(LocalServiceResponse::error(
+                            request_id,
+                            "candidate_execution_failed",
+                            "candidate execution failed before a validation verdict; the change set has been requeued",
+                            true,
+                            Vec::new(),
+                        )))
+                    }
                 }
             }
             ClaimOutcome::Requeued { .. } | ClaimOutcome::NeedsDecision { .. } => {
                 Ok(ExecutedEffect::response(LocalServiceResponse::success(
                     request_id,
-                    self.change_set_result(change_set_id, None, None)?,
+                    self.change_set_result(change_set_id, None, Vec::new())?,
                 )))
             }
         }
@@ -1074,11 +1130,48 @@ impl ServiceSession {
         })
     }
 
+    /// Projects a worker rejection onto the client wire.
+    ///
+    /// The code is namespaced `"{rejection code}:{worker diagnostic code}"`
+    /// so a client can tell a tsc error apart from a behavioral failure apart
+    /// from a refused intent without parsing prose. Raw payload paths never
+    /// reach the wire: each `module_path` is projected corpus-relative, and a
+    /// projection failure degrades the path to absent rather than dropping
+    /// the diagnostic — a display-path problem must not hide the finding.
+    fn rejection_diagnostics(&self, rejected: &CandidateRejected) -> Vec<Diagnostic> {
+        let diagnostics = rejected
+            .diagnostics
+            .iter()
+            .take(MAX_WIRE_DIAGNOSTICS)
+            .map(|diagnostic| Diagnostic {
+                code: format!("{}:{}", rejected.code, diagnostic.code),
+                message: bounded_message(&diagnostic.message),
+                node_id: diagnostic.node_id.clone(),
+                module_path: diagnostic.module_path.as_deref().and_then(|payload| {
+                    project_module_path(&self.canonical_corpus_root, payload).ok()
+                }),
+            })
+            .collect::<Vec<_>>();
+        if diagnostics.is_empty() {
+            // A rejection with no worker diagnostics is possible (a
+            // `mutationFailed`-class refusal, or a behavioral failure whose
+            // output did not survive normalization). `validation_failed` must
+            // never be diagnostic-free, so the rejection itself becomes one.
+            return vec![Diagnostic {
+                code: rejected.code.clone(),
+                message: bounded_message(&rejected.message),
+                node_id: None,
+                module_path: None,
+            }];
+        }
+        diagnostics
+    }
+
     fn change_set_result(
         &self,
         change_set_id: &str,
         publication_digest: Option<String>,
-        diagnostic: Option<Diagnostic>,
+        diagnostics: Vec<Diagnostic>,
     ) -> Result<ResponseResult> {
         let change_set = self
             .kernel
@@ -1124,7 +1217,7 @@ impl ServiceSession {
                     .map(|record| record.affected_node_ids)
                     .unwrap_or_default(),
             ),
-            diagnostics: diagnostic.into_iter().collect(),
+            diagnostics,
             publication_digest,
             renamed_symbols,
         })

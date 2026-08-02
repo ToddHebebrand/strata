@@ -1443,10 +1443,10 @@ fn three_unrelated_final_state_losses_exhaust_once_without_rebuilding() {
 // Coverage for the daemon advance handler's fix-(b) match arm
 // (`bin/strata_kernel_service/session.rs`). When the advance path's publication
 // returns `CoordinationError::OptimisticRetryExhausted`, that is scheduler
-// contention, NOT a candidate/tsc validation failure: the handler must report a
-// non-terminal state (never `validation_failed`), fabricate no
-// `candidate_validation_failed` diagnostic, and run no `CancelChangeSet`
-// follow-up — the claim stays intact.
+// contention, NOT a candidate failure of either kind: the handler must report a
+// non-terminal state (never `validation_failed`, never the B-2 operational
+// `candidate_execution_failed` release-and-requeue), emit no diagnostics, and
+// run no `CancelChangeSet` follow-up — the claim stays intact.
 //
 // After fix (a), the only natural trigger left is legitimate DISJOINT scheduler
 // churn during the older claim's publication window (a younger *overlapping*
@@ -1469,8 +1469,9 @@ fn three_unrelated_final_state_losses_exhaust_once_without_rebuilding() {
 //
 // Pre-fix-(b), the daemon's `Err(_)` catch-all would instead have appended a
 // `validation_failed` audit event, returned `ChangeSetState::ValidationFailed`
-// with a fabricated `candidate_validation_failed` diagnostic, and scheduled a
-// `CancelChangeSet` follow-up that cancelled this very claim. The assertions below
+// with the then-fabricated `candidate_validation_failed` diagnostic (retired in
+// B-2 Task 4), and scheduled a `CancelChangeSet` follow-up that cancelled this
+// very claim. The assertions below
 // pin the opposite outcome at every observable the session response is built from.
 #[test]
 fn optimistic_retry_exhaustion_from_disjoint_churn_keeps_claim_non_terminal() {
