@@ -41,13 +41,35 @@ const addParameterIntent = z
   .strict();
 
 export const COORDINATION_TOOL_INPUT_SCHEMAS = {
+  list_modules: z
+    .object({
+      after_module_id: stableId.optional(),
+      limit: z.number().int().min(1).max(64)
+    })
+    .strict(),
+  list_module_declarations: z
+    .object({
+      module_id: stableId,
+      after_node_id: stableId.optional(),
+      limit: z.number().int().min(1).max(64)
+    })
+    .strict(),
   find_declarations: z
     .object({
       name: z.string().min(1).max(MAX_ID_CHARS),
-      kind: z.enum(["interface", "type-alias", "class", "function", "variable"]).optional()
+      kind: z.enum(["interface", "type-alias", "class", "function", "variable"]).optional(),
+      module_id: stableId.optional(),
+      after_node_id: stableId.optional()
     })
     .strict(),
   inspect_nodes: z.object({ node_ids: z.array(stableId).min(1).max(MAX_NODE_IDS) }).strict(),
+  get_references: z
+    .object({
+      node_id: stableId,
+      after_reference_key: stableId.optional(),
+      limit: z.number().int().min(1).max(256)
+    })
+    .strict(),
   begin_change_set: z.object({ reasoning: z.string().max(MAX_REASONING_CHARS) }).strict(),
   add_intent: z
     .object({
@@ -69,11 +91,25 @@ export const COORDINATION_TOOL_INPUT_SCHEMAS = {
 } as const;
 
 export interface CoordinationClientApi {
+  listModules(
+    options?: { afterModuleId?: string },
+    limit?: number
+  ): Promise<CoordinationResult>;
+  listModuleDeclarations(
+    moduleId: string,
+    options?: { afterNodeId?: string },
+    limit?: number
+  ): Promise<CoordinationResult>;
   findDeclarations(
     name: string,
-    options?: { kind?: string }
+    options?: { kind?: string; moduleId?: string; afterNodeId?: string }
   ): Promise<CoordinationResult>;
   inspectNodes(nodeIds: string[]): Promise<CoordinationResult>;
+  getReferences(
+    nodeId: string,
+    options?: { afterReferenceKey?: string },
+    limit?: number
+  ): Promise<CoordinationResult>;
   beginChangeSet(reasoning: string): Promise<CoordinationResult>;
   addIntent(changeSetId: string, intent: CoordinationIntent): Promise<CoordinationResult>;
   submitChangeSet(changeSetId: string): Promise<CoordinationResult>;
@@ -138,16 +174,61 @@ export function createCoordinationTools(
 ): SdkMcpToolDefinition<any>[] {
   return [
     strictTool(
+      "list_modules",
+      "List the modules of the codebase as a bounded page: each entry is a stable module ID, its corpus-relative display path, and how many top-level declarations it holds. Start discovery here when you have no IDs. Pass the last moduleId as after_module_id to fetch the next page while hasMore is true; if graphGeneration changes between pages, restart from the first page. The path is display metadata only — every operation takes the moduleId, never a path.",
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_modules,
+      async ({ after_module_id, limit }) =>
+        textResult(
+          await client.listModules(
+            after_module_id ? { afterModuleId: after_module_id } : undefined,
+            limit
+          )
+        )
+    ),
+    strictTool(
+      "list_module_declarations",
+      "List one module's top-level declarations — including non-exported ones — as a bounded page of stable node IDs with name (null when the declaration has no confirmable name), kind, and whether it is exported. Use after list_modules to locate a declaration by name without a global search, then inspect_nodes or get_references on the returned IDs.",
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_module_declarations,
+      async ({ module_id, after_node_id, limit }) =>
+        textResult(
+          await client.listModuleDeclarations(
+            module_id,
+            after_node_id ? { afterNodeId: after_node_id } : undefined,
+            limit
+          )
+        )
+    ),
+    strictTool(
       "find_declarations",
-      "Find declarations by exact name, optionally narrowed by kind (interface, type-alias, class, function, variable). Returns stable node IDs with their module. This is your discovery entry point: use it to locate the declaration to change, then inspect_nodes on the returned IDs before mutating.",
+      "Find declarations by exact name, optionally narrowed by kind (interface, type-alias, class, function, variable) and/or to one module via module_id. Returns a bounded page of stable node IDs with their module; while hasMore is true, pass the last nodeId as after_node_id for the next page, and restart pagination if graphGeneration changes. Prefer module-scoped lookups once list_modules has told you where to look.",
       COORDINATION_TOOL_INPUT_SCHEMAS.find_declarations,
-      async ({ name, kind }) => textResult(await client.findDeclarations(name, { kind }))
+      async ({ name, kind, module_id, after_node_id }) =>
+        textResult(
+          await client.findDeclarations(name, {
+            ...(kind ? { kind } : {}),
+            ...(module_id ? { moduleId: module_id } : {}),
+            ...(after_node_id ? { afterNodeId: after_node_id } : {})
+          })
+        )
     ),
     strictTool(
       "inspect_nodes",
       "Inspect a bounded caller-supplied set of stable node IDs and their immediate safe relationships. Read-only. Use stable node IDs from the prompt or prior safe results; do not guess IDs. This is the bounded inspection step before begin_change_set or after a fresh decision.",
       COORDINATION_TOOL_INPUT_SCHEMAS.inspect_nodes,
       async ({ node_ids }) => textResult(await client.inspectNodes(node_ids))
+    ),
+    strictTool(
+      "get_references",
+      "List the incoming references to one declaration as a bounded page: everything that references the declaration or anything inside it, from outside it. Each entry names the referencing node, the reference kind, and the module it lives in. Use this to size and locate the blast radius of a rename or parameter change before mutating. Pass the last fromNodeId as after_reference_key while hasMore is true; restart if graphGeneration changes.",
+      COORDINATION_TOOL_INPUT_SCHEMAS.get_references,
+      async ({ node_id, after_reference_key, limit }) =>
+        textResult(
+          await client.getReferences(
+            node_id,
+            after_reference_key ? { afterReferenceKey: after_reference_key } : undefined,
+            limit
+          )
+        )
     ),
     strictTool(
       "begin_change_set",
@@ -204,8 +285,11 @@ export function createCoordinationTools(
 }
 
 export const COORDINATION_TOOL_NAMES = [
+  "list_modules",
+  "list_module_declarations",
   "find_declarations",
   "inspect_nodes",
+  "get_references",
   "begin_change_set",
   "add_intent",
   "submit_change_set",

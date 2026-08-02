@@ -29,6 +29,24 @@ function fakeClient(overrides: Partial<CoordinationClientApi> = {}): Coordinatio
       declarations: [],
       hasMore: false
     }),
+    listModules: async () => ({
+      type: "modules",
+      graphGeneration: "0",
+      modules: [],
+      hasMore: false
+    }),
+    listModuleDeclarations: async () => ({
+      type: "module_declarations",
+      graphGeneration: "0",
+      declarations: [],
+      hasMore: false
+    }),
+    getReferences: async () => ({
+      type: "references",
+      graphGeneration: "0",
+      references: [],
+      hasMore: false
+    }),
     inspectNodes: async () => ({ type: "nodes", graphGeneration: "0", nodes: [] }),
     beginChangeSet: async () => changeSet,
     addIntent: async () => changeSet,
@@ -68,10 +86,13 @@ function textPayload(result: { content: Array<{ type: string; text?: string }> }
 }
 
 describe("coordination-only MCP surface", () => {
-  it("exports exactly the ten design operations and qualified allowlist", () => {
+  it("exports exactly the thirteen design operations and qualified allowlist", () => {
     expect(COORDINATION_TOOL_NAMES).toEqual([
+      "list_modules",
+      "list_module_declarations",
       "find_declarations",
       "inspect_nodes",
+      "get_references",
       "begin_change_set",
       "add_intent",
       "submit_change_set",
@@ -142,6 +163,98 @@ describe("coordination-only MCP surface", () => {
     ).toMatchObject({ intent: { type: "add_parameter", value: "false" } });
   });
 
+  it("accepts paged find_declarations narrowing by module_id and after_node_id", () => {
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.find_declarations.parse({
+        name: "Account",
+        kind: "class",
+        module_id: "module:1",
+        after_node_id: "node:99"
+      })
+    ).toEqual({
+      name: "Account",
+      kind: "class",
+      module_id: "module:1",
+      after_node_id: "node:99"
+    });
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.find_declarations.safeParse({
+        name: "Account",
+        extra: "nope"
+      }).success
+    ).toBe(false);
+  });
+
+  it("bounds list_modules to a page of at most 64 with an optional cursor", () => {
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_modules.parse({ limit: 64 })
+    ).toEqual({ limit: 64 });
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_modules.parse({
+        after_module_id: "module:1",
+        limit: 1
+      })
+    ).toEqual({ after_module_id: "module:1", limit: 1 });
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_modules.safeParse({ limit: 0 }).success
+    ).toBe(false);
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_modules.safeParse({ limit: 65 }).success
+    ).toBe(false);
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_modules.safeParse({ limit: 10, extra: "nope" })
+        .success
+    ).toBe(false);
+  });
+
+  it("requires module_id and bounds list_module_declarations to a page of at most 64", () => {
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_module_declarations.parse({
+        module_id: "module:1",
+        limit: 64
+      })
+    ).toEqual({ module_id: "module:1", limit: 64 });
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_module_declarations.safeParse({ limit: 10 }).success
+    ).toBe(false);
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_module_declarations.safeParse({
+        module_id: "module:1",
+        limit: 65
+      }).success
+    ).toBe(false);
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_module_declarations.safeParse({
+        module_id: "module:1",
+        limit: 0
+      }).success
+    ).toBe(false);
+  });
+
+  it("requires node_id and bounds get_references to a page of at most 256", () => {
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.get_references.parse({
+        node_id: "node:1",
+        limit: 256
+      })
+    ).toEqual({ node_id: "node:1", limit: 256 });
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.get_references.safeParse({ limit: 10 }).success
+    ).toBe(false);
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.get_references.safeParse({
+        node_id: "node:1",
+        limit: 257
+      }).success
+    ).toBe(false);
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.get_references.safeParse({
+        node_id: "node:1",
+        limit: 0
+      }).success
+    ).toBe(false);
+  });
+
   it.each([
     "key",
     "resource_key",
@@ -194,8 +307,11 @@ describe("coordination-only MCP surface", () => {
       };
     };
     const valid: Record<string, Record<string, unknown>> = {
+      list_modules: { limit: 10 },
+      list_module_declarations: { module_id: "module:1", limit: 10 },
       find_declarations: { name: "Account" },
       inspect_nodes: { node_ids: ["node:1"] },
+      get_references: { node_id: "node:1", limit: 10 },
       begin_change_set: { reasoning: "reason" },
       add_intent: {
         change_set_id: "change:1",
@@ -259,6 +375,106 @@ describe("coordination-only MCP surface", () => {
       ]
     ]);
     expect(result).toEqual(changeSet);
+  });
+
+  it("forwards paged find_declarations args, omitting unset optionals", async () => {
+    const calls: unknown[] = [];
+    const tools = createCoordinationTools(
+      fakeClient({
+        findDeclarations: async (...args) => {
+          calls.push(args);
+          return { type: "declarations", graphGeneration: "0", declarations: [], hasMore: false };
+        }
+      })
+    );
+    const find = tools.find((entry) => entry.name === "find_declarations")!;
+
+    await find.handler({ name: "Account" }, {});
+    await find.handler(
+      { name: "Account", kind: "class", module_id: "module:1", after_node_id: "node:9" },
+      {}
+    );
+
+    expect(calls).toEqual([
+      ["Account", {}],
+      ["Account", { kind: "class", moduleId: "module:1", afterNodeId: "node:9" }]
+    ]);
+  });
+
+  it("forwards list_modules args to the client, omitting the cursor when unset", async () => {
+    const calls: unknown[] = [];
+    const tools = createCoordinationTools(
+      fakeClient({
+        listModules: async (...args) => {
+          calls.push(args);
+          return { type: "modules", graphGeneration: "0", modules: [], hasMore: false };
+        }
+      })
+    );
+    const listModules = tools.find((entry) => entry.name === "list_modules")!;
+
+    await listModules.handler({ limit: 10 }, {});
+    await listModules.handler({ after_module_id: "module:1", limit: 5 }, {});
+
+    expect(calls).toEqual([
+      [undefined, 10],
+      [{ afterModuleId: "module:1" }, 5]
+    ]);
+  });
+
+  it("forwards list_module_declarations args to the client, omitting the cursor when unset", async () => {
+    const calls: unknown[] = [];
+    const tools = createCoordinationTools(
+      fakeClient({
+        listModuleDeclarations: async (...args) => {
+          calls.push(args);
+          return {
+            type: "module_declarations",
+            graphGeneration: "0",
+            declarations: [],
+            hasMore: false
+          };
+        }
+      })
+    );
+    const listModuleDeclarations = tools.find(
+      (entry) => entry.name === "list_module_declarations"
+    )!;
+
+    await listModuleDeclarations.handler({ module_id: "module:1", limit: 10 }, {});
+    await listModuleDeclarations.handler(
+      { module_id: "module:1", after_node_id: "node:1", limit: 5 },
+      {}
+    );
+
+    expect(calls).toEqual([
+      ["module:1", undefined, 10],
+      ["module:1", { afterNodeId: "node:1" }, 5]
+    ]);
+  });
+
+  it("forwards get_references args to the client, omitting the cursor when unset", async () => {
+    const calls: unknown[] = [];
+    const tools = createCoordinationTools(
+      fakeClient({
+        getReferences: async (...args) => {
+          calls.push(args);
+          return { type: "references", graphGeneration: "0", references: [], hasMore: false };
+        }
+      })
+    );
+    const getReferences = tools.find((entry) => entry.name === "get_references")!;
+
+    await getReferences.handler({ node_id: "node:1", limit: 10 }, {});
+    await getReferences.handler(
+      { node_id: "node:1", after_reference_key: "node:2", limit: 5 },
+      {}
+    );
+
+    expect(calls).toEqual([
+      ["node:1", undefined, 10],
+      ["node:1", { afterReferenceKey: "node:2" }, 5]
+    ]);
   });
 
   it("adds bounded fresh-decision guidance without exposing hidden work", async () => {
