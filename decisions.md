@@ -7,6 +7,113 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-08-01 — B-1 bounded discovery surface landed; key-free chain green; get_references SUBTREE semantics confirmed empirically
+
+**Decision:** B-1 (see 2026-07-31 chartering entry, design
+`docs/superpowers/specs/2026-07-31-item-b-design.md`, implementation plan
+`docs/superpowers/sdd/2026-08-01-item-b1-discovery-plan/`) is CLOSED on this
+branch (`worktree-b1-discovery`, 8 tasks, each independently reviewed). What
+shipped: the four discovery actions — `list_modules`, `list_module_declarations`,
+module-scoped `find_declarations`, pageable `get_references` — under a
+uniform collection contract (graphGeneration stamp, deterministic ordering,
+cursor+`has_more` instead of fail-past-the-cap); a fail-closed corpus-relative
+module path projection (absolute paths and `..`-escape are rejected, not
+silently normalized); a zero-ID discovery-bootstrap acceptance gate
+(`discoveryBootstrap.test.ts`, spec B-1 gate (b)) that resolves and publishes
+a T03-class rename with no IDs supplied by the test, only discovered via the
+new actions; and the agent-facing tool surface grew from 9 to 13 tools
+(`list_modules`, `list_module_declarations`, `find_declarations`,
+`inspect_nodes`, `get_references`, plus the 8 pre-existing change-set/event
+tools — `packages/live-compare/src/tools.ts:287-300`).
+
+**Flagged prominently, per the plan header: `get_references` uses SUBTREE
+reference semantics, not per-declaration-node semantics.** Ingest resolves
+references to a declaration's name-identifier child, not to the declaration
+node itself — so a naive `references_to(declarationNodeId)` lookup returns
+empty for every declaration. `get_references` instead unions references
+targeting any node in the declaration's subtree (the declaration node plus
+its name-identifier and other descendant nodes), which is what the tool
+actually needs to be useful (the agent asks "what points at this
+declaration," not "what points at this exact node"). This was a documented
+interpretation going in (plan header + design doc), not discovered as a
+defect during the build; Task 7's bootstrap gate empirically confirmed it —
+the gate asserts EXACT set-equality between `get_references`' returned ID set
+and the sealed manifest's `incomingReferenceIds`, and that equality PASSED,
+which would not happen under naive per-node semantics on this fixture.
+
+**Divergences from the plan's literal text, both made during fix rounds
+after reviewer findings, both ratified:**
+1. **Task 1** — the plan's wire-contract snippet left the TS side of the
+   module-declaration `name` field unbounded while the Rust side enforces
+   `MAX_ID_BYTES` (512 bytes); a reviewer Important caught the asymmetry
+   (mirrors a pre-existing, deferred asymmetry in
+   `protocol.ts:253`'s `declarationSummarySchema.name` — not introduced by
+   B-1, just structurally identical). Fixed by bounding the TS field to
+   `MAX_ID_BYTES` and adding a shared oversized-name rejected fixture
+   exercised by both language suites.
+2. **Task 2** — the plan's file list for the fail-closed path projection
+   didn't call out a sibling-directory-prefix case (`examples/medium-other`
+   should not be treated as inside `examples/medium`); a reviewer Important
+   flagged the missing regression test. Fixed by adding it plus a one-line
+   comment recording that corpus root `"/"` is structurally unsupported by
+   the prefix chain (not a practical value, left as a comment not a fix).
+
+**Task-4 test-harness-only fix (not a product change):** `local_service.rs`'s
+`repo_root()` test helper seeded module payloads with literal `../..`
+path components, which the new fail-closed projection correctly rejects
+(this is the projection doing its job — the harness was feeding it a shape
+the product never produces). Canonicalized `repo_root()` in the test harness
+only; no production path touched.
+
+**Pre-existing findings surfaced during this slice, explicitly NOT fixed
+(out of B-1 scope, for the operator):**
+1. `extract_function` drops generic type-parameter bindings on at least one
+   real-corpus case, and the test that would catch it
+   (`packages/verify/tests/extractFunctionCommit.test.ts` — "extracts a
+   contiguous span from a medium-corpus function and commits green") is
+   itself checkout-path-order-dependent: node IDs hash absolute ingest
+   paths, so which function candidate gets selected depends on where the
+   repo is checked out. In this worktree it selects a generic function in
+   `examples/medium/src/persistence.ts` and the extraction drops the
+   type-parameter binding (`tsc` TS2304 "Cannot find name 'V'"); the
+   identical code and test PASS on `main`. Genuine `extract_function`
+   soundness gap plus a path-fragile test — pre-existing, not introduced by
+   B-1, recorded in the ledger at baseline (before Task 1 started).
+2. `gate3Noninferiority`'s warm-verdict reproduction is INCONCLUSIVE vs. the
+   recorded FAIL under high ambient machine load — reproduced on an
+   unmodified `main` checkout at loadavg ~27-30 (same failure, same
+   machine-load cause, nothing to do with this branch's code); passes
+   cleanly on quieter runs, including in this slice's own full-chain run
+   (loadavg ~15-18, gate3 passed clean, no retry needed).
+
+**Gate evidence (key-free, this branch):** `PATH=/opt/homebrew/bin:$PATH
+pnpm kernel:full-key-free:test` ran to completion green in a single pass —
+every `cargo test` suite in the chain reports `0 failed`, every vitest suite
+reports all-passed, including `gate3Noninferiority` (66.7s, passed clean,
+no flake this run) and the new `kernel:discovery:test` stage
+(`discoveryBootstrap.test.ts`, ~4-5s, PASS: "resolves and publishes a
+T03-class rename from zero supplied IDs"). `PATH=/opt/homebrew/bin:$PATH
+pnpm -r test` ran `ingest` and `store` fully green, then stopped at
+`@strata-code/verify`'s single pre-existing failure (finding 1 above) per
+pnpm's recursive-run fail-fast — the documented, path-order-dependent
+`extract_function` gap, not a B-1 regression; the rest of the workspace
+(`kernel-bridge`, `live-compare`, `agent`, `bench`, `cli`, `render`) did not
+get a turn to run because of the fail-fast, consistent with the same
+short-circuit noted at this slice's baseline (progress ledger, "pnpm -r test
+stopped there, so live-compare baseline runs separately").
+
+**Registration digest unchanged:** `628bd6da…` (2026-07-17). No B-1 commit
+touches `packages/live-compare/src/tasks.ts`, registered prompts, or the
+Phase-6 manifest schema — none of B-1's actions or gates are part of the
+qualified live-comparison surface.
+
+**Design-doc impact:** none — this is Phase-6 kernel-research scope, out of
+`strata-design.md`'s single-agent-product frame per the existing carve-out.
+
+**Revisit when:** B-2 (typed candidate rejection, seed-green validation
+manifest, fail-closed registered-fixture reader) begins — it builds directly
+on B-1's collection contract and path projection.
+
 ## 2026-07-31 — Roadmap item B chartered (discovery worldview + behavioral gate), two slices, post-review
 
 **Decision:** with the bridge-persistence slice closed, the operator directed
