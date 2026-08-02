@@ -180,13 +180,24 @@ export const intentRecordSchema = z
   })
   .strict();
 
+/**
+ * Per-step validation budget, mirroring the Rust profile's bounds
+ * (`1_000..=180_000`). OPTIONAL on `tscOnly` and REQUIRED on `behavioral`:
+ * without an operator manifest the daemon emits a `tscOnly` profile with the
+ * timeout keys ABSENT, which keeps the default wire byte-identical to the
+ * pre-B-2 five-key profile.
+ */
+const validationTimeoutMsSchema = z.number().int().min(1_000).max(180_000);
+
 const tscOnlyValidationProfileSchema = z
   .object({
     mode: z.literal("tscOnly"),
     sourceRoot: nonEmptyStringSchema,
     corpusRoot: nonEmptyStringSchema,
     behavioralFixtures: z.tuple([]),
-    strictSrcOnlyTscScope: z.boolean()
+    strictSrcOnlyTscScope: z.boolean(),
+    tscTimeoutMs: validationTimeoutMsSchema.optional(),
+    vitestTimeoutMs: validationTimeoutMsSchema.optional()
   })
   .strict();
 
@@ -196,7 +207,9 @@ const behavioralValidationProfileSchema = z
     sourceRoot: nonEmptyStringSchema,
     corpusRoot: nonEmptyStringSchema,
     behavioralFixtures: z.array(nonEmptyStringSchema).max(MAX_PROTOCOL_ARRAY_ITEMS),
-    strictSrcOnlyTscScope: z.boolean()
+    strictSrcOnlyTscScope: z.boolean(),
+    tscTimeoutMs: validationTimeoutMsSchema,
+    vitestTimeoutMs: validationTimeoutMsSchema
   })
   .strict();
 

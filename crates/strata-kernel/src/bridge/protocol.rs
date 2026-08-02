@@ -5,9 +5,23 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fmt;
+use std::time::Duration;
 
 pub(crate) const PROTOCOL_VERSION: u32 = 1;
 const MAX_ARRAY_ITEMS: usize = 1_000_000;
+
+/// Fixed overhead the daemon adds on top of a candidate's own tsc+vitest
+/// budget: process-group teardown and result plumbing. THE single source of
+/// truth for this arithmetic — the service's validation-manifest loader
+/// re-exports this constant rather than defining its own.
+pub const CANDIDATE_OVERHEAD_MS: u64 = 30_000;
+/// Allowance for a candidate request to sit queued behind other work before a
+/// worker even starts running it. The persistent transport's total deadline
+/// for a candidate frame is `QUEUE_ALLOWANCE_MS + candidate_deadline`.
+pub const QUEUE_ALLOWANCE_MS: u64 = 30_000;
+/// Bounds on any PRESENT per-step validation timeout, both languages.
+const MIN_VALIDATION_TIMEOUT_MS: u64 = 1_000;
+const MAX_VALIDATION_TIMEOUT_MS: u64 = 180_000;
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -453,12 +467,24 @@ pub(crate) enum ValidationProfile {
         corpus_root: String,
         behavioral_fixtures: Vec<String>,
         strict_src_only_tsc_scope: bool,
+        /// OPTIONAL, and ABSENT (not null) unless an operator manifest set
+        /// it. This asymmetry with `Behavioral` is the whole point: without
+        /// `--validation-manifest` the profile serializes the historic five
+        /// keys and the default wire stays byte-identical to pre-B-2.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tsc_timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vitest_timeout_ms: Option<u64>,
     },
     Behavioral {
         source_root: String,
         corpus_root: String,
         behavioral_fixtures: Vec<String>,
         strict_src_only_tsc_scope: bool,
+        /// REQUIRED: a behavioral run spawns a real tsc and a real vitest, and
+        /// an unbounded one holds a claim past every deadline in the system.
+        tsc_timeout_ms: u64,
+        vitest_timeout_ms: u64,
     },
 }
 
@@ -473,6 +499,8 @@ impl ValidationProfile {
             corpus_root: corpus_root.into(),
             behavioral_fixtures: Vec::new(),
             strict_src_only_tsc_scope,
+            tsc_timeout_ms: None,
+            vitest_timeout_ms: None,
         }
     }
 
@@ -487,17 +515,47 @@ impl ValidationProfile {
         corpus_root: impl Into<String>,
         behavioral_fixtures: Vec<String>,
         strict_src_only_tsc_scope: bool,
+        tsc_timeout_ms: u64,
+        vitest_timeout_ms: u64,
     ) -> Result<Self> {
         ensure!(
             !behavioral_fixtures.is_empty(),
             "behavioral validation profile requires at least one fixture"
         );
-        Ok(Self::Behavioral {
+        let profile = Self::Behavioral {
             source_root: source_root.into(),
             corpus_root: corpus_root.into(),
             behavioral_fixtures,
             strict_src_only_tsc_scope,
-        })
+            tsc_timeout_ms,
+            vitest_timeout_ms,
+        };
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    /// The per-candidate budget this profile implies: the two spawned steps
+    /// plus [`CANDIDATE_OVERHEAD_MS`] for teardown and result plumbing.
+    /// `None` when no operator manifest set the budgets — the caller then
+    /// keeps its existing (pre-B-2) deadline unchanged.
+    pub(crate) fn candidate_deadline(&self) -> Option<Duration> {
+        let (tsc, vitest) = match self {
+            Self::TscOnly {
+                tsc_timeout_ms: Some(tsc),
+                vitest_timeout_ms: Some(vitest),
+                ..
+            } => (*tsc, *vitest),
+            Self::TscOnly { .. } => return None,
+            Self::Behavioral {
+                tsc_timeout_ms,
+                vitest_timeout_ms,
+                ..
+            } => (*tsc_timeout_ms, *vitest_timeout_ms),
+        };
+        Some(Duration::from_millis(
+            tsc.saturating_add(vitest)
+                .saturating_add(CANDIDATE_OVERHEAD_MS),
+        ))
     }
 
     fn validate(&self) -> Result<()> {
@@ -506,6 +564,8 @@ impl ValidationProfile {
                 source_root,
                 corpus_root,
                 behavioral_fixtures,
+                tsc_timeout_ms,
+                vitest_timeout_ms,
                 ..
             } => {
                 non_empty(source_root, "validationProfile.sourceRoot")?;
@@ -514,11 +574,20 @@ impl ValidationProfile {
                     behavioral_fixtures.is_empty(),
                     "tscOnly validation profile cannot contain behavioral fixtures"
                 );
+                // Only PRESENT values are bounded: absence is the default wire.
+                if let Some(value) = tsc_timeout_ms {
+                    bounded_timeout("validationProfile.tscTimeoutMs", *value)?;
+                }
+                if let Some(value) = vitest_timeout_ms {
+                    bounded_timeout("validationProfile.vitestTimeoutMs", *value)?;
+                }
             }
             Self::Behavioral {
                 source_root,
                 corpus_root,
                 behavioral_fixtures,
+                tsc_timeout_ms,
+                vitest_timeout_ms,
                 ..
             } => {
                 non_empty(source_root, "validationProfile.sourceRoot")?;
@@ -537,10 +606,21 @@ impl ValidationProfile {
                         &format!("validationProfile.behavioralFixtures[{index}]"),
                     )?;
                 }
+                bounded_timeout("validationProfile.tscTimeoutMs", *tsc_timeout_ms)?;
+                bounded_timeout("validationProfile.vitestTimeoutMs", *vitest_timeout_ms)?;
             }
         }
         Ok(())
     }
+}
+
+fn bounded_timeout(context: &str, value: u64) -> Result<()> {
+    ensure!(
+        (MIN_VALIDATION_TIMEOUT_MS..=MAX_VALIDATION_TIMEOUT_MS).contains(&value),
+        "{context} must be between {MIN_VALIDATION_TIMEOUT_MS} and \
+         {MAX_VALIDATION_TIMEOUT_MS} ms, got {value}"
+    );
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -659,7 +739,11 @@ impl BridgeRequest {
         }
     }
 
-    fn kind(&self) -> BridgeKind {
+    /// The request kind. `pub(crate)` because the one-shot transport selects
+    /// its deadline per kind (B-2 Task 6): candidate frames are bounded by the
+    /// nested validation budget, analyze frames by the separate transport
+    /// deadline.
+    pub(crate) fn kind(&self) -> BridgeKind {
         match self {
             Self::AnalyzeIntent(_) => BridgeKind::AnalyzeIntent,
             Self::BuildValidateCandidate(_) => BridgeKind::BuildValidateCandidate,
@@ -1624,7 +1708,10 @@ mod tests {
         let cases = [
             ("hydrate", "hydrateFailed"),
             ("validate", "candidateFinalizeFailed"),
+            // Both process-group timeout codes the bounded gate emits
+            // (B-2 Task 6): "we could not finish judging", never a rejection.
             ("validate", "vitestTimedOut"),
+            ("validate", "tscTimedOut"),
             // v2 correction: mutationFailed is OPERATIONAL, not semantic.
             ("mutate", "mutationFailed"),
         ];
@@ -1676,16 +1763,174 @@ mod tests {
 
     #[test]
     fn behavioral_profile_is_unconstructible_with_zero_fixtures() {
-        assert!(ValidationProfile::behavioral("/c/src", "/c", Vec::new(), true).is_err());
+        assert!(
+            ValidationProfile::behavioral("/c/src", "/c", Vec::new(), true, 60_000, 90_000)
+                .is_err()
+        );
         let manual = ValidationProfile::Behavioral {
             source_root: "/c/src".into(),
             corpus_root: "/c".into(),
             behavioral_fixtures: Vec::new(),
             strict_src_only_tsc_scope: true,
+            tsc_timeout_ms: 60_000,
+            vitest_timeout_ms: 90_000,
         };
         assert!(
             manual.validate().is_err(),
             "validate() must also enforce the invariant"
+        );
+    }
+
+    /// The default (no `--validation-manifest`) wire must stay BYTE-IDENTICAL
+    /// to the pre-B-2 profile: exactly five keys, with the new optional
+    /// timeouts ABSENT rather than serialized as null.
+    #[test]
+    fn tsc_only_profile_omits_the_timeout_keys_entirely() {
+        let value =
+            serde_json::to_value(ValidationProfile::tsc_only("/c/src", "/c", true)).unwrap();
+        // serde_json's default map is sorted, so compare key SETS (exactly
+        // what the acceptance suite's `assert_exact_object_keys` does).
+        let keys: BTreeSet<&str> = value
+            .as_object()
+            .expect("profile object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "mode",
+                "sourceRoot",
+                "corpusRoot",
+                "behavioralFixtures",
+                "strictSrcOnlyTscScope",
+            ]),
+            "the no-manifest profile must serialize the historic five keys only"
+        );
+        assert_eq!(value["mode"], "tscOnly");
+    }
+
+    /// A manifest-backed behavioral profile carries both budgets, always.
+    #[test]
+    fn behavioral_profile_serializes_exactly_seven_keys() {
+        let profile = ValidationProfile::behavioral(
+            "/c/src",
+            "/c",
+            vec!["tests/a.test.ts".to_owned()],
+            true,
+            60_000,
+            90_000,
+        )
+        .unwrap();
+        let value = serde_json::to_value(&profile).unwrap();
+        let keys: BTreeSet<&str> = value
+            .as_object()
+            .expect("profile object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "mode",
+                "sourceRoot",
+                "corpusRoot",
+                "behavioralFixtures",
+                "strictSrcOnlyTscScope",
+                "tscTimeoutMs",
+                "vitestTimeoutMs",
+            ])
+        );
+        assert_eq!(value["tscTimeoutMs"], 60_000);
+        assert_eq!(value["vitestTimeoutMs"], 90_000);
+        // Round-trips through the strict wire parser.
+        let parsed: ValidationProfile = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, profile);
+        assert!(parsed.validate().is_ok());
+    }
+
+    /// A tscOnly profile MAY carry timeouts (an operator manifest in tscOnly
+    /// mode), and both variants bound every present value to 1s..=180s.
+    #[test]
+    fn present_profile_timeouts_are_bounded_on_both_variants() {
+        let with_timeouts: ValidationProfile = serde_json::from_value(serde_json::json!({
+            "mode": "tscOnly",
+            "sourceRoot": "/c/src",
+            "corpusRoot": "/c",
+            "behavioralFixtures": [],
+            "strictSrcOnlyTscScope": true,
+            "tscTimeoutMs": 60_000,
+            "vitestTimeoutMs": 90_000,
+        }))
+        .unwrap();
+        assert!(with_timeouts.validate().is_ok());
+
+        for (tsc, vitest) in [(999_u64, 90_000_u64), (60_000, 180_001), (0, 90_000)] {
+            let out_of_bounds: ValidationProfile = serde_json::from_value(serde_json::json!({
+                "mode": "tscOnly",
+                "sourceRoot": "/c/src",
+                "corpusRoot": "/c",
+                "behavioralFixtures": [],
+                "strictSrcOnlyTscScope": true,
+                "tscTimeoutMs": tsc,
+                "vitestTimeoutMs": vitest,
+            }))
+            .unwrap();
+            assert!(
+                out_of_bounds.validate().is_err(),
+                "tscOnly must reject {tsc}/{vitest}"
+            );
+
+            let behavioral = ValidationProfile::Behavioral {
+                source_root: "/c/src".into(),
+                corpus_root: "/c".into(),
+                behavioral_fixtures: vec!["tests/a.test.ts".to_owned()],
+                strict_src_only_tsc_scope: true,
+                tsc_timeout_ms: tsc,
+                vitest_timeout_ms: vitest,
+            };
+            assert!(
+                behavioral.validate().is_err(),
+                "behavioral must reject {tsc}/{vitest}"
+            );
+        }
+    }
+
+    /// The behavioral variant cannot be deserialized without both budgets —
+    /// a behavioral run with no bound is exactly what this task forbids.
+    #[test]
+    fn behavioral_profile_without_timeouts_does_not_deserialize() {
+        let missing = serde_json::json!({
+            "mode": "behavioral",
+            "sourceRoot": "/c/src",
+            "corpusRoot": "/c",
+            "behavioralFixtures": ["tests/a.test.ts"],
+            "strictSrcOnlyTscScope": true,
+        });
+        assert!(serde_json::from_value::<ValidationProfile>(missing).is_err());
+    }
+
+    #[test]
+    fn candidate_deadline_nests_tsc_plus_vitest_plus_overhead() {
+        let profile = ValidationProfile::behavioral(
+            "/c/src",
+            "/c",
+            vec!["tests/a.test.ts".to_owned()],
+            true,
+            60_000,
+            90_000,
+        )
+        .unwrap();
+        assert_eq!(
+            profile.candidate_deadline(),
+            Some(std::time::Duration::from_millis(
+                60_000 + 90_000 + CANDIDATE_OVERHEAD_MS
+            ))
+        );
+        // No manifest → no derived deadline; the caller keeps its own.
+        assert_eq!(
+            ValidationProfile::tsc_only("/c/src", "/c", true).candidate_deadline(),
+            None
         );
     }
 }

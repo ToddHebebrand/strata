@@ -23,11 +23,13 @@ use super::protocol::{MAX_DEADLINE_MS, validate_module_path};
 
 /// Fixed overhead the daemon adds on top of a candidate's own tsc+vitest
 /// budget before it reaches the wire's `MAX_DEADLINE_MS` (Task 6 spends
-/// this on process-group teardown and result plumbing).
-pub(super) const CANDIDATE_OVERHEAD_MS: u64 = 30_000;
+/// this on process-group teardown and result plumbing). Re-exported from the
+/// bridge, which owns the deadline arithmetic this manifest must agree with —
+/// two independent copies of the nesting constants could silently drift.
+pub(super) use strata_kernel::CANDIDATE_OVERHEAD_MS;
 /// Allowance for the request to sit behind other work before a worker even
 /// starts running the candidate.
-pub(super) const QUEUE_ALLOWANCE_MS: u64 = 30_000;
+pub(super) use strata_kernel::QUEUE_ALLOWANCE_MS;
 /// `tscOnly` (no `--validation-manifest`) default tsc timeout — unchanged
 /// from the pre-B-2 hardcoded worker budget.
 pub(super) const DEFAULT_TSC_TIMEOUT_MS: u64 = 60_000;

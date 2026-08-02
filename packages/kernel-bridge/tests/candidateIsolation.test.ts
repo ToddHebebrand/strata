@@ -199,7 +199,7 @@ function hydratedMirror(snapshot: KernelSnapshotV1): Mirror {
 }
 
 function servedResult(
-  outcome: ReturnType<typeof buildValidateCandidateOnMirror>
+  outcome: Awaited<ReturnType<typeof buildValidateCandidateOnMirror>>
 ): BuildValidateCandidateResult {
   if (outcome.kind !== "served") {
     throw new Error(`expected a served candidate, got poison: ${outcome.detail}`);
@@ -208,14 +208,14 @@ function servedResult(
 }
 
 /** Asserts the full isolation contract around ONE mirror candidate. */
-function runIsolated(
+async function runIsolated(
   mirror: Mirror,
   request: MirrorCandidateRequest,
   pipeline?: Parameters<typeof buildValidateCandidateOnMirror>[3]
-): ReturnType<typeof buildValidateCandidateOnMirror> {
+): Promise<Awaited<ReturnType<typeof buildValidateCandidateOnMirror>>> {
   const overlaysBefore = openTransactionOverlayCount();
   const pre = mirrorFingerprint(mirror.db, mirror.identity.generation);
-  const outcome = buildValidateCandidateOnMirror(request, mirror.db, undefined, pipeline);
+  const outcome = await buildValidateCandidateOnMirror(request, mirror.db, undefined, pipeline);
   const post = mirrorFingerprint(mirror.db, mirror.identity.generation);
   if (outcome.kind === "served") {
     expect(post).toBe(pre);
@@ -239,13 +239,13 @@ describe("mirror candidate savepoint isolation (Task 7)", () => {
   const snapshot = mediumSnapshot();
   const mirror = hydratedMirror(snapshot);
 
-  it("gate (a): successful candidate equals one-shot and leaves the mirror byte-identical", () => {
+  it("gate (a): successful candidate equals one-shot and leaves the mirror byte-identical", async () => {
     const request = oneShotRequest(snapshot, "rename", [
       renameIntent(snapshot, "isolation-rename-change-set", "Account")
     ]);
-    const oneShot = buildValidateCandidate(request);
+    const oneShot = await buildValidateCandidate(request);
     const mirrored = servedResult(
-      runIsolated(mirror, mirrorRequestOf(request, mirror.identity))
+      await runIsolated(mirror, mirrorRequestOf(request, mirror.identity))
     );
     expect("delta" in mirrored).toBe(true);
     // Byte-compare the payloads (transport fields aside, this IS the whole
@@ -253,26 +253,26 @@ describe("mirror candidate savepoint isolation (Task 7)", () => {
     expect(JSON.stringify(mirrored)).toBe(JSON.stringify(oneShot));
   }, 120_000);
 
-  it("gate (b): failing candidate (type error) reports identically to one-shot, fingerprints equal", () => {
+  it("gate (b): failing candidate (type error) reports identically to one-shot, fingerprints equal", async () => {
     const request = oneShotRequest(snapshot, "type-error", [
       addParameterIntent(snapshot, "isolation-type-error-change-set", {
         typeText: "boolean",
         defaultValue: '"nope"'
       })
     ]);
-    const oneShot = buildValidateCandidate(request);
+    const oneShot = await buildValidateCandidate(request);
     if ("delta" in oneShot) throw new Error("type-error fixture must fail validation");
     expect(oneShot.stage).toBe("validate");
     expect(oneShot.code).toBe("typescriptFailed");
     expect(oneShot.diagnostics.length).toBeGreaterThan(0);
 
     const mirrored = servedResult(
-      runIsolated(mirror, mirrorRequestOf(request, mirror.identity))
+      await runIsolated(mirror, mirrorRequestOf(request, mirror.identity))
     );
     expect(JSON.stringify(mirrored)).toBe(JSON.stringify(oneShot));
   }, 120_000);
 
-  it("gate (c): thrown mid-pipeline exceptions unwind cleanly and the mirror keeps serving", () => {
+  it("gate (c): thrown mid-pipeline exceptions unwind cleanly and the mirror keeps serving", async () => {
     // Malformed intent: the store throws inside the pipeline (mutate stage),
     // and the pipeline's own error path reports it — identically one-shot.
     const missing = oneShotRequest(snapshot, "missing-decl", [
@@ -288,18 +288,18 @@ describe("mirror candidate savepoint isolation (Task 7)", () => {
         }
       }
     ]);
-    const oneShot = buildValidateCandidate(missing);
+    const oneShot = await buildValidateCandidate(missing);
     if ("delta" in oneShot) throw new Error("missing declaration must fail");
     expect(oneShot.stage).toBe("mutate");
     const mirrored = servedResult(
-      runIsolated(mirror, mirrorRequestOf(missing, mirror.identity))
+      await runIsolated(mirror, mirrorRequestOf(missing, mirror.identity))
     );
     expect(JSON.stringify(mirrored)).toBe(JSON.stringify(oneShot));
 
     // Injected seam: a pipeline that dirties the mirror and then THROWS past
     // the pipeline's own error handling — the wrapper's finally must still
     // roll back, and the thrown error becomes a bounded error payload.
-    const thrown = runIsolated(
+    const thrown = await runIsolated(
       mirror,
       mirrorRequestOf(
         oneShotRequest(snapshot, "throwing", [
@@ -322,12 +322,12 @@ describe("mirror candidate savepoint isolation (Task 7)", () => {
       renameIntent(snapshot, "isolation-recovery-change-set", "Account")
     ]);
     const recovered = servedResult(
-      runIsolated(mirror, mirrorRequestOf(recovery, mirror.identity))
+      await runIsolated(mirror, mirrorRequestOf(recovery, mirror.identity))
     );
     expect("delta" in recovered).toBe(true);
   }, 240_000);
 
-  it("gate (e): a commit behind the savepoint is caught by the post-fingerprint (poison)", () => {
+  it("gate (e): a commit behind the savepoint is caught by the post-fingerprint (poison)", async () => {
     const request = mirrorRequestOf(
       oneShotRequest(snapshot, "poison", [
         renameIntent(snapshot, "isolation-poison-change-set", "Account")
@@ -335,7 +335,7 @@ describe("mirror candidate savepoint isolation (Task 7)", () => {
       mirror.identity
     );
     const pre = mirrorFingerprint(mirror.db, mirror.identity.generation);
-    const outcome = buildValidateCandidateOnMirror(
+    const outcome = await buildValidateCandidateOnMirror(
       request,
       mirror.db,
       undefined,
@@ -354,7 +354,7 @@ describe("mirror candidate savepoint isolation (Task 7)", () => {
 });
 
 describe("mirror candidate cross-candidate leakage (gate f)", () => {
-  it("two back-to-back mirror candidates equal two fresh one-shot runs with a correct analyze between", () => {
+  it("two back-to-back mirror candidates equal two fresh one-shot runs with a correct analyze between", async () => {
     const snapshot = mediumSnapshot();
     const mirror = hydratedMirror(snapshot);
     const renameRequest = oneShotRequest(snapshot, "leak-rename", [
@@ -365,11 +365,11 @@ describe("mirror candidate cross-candidate leakage (gate f)", () => {
     ]);
 
     // Fresh one-shot references, each on its own throwaway database.
-    const oneShotRename = buildValidateCandidate(renameRequest);
-    const oneShotParameter = buildValidateCandidate(parameterRequest);
+    const oneShotRename = await buildValidateCandidate(renameRequest);
+    const oneShotParameter = await buildValidateCandidate(parameterRequest);
 
     const mirroredRename = servedResult(
-      runIsolated(mirror, mirrorRequestOf(renameRequest, mirror.identity))
+      await runIsolated(mirror, mirrorRequestOf(renameRequest, mirror.identity))
     );
     // An analyze between the two candidates still sees the untouched base
     // generation: the rename candidate's User -> Account must NOT have leaked.
@@ -380,7 +380,7 @@ describe("mirror candidate cross-candidate leakage (gate f)", () => {
     expect(analysis.facts.type).toBe("renameSymbol");
     expect(analysis.facts.references.length).toBeGreaterThan(0);
     const mirroredParameter = servedResult(
-      runIsolated(mirror, mirrorRequestOf(parameterRequest, mirror.identity))
+      await runIsolated(mirror, mirrorRequestOf(parameterRequest, mirror.identity))
     );
 
     expect(JSON.stringify(mirroredRename)).toBe(JSON.stringify(oneShotRename));
@@ -526,7 +526,7 @@ describe("persistent worker mirror candidates (Task 7, loop level)", () => {
       const request = oneShotRequest(snapshot, "worker-rename", [
         renameIntent(snapshot, "worker-rename-change-set", "Account")
       ]);
-      const oneShot = buildValidateCandidate(request);
+      const oneShot = await buildValidateCandidate(request);
       if (!("delta" in oneShot)) throw new Error("reference candidate must succeed");
 
       // Identity mismatch → refuse, mirror untouched.

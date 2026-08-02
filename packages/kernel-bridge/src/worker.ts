@@ -103,7 +103,7 @@ export async function runOneShotWorker(
   }
 
   try {
-    const response = dispatch(request, handlers, recorder);
+    const response = await dispatch(request, handlers, recorder);
     await emitResponse(response, responseIdentityOf(request), recorder);
   } catch (error) {
     const response = requestErrorResponse(
@@ -255,7 +255,7 @@ async function servePersistentFrame(
     return false;
   }
   try {
-    const response = dispatch(request, handlers, recorder);
+    const response = await dispatch(request, handlers, recorder);
     await writePersistentResponse(response, responseIdentityOf(request), recorder);
   } catch (error) {
     const response = requestErrorResponse(
@@ -437,7 +437,7 @@ async function serveMirrorCandidate(
       ? corruptingMirrorPipelineForTests
       : undefined;
   try {
-    const outcome = buildValidateCandidateOnMirror(request, db, recorder, pipeline);
+    const outcome = await buildValidateCandidateOnMirror(request, db, recorder, pipeline);
     if (outcome.kind === "poisoned") {
       mirror.markPoisoned(outcome.detail);
       await writeLoopErrorFrame(request.requestId, "mirrorPoisoned", new Error(outcome.detail));
@@ -570,11 +570,11 @@ async function readBoundedInput(): Promise<string> {
   return Buffer.concat(chunks, bytes).toString("utf8");
 }
 
-function dispatch(
+async function dispatch(
   request: BridgeRequest,
   handlers: WorkerHandlers,
   recorder?: StageRecorder
-): BridgeResponse {
+): Promise<BridgeResponse> {
   if (request.kind === "analyzeIntent") {
     const result = handlers.analyzeIntent(request, recorder);
     const response = "facts" in result
@@ -596,7 +596,7 @@ function dispatch(
     return bridgeResponseSchema.parse(response);
   }
 
-  const result = handlers.buildValidateCandidate(request, recorder);
+  const result = await handlers.buildValidateCandidate(request, recorder);
   const response = "delta" in result
     ? {
         protocolVersion: 1 as const,

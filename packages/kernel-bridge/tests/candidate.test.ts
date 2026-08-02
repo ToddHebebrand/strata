@@ -142,7 +142,7 @@ function addParameterRequest(
 }
 
 function expectSuccess(
-  result: ReturnType<typeof buildValidateCandidate>
+  result: Awaited<ReturnType<typeof buildValidateCandidate>>
 ): Extract<typeof result, { delta: unknown }> {
   if (!("delta" in result)) {
     throw new Error(
@@ -153,7 +153,7 @@ function expectSuccess(
 }
 
 function expectFailure(
-  result: ReturnType<typeof buildValidateCandidate>
+  result: Awaited<ReturnType<typeof buildValidateCandidate>>
 ): BridgeErrorPayload {
   if (!("stage" in result)) throw new Error("expected candidate failure");
   expect(result).not.toHaveProperty("delta");
@@ -205,6 +205,21 @@ function behavioralMedium(): {
       '  expect(greet({ id: "1", email: "bridge@example.test" })).toBe("hello bridge@example.test");\n' +
       '});\n'
   );
+  // A fixture that runs far longer than any budget the timeout gate hands it
+  // (45s vs the gate's 1.5s), with vitest's own per-test timeout raised so the
+  // hang is OURS to bound, not vitest's. It also spawns a NON-detached
+  // grandchild, so a runner that killed only the direct vitest process would
+  // leak it. Bounded at 45s rather than "forever" purely so a regression in the
+  // bounding path fails the suite in a minute instead of wedging it.
+  writeFileSync(
+    path.join(root, "tests", "bridge-hanging.test.ts"),
+    'import { spawn } from "node:child_process";\n' +
+      'import { it } from "vitest";\n' +
+      'it("outlasts the behavioral budget", async () => {\n' +
+      '  spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });\n' +
+      "  await new Promise((resolve) => setTimeout(resolve, 45_000));\n" +
+      "}, 90_000);\n"
+  );
   const src = path.join(root, "src");
   return {
     corpusRoot: root,
@@ -223,10 +238,10 @@ afterEach(() => {
 });
 
 describe("validated scratch candidates", () => {
-  it("builds a TypeScript-clean real-corpus rename delta from one change set", () => {
+  it("builds a TypeScript-clean real-corpus rename delta from one change set", async () => {
     const before = mediumSnapshot();
 
-    const result = expectSuccess(buildValidateCandidate(renameRequest(before)));
+    const result = expectSuccess(await buildValidateCandidate(renameRequest(before)));
 
     expect(result.diagnostics).toEqual([]);
     const after = applyDelta(before, result.delta);
@@ -260,7 +275,7 @@ describe("validated scratch candidates", () => {
     assertIdentityBoundary(before, after, touched);
   });
 
-  it("adds one uniform parameter value at every real greet callsite with bounded ID churn", () => {
+  it("adds one uniform parameter value at every real greet callsite with bounded ID churn", async () => {
     const before = mediumSnapshot();
     const request = addParameterRequest(before);
     const db = hydrateSnapshot(before);
@@ -273,7 +288,7 @@ describe("validated scratch candidates", () => {
       db.close();
     }
 
-    const result = expectSuccess(buildValidateCandidate(request));
+    const result = expectSuccess(await buildValidateCandidate(request));
     const after = applyDelta(before, result.delta);
     const intent = request.changeSet.orderedIntents[0]!;
     if (intent.parameters.type !== "addParameter") throw new Error("parameter expected");
@@ -291,10 +306,10 @@ describe("validated scratch candidates", () => {
     );
   });
 
-  it("maps a null default value to the store operation's undefined input", () => {
+  it("maps a null default value to the store operation's undefined input", async () => {
     const before = mediumSnapshot();
     const request = addParameterRequest(before, null);
-    const result = expectSuccess(buildValidateCandidate(request));
+    const result = expectSuccess(await buildValidateCandidate(request));
     const after = applyDelta(before, result.delta);
     const intent = request.changeSet.orderedIntents[0]!;
     if (intent.parameters.type !== "addParameter") throw new Error("parameter expected");
@@ -304,7 +319,7 @@ describe("validated scratch candidates", () => {
       .not.toContain("excited: boolean =");
   });
 
-  it("applies ordered rename and add-parameter intents as one combined candidate", () => {
+  it("applies ordered rename and add-parameter intents as one combined candidate", async () => {
     const before = mediumSnapshot();
     const rename = renameRequest(before);
     const parameter = addParameterRequest(before);
@@ -331,7 +346,7 @@ describe("validated scratch candidates", () => {
 
     const db = hydrateSnapshot(before);
     try {
-      const result = expectSuccess(buildValidateCandidateInScratch(request, db));
+      const result = expectSuccess(await buildValidateCandidateInScratch(request, db));
       const transactions = db.prepare(
         "SELECT tx_id, status, actor FROM transactions ORDER BY started_at"
       ).all() as { tx_id: string; status: string; actor: string }[];
@@ -369,7 +384,7 @@ describe("validated scratch candidates", () => {
     }
   });
 
-  it("rolls back a valid first intent when the second intent is a known rejection", () => {
+  it("rolls back a valid first intent when the second intent is a known rejection", async () => {
     const before = mediumSnapshot();
     const request = renameRequest(before);
     request.changeSet.orderedIntents.push({
@@ -390,7 +405,7 @@ describe("validated scratch candidates", () => {
 
     const db = hydrateSnapshot(before);
     try {
-      const error = expectFailure(buildValidateCandidateInScratch(request, db));
+      const error = expectFailure(await buildValidateCandidateInScratch(request, db));
       expect(error.stage).toBe("mutate");
       expect(error.code).toBe("intentRejected");
       expect(JSON.stringify(exportSnapshot(db, before.generation))).toBe(original);
@@ -403,10 +418,10 @@ describe("validated scratch candidates", () => {
       db.close();
     }
     expect(JSON.stringify(before)).toBe(original);
-    expectSuccess(buildValidateCandidate(renameRequest(before)));
+    expectSuccess(await buildValidateCandidate(renameRequest(before)));
   });
 
-  it("rejects declaration/statement and out-of-scope identifier churn without a delta", () => {
+  it("rejects declaration/statement and out-of-scope identifier churn without a delta", async () => {
     const before = mediumSnapshot();
     const statement = before.nodes.find(
       (node) => node.kind !== "Module" && node.kind !== "Identifier"
@@ -451,7 +466,7 @@ describe("validated scratch candidates", () => {
     expect(identifierError).not.toHaveProperty("delta");
   });
 
-  it("uses one explicitly scoped passing behavioral fixture and ignores unrelated red fixtures", () => {
+  it("uses one explicitly scoped passing behavioral fixture and ignores unrelated red fixtures", async () => {
     const fixture = behavioralMedium();
     const request = renameRequest(fixture.snapshot);
     request.validationProfile = {
@@ -459,26 +474,47 @@ describe("validated scratch candidates", () => {
       sourceRoot: fixture.sourceRoot,
       corpusRoot: fixture.corpusRoot,
       behavioralFixtures: ["tests/bridge-passing.test.ts"],
-      strictSrcOnlyTscScope: true
+      strictSrcOnlyTscScope: true,
+      tscTimeoutMs: 120_000,
+      vitestTimeoutMs: 120_000
     };
 
-    expectSuccess(buildValidateCandidate(request));
+    expectSuccess(await buildValidateCandidate(request));
   });
+
+  it("fails a behavioral candidate whose fixture outruns the vitest timeout with vitestTimedOut", async () => {
+    const fixture = behavioralMedium();
+    const request = renameRequest(fixture.snapshot);
+    request.validationProfile = {
+      mode: "behavioral",
+      sourceRoot: fixture.sourceRoot,
+      corpusRoot: fixture.corpusRoot,
+      behavioralFixtures: ["tests/bridge-hanging.test.ts"],
+      strictSrcOnlyTscScope: true,
+      tscTimeoutMs: 120_000,
+      vitestTimeoutMs: 1_500
+    };
+
+    const error = expectFailure(await buildValidateCandidate(request));
+
+    expect(error.stage).toBe("validate");
+    expect(error.code).toBe("vitestTimedOut");
+  }, 180_000);
 
   it.each([
     ["missing source root", { sourceRoot: path.join(corpusRoot, "missing") }],
     ["missing corpus root", { corpusRoot: path.join(corpusRoot, "missing") }],
     ["source root escaping corpus", { sourceRoot: path.dirname(corpusRoot) }]
-  ])("rejects %s", (_label, override) => {
+  ])("rejects %s", async (_label, override) => {
     const before = mediumSnapshot();
     const request = renameRequest(before);
     request.validationProfile = { ...request.validationProfile, ...override };
-    const error = expectFailure(buildValidateCandidate(request));
+    const error = expectFailure(await buildValidateCandidate(request));
     expect(error.stage).toBe("validate");
     expect(error.code).toBe("invalidValidationProfile");
   });
 
-  it("rejects module paths outside the trusted source root", () => {
+  it("rejects module paths outside the trusted source root", async () => {
     const before = mediumSnapshot();
     const module = before.nodes.find((node) => node.kind === "Module")!;
     const escaped: KernelSnapshotV1 = {
@@ -487,7 +523,7 @@ describe("validated scratch candidates", () => {
         node.id === module.id ? { ...node, payload: path.join(corpusRoot, "outside.ts") } : node
       )
     };
-    const error = expectFailure(buildValidateCandidate(renameRequest(escaped)));
+    const error = expectFailure(await buildValidateCandidate(renameRequest(escaped)));
     expect(error.stage).toBe("validate");
     expect(error.code).toBe("moduleOutsideSourceRoot");
   });
@@ -499,7 +535,7 @@ describe("validated scratch candidates", () => {
     [["tests/missing.test.ts"]]
   ])(
     "rejects empty or untrusted behavioral fixture selection %j",
-    (behavioralFixtures) => {
+    async (behavioralFixtures) => {
       const fixture = behavioralMedium();
       const request = renameRequest(fixture.snapshot);
       request.validationProfile = {
@@ -507,22 +543,24 @@ describe("validated scratch candidates", () => {
         sourceRoot: fixture.sourceRoot,
         corpusRoot: fixture.corpusRoot,
         behavioralFixtures,
-        strictSrcOnlyTscScope: true
+        strictSrcOnlyTscScope: true,
+        tscTimeoutMs: 120_000,
+        vitestTimeoutMs: 120_000
       };
-      const error = expectFailure(buildValidateCandidate(request));
+      const error = expectFailure(await buildValidateCandidate(request));
       expect(error.stage).toBe("validate");
       expect(error.code).toBe("invalidBehavioralFixtures");
     }
   );
 
-  it("bounds normalized mutation failures and never returns a partial delta", () => {
+  it("bounds normalized mutation failures and never returns a partial delta", async () => {
     const before = mediumSnapshot();
     const request = renameRequest(before);
     const first = request.changeSet.orderedIntents[0]!;
     if (first.parameters.type !== "renameSymbol") throw new Error("rename expected");
     first.parameters.newName = `not-valid-${"x".repeat(100_000)}`;
 
-    const error = expectFailure(buildValidateCandidate(request));
+    const error = expectFailure(await buildValidateCandidate(request));
 
     expect(error.stage).toBe("mutate");
     // An internal invariant failure (a value the pre-check does not cover)
@@ -532,21 +570,21 @@ describe("validated scratch candidates", () => {
     expect(error.message.length).toBeLessThanOrEqual(1_000);
   });
 
-  it("rejects a rename intent whose target declaration does not exist as a known intent rejection", () => {
+  it("rejects a rename intent whose target declaration does not exist as a known intent rejection", async () => {
     const before = mediumSnapshot();
     const request = renameRequest(before);
     const intent = request.changeSet.orderedIntents[0]!;
     if (intent.parameters.type !== "renameSymbol") throw new Error("rename expected");
     intent.parameters.declarationId = "missing-declaration";
 
-    const error = expectFailure(buildValidateCandidate(request));
+    const error = expectFailure(await buildValidateCandidate(request));
 
     expect(error.stage).toBe("mutate");
     expect(error.code).toBe("intentRejected");
     expect(error.message).toContain("missing-declaration");
   });
 
-  it("rejects a rename intent whose target is not a supported declaration kind as a known intent rejection", () => {
+  it("rejects a rename intent whose target is not a supported declaration kind as a known intent rejection", async () => {
     const before = mediumSnapshot();
     const request = renameRequest(before);
     const intent = request.changeSet.orderedIntents[0]!;
@@ -554,35 +592,35 @@ describe("validated scratch candidates", () => {
     const identifier = before.nodes.find((node) => node.kind === "Identifier")!;
     intent.parameters.declarationId = identifier.id;
 
-    const error = expectFailure(buildValidateCandidate(request));
+    const error = expectFailure(await buildValidateCandidate(request));
 
     expect(error.stage).toBe("mutate");
     expect(error.code).toBe("intentRejected");
     expect(error.message).toContain(identifier.id);
   });
 
-  it("rejects an add_parameter intent whose target is not a function as a known intent rejection", () => {
+  it("rejects an add_parameter intent whose target is not a function as a known intent rejection", async () => {
     const before = mediumSnapshot();
     const request = addParameterRequest(before);
     const intent = request.changeSet.orderedIntents[0]!;
     if (intent.parameters.type !== "addParameter") throw new Error("parameter expected");
     intent.parameters.functionId = declarationId(before, /export interface User\s*\{/);
 
-    const error = expectFailure(buildValidateCandidate(request));
+    const error = expectFailure(await buildValidateCandidate(request));
 
     expect(error.stage).toBe("mutate");
     expect(error.code).toBe("intentRejected");
     expect(error.message).toContain(intent.parameters.functionId);
   });
 
-  it("rejects an add_parameter intent whose target function does not exist as a known intent rejection", () => {
+  it("rejects an add_parameter intent whose target function does not exist as a known intent rejection", async () => {
     const before = mediumSnapshot();
     const request = addParameterRequest(before);
     const intent = request.changeSet.orderedIntents[0]!;
     if (intent.parameters.type !== "addParameter") throw new Error("parameter expected");
     intent.parameters.functionId = "missing-function";
 
-    const error = expectFailure(buildValidateCandidate(request));
+    const error = expectFailure(await buildValidateCandidate(request));
 
     expect(error.stage).toBe("mutate");
     expect(error.code).toBe("intentRejected");

@@ -12,7 +12,11 @@ import {
   type Db,
   type TxHandle
 } from "@strata-code/store";
-import { commit, commitWithBehavioralGate, type Diagnostic } from "@strata-code/verify";
+import {
+  commit,
+  commitWithBehavioralGateBounded,
+  type Diagnostic
+} from "@strata-code/verify";
 import { StageRecorder } from "./metrics";
 import { mirrorFingerprint } from "./mirror-fingerprint";
 import {
@@ -63,10 +67,10 @@ class CandidateFailure extends Error {
   }
 }
 
-export function buildValidateCandidate(
+export async function buildValidateCandidate(
   request: BuildValidateCandidateRequest,
   recorder?: StageRecorder
-): BuildValidateCandidateResult {
+): Promise<BuildValidateCandidateResult> {
   const profileError = validateProfile(request.validationProfile, request.snapshot);
   if (profileError !== undefined) return profileError;
 
@@ -80,7 +84,7 @@ export function buildValidateCandidate(
   }
 
   try {
-    return buildValidateCandidateInScratch(request, db, recorder);
+    return await buildValidateCandidateInScratch(request, db, recorder);
   } finally {
     db.close();
   }
@@ -90,16 +94,20 @@ export function buildValidateCandidate(
  * Package-internal seam for proving rollback against the exact hydrated graph.
  * The package barrel intentionally does not export it.
  */
-export function buildValidateCandidateInScratch(
+export async function buildValidateCandidateInScratch(
   request: BuildValidateCandidateRequest,
   db: Db,
   recorder?: StageRecorder
-): BuildValidateCandidateResult {
+): Promise<BuildValidateCandidateResult> {
   let tx: TxHandle | undefined;
   const touchedStatementIds = new Set<string>();
   let stage: BridgeErrorPayload["stage"] = "mutate";
   const bracket = <T>(bracketStage: "mutate" | "validate" | "export", fn: () => T): T =>
     recorder ? recorder.time(bracketStage, fn) : fn();
+  const bracketAsync = <T>(
+    bracketStage: "mutate" | "validate" | "export",
+    fn: () => Promise<T>
+  ): Promise<T> => (recorder ? recorder.timeAsync(bracketStage, fn) : fn());
 
   try {
     const activeTx = begin(db, request.changeSet.actor, request.changeSet.reasoning);
@@ -147,18 +155,36 @@ export function buildValidateCandidateInScratch(
     });
 
     stage = "validate";
-    const commitResult = bracket("validate", () =>
-      request.validationProfile.mode === "tscOnly"
-        ? commit(db, activeTx, request.validationProfile.corpusRoot)
-        : commitWithBehavioralGate(db, activeTx, {
-            srcRoot: request.validationProfile.sourceRoot,
-            corpusRoot: request.validationProfile.corpusRoot,
-            behavioralFixtures: request.validationProfile.behavioralFixtures,
-            strictSrcOnlyTscScope:
-              request.validationProfile.strictSrcOnlyTscScope
+    const profile = request.validationProfile;
+    const commitResult = await bracketAsync("validate", async () =>
+      profile.mode === "tscOnly"
+        ? commit(db, activeTx, profile.corpusRoot)
+        : // Behavioral validation spawns a real tsc and a real vitest, each
+          // under its own budget and its own process group (Task 6). A budget
+          // exhausted here is OPERATIONAL, not a rejection of the candidate.
+          await commitWithBehavioralGateBounded(db, activeTx, {
+            srcRoot: profile.sourceRoot,
+            corpusRoot: profile.corpusRoot,
+            behavioralFixtures: profile.behavioralFixtures,
+            strictSrcOnlyTscScope: profile.strictSrcOnlyTscScope,
+            tscTimeoutMs: profile.tscTimeoutMs,
+            vitestTimeoutMs: profile.vitestTimeoutMs
           })
     );
     if (!commitResult.ok) {
+      if ("timedOut" in commitResult) {
+        // OPERATIONAL: the worker could not FINISH judging the candidate, so
+        // downstream must re-queue rather than mark the change set rejected.
+        // Deliberately outside the semantic {typescriptFailed,
+        // behavioralFailed, intentRejected} set the Rust side downcasts.
+        throw new CandidateFailure(
+          "validate",
+          commitResult.timedOut === "tsc" ? "tscTimedOut" : "vitestTimedOut",
+          [],
+          `candidate ${commitResult.timedOut} validation exceeded its budget ` +
+            `and its process group was killed`
+        );
+      }
       if ("diagnostics" in commitResult) {
         throw new CandidateFailure(
           "validate",
@@ -224,7 +250,7 @@ export type CandidatePipeline = (
   request: BuildValidateCandidateRequest,
   db: Db,
   recorder?: StageRecorder
-) => BuildValidateCandidateResult;
+) => Promise<BuildValidateCandidateResult>;
 
 export type MirrorCandidateOutcome =
   | { kind: "served"; result: BuildValidateCandidateResult }
@@ -260,12 +286,12 @@ export type MirrorCandidateOutcome =
  * `pipeline` is a test seam (poison-state gate: a pipeline that COMMITs
  * behind the wrapper's back must be detected); production callers omit it.
  */
-export function buildValidateCandidateOnMirror(
+export async function buildValidateCandidateOnMirror(
   request: MirrorCandidateRequest,
   db: Db,
   recorder?: StageRecorder,
   pipeline?: CandidatePipeline
-): MirrorCandidateOutcome {
+): Promise<MirrorCandidateOutcome> {
   const generation = request.identity.generation;
   const run: CandidatePipeline = pipeline ?? buildValidateCandidateInScratch;
 
@@ -296,7 +322,12 @@ export function buildValidateCandidateOnMirror(
       validationProfile: request.validationProfile
     };
     const profileError = validateProfile(request.validationProfile, snapshot);
-    result = profileError ?? run(fullRequest, db, recorder);
+    // The savepoint brackets the AWAITED pipeline. Safe by construction: the
+    // mirror is a single better-sqlite3 connection served by a strictly serial
+    // frame loop, so no other statement can interleave between this SAVEPOINT
+    // and its ROLLBACK while the awaited tsc/vitest run out of process — and
+    // the pre/post fingerprints below assert exactly that.
+    result = profileError ?? (await run(fullRequest, db, recorder));
   } catch (error) {
     // The pipeline normally reports failures as payloads; anything that
     // still throws (snapshot export, a seam, a store invariant) becomes an
@@ -349,7 +380,7 @@ export function corruptingMirrorPipelineForTests(
   request: BuildValidateCandidateRequest,
   db: Db,
   recorder?: StageRecorder
-): BuildValidateCandidateResult {
+): Promise<BuildValidateCandidateResult> {
   db.exec("RELEASE candidate");
   db.prepare(
     `UPDATE nodes SET payload = payload || ' /* corrupted-behind-savepoint */'

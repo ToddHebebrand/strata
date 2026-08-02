@@ -6,7 +6,10 @@ mod model;
 mod storage;
 mod sync_digest;
 
-pub use bridge::{NodeBridgeConfig, WorkerRunMetrics, WorkerSelfMetrics};
+pub use bridge::{
+    CANDIDATE_OVERHEAD_MS, NodeBridgeConfig, QUEUE_ALLOWANCE_MS, WorkerRunMetrics,
+    WorkerSelfMetrics,
+};
 /// The typed candidate-rejection surface (Task 1 of the behavioral gate):
 /// callers downcast a candidate-execution `anyhow::Error` to
 /// [`CandidateRejected`] to distinguish a SEMANTIC rejection (type-check

@@ -44,13 +44,15 @@ use serde_json::{Value, json};
 
 use super::observer::{self, WorkerRunMetrics};
 use super::persistent::{
-    GraphIdentity, PersistentWorkerConfig, PersistentWorkerHost, SyncPlanner,
+    GraphIdentity, PersistentWorkerConfig, PersistentWorkerHost, SyncPlanner, TransportFailure,
+    TransportPhase,
 };
 use super::process::{NodeBridgeClient, NodeBridgeConfig, elapsed_ns};
 use super::protocol::{
     BridgeBinding, CandidateBinding, ChangeSet, Hash64, MirrorCandidateResponse,
-    PROTOCOL_VERSION, SemanticFacts, ValidationProfile, WireGraphDelta, WireU64,
-    candidate_failure_to_error, parse_mirror_analyze_facts, parse_mirror_candidate_delta,
+    PROTOCOL_VERSION, QUEUE_ALLOWANCE_MS, SemanticFacts, ValidationProfile, WireGraphDelta,
+    WireU64, candidate_failure_to_error, parse_mirror_analyze_facts,
+    parse_mirror_candidate_delta,
 };
 use super::provider::wire_intent;
 use super::sync_state::SyncShared;
@@ -82,9 +84,15 @@ impl SyncPlanner for PublishedSyncPlanner {
 pub(crate) struct PersistentBridgeRouter {
     host: PersistentWorkerHost,
     sync: Arc<SyncShared>,
-    /// Per-request deadline — the same value the one-shot transport uses, so
-    /// a hung worker is bounded identically on both transports.
+    /// Per-request deadline for ANALYZE frames — the same value the one-shot
+    /// transport uses, so a hung worker is bounded identically on both
+    /// transports. Also the eager-hydration budget.
     deadline: Duration,
+    /// Transport total for CANDIDATE frames: `QUEUE_ALLOWANCE_MS` on top of
+    /// the config's candidate deadline, so a candidate that legitimately
+    /// spends its whole validation budget is not cut off by time it spent
+    /// queued behind another caller (B-2 Task 6 deadline nesting).
+    candidate_deadline: Duration,
     max_request_bytes: usize,
     max_diagnostics_bytes: usize,
     collect_metrics: bool,
@@ -128,6 +136,8 @@ impl PersistentBridgeRouter {
             host,
             sync,
             deadline: config.deadline,
+            candidate_deadline: Duration::from_millis(QUEUE_ALLOWANCE_MS)
+                .saturating_add(config.candidate_deadline),
             max_request_bytes: config.max_request_bytes,
             max_diagnostics_bytes: config.max_diagnostics_bytes,
             collect_metrics: config.collect_metrics,
@@ -361,9 +371,12 @@ impl PersistentBridgeRouter {
         let request_serialize_ns = elapsed_ns(serialize_start);
 
         let wall_start = Instant::now();
-        let exchanged =
-            self.host
-                .request_at_with_size(&target, frame, self.deadline, &self.planner());
+        let exchanged = self.host.request_at_with_size(
+            &target,
+            frame,
+            self.candidate_deadline,
+            &self.planner(),
+        );
         let bridge_wall_ns = elapsed_ns(wall_start);
 
         let (outcome, response_bytes, result) = match exchanged {
@@ -380,7 +393,16 @@ impl PersistentBridgeRouter {
                     // "ok" exactly as the one-shot transport records it (its
                     // parse succeeds there too; the failure surfaces after).
                     Ok(parsed) => ("ok", response_bytes, Ok((parsed, metrics))),
-                    Err(error) => ("parseFailed", response_bytes, Err(error)),
+                    // The worker DID run this candidate; we just could not read
+                    // its answer. Exchange phase — never replayed one-shot.
+                    Err(error) => (
+                        "parseFailed",
+                        response_bytes,
+                        Err(anyhow::Error::new(TransportFailure::new(
+                            TransportPhase::Exchange,
+                            error,
+                        ))),
+                    ),
                 }
             }
             Err(error) => ("persistentError", 0, Err(error)),

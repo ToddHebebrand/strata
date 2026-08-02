@@ -93,6 +93,10 @@ fn default_config(script: &str) -> NodeBridgeConfig {
         executable: PathBuf::from("node"),
         arguments: vec![OsString::from(process_fixture_path(script))],
         deadline: Duration::from_secs(5),
+        // Without a validation manifest the candidate budget IS the request
+        // deadline (B-2 Task 6); this harness builds the struct directly, so
+        // it states that default explicitly.
+        candidate_deadline: Duration::from_secs(5),
         max_request_bytes: MAX_REQUEST_BYTES,
         max_response_bytes: MAX_RESPONSE_BYTES,
         max_stderr_bytes: MAX_STDERR_BYTES,

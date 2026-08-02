@@ -71,10 +71,80 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
+use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
+
+/// Where in a persistent-transport request's lifecycle a failure happened.
+/// The executor classifies fallback eligibility on this TYPE, never on error
+/// text (B-2 Task 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransportPhase {
+    /// The caller never reached the worker: its deadline lapsed while queued
+    /// behind another caller, or the host refused the frame before writing a
+    /// byte (oversized request). Nothing is running, so replaying this request
+    /// one-shot is safe.
+    Queued,
+    /// Failed while bringing the worker's mirror to the request's identity
+    /// (hydration / attestation / sync refusal). No semantic frame was
+    /// dispatched, but the worker may have been killed and its mirror is not
+    /// trustworthy for this request; treated as operational, not replayed.
+    Sync,
+    /// Failed with the SEMANTIC frame in flight — including a mid-exchange
+    /// deadline. The worker may still be running the candidate's tsc/vitest,
+    /// so a one-shot replay would double the work the deadline exists to
+    /// bound. Never replayed for candidate frames.
+    Exchange,
+}
+
+impl fmt::Display for TransportPhase {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::Queued => "queued",
+            Self::Sync => "sync",
+            Self::Exchange => "exchange",
+        };
+        formatter.write_str(label)
+    }
+}
+
+/// A persistent-transport failure tagged with the phase it happened in.
+/// Every error out of [`PersistentWorkerHost::request_at`],
+/// [`PersistentWorkerHost::request_at_with_size`] and
+/// [`PersistentWorkerHost::hydrate_at`] carries one, and `anyhow`'s downcast
+/// recovers it through added context.
+#[derive(Debug)]
+pub struct TransportFailure {
+    pub phase: TransportPhase,
+    pub source: anyhow::Error,
+}
+
+impl TransportFailure {
+    pub fn new(phase: TransportPhase, source: anyhow::Error) -> Self {
+        Self { phase, source }
+    }
+}
+
+impl fmt::Display for TransportFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The phase is a prefix, so operator logs keep the classification the
+        // executor acted on alongside the original text.
+        write!(formatter, "[{} phase] {:#}", self.phase, self.source)
+    }
+}
+
+impl std::error::Error for TransportFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+/// Tags a plain error with its transport phase.
+fn phased(phase: TransportPhase, error: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(TransportFailure::new(phase, error))
+}
 
 /// A published graph identity: the pair the worker attests after applying a
 /// sync. Generation crosses the wire as the canonical decimal string (the
@@ -233,30 +303,41 @@ impl PersistentWorkerHost {
     ) -> Result<(Value, u64)> {
         let started = Instant::now();
         let mut state = lock_state(&self.state);
-        let deadline_at = started
-            .checked_add(deadline)
-            .ok_or_else(|| anyhow!("persistent bridge request deadline is too large"))?;
+        let deadline_at = started.checked_add(deadline).ok_or_else(|| {
+            phased(
+                TransportPhase::Queued,
+                anyhow!("persistent bridge request deadline is too large"),
+            )
+        })?;
         if Instant::now() >= deadline_at {
-            // The worker was never touched; explicitly not a poison.
-            bail!(
-                "persistent bridge request deadline elapsed while queued for the worker \
-                 (worker untouched)"
-            );
+            // The worker was never touched; explicitly not a poison, and the
+            // one phase a candidate MAY be replayed one-shot from.
+            return Err(phased(
+                TransportPhase::Queued,
+                anyhow!(
+                    "persistent bridge request deadline elapsed while queued for the worker \
+                     (worker untouched)"
+                ),
+            ));
         }
 
         // Bound the semantic frame BEFORE any worker interaction: an
         // oversized request is refused host-side, never written, never poison.
         let (semantic_id, semantic_frame) =
-            encode_frame(&self.config, &mut state.next_request_id, frame)?;
+            encode_frame(&self.config, &mut state.next_request_id, frame)
+                .map_err(|error| phased(TransportPhase::Queued, error))?;
 
-        self.ensure_healthy_worker(&mut state)?;
+        self.ensure_healthy_worker(&mut state)
+            .map_err(|error| phased(TransportPhase::Sync, error))?;
 
         if state.last_attestation.as_ref() != Some(identity) {
-            self.sync_locked(&mut state, identity, planner, deadline_at)?;
+            self.sync_locked(&mut state, identity, planner, deadline_at)
+                .map_err(|error| phased(TransportPhase::Sync, error))?;
         }
 
-        let (bytes, value) =
-            self.exchange_raw_locked(&mut state, &semantic_id, semantic_frame, deadline_at)?;
+        let (bytes, value) = self
+            .exchange_raw_locked(&mut state, &semantic_id, semantic_frame, deadline_at)
+            .map_err(|error| phased(TransportPhase::Exchange, error))?;
         if value.get("kind").and_then(Value::as_str) == Some("error")
             && value.get("code").and_then(Value::as_str) == Some("mirrorPoisoned")
         {
@@ -271,9 +352,12 @@ impl PersistentWorkerHost {
                 .get("message")
                 .and_then(Value::as_str)
                 .unwrap_or("unspecified");
-            return Err(self.poison(
-                &mut state,
-                &format!("worker reported a poisoned mirror (candidate isolation): {detail}"),
+            return Err(phased(
+                TransportPhase::Exchange,
+                self.poison(
+                    &mut state,
+                    &format!("worker reported a poisoned mirror (candidate isolation): {detail}"),
+                ),
             ));
         }
         if value.get("kind").and_then(Value::as_str) == Some("refuse") {
@@ -288,10 +372,13 @@ impl PersistentWorkerHost {
                 .and_then(Value::as_str)
                 .unwrap_or("unspecified")
                 .to_owned();
-            bail!(
-                "persistent bridge worker refused the mirror-served request ({reason}); \
-                 attestation cleared, the request must be served one-shot"
-            );
+            return Err(phased(
+                TransportPhase::Exchange,
+                anyhow!(
+                    "persistent bridge worker refused the mirror-served request ({reason}); \
+                     attestation cleared, the request must be served one-shot"
+                ),
+            ));
         }
         Ok((value, bytes.len() as u64))
     }
@@ -310,12 +397,17 @@ impl PersistentWorkerHost {
     ) -> Result<()> {
         let started = Instant::now();
         let mut state = lock_state(&self.state);
-        let deadline_at = started
-            .checked_add(deadline)
-            .ok_or_else(|| anyhow!("persistent bridge hydration deadline is too large"))?;
-        self.ensure_healthy_worker(&mut state)?;
+        let deadline_at = started.checked_add(deadline).ok_or_else(|| {
+            phased(
+                TransportPhase::Queued,
+                anyhow!("persistent bridge hydration deadline is too large"),
+            )
+        })?;
+        self.ensure_healthy_worker(&mut state)
+            .map_err(|error| phased(TransportPhase::Sync, error))?;
         if state.last_attestation.as_ref() != Some(identity) {
-            self.sync_locked(&mut state, identity, planner, deadline_at)?;
+            self.sync_locked(&mut state, identity, planner, deadline_at)
+                .map_err(|error| phased(TransportPhase::Sync, error))?;
         }
         Ok(())
     }
@@ -943,7 +1035,10 @@ fn stderr_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{GraphIdentity, PersistentWorkerConfig, PersistentWorkerHost, SyncPlanner};
+    use super::{
+        GraphIdentity, PersistentWorkerConfig, PersistentWorkerHost, SyncPlanner, TransportFailure,
+        TransportPhase,
+    };
     use crate::bridge::process::{DEFAULT_MAX_STDERR_BYTES, MAX_RESPONSE_FRAME_BYTES};
     use anyhow::Result;
     use serde_json::{Value, json};
@@ -970,6 +1065,16 @@ mod tests {
         ];
         arguments.extend(mode_arguments.iter().map(OsString::from));
         PersistentWorkerConfig::new("node", arguments, GENEROUS, TEST_EPOCH)
+    }
+
+    /// The typed transport phase of a host error (B-2 Task 6). Every error
+    /// `request_at`/`hydrate_at` returns must carry one: the executor
+    /// classifies fallback eligibility by TYPE, never by message text.
+    fn phase_of(error: &anyhow::Error) -> TransportPhase {
+        error
+            .downcast_ref::<TransportFailure>()
+            .map(|failure| failure.phase)
+            .unwrap_or_else(|| panic!("untyped persistent-bridge error: {error:#}"))
     }
 
     fn identity(generation: u64, digest: &str) -> GraphIdentity {
@@ -1520,6 +1625,164 @@ mod tests {
 
         let content = fs::read_to_string(&log_path).unwrap();
         assert_eq!(content.lines().collect::<Vec<_>>(), vec!["hydrate:H"]);
+    }
+
+    // ---------------------------------------------------------------------
+    // Typed transport phases (B-2 Task 6). These are SIBLINGS of the pins
+    // above (`deadline_exceeded_mid_request_poisons`,
+    // `queued_caller_deadline_expires_without_poisoning_worker`,
+    // `oversized_request_is_refused_host_side_without_poisoning`), which keep
+    // asserting the unchanged poison/queue semantics. These add the phase the
+    // executor classifies on.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn queued_deadline_is_phase_queued_so_the_caller_may_fall_back_one_shot() {
+        // Sibling of `queued_caller_deadline_expires_without_poisoning_worker`:
+        // the worker was never touched, so replaying this request one-shot
+        // cannot double-run anything.
+        let host = Arc::new(
+            PersistentWorkerHost::spawn(fake_worker_config(&[
+                "--mode=slow".into(),
+                "--delay-ms=600".into(),
+            ]))
+            .unwrap(),
+        );
+        let id = identity(1, "digest-a");
+
+        let busy_host = Arc::clone(&host);
+        let busy_id = id.clone();
+        let busy = thread::spawn(move || {
+            let planner = CountingPlanner::new("A");
+            busy_host.request_at(&busy_id, json!({"tag": "A"}), GENEROUS, &planner)
+        });
+        thread::sleep(Duration::from_millis(150));
+
+        let planner = CountingPlanner::new("B");
+        let error = host
+            .request_at(&id, json!({"tag": "B"}), Duration::from_millis(200), &planner)
+            .unwrap_err();
+        assert_eq!(phase_of(&error), TransportPhase::Queued);
+        assert!(error.to_string().contains("queued"), "{error:#}");
+
+        busy.join().unwrap().unwrap();
+        host.shutdown().unwrap();
+    }
+
+    #[test]
+    fn oversized_request_is_phase_queued_because_the_worker_is_untouched() {
+        let config = fake_worker_config(&["--mode=echo".into()]).test_with_limits(
+            512,
+            MAX_RESPONSE_FRAME_BYTES,
+            DEFAULT_MAX_STDERR_BYTES,
+        );
+        let host = PersistentWorkerHost::spawn(config).unwrap();
+        let planner = CountingPlanner::new("A");
+
+        let error = host
+            .request_at(
+                &identity(1, "digest-a"),
+                json!({"tag": "x".repeat(2048)}),
+                GENEROUS,
+                &planner,
+            )
+            .unwrap_err();
+        assert_eq!(phase_of(&error), TransportPhase::Queued);
+        host.shutdown().unwrap();
+    }
+
+    #[test]
+    fn mid_exchange_deadline_is_phase_exchange_so_no_one_shot_replay_may_follow() {
+        // The semantic frame WAS handed to the worker, which may still be
+        // running a validation. Replaying it one-shot would double the work
+        // the timeout exists to bound. Needs a worker that ATTESTS the sync
+        // and only then goes silent — the `--mode=silent` worker used by the
+        // pin below never answers the sync frame, so its deadline fires
+        // earlier, in the Sync phase.
+        let host = PersistentWorkerHost::spawn(fake_worker_config(&[
+            "--mode=silent-after-sync".into(),
+        ]))
+        .unwrap();
+        let planner = CountingPlanner::new("A");
+        let id = identity(1, "digest-a");
+
+        // Attest FIRST under a generous budget, so the request below takes the
+        // attested fast path and skips sync entirely. Without this the short
+        // deadline could elapse during the sync exchange under load and the
+        // phase would (correctly, but not usefully) be Sync.
+        host.hydrate_at(&id, GENEROUS, &planner).unwrap();
+        assert_eq!(host.last_attestation_for_test(), Some(id.clone()));
+
+        let error = host
+            .request_at(&id, json!({"tag": "A"}), Duration::from_millis(300), &planner)
+            .unwrap_err();
+        assert_eq!(planner.calls(), 1, "the semantic frame must skip sync");
+        assert_eq!(phase_of(&error), TransportPhase::Exchange);
+        assert!(error.to_string().contains("poisoned"), "{error:#}");
+        assert_eq!(host.worker_pid_for_test(), None, "still a poison");
+    }
+
+    #[test]
+    fn deadline_before_the_worker_attests_is_phase_sync() {
+        // Sibling of `deadline_exceeded_mid_request_poisons` (the `silent`
+        // worker): that pin's deadline actually fires while the SYNC frame is
+        // outstanding. Still a poison, still no one-shot replay — Sync and
+        // Exchange are classified together for fallback purposes.
+        let host =
+            PersistentWorkerHost::spawn(fake_worker_config(&["--mode=silent".into()])).unwrap();
+        let planner = CountingPlanner::new("A");
+
+        let error = host
+            .request_at(
+                &identity(1, "digest-a"),
+                json!({"tag": "A"}),
+                Duration::from_millis(300),
+                &planner,
+            )
+            .unwrap_err();
+        assert_eq!(phase_of(&error), TransportPhase::Sync);
+        assert!(error.to_string().contains("poisoned"), "{error:#}");
+    }
+
+    #[test]
+    fn sync_refusal_is_phase_sync() {
+        let host =
+            PersistentWorkerHost::spawn(fake_worker_config(&["--mode=refuse".into()])).unwrap();
+        let planner = PhasePlanner::new("A");
+
+        let error = host
+            .request_at(&identity(1, "digest-a"), json!({"tag": "A"}), GENEROUS, &planner)
+            .unwrap_err();
+        assert_eq!(phase_of(&error), TransportPhase::Sync);
+        host.shutdown().unwrap();
+    }
+
+    #[test]
+    fn semantic_frame_refusal_is_phase_exchange() {
+        let host = PersistentWorkerHost::spawn(fake_worker_config(&[
+            "--mode=refuse-semantic".into(),
+        ]))
+        .unwrap();
+        let planner = PhasePlanner::new("A");
+
+        let error = host
+            .request_at(&identity(1, "digest-a"), json!({"tag": "A"}), GENEROUS, &planner)
+            .unwrap_err();
+        assert_eq!(phase_of(&error), TransportPhase::Exchange);
+        host.shutdown().unwrap();
+    }
+
+    #[test]
+    fn hydrate_at_failures_are_phase_sync() {
+        let host =
+            PersistentWorkerHost::spawn(fake_worker_config(&["--mode=refuse".into()])).unwrap();
+        let planner = PhasePlanner::new("A");
+
+        let error = host
+            .hydrate_at(&identity(1, "digest-a"), GENEROUS, &planner)
+            .unwrap_err();
+        assert_eq!(phase_of(&error), TransportPhase::Sync);
+        host.shutdown().unwrap();
     }
 
     #[test]

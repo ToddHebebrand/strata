@@ -15,6 +15,7 @@ pub use observer::WorkerRunMetrics;
 pub(crate) use process::NodeBridgeClient;
 pub use process::NodeBridgeConfig;
 pub use protocol::WorkerSelfMetrics;
+pub use protocol::{CANDIDATE_OVERHEAD_MS, QUEUE_ALLOWANCE_MS};
 pub(crate) use provider::NodeSemanticProvider;
 pub(crate) use router::PersistentBridgeRouter;
 pub(crate) use sync_state::SyncShared;

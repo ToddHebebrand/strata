@@ -49,6 +49,22 @@ export class StageRecorder {
     }
   }
 
+  /**
+   * Await-aware {@link time}: the stage's elapsed time spans the whole awaited
+   * operation, not just the synchronous call that produced the promise. The
+   * behavioral gate's spawned tsc/vitest are asynchronous, so timing them with
+   * `time()` would record ~0ns.
+   */
+  async timeAsync<T>(stage: StageName, fn: () => Promise<T>): Promise<T> {
+    const start = process.hrtime.bigint();
+    try {
+      return await fn();
+    } finally {
+      const elapsed = process.hrtime.bigint() - start;
+      this.stageNs.set(stage, (this.stageNs.get(stage) ?? 0n) + elapsed);
+    }
+  }
+
   finish(): WorkerStageMetrics {
     const metrics: WorkerStageMetrics = {
       totalNs: Number(process.hrtime.bigint() - this.startedAt),
