@@ -17,6 +17,10 @@ pub use bridge::{
 /// failure, which stays untyped. Re-exported at the crate root because the
 /// service binary links this crate as a library.
 pub use bridge::protocol::{CandidateRejected, RejectionDiagnostic};
+/// The seed-green startup verdict (Task 7 of the behavioral gate): the
+/// service binary refuses to bind its socket unless the corpus AS PUBLISHED
+/// passes the session's own validation profile.
+pub use bridge::protocol::{BaselineDiagnostic, BaselineVerdict};
 
 #[cfg(feature = "coordination-test-api")]
 pub use coordination::affected_resource_keys;

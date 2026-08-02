@@ -196,6 +196,12 @@ literal_bool!(False, false);
 pub(crate) enum BridgeKind {
     AnalyzeIntent,
     BuildValidateCandidate,
+    /// Seed-green startup gate (B-2 Task 7): judge the corpus AS PUBLISHED,
+    /// with no change set and no mutation. A DISTINCT kind on purpose —
+    /// modelling it as a candidate with zero intents would have to weaken
+    /// [`ChangeSet::validate`]'s non-empty `orderedIntents` invariant for
+    /// every real candidate.
+    ValidateBaseline,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -504,6 +510,28 @@ impl ValidationProfile {
         }
     }
 
+    /// A `tscOnly` profile whose per-step budgets an operator manifest DID
+    /// set (B-2 Task 7). Distinct from [`Self::tsc_only`], whose timeouts stay
+    /// absent so the no-manifest wire is byte-identical to pre-B-2.
+    pub(crate) fn tsc_only_bounded(
+        source_root: impl Into<String>,
+        corpus_root: impl Into<String>,
+        strict_src_only_tsc_scope: bool,
+        tsc_timeout_ms: u64,
+        vitest_timeout_ms: u64,
+    ) -> Result<Self> {
+        let profile = Self::TscOnly {
+            source_root: source_root.into(),
+            corpus_root: corpus_root.into(),
+            behavioral_fixtures: Vec::new(),
+            strict_src_only_tsc_scope,
+            tsc_timeout_ms: Some(tsc_timeout_ms),
+            vitest_timeout_ms: Some(vitest_timeout_ms),
+        };
+        profile.validate()?;
+        Ok(profile)
+    }
+
     /// The review-verified gap this closes: Rust never required a
     /// behavioral profile to actually carry fixtures, so a caller could
     /// construct (or deserialize) a `Behavioral` variant that validates
@@ -687,11 +715,25 @@ pub(crate) struct BuildValidateCandidateRequest {
     pub(crate) validation_profile: ValidationProfile,
 }
 
+/// Seed-green startup frame: binding + snapshot + the session's validation
+/// profile, and nothing else. No attempt, no scope fingerprint, no change set.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ValidateBaselineRequest {
+    pub(crate) protocol_version: u32,
+    pub(crate) request_id: String,
+    pub(crate) kind: BridgeKind,
+    pub(crate) binding: BridgeBinding,
+    pub(crate) snapshot: WireSnapshot,
+    pub(crate) validation_profile: ValidationProfile,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum BridgeRequest {
     AnalyzeIntent(AnalyzeIntentRequest),
     BuildValidateCandidate(BuildValidateCandidateRequest),
+    ValidateBaseline(ValidateBaselineRequest),
 }
 
 impl BridgeRequest {
@@ -725,6 +767,17 @@ impl BridgeRequest {
                 request.change_set.validate(request.snapshot.generation)?;
                 request.validation_profile.validate()?;
             }
+            Self::ValidateBaseline(request) => {
+                validate_request_header(
+                    request.protocol_version,
+                    &request.request_id,
+                    request.kind,
+                    BridgeKind::ValidateBaseline,
+                    &request.binding,
+                    &request.snapshot,
+                )?;
+                request.validation_profile.validate()?;
+            }
         }
         Ok(())
     }
@@ -736,6 +789,7 @@ impl BridgeRequest {
         match self {
             Self::AnalyzeIntent(request) => &request.request_id,
             Self::BuildValidateCandidate(request) => &request.request_id,
+            Self::ValidateBaseline(request) => &request.request_id,
         }
     }
 
@@ -747,25 +801,31 @@ impl BridgeRequest {
         match self {
             Self::AnalyzeIntent(_) => BridgeKind::AnalyzeIntent,
             Self::BuildValidateCandidate(_) => BridgeKind::BuildValidateCandidate,
+            Self::ValidateBaseline(_) => BridgeKind::ValidateBaseline,
         }
     }
 
-    /// Observability label for the request kind: `"analyzeIntent"` or
-    /// `"buildValidateCandidate"`. Purely for run records; never used by
-    /// binding or protocol validation.
+    /// Observability label for the request kind: `"analyzeIntent"`,
+    /// `"buildValidateCandidate"` or `"validateBaseline"`. Purely for run
+    /// records; never used by binding or protocol validation.
     pub(crate) fn observed_kind(&self) -> &'static str {
         match self {
             Self::AnalyzeIntent(_) => "analyzeIntent",
             Self::BuildValidateCandidate(_) => "buildValidateCandidate",
+            Self::ValidateBaseline(_) => "validateBaseline",
         }
     }
 
     /// The change set the request belongs to: the intent's change set for an
-    /// analyze request, the candidate's change set for a build request.
+    /// analyze request, the candidate's change set for a build request. A
+    /// baseline belongs to no change set — it judges the published corpus
+    /// before any client exists — and reports the reserved label below so run
+    /// records stay a total function of the request.
     pub(crate) fn change_set_id(&self) -> &str {
         match self {
             Self::AnalyzeIntent(request) => &request.intent.change_set_id,
             Self::BuildValidateCandidate(request) => &request.change_set.change_set_id,
+            Self::ValidateBaseline(_) => BASELINE_CHANGE_SET_LABEL,
         }
     }
 
@@ -773,6 +833,44 @@ impl BridgeRequest {
         match self {
             Self::AnalyzeIntent(request) => &request.binding,
             Self::BuildValidateCandidate(request) => &request.binding,
+            Self::ValidateBaseline(request) => &request.binding,
+        }
+    }
+}
+
+/// Observability-only stand-in for the change set a baseline does not have.
+const BASELINE_CHANGE_SET_LABEL: &str = "startup:baseline";
+
+/// A `kind` field pinned to exactly [`BridgeKind::ValidateBaseline`].
+///
+/// [`BridgeResponse`] is an UNTAGGED union, so a baseline error response and
+/// an analyze error response are byte-identical in shape (both carry a plain
+/// [`BridgeBinding`] and an error payload). Without this literal the untagged
+/// matcher would resolve a baseline error to `AnalyzeError` and the seed-green
+/// gate would report "not a validateBaseline response" instead of the worker's
+/// real failure. The literal makes the two shapes structurally disjoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BaselineKind;
+
+impl Serialize for BaselineKind {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        BridgeKind::ValidateBaseline.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BaselineKind {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match BridgeKind::deserialize(deserializer)? {
+            BridgeKind::ValidateBaseline => Ok(Self),
+            other => Err(de::Error::custom(format!(
+                "expected validateBaseline, got {other:?}"
+            ))),
         }
     }
 }
@@ -1185,6 +1283,34 @@ pub(crate) struct CandidateResult {
     pub(crate) diagnostics: Vec<BridgeDiagnostic>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct BaselineResult {
+    pub(crate) green: bool,
+    pub(crate) diagnostics: Vec<BridgeDiagnostic>,
+}
+
+/// The seed-green verdict a daemon refuses to start on (B-2 Task 7). A verdict
+/// means the worker FINISHED judging; every failure to finish stays an
+/// ordinary `Err` from [`Kernel::validate_baseline`], which the startup gate
+/// treats as fail-closed all the same.
+///
+/// [`Kernel::validate_baseline`]: crate::Kernel::validate_baseline
+#[derive(Clone, Debug)]
+pub struct BaselineVerdict {
+    pub green: bool,
+    pub diagnostics: Vec<BaselineDiagnostic>,
+}
+
+/// One bounded line of a red baseline's captured tsc/vitest output.
+#[derive(Clone, Debug)]
+pub struct BaselineDiagnostic {
+    pub node_id: Option<String>,
+    pub module_path: Option<String>,
+    pub message: String,
+    pub code: i64,
+}
+
 /// Per-stage timings and peak memory a worker self-reports for a bridge call.
 /// Absent when a worker does not (yet) report metrics; purely observational —
 /// never consulted by protocol validation or binding checks.
@@ -1228,6 +1354,32 @@ pub(crate) struct CandidateSuccessResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct BaselineSuccessResponse {
+    protocol_version: u32,
+    request_id: String,
+    kind: BaselineKind,
+    binding: BridgeBinding,
+    ok: True,
+    result: BaselineResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) metrics: Option<WorkerSelfMetrics>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct BaselineErrorResponse {
+    protocol_version: u32,
+    request_id: String,
+    kind: BaselineKind,
+    binding: BridgeBinding,
+    ok: False,
+    error: BridgeErrorPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) metrics: Option<WorkerSelfMetrics>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AnalyzeErrorResponse {
     protocol_version: u32,
     request_id: String,
@@ -1252,9 +1404,14 @@ pub(crate) struct CandidateErrorResponse {
     pub(crate) metrics: Option<WorkerSelfMetrics>,
 }
 
+/// UNTAGGED: the baseline variants come FIRST so their literal
+/// [`BaselineKind`] gets first refusal on a frame whose shape an analyze
+/// response would otherwise absorb (see [`BaselineKind`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum BridgeResponse {
+    BaselineSuccess(BaselineSuccessResponse),
+    BaselineError(BaselineErrorResponse),
     AnalyzeSuccess(AnalyzeSuccessResponse),
     CandidateSuccess(CandidateSuccessResponse),
     AnalyzeError(AnalyzeErrorResponse),
@@ -1291,12 +1448,44 @@ impl BridgeResponse {
         }
     }
 
+    /// The seed-green verdict, or the operational failure that stopped the
+    /// worker from producing one. A RED verdict is `Ok(BaselineVerdict { green:
+    /// false, .. })`: the worker finished judging. Only "could not finish" is
+    /// `Err` — and the startup gate refuses to serve on either.
+    pub(crate) fn into_baseline_result(self) -> Result<BaselineVerdict> {
+        match self {
+            Self::BaselineSuccess(response) => Ok(BaselineVerdict {
+                green: response.result.green,
+                diagnostics: response
+                    .result
+                    .diagnostics
+                    .into_iter()
+                    .map(|diagnostic| BaselineDiagnostic {
+                        node_id: diagnostic.node_id,
+                        module_path: diagnostic.module_path,
+                        message: diagnostic.message,
+                        code: diagnostic.code,
+                    })
+                    .collect(),
+            }),
+            Self::BaselineError(response) => bail!(
+                "Node bridge baseline validation failed at {:?}/{}: {}",
+                response.error.stage,
+                response.error.code,
+                response.error.message
+            ),
+            _ => bail!("Node bridge response is not a validateBaseline response"),
+        }
+    }
+
     pub(crate) fn metrics_ref(&self) -> Option<&WorkerSelfMetrics> {
         match self {
             Self::AnalyzeSuccess(response) => response.metrics.as_ref(),
             Self::CandidateSuccess(response) => response.metrics.as_ref(),
+            Self::BaselineSuccess(response) => response.metrics.as_ref(),
             Self::AnalyzeError(response) => response.metrics.as_ref(),
             Self::CandidateError(response) => response.metrics.as_ref(),
+            Self::BaselineError(response) => response.metrics.as_ref(),
         }
     }
 
@@ -1326,6 +1515,18 @@ impl BridgeResponse {
                 response.kind,
                 ResponseBinding::Candidate(&response.binding),
             ),
+            Self::BaselineSuccess(response) => (
+                response.protocol_version,
+                response.request_id.as_str(),
+                BridgeKind::ValidateBaseline,
+                ResponseBinding::Baseline(&response.binding),
+            ),
+            Self::BaselineError(response) => (
+                response.protocol_version,
+                response.request_id.as_str(),
+                BridgeKind::ValidateBaseline,
+                ResponseBinding::Baseline(&response.binding),
+            ),
         };
         ensure!(
             protocol_version == PROTOCOL_VERSION,
@@ -1354,6 +1555,9 @@ impl BridgeResponse {
                     "candidate response binding mismatch"
                 );
             }
+            (BridgeRequest::ValidateBaseline(expected), ResponseBinding::Baseline(actual)) => {
+                ensure!(actual == &expected.binding, "response binding mismatch");
+            }
             _ => bail!("response schema does not match request kind"),
         }
         Ok(())
@@ -1374,8 +1578,31 @@ impl BridgeResponse {
                 );
                 Ok(())
             }
+            Self::BaselineSuccess(response) => {
+                // A GREEN baseline is contradictory if it also carries
+                // diagnostics: the daemon only prints them when refusing.
+                ensure!(
+                    !response.result.green || response.result.diagnostics.is_empty(),
+                    "green baseline response contains diagnostics"
+                );
+                bounded_len(
+                    "result.diagnostics",
+                    response.result.diagnostics.len(),
+                )?;
+                for (index, diagnostic) in response.result.diagnostics.iter().enumerate() {
+                    diagnostic.validate(&format!("result.diagnostics[{index}]"))?;
+                }
+                let bytes = serde_json::to_vec(&response.result.diagnostics)
+                    .context("serialize baseline diagnostics for bound check")?;
+                ensure!(
+                    bytes.len() <= max_diagnostic_bytes,
+                    "baseline diagnostics exceed configured byte limit"
+                );
+                Ok(())
+            }
             Self::AnalyzeError(response) => response.error.validate(max_diagnostic_bytes),
             Self::CandidateError(response) => response.error.validate(max_diagnostic_bytes),
+            Self::BaselineError(response) => response.error.validate(max_diagnostic_bytes),
         }
     }
 }
@@ -1383,6 +1610,7 @@ impl BridgeResponse {
 enum ResponseBinding<'a> {
     Analyze(&'a BridgeBinding),
     Candidate(&'a CandidateBinding),
+    Baseline(&'a BridgeBinding),
 }
 
 pub(crate) fn parse_bridge_request(bytes: &[u8]) -> Result<BridgeRequest> {

@@ -140,7 +140,11 @@ fn wire_u64_rejects_numbers_and_noncanonical_decimal_strings() {
 
 #[test]
 fn shared_protocol_v1_golden_messages_round_trip_without_schema_drift() {
-    for request_name in ["analyze-request.json", "candidate-request.json"] {
+    for request_name in [
+        "analyze-request.json",
+        "candidate-request.json",
+        "baseline-request.json",
+    ] {
         let request = parse_request_fixture(request_name);
         let encoded = serialize_bridge_request(&request).unwrap();
         assert_eq!(
@@ -153,6 +157,7 @@ fn shared_protocol_v1_golden_messages_round_trip_without_schema_drift() {
         ("analyze-response.json", "analyze-request.json"),
         ("analyze-response-add-parameter.json", "analyze-request.json"),
         ("candidate-response.json", "candidate-request.json"),
+        ("baseline-response.json", "baseline-request.json"),
         ("error-response.json", "analyze-request.json"),
     ] {
         let response = parse_response_fixture(response_name, request_name);
@@ -388,6 +393,110 @@ fn response_bindings_are_checked_before_success_payloads_are_exposed() {
         value.pointer_mut(pointer).unwrap().clone_from(&replacement);
         assert_response_value_rejected(value, "candidate-request.json");
     }
+}
+
+/// The seed-green frame (B-2 Task 7) is its OWN wire kind, not a degenerate
+/// candidate: it carries no attempt, no scope fingerprint and no change set,
+/// and the schema refuses each of them. This is what keeps
+/// `changeSet.orderedIntents`'s non-empty invariant intact for candidates —
+/// a baseline never has to weaken it.
+#[test]
+fn baseline_request_schema_rejects_candidate_authority_and_generation_drift() {
+    for (field, value) in [
+        ("attemptId", json!("attempt-1")),
+        ("scopeFingerprint", json!("a".repeat(64))),
+        ("changeSet", fixture_value("candidate-request.json")["changeSet"].clone()),
+        ("intent", fixture_value("analyze-request.json")["intent"].clone()),
+    ] {
+        let mut request = fixture_value("baseline-request.json");
+        request[field] = value;
+        assert_request_value_rejected(request);
+    }
+
+    let mut mismatched = fixture_value("baseline-request.json");
+    mismatched["snapshot"]["generation"] = json!("1");
+    assert_request_value_rejected(mismatched);
+
+    let mut wrong_kind = fixture_value("baseline-request.json");
+    wrong_kind["kind"] = json!("buildValidateCandidate");
+    assert_request_value_rejected(wrong_kind);
+}
+
+#[test]
+fn baseline_response_binding_and_green_verdict_invariants_are_enforced() {
+    for (pointer, replacement) in [
+        ("/requestId", json!("other-request")),
+        ("/binding/serviceEpoch", json!("2")),
+        ("/binding/graphGeneration", json!("1")),
+        ("/binding/graphDigest", json!("f".repeat(64))),
+    ] {
+        let mut value = fixture_value("baseline-response.json");
+        value.pointer_mut(pointer).unwrap().clone_from(&replacement);
+        assert_response_value_rejected(value, "baseline-request.json");
+    }
+
+    // A GREEN verdict with diagnostics is contradictory: the daemon prints
+    // diagnostics only when it refuses to serve.
+    let mut green_with_diagnostics = fixture_value("baseline-response.json");
+    green_with_diagnostics["result"]["green"] = json!(true);
+    assert_response_value_rejected(green_with_diagnostics, "baseline-request.json");
+
+    // A baseline response must not be accepted for a candidate request, and
+    // a candidate response must not satisfy a baseline request.
+    assert_response_value_rejected(
+        fixture_value("baseline-response.json"),
+        "candidate-request.json",
+    );
+    assert_response_value_rejected(
+        fixture_value("candidate-response.json"),
+        "baseline-request.json",
+    );
+}
+
+/// A red verdict is a SUCCESS response (the worker finished judging and the
+/// answer is "not green"); only a failure to finish is an error response.
+#[test]
+fn baseline_verdicts_split_red_from_operational_failure() {
+    let red = parse_response_fixture("baseline-response.json", "baseline-request.json")
+        .into_baseline_result()
+        .expect("a red verdict is a verdict, not an error");
+    assert!(!red.green);
+    assert_eq!(red.diagnostics.len(), 1);
+    assert!(red.diagnostics[0].message.contains("baseline-pin.test.ts"));
+
+    let mut green_value = fixture_value("baseline-response.json");
+    green_value["result"]["green"] = json!(true);
+    green_value["result"]["diagnostics"] = json!([]);
+    let green = parse_bridge_response(
+        &serde_json::to_vec(&green_value).unwrap(),
+        &parse_request_fixture("baseline-request.json"),
+        MAX_DIAGNOSTIC_BYTES,
+    )
+    .unwrap()
+    .into_baseline_result()
+    .unwrap();
+    assert!(green.green);
+    assert!(green.diagnostics.is_empty());
+
+    let mut timed_out = fixture_value("baseline-response.json");
+    timed_out["ok"] = json!(false);
+    timed_out.as_object_mut().unwrap().remove("result");
+    timed_out["error"] = json!({
+        "stage": "validate",
+        "code": "vitestTimedOut",
+        "message": "baseline vitest validation exceeded its budget",
+        "diagnostics": [],
+    });
+    let error = parse_bridge_response(
+        &serde_json::to_vec(&timed_out).unwrap(),
+        &parse_request_fixture("baseline-request.json"),
+        MAX_DIAGNOSTIC_BYTES,
+    )
+    .unwrap()
+    .into_baseline_result()
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("vitestTimedOut"), "{error}");
 }
 
 #[test]

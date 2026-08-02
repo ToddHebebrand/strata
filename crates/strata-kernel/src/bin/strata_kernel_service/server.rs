@@ -17,6 +17,11 @@ use super::session::{ServiceConfig, ServiceSession};
 const SOCKET_DIRECTORY: &str = "/tmp/strata-lc";
 const MAX_SOCKET_PATH_BYTES: usize = 96;
 
+/// Maximum bounded diagnostic lines a refusing daemon prints to stderr. The
+/// operator needs enough of the failing tsc/vitest output to act on; the cap
+/// keeps a pathological run from flooding a startup log.
+const MAX_REFUSAL_DIAGNOSTIC_LINES: usize = 8;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Readiness {
@@ -24,6 +29,13 @@ struct Readiness {
     socket_path: String,
     service_epoch: String,
     recovered: bool,
+    /// Session validation identity (B-2 Task 7). The readiness line is a
+    /// SERVICE-INTERNAL stdout handshake, not the client wire, so these are
+    /// additive here: the digest key is omitted entirely without a manifest,
+    /// where the client-facing `hello` instead carries an explicit `null`.
+    validation_mode: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation_manifest_digest: Option<String>,
 }
 
 pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
@@ -33,6 +45,21 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
 
     // Recovery is intentionally complete before the authority becomes reachable.
     let (session, service_epoch) = ServiceSession::open(config)?;
+    // Seed-green gate (B-2 Task 7). Runs for ANY operator manifest — a
+    // `tscOnly` manifest gets a tsc-only baseline, a behavioral one gets tsc +
+    // fixtures — and strictly BEFORE both the start audit event and the socket
+    // bind. A daemon that cannot prove its own corpus green must leave no
+    // trace of a session it never served, so a refusal happens here, before
+    // `finalize_startup` writes anything.
+    //
+    // Fail-closed in BOTH directions: a red verdict and an operational failure
+    // to reach a verdict both refuse. Without a manifest there is no baseline
+    // at all and this whole block is skipped, leaving the pre-B-2 startup
+    // sequence (open → finalize → hydrate → bind → readiness) untouched.
+    if session.requires_seed_green_baseline() {
+        refuse_unless_seed_green(&session)?;
+    }
+    session.finalize_startup()?;
     // Eager persistent-mirror hydration (Task 6): after seed/recovery,
     // strictly BEFORE the readiness line below, so a ready daemon already
     // holds an attested mirror and the first analyze trip is snapshot-free.
@@ -53,6 +80,10 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
         socket_path: socket_path.to_string_lossy().into_owned(),
         service_epoch: service_epoch.to_string(),
         recovered: session.recovered(),
+        validation_mode: session.validation_mode().as_label(),
+        validation_manifest_digest: session
+            .validation_manifest_digest()
+            .map(str::to_owned),
     };
     let mut stdout = std::io::stdout().lock();
     serde_json::to_writer(&mut stdout, &ready)?;
@@ -72,6 +103,38 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Runs the seed-green baseline and turns anything but a green verdict into a
+/// startup failure. `Err` here reaches `main`, which prints the chain and
+/// exits 2 — the daemon's existing pre-readiness failure surface, so a caller
+/// waiting on the stdout readiness line sees EOF rather than a bound socket.
+fn refuse_unless_seed_green(session: &ServiceSession) -> Result<()> {
+    let verdict = session
+        .validate_baseline()
+        .context("seed-green baseline could not be established; refusing to serve")?;
+    if verdict.green {
+        return Ok(());
+    }
+    let mut message = String::from(
+        "seed-green baseline is not green; refusing to serve this corpus. \
+         Validation output (truncated):",
+    );
+    for diagnostic in verdict
+        .diagnostics
+        .iter()
+        .take(MAX_REFUSAL_DIAGNOSTIC_LINES)
+    {
+        message.push_str("\n  ");
+        message.push_str(&diagnostic.message);
+    }
+    if verdict.diagnostics.len() > MAX_REFUSAL_DIAGNOSTIC_LINES {
+        message.push_str(&format!(
+            "\n  ... {} further diagnostic line(s) suppressed",
+            verdict.diagnostics.len() - MAX_REFUSAL_DIAGNOSTIC_LINES
+        ));
+    }
+    bail!(message)
 }
 
 pub(super) fn validate_socket_path(path: &Path) -> Result<()> {

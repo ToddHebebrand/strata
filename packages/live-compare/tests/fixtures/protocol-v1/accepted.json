@@ -1,7 +1,7 @@
 {
   "cases": [
     {"name":"hello-request","direction":"request","value":{"protocolVersion":1,"requestId":"request:hello","clientId":"client:alpha","deadlineMs":"30000","action":{"type":"hello"}}},
-    {"name":"ready-response","direction":"response","value":{"protocolVersion":1,"requestId":"request:hello","ok":true,"result":{"type":"ready"}}},
+    {"name":"ready-response","direction":"response","value":{"protocolVersion":1,"requestId":"request:hello","ok":true,"result":{"type":"ready","validationMode":"tscOnly","validationManifestDigest":null}}},
     {"name":"inspect-nodes-request","direction":"request","value":{"protocolVersion":1,"requestId":"request:inspect","clientId":"client:alpha","deadlineMs":"30000","action":{"type":"inspect_nodes","nodeIds":["node:user"]}}},
     {"name":"inspect-nodes-response","direction":"response","value":{"protocolVersion":1,"requestId":"request:inspect","ok":true,"result":{"type":"nodes","graphGeneration":"7","nodes":[{"nodeId":"node:user","kind":"InterfaceDeclaration","payload":"export interface User {}","relationships":[{"kind":"reference","nodeId":"node:user-ref"}]}]}}},
     {"name":"begin-change-set-request","direction":"request","value":{"protocolVersion":1,"requestId":"request:begin","clientId":"client:alpha","deadlineMs":"30000","idempotencyKey":"idem:begin:1","action":{"type":"begin_change_set","reasoning":"Rename the shared user type."}}},

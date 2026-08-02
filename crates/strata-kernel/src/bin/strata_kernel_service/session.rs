@@ -24,7 +24,7 @@ use super::protocol::{
     LocalServiceProtocolContext, LocalServiceRequest, LocalServiceResponse,
     ModuleDeclarationSummary, ModuleSummary, NodeRelationship, OperationIntentSummary,
     OperationRenameTransition, ReferenceSummary, RenamedSymbol, RequestAction, ResponseResult,
-    ServiceEvent, ServiceEventKind, TicketState, WireU64, parse_request_frame,
+    ServiceEvent, ServiceEventKind, TicketState, ValidationMode, WireU64, parse_request_frame,
 };
 
 const MAX_INTENTS: usize = 256;
@@ -52,20 +52,19 @@ pub(super) enum ServiceFailpoint {
 /// The daemon's active validation configuration, resolved once in `main.rs`
 /// from `--validation-manifest` (or its absence) and carried unchanged from
 /// then on. Consumed by Task 6 (deadline nesting into the bridge) and Task 9
-/// (savepoint/timeout gating) — nothing in this task reads it beyond storing
-/// it on the session.
+/// (savepoint/timeout gating), and by Task 7's seed-green startup gate and
+/// the identity it publishes.
 ///
 /// Without `--validation-manifest`, this is exactly `tsc_only()`: mode
 /// `"tscOnly"`, no digest, no fixtures, the pre-B-2 default timeouts. That
 /// no-flag path must never change `NodeBridgeConfig::tsc_only`'s
 /// construction — the byte-identical guarantee every pre-existing suite
 /// depends on.
-// Fields are not yet read outside construction/tests (Tasks 6/9 read them);
-// this is a load-bearing return value threaded onto the session, not dead
-// code.
+// `fixtures` is consumed in `main.rs` when it builds the behavioral bridge
+// config, not through this struct's own reader.
 #[allow(dead_code)]
 pub(super) struct ValidationSettings {
-    pub mode: &'static str,
+    pub mode: super::protocol::ValidationMode,
     pub manifest_digest: Option<String>,
     /// (corpus-relative path, sha256) per fixture; empty in `tscOnly`.
     pub fixtures: Vec<(String, String)>,
@@ -76,7 +75,7 @@ pub(super) struct ValidationSettings {
 impl ValidationSettings {
     pub(super) fn tsc_only() -> Self {
         Self {
-            mode: "tscOnly",
+            mode: super::protocol::ValidationMode::TscOnly,
             manifest_digest: None,
             fixtures: Vec::new(),
             tsc_timeout_ms: super::manifest::DEFAULT_TSC_TIMEOUT_MS,
@@ -87,8 +86,12 @@ impl ValidationSettings {
     pub(super) fn from_loaded_manifest(loaded: &super::manifest::LoadedManifest) -> Self {
         Self {
             mode: match loaded.manifest.mode {
-                super::manifest::ManifestMode::TscOnly => "tscOnly",
-                super::manifest::ManifestMode::Behavioral => "behavioral",
+                super::manifest::ManifestMode::TscOnly => {
+                    super::protocol::ValidationMode::TscOnly
+                }
+                super::manifest::ManifestMode::Behavioral => {
+                    super::protocol::ValidationMode::Behavioral
+                }
             },
             manifest_digest: Some(loaded.digest.clone()),
             fixtures: loaded
@@ -114,8 +117,8 @@ pub(super) struct ServiceConfig {
     /// canonical form.
     pub corpus_root: PathBuf,
     /// Resolved once in `main.rs` from `--validation-manifest` (or its
-    /// absence). Stored on `ServiceSession` unchanged; not yet consumed by
-    /// any validation run (Tasks 6/9).
+    /// absence). Stored on `ServiceSession` unchanged and consumed by the
+    /// startup gate and the session-identity surfaces.
     pub validation: ValidationSettings,
     pub failpoint: ServiceFailpoint,
     /// When set, per-request/recovery observability records are written to this
@@ -141,10 +144,10 @@ pub(super) struct ServiceSession {
     /// Canonicalized once at `open`; consumed by `paths::project_module_path`
     /// in the `list_modules` read handler.
     canonical_corpus_root: PathBuf,
-    /// Resolved once at `open` from `config.validation`. Not yet read by
-    /// anything (Tasks 6/9 consume it); `#[allow(dead_code)]` documents that
-    /// this is deliberate for this task, not an oversight.
-    #[allow(dead_code)]
+    /// Resolved once at `open` from `config.validation`. Read by the startup
+    /// gate (seed-green + `finalize_startup`) and by every surface that
+    /// reports session identity: the readiness line, the start audit event,
+    /// and the `hello` response.
     validation: ValidationSettings,
     failpoint: ServiceFailpoint,
     /// Present only under `--metrics`. Behind a `Mutex` because connections are
@@ -219,8 +222,23 @@ impl ServiceSession {
             }
         }
         session.resolve_pending_before_bind()?;
-        session.append_audit(AuditEvent {
-            kind: if existed {
+        Ok((session, recovery.service_epoch))
+    }
+
+    /// Appends the ONE start event (`service_started` / `service_recovered`)
+    /// that says this daemon is going to serve, carrying the session's
+    /// validation identity.
+    ///
+    /// Split out of [`Self::open`] by B-2 Task 7 so the seed-green gate can
+    /// run BETWEEN them: a daemon whose corpus is not green must audit
+    /// NOTHING — a start event in the log would assert a session that never
+    /// existed. Without a manifest there is no baseline to run and
+    /// `server::serve` calls this immediately after `open`, so the audit
+    /// stream's content and its order relative to hydration and the socket
+    /// bind are exactly what they were before this split.
+    pub fn finalize_startup(&self) -> Result<()> {
+        self.append_audit(AuditEvent {
+            kind: if self.recovered {
                 "service_recovered".into()
             } else {
                 "service_started".into()
@@ -231,13 +249,40 @@ impl ServiceSession {
             action: None,
             change_set_id: None,
             state: None,
-            graph_generation: session.kernel.snapshot().generation().to_string(),
-        })?;
-        Ok((session, recovery.service_epoch))
+            graph_generation: self.kernel.snapshot().generation().to_string(),
+            validation_mode: Some(self.validation.mode.as_label().to_owned()),
+            validation_manifest_digest: self.validation.manifest_digest.clone(),
+        })
     }
 
     pub fn recovered(&self) -> bool {
         self.recovered
+    }
+
+    /// `"tscOnly"` or `"behavioral"` — the session's validation regime, as
+    /// reported on the readiness line, the start audit event, and `hello`.
+    pub fn validation_mode(&self) -> ValidationMode {
+        self.validation.mode
+    }
+
+    /// The sha256 of the operator's validation manifest, or `None` when the
+    /// daemon runs the no-manifest default.
+    pub fn validation_manifest_digest(&self) -> Option<&str> {
+        self.validation.manifest_digest.as_deref()
+    }
+
+    /// True when an operator supplied `--validation-manifest`, in EITHER mode.
+    /// A `tscOnly` manifest is still an operator statement about how this
+    /// corpus must validate, so it gets the same seed-green gate a behavioral
+    /// one does — only the no-manifest default skips the baseline.
+    pub fn requires_seed_green_baseline(&self) -> bool {
+        self.validation.manifest_digest.is_some()
+    }
+
+    /// Runs the seed-green baseline against the CURRENT graph (B-2 Task 7).
+    /// Called by `server::serve` after `open` and before `finalize_startup`.
+    pub fn validate_baseline(&self) -> Result<strata_kernel::BaselineVerdict> {
+        self.kernel.validate_baseline()
     }
 
     /// Eager persistent-mirror hydration (Task 6): run after seed/recovery,
@@ -642,6 +687,8 @@ impl ServiceSession {
                 change_set_id: request.action.change_set_id().map(str::to_owned),
                 state: None,
                 graph_generation: self.kernel.snapshot().generation().to_string(),
+                validation_mode: None,
+                validation_manifest_digest: None,
             })?;
         }
         Ok(())
@@ -794,6 +841,8 @@ impl ServiceSession {
                     change_set_id: Some(change_set_id.into()),
                     state: Some("claimed".into()),
                     graph_generation: self.kernel.snapshot().generation().to_string(),
+                    validation_mode: None,
+                    validation_manifest_digest: None,
                 })?;
                 // Publication is the sole durable-graph mutation of an advance.
                 // With a redb-spike-api publish failpoint armed, route it through
@@ -886,6 +935,8 @@ impl ServiceSession {
                             change_set_id: Some(change_set_id.into()),
                             state: Some("validation_failed".into()),
                             graph_generation: self.kernel.snapshot().generation().to_string(),
+                            validation_mode: None,
+                            validation_manifest_digest: None,
                         })?;
                         let response = LocalServiceResponse::success(
                             request_id,
@@ -937,6 +988,8 @@ impl ServiceSession {
                             change_set_id: Some(change_set_id.into()),
                             state: requeued_state,
                             graph_generation: self.kernel.snapshot().generation().to_string(),
+                            validation_mode: None,
+                            validation_manifest_digest: None,
                         })?;
                         Ok(ExecutedEffect::response(LocalServiceResponse::error(
                             request_id,
@@ -959,7 +1012,10 @@ impl ServiceSession {
 
     fn execute_read(&self, client_id: &str, action: &RequestAction) -> Result<ResponseResult> {
         match action {
-            RequestAction::Hello { .. } => Ok(ResponseResult::Ready {}),
+            RequestAction::Hello { .. } => Ok(ResponseResult::Ready {
+                validation_mode: self.validation.mode,
+                validation_manifest_digest: self.validation.manifest_digest.clone(),
+            }),
             RequestAction::InspectNodes { node_ids } => self.inspect_nodes(node_ids),
             RequestAction::FindDeclarations {
                 name,
@@ -1343,6 +1399,8 @@ impl ServiceSession {
                 .or_else(|| request.action.change_set_id().map(str::to_owned)),
             state: response_state(response),
             graph_generation: self.kernel.snapshot().generation().to_string(),
+            validation_mode: None,
+            validation_manifest_digest: None,
         })
     }
 

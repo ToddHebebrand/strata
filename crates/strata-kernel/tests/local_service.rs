@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -124,6 +124,55 @@ fn protocol_shared_invalid_messages_are_rejected() {
     }
 }
 
+/// B-2 Task 7 sweep discipline: every REJECTED `ready` fixture gained the two
+/// new required identity fields, so each one must still fail for ITS OWN
+/// original defect — not merely because the new fields were missing. Removing
+/// (or correcting) the stated defect must make the frame parse.
+#[test]
+fn rejected_ready_fixtures_still_fail_for_their_own_defect() {
+    fn assert_repair_parses(name: &str, repair: impl FnOnce(&mut Value)) {
+        let mut value = rejected_value(name);
+        assert!(
+            parse_response_frame(&frame(&value)).is_err(),
+            "{name} must be rejected as written"
+        );
+        repair(&mut value);
+        parse_response_frame(&frame(&value))
+            .unwrap_or_else(|error| panic!("{name} must parse once repaired: {error:#}"));
+    }
+
+    // Pre-existing negative cases: the defect is an extra authority field.
+    assert_repair_parses("unknown-response-field", |value| {
+        value.as_object_mut().unwrap().remove("serviceEpoch");
+    });
+    assert_repair_parses("attempt-authority", |value| {
+        value["result"].as_object_mut().unwrap().remove("attemptId");
+    });
+    assert_repair_parses("raw-delta-response", |value| {
+        value["result"].as_object_mut().unwrap().remove("delta");
+    });
+
+    // New cases: the identity fields are required, and typed.
+    assert_repair_parses("ready-response-missing-validation-mode", |value| {
+        value["result"]["validationMode"] = json!("behavioral");
+    });
+    assert_repair_parses(
+        "ready-response-missing-validation-manifest-digest",
+        |value| {
+            value["result"]["validationManifestDigest"] = Value::Null;
+        },
+    );
+    assert_repair_parses("ready-response-unknown-validation-mode", |value| {
+        value["result"]["validationMode"] = json!("behavioral");
+    });
+    assert_repair_parses(
+        "ready-response-malformed-validation-manifest-digest",
+        |value| {
+            value["result"]["validationManifestDigest"] = json!("a".repeat(64));
+        },
+    );
+}
+
 #[test]
 fn protocol_shared_raw_json_representations_are_rejected() {
     for name in RAW_REJECTED_FIXTURES {
@@ -228,6 +277,9 @@ struct RunningService {
     child: Child,
     socket_path: PathBuf,
     epoch: u64,
+    /// The parsed stdout readiness line. Retained so the B-2 Task 7 gate can
+    /// assert the session-identity fields it now carries.
+    readiness: Value,
 }
 
 impl Drop for RunningService {
@@ -248,6 +300,18 @@ fn repo_root() -> PathBuf {
 }
 
 fn localized_source_snapshot(directory: &TempDir) -> PathBuf {
+    let corpus_root = repo_root().join("examples/medium");
+    let snapshot = localized_snapshot_value(&corpus_root);
+    let path = directory.path().join("snapshot.json");
+    fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    path
+}
+
+/// The shared `examples/medium` snapshot with every retained module payload
+/// rewritten under `corpus_root`. Parameterized so the seed-green tests can
+/// point a daemon at a PRIVATE copy of the corpus (they write fixtures into
+/// it) while the pre-existing tests keep using the repo's own.
+fn localized_snapshot_value(corpus_root: &Path) -> Value {
     let mut snapshot: Value =
         serde_json::from_str(include_str!("fixtures/examples-medium.snapshot.json")).unwrap();
     let nodes = snapshot["nodes"].as_array().unwrap();
@@ -286,7 +350,6 @@ fn localized_source_snapshot(directory: &TempDir) -> PathBuf {
             retained.contains(reference["fromNodeId"].as_str().unwrap())
                 && retained.contains(reference["toNodeId"].as_str().unwrap())
         });
-    let corpus_root = repo_root().join("examples/medium");
     for module in snapshot["nodes"]
         .as_array_mut()
         .unwrap()
@@ -300,9 +363,7 @@ fn localized_source_snapshot(directory: &TempDir) -> PathBuf {
             .unwrap();
         module["payload"] = json!(corpus_root.join(relative).to_string_lossy());
     }
-    let path = directory.path().join("snapshot.json");
-    fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
-    path
+    snapshot
 }
 
 fn start_service(directory: &TempDir, token: &str) -> RunningService {
@@ -462,6 +523,7 @@ fn start_service_with_snapshot(
         child,
         socket_path,
         epoch: ready["serviceEpoch"].as_str().unwrap().parse().unwrap(),
+        readiness: ready,
     }
 }
 
@@ -1424,5 +1486,420 @@ fn taxonomy_diagnostics_survive_needs_decision_free_path() {
         response["result"]["diagnostics"].as_array().unwrap().len(),
         0,
         "{response}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// B-2 Task 7: the seed-green startup gate and the manifest identity it
+// publishes on the readiness line, the start audit event, and `hello`.
+// ---------------------------------------------------------------------------
+
+/// A green baseline fixture: pins `greet`'s CURRENT behavior, so it passes
+/// against the seed corpus exactly as published.
+const GREEN_FIXTURE: &str = concat!(
+    "import { expect, it } from \"vitest\";\n",
+    "import { greet } from \"../src/users/greet.ts\";\n",
+    "it(\"pins the seed corpus behavior\", () => {\n",
+    "  expect(greet({ id: \"1\", email: \"seed@example.test\" })).toBe(\"hello seed@example.test\");\n",
+    "});\n"
+);
+
+/// A red baseline fixture: asserts a property the seed corpus does NOT have.
+const RED_FIXTURE: &str = concat!(
+    "import { expect, it } from \"vitest\";\n",
+    "import { greet } from \"../src/users/greet.ts\";\n",
+    "it(\"asserts a property the seed corpus does not have\", () => {\n",
+    "  expect(greet({ id: \"1\", email: \"seed@example.test\" })).toBe(\"SEED_BASELINE_IS_RED\");\n",
+    "});\n"
+);
+
+/// A private, canonicalized copy of `examples/medium` the seed-green tests
+/// write their fixtures into. Canonicalized because the daemon canonicalizes
+/// `--corpus-root`, and module payloads are matched lexically against it.
+fn private_medium_corpus(directory: &TempDir) -> PathBuf {
+    let root = directory.path().join("corpus");
+    let status = Command::new("cp")
+        .arg("-R")
+        .arg(repo_root().join("examples/medium"))
+        .arg(&root)
+        .status()
+        .unwrap();
+    assert!(status.success(), "corpus copy failed");
+    fs::canonicalize(&root).unwrap()
+}
+
+/// Writes `contents` to `tests/<name>` under the corpus and returns the
+/// manifest fixture entry (corpus-relative path + its real sha256).
+fn write_corpus_fixture(corpus_root: &Path, name: &str, contents: &str) -> Value {
+    let path = corpus_root.join("tests").join(name);
+    fs::write(&path, contents).unwrap();
+    json!({
+        "path": format!("tests/{name}"),
+        "sha256": format!("{:x}", Sha256::digest(contents.as_bytes())),
+    })
+}
+
+fn write_validation_manifest(directory: &TempDir, mode: &str, fixtures: Vec<Value>) -> PathBuf {
+    let path = directory.path().join("validation-manifest.json");
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "schemaVersion": 1,
+            "mode": mode,
+            "strictSrcOnlyTscScope": true,
+            "tscTimeoutMs": 120_000,
+            "vitestTimeoutMs": 120_000,
+            "fixtures": fixtures,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    path
+}
+
+/// Localized snapshot for a private corpus, optionally carrying one synthetic
+/// module whose rendered text does NOT type-check — the corpus-level type
+/// error a `tscOnly` baseline has to catch.
+fn private_corpus_snapshot(
+    directory: &TempDir,
+    corpus_root: &Path,
+    with_type_error: bool,
+) -> PathBuf {
+    let mut snapshot = localized_snapshot_value(corpus_root);
+    if with_type_error {
+        let module_id = "zzz-broken-module";
+        let statement_id = "zzz-broken-statement";
+        let nodes = snapshot["nodes"].as_array_mut().unwrap();
+        nodes.push(json!({
+            "id": module_id,
+            "kind": "Module",
+            "parentId": null,
+            "childIndex": null,
+            "payload": corpus_root.join("src/zzz-broken.ts").to_string_lossy(),
+        }));
+        nodes.push(json!({
+            "id": statement_id,
+            "kind": "FirstStatement",
+            "parentId": module_id,
+            "childIndex": 0,
+            "payload": "export const broken: number = \"not a number\";",
+        }));
+        nodes.sort_by(|left, right| left["id"].as_str().cmp(&right["id"].as_str()));
+    }
+    let path = directory.path().join("private-snapshot.json");
+    fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    path
+}
+
+/// Spawns the daemon against a private corpus, optionally under an operator
+/// validation manifest. Returns the child with stdout/stderr piped; the caller
+/// decides whether it expects a readiness line or a refusal.
+fn spawn_gated_service(
+    directory: &TempDir,
+    token: &str,
+    corpus_root: &Path,
+    snapshot: &Path,
+    audit: &Path,
+    manifest: Option<&Path>,
+) -> Child {
+    let worker = bridge_worker();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"));
+    command.args([
+        "serve",
+        "--db",
+        directory.path().join("kernel.redb").to_str().unwrap(),
+        "--snapshot",
+        snapshot.to_str().unwrap(),
+        "--bridge-worker",
+        worker.to_str().unwrap(),
+        "--source-root",
+        corpus_root.join("src").to_str().unwrap(),
+        "--corpus-root",
+        corpus_root.to_str().unwrap(),
+        "--socket-token",
+        token,
+        "--audit",
+        audit.to_str().unwrap(),
+    ]);
+    if let Some(manifest) = manifest {
+        command.args(["--validation-manifest", manifest.to_str().unwrap()]);
+    }
+    command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+/// Reads the readiness line, or — when the daemon refused before binding —
+/// returns its exit status plus captured stderr.
+fn await_readiness(mut child: Child) -> Result<RunningService, (i32, String)> {
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    if line.trim().is_empty() {
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .unwrap()
+            .read_to_string(&mut stderr)
+            .unwrap();
+        let status = child.wait().unwrap();
+        return Err((status.code().unwrap_or(-1), stderr));
+    }
+    let ready: Value = serde_json::from_str(&line).unwrap();
+    let socket_path = PathBuf::from(ready["socketPath"].as_str().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket_path.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(socket_path.exists(), "service socket was not created");
+    Ok(RunningService {
+        child,
+        socket_path,
+        epoch: ready["serviceEpoch"].as_str().unwrap().parse().unwrap(),
+        readiness: ready,
+    })
+}
+
+/// The single start event a served session appends.
+fn start_audit_event(audit: &Path) -> Value {
+    let contents = fs::read_to_string(audit).unwrap_or_default();
+    let line = contents
+        .lines()
+        .find(|line| line.contains("service_started") || line.contains("service_recovered"))
+        .unwrap_or_else(|| panic!("no start event in audit log:\n{contents}"));
+    serde_json::from_str::<Value>(line).unwrap()["event"].clone()
+}
+
+fn hello(service: &RunningService, request_id: &str) -> Value {
+    let response = request(
+        service,
+        request_id,
+        "client:seed-green",
+        None,
+        json!({"type":"hello"}),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+    response["result"].clone()
+}
+
+/// A behavioral manifest whose fixture PASSES against the seed corpus: the
+/// daemon serves, and the same manifest digest appears on all three identity
+/// surfaces (readiness line, start audit event, `hello`).
+#[test]
+fn seed_green_daemon_serves_and_reports_digest() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let fixture = write_corpus_fixture(&corpus, "baseline-pin.test.ts", GREEN_FIXTURE);
+    let manifest = write_validation_manifest(&directory, "behavioral", vec![fixture]);
+    let snapshot = private_corpus_snapshot(&directory, &corpus, false);
+    let audit = directory.path().join("audit.jsonl");
+
+    let service = await_readiness(spawn_gated_service(
+        &directory,
+        "seed-green-serves-token",
+        &corpus,
+        &snapshot,
+        &audit,
+        Some(&manifest),
+    ))
+    .unwrap_or_else(|(code, stderr)| panic!("green daemon refused to serve ({code}): {stderr}"));
+
+    let digest = service.readiness["validationManifestDigest"]
+        .as_str()
+        .unwrap_or_else(|| panic!("readiness carries no digest: {}", service.readiness))
+        .to_owned();
+    assert_eq!(service.readiness["validationMode"], "behavioral");
+    assert_eq!(digest.len(), 64, "{digest}");
+    assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+    let ready = hello(&service, "request:hello:seed-green");
+    assert_eq!(ready["type"], "ready", "{ready}");
+    assert_eq!(ready["validationMode"], "behavioral", "{ready}");
+    assert_eq!(ready["validationManifestDigest"], json!(digest), "{ready}");
+
+    let event = start_audit_event(&audit);
+    assert_eq!(event["kind"], "service_started", "{event}");
+    assert_eq!(event["validationMode"], "behavioral", "{event}");
+    assert_eq!(event["validationManifestDigest"], json!(digest), "{event}");
+}
+
+/// The same corpus with a fixture that asserts a FALSE property: the daemon
+/// exits non-zero before any readiness line, prints bounded diagnostics, and
+/// — critically — audits NOTHING. A start event would assert a session that
+/// never served.
+///
+/// This is also the first REAL-WIRE proof that the seven-key behavioral
+/// validation profile reaches the worker (carried over from Task 6, where only
+/// its serialization was asserted). The refusal is only reachable if the
+/// fixture list crossed the wire and vitest actually ran it — a profile that
+/// arrived as `tscOnly`, or behavioral-without-fixtures, would type-check the
+/// corpus, come back green, and this daemon would serve.
+#[test]
+fn seed_red_daemon_refuses_to_serve() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let fixture = write_corpus_fixture(&corpus, "baseline-pin.test.ts", RED_FIXTURE);
+    let manifest = write_validation_manifest(&directory, "behavioral", vec![fixture]);
+    let snapshot = private_corpus_snapshot(&directory, &corpus, false);
+    let audit = directory.path().join("audit.jsonl");
+
+    let (code, stderr) = await_readiness(spawn_gated_service(
+        &directory,
+        "seed-red-refuses-token",
+        &corpus,
+        &snapshot,
+        &audit,
+        Some(&manifest),
+    ))
+    .err()
+    .unwrap_or_else(|| panic!("a red baseline must refuse to serve"));
+
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("seed-green baseline is not green"), "{stderr}");
+    assert!(stderr.contains("baseline-pin.test.ts"), "{stderr}");
+    assert!(stderr.contains("SEED_BASELINE_IS_RED"), "{stderr}");
+    let printed = stderr
+        .lines()
+        .filter(|line| line.starts_with("  "))
+        .count();
+    assert!(printed <= 9, "diagnostics must stay bounded: {stderr}");
+
+    // Absence, not just a nonzero exit: no audit EVENT of any kind.
+    let audited = fs::read_to_string(&audit).unwrap_or_default();
+    assert!(
+        audited.trim().is_empty(),
+        "a refusing daemon must audit nothing, got:\n{audited}"
+    );
+}
+
+/// The no-manifest default: no baseline runs, the readiness line OMITS the
+/// digest key entirely, and `hello` reports an explicit `null`.
+#[test]
+fn tsc_only_daemon_reports_null_digest() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let snapshot = private_corpus_snapshot(&directory, &corpus, false);
+    let audit = directory.path().join("audit.jsonl");
+
+    let service = await_readiness(spawn_gated_service(
+        &directory,
+        "tsc-only-null-digest-token",
+        &corpus,
+        &snapshot,
+        &audit,
+        None,
+    ))
+    .unwrap_or_else(|(code, stderr)| panic!("the default daemon must serve ({code}): {stderr}"));
+
+    assert_eq!(service.readiness["validationMode"], "tscOnly");
+    assert!(
+        service.readiness.get("validationManifestDigest").is_none(),
+        "the no-manifest readiness line must omit the digest key: {}",
+        service.readiness
+    );
+
+    let ready = hello(&service, "request:hello:tsc-only");
+    assert_eq!(ready["validationMode"], "tscOnly", "{ready}");
+    assert_eq!(
+        ready["validationManifestDigest"],
+        Value::Null,
+        "the wire digest is nullable, never absent: {ready}"
+    );
+
+    let event = start_audit_event(&audit);
+    assert_eq!(event["validationMode"], "tscOnly", "{event}");
+    assert!(
+        event.get("validationManifestDigest").is_none(),
+        "{event}"
+    );
+}
+
+/// Review Major 8: the gate is not behavioral-only. A `tscOnly` MANIFEST is
+/// still an operator statement about validation, so it gets a tsc-only
+/// baseline (no fixtures) — and a corpus that does not type-check refuses to
+/// serve just as a red behavioral one does.
+#[test]
+fn seed_tsc_only_manifest_daemon_gets_tsc_baseline() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let manifest = write_validation_manifest(&directory, "tscOnly", Vec::new());
+    let snapshot = private_corpus_snapshot(&directory, &corpus, true);
+    let audit = directory.path().join("audit.jsonl");
+
+    let (code, stderr) = await_readiness(spawn_gated_service(
+        &directory,
+        "seed-tsc-only-manifest-token",
+        &corpus,
+        &snapshot,
+        &audit,
+        Some(&manifest),
+    ))
+    .err()
+    .unwrap_or_else(|| panic!("a tscOnly manifest must still gate on a red baseline"));
+
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("seed-green baseline is not green"), "{stderr}");
+    assert!(stderr.contains("zzz-broken.ts"), "{stderr}");
+    assert!(
+        fs::read_to_string(&audit).unwrap_or_default().trim().is_empty(),
+        "a refusing daemon must audit nothing"
+    );
+}
+
+/// Fail-closed in the OPERATIONAL direction too: when the baseline cannot be
+/// established at all (here, an unspawnable bridge worker), the daemon refuses
+/// rather than serving a corpus it never verified. Without a manifest the same
+/// broken worker is a lazy, per-request failure — the gate is what turns it
+/// into a startup refusal.
+#[test]
+fn seed_green_baseline_operational_failure_is_fail_closed() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let fixture = write_corpus_fixture(&corpus, "baseline-pin.test.ts", GREEN_FIXTURE);
+    let manifest = write_validation_manifest(&directory, "behavioral", vec![fixture]);
+    let snapshot = private_corpus_snapshot(&directory, &corpus, false);
+    let audit = directory.path().join("audit.jsonl");
+    let missing_worker = directory.path().join("no-such-worker.js");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"));
+    command
+        .args([
+            "serve",
+            "--db",
+            directory.path().join("kernel.redb").to_str().unwrap(),
+            "--snapshot",
+            snapshot.to_str().unwrap(),
+            "--bridge-worker",
+            missing_worker.to_str().unwrap(),
+            "--source-root",
+            corpus.join("src").to_str().unwrap(),
+            "--corpus-root",
+            corpus.to_str().unwrap(),
+            "--socket-token",
+            "seed-green-operational-token",
+            "--audit",
+            audit.to_str().unwrap(),
+            "--validation-manifest",
+            manifest.to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let (code, stderr) = await_readiness(command.spawn().unwrap())
+        .err()
+        .unwrap_or_else(|| panic!("an unestablishable baseline must refuse to serve"));
+
+    assert_eq!(code, 2, "{stderr}");
+    assert!(
+        stderr.contains("seed-green baseline could not be established"),
+        "{stderr}"
+    );
+    assert!(
+        fs::read_to_string(&audit).unwrap_or_default().trim().is_empty(),
+        "a refusing daemon must audit nothing"
     );
 }

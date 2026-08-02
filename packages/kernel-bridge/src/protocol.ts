@@ -129,7 +129,15 @@ export const workerStageMetricsSchema = z
   })
   .strict();
 
-export const bridgeKindSchema = z.enum(["analyzeIntent", "buildValidateCandidate"]);
+export const bridgeKindSchema = z.enum([
+  "analyzeIntent",
+  "buildValidateCandidate",
+  // B-2 Task 7 seed-green gate. A DISTINCT wire kind, deliberately not a
+  // degenerate `buildValidateCandidate`: a baseline carries no change set, and
+  // collapsing the two would have to weaken `changeSet.orderedIntents`'s
+  // non-empty invariant for every candidate frame.
+  "validateBaseline"
+]);
 
 export const bridgeBindingSchema = z
   .object({
@@ -286,9 +294,36 @@ export const buildValidateCandidateRequestSchema = z
     });
   });
 
+/**
+ * Seed-green startup gate (B-2 Task 7). Carries the binding, the snapshot to
+ * judge, and the session's validation profile — and NOTHING else: there is no
+ * change set, no attempt, no scope fingerprint, because a baseline judges the
+ * corpus AS PUBLISHED rather than a proposed mutation of it.
+ */
+export const validateBaselineRequestSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    requestId: opaqueIdSchema,
+    kind: z.literal("validateBaseline"),
+    binding: bridgeBindingSchema,
+    snapshot: kernelSnapshotV1Schema,
+    validationProfile: validationProfileSchema
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.snapshot.generation !== request.binding.graphGeneration) {
+      context.addIssue({
+        code: "custom",
+        path: ["snapshot", "generation"],
+        message: "snapshot generation does not match binding"
+      });
+    }
+  });
+
 export const bridgeRequestSchema = z.union([
   analyzeIntentRequestSchema,
-  buildValidateCandidateRequestSchema
+  buildValidateCandidateRequestSchema,
+  validateBaselineRequestSchema
 ]);
 
 const boundedIdArraySchema = z
@@ -438,11 +473,57 @@ const candidateErrorResponseSchema = z
   })
   .strict();
 
+/**
+ * A baseline VERDICT is a success response even when it is red: the worker
+ * finished judging and the answer is "not green". Only a failure to finish
+ * (timeout, bad profile, unhydratable snapshot) is an error response — the same
+ * semantic/operational split the candidate path draws.
+ */
+const baselineSuccessResponseSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    requestId: opaqueIdSchema,
+    kind: z.literal("validateBaseline"),
+    binding: bridgeBindingSchema,
+    ok: z.literal(true),
+    result: z
+      .object({
+        green: z.boolean(),
+        diagnostics: z.array(bridgeDiagnosticSchema).max(MAX_PROTOCOL_ARRAY_ITEMS)
+      })
+      .strict(),
+    metrics: workerStageMetricsSchema.optional()
+  })
+  .strict()
+  .superRefine((response, context) => {
+    if (response.result.green && response.result.diagnostics.length > 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["result", "diagnostics"],
+        message: "a green baseline must carry no diagnostics"
+      });
+    }
+  });
+
+const baselineErrorResponseSchema = z
+  .object({
+    protocolVersion: z.literal(1),
+    requestId: opaqueIdSchema,
+    kind: z.literal("validateBaseline"),
+    binding: bridgeBindingSchema,
+    ok: z.literal(false),
+    error: bridgeErrorPayloadSchema,
+    metrics: workerStageMetricsSchema.optional()
+  })
+  .strict();
+
 export const bridgeResponseSchema = z.union([
   analyzeSuccessResponseSchema,
   candidateSuccessResponseSchema,
+  baselineSuccessResponseSchema,
   analyzeErrorResponseSchema,
-  candidateErrorResponseSchema
+  candidateErrorResponseSchema,
+  baselineErrorResponseSchema
 ]);
 
 export type BridgeKind = z.infer<typeof bridgeKindSchema>;
@@ -452,6 +533,7 @@ export type IntentParameters = z.infer<typeof intentParametersSchema>;
 export type IntentRecord = z.infer<typeof intentRecordSchema>;
 export type AnalyzeIntentRequest = z.infer<typeof analyzeIntentRequestSchema>;
 export type BuildValidateCandidateRequest = z.infer<typeof buildValidateCandidateRequestSchema>;
+export type ValidateBaselineRequest = z.infer<typeof validateBaselineRequestSchema>;
 export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
 export type BridgeResponse = z.infer<typeof bridgeResponseSchema>;
 export type BridgeErrorPayload = z.infer<typeof bridgeErrorPayloadSchema>;

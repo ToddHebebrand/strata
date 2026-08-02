@@ -325,7 +325,18 @@ const eventSchema = z
   .strict();
 
 export const responseResultSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("ready") }).strict(),
+  // `hello`. Both validation-identity fields are REQUIRED (B-2 Task 7): a
+  // client reads the daemon's validation regime off its first response
+  // instead of inferring it from a missing key. The digest is NULLABLE, not
+  // optional — `null` means "no operator manifest", a different claim from
+  // "this field was not sent".
+  z
+    .object({
+      type: z.literal("ready"),
+      validationMode: z.enum(["tscOnly", "behavioral"]),
+      validationManifestDigest: digestSchema.nullable()
+    })
+    .strict(),
   z
     .object({
       type: z.literal("nodes"),

@@ -91,20 +91,19 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     let token = required_text(&values, "--socket-token")?;
     let metrics_path = optional_path(&values, "--metrics");
     // Resolved BEFORE corpus_root moves into NodeBridgeConfig::tsc_only
-    // below. Nothing here changes bridge_config's construction (Task 6
-    // wires that); this only produces the ValidationSettings stored on the
-    // session.
-    let validation = match optional_path(&values, "--validation-manifest") {
-        Some(manifest_path) => {
-            let loaded = manifest::load_validation_manifest(&manifest_path, &corpus_root)
-                .with_context(|| {
-                    format!(
-                        "load validation manifest {}",
-                        manifest_path.display()
-                    )
-                })?;
-            ValidationSettings::from_loaded_manifest(&loaded)
-        }
+    // below. Produces both the ValidationSettings the session publishes as
+    // its identity AND (further down) the bridge profile the worker actually
+    // validates under — one manifest, one decision, two consumers.
+    let loaded_manifest = match optional_path(&values, "--validation-manifest") {
+        Some(manifest_path) => Some(
+            manifest::load_validation_manifest(&manifest_path, &corpus_root).with_context(
+                || format!("load validation manifest {}", manifest_path.display()),
+            )?,
+        ),
+        None => None,
+    };
+    let validation = match &loaded_manifest {
+        Some(loaded) => ValidationSettings::from_loaded_manifest(loaded),
         None => ValidationSettings::tsc_only(),
     };
     #[cfg(feature = "coordination-test-api")]
@@ -152,6 +151,29 @@ fn serve(arguments: &[OsString]) -> Result<()> {
         corpus_root,
         true,
     );
+    // The operator manifest's regime and budgets reach the WORKER here (B-2
+    // Task 7). Without a manifest this block does not run at all, so the
+    // profile keeps its historic five keys and the candidate deadline stays
+    // the transport deadline — the byte-identical no-flag wire.
+    if let Some(loaded) = &loaded_manifest {
+        bridge_config = match loaded.manifest.mode {
+            manifest::ManifestMode::TscOnly => bridge_config.with_tsc_only_timeouts(
+                loaded.manifest.tsc_timeout_ms,
+                loaded.manifest.vitest_timeout_ms,
+            ),
+            manifest::ManifestMode::Behavioral => bridge_config.with_behavioral_validation(
+                loaded
+                    .manifest
+                    .fixtures
+                    .iter()
+                    .map(|fixture| fixture.path.clone())
+                    .collect(),
+                loaded.manifest.tsc_timeout_ms,
+                loaded.manifest.vitest_timeout_ms,
+            ),
+        }
+        .context("apply the validation manifest to the Node bridge configuration")?;
+    }
     // Only ask workers to self-report metrics when the sink is active, so a run
     // without `--metrics` never appends `--emit-metrics` to worker argv.
     if metrics_path.is_some() {

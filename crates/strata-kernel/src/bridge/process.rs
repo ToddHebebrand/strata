@@ -138,6 +138,44 @@ impl NodeBridgeConfig {
         Ok(self)
     }
 
+    /// Applies an operator manifest's per-step budgets to a `tscOnly` profile
+    /// (B-2 Task 7): the profile keeps its five historic keys plus the two now
+    /// PRESENT timeouts, and the candidate deadline becomes the same nested
+    /// `tsc + vitest + CANDIDATE_OVERHEAD_MS` a behavioral session gets.
+    ///
+    /// This exists because a `tscOnly` MANIFEST is still an operator decision
+    /// to bound validation; only the no-manifest default leaves the timeouts
+    /// absent, which is what keeps the pre-B-2 wire byte-identical. Errors if
+    /// the profile is already behavioral (that path has its own constructor)
+    /// or a budget is out of bounds.
+    pub fn with_tsc_only_timeouts(
+        mut self,
+        tsc_timeout_ms: u64,
+        vitest_timeout_ms: u64,
+    ) -> Result<Self> {
+        let ValidationProfile::TscOnly {
+            source_root,
+            corpus_root,
+            strict_src_only_tsc_scope,
+            ..
+        } = &self.validation_profile
+        else {
+            bail!("with_tsc_only_timeouts requires a tscOnly validation profile");
+        };
+        let profile = ValidationProfile::tsc_only_bounded(
+            source_root.clone(),
+            corpus_root.clone(),
+            *strict_src_only_tsc_scope,
+            tsc_timeout_ms,
+            vitest_timeout_ms,
+        )?;
+        self.candidate_deadline = profile
+            .candidate_deadline()
+            .expect("a timeout-carrying tscOnly profile always derives a deadline");
+        self.validation_profile = profile;
+        Ok(self)
+    }
+
     /// Opts this config into per-run metrics collection. When enabled, spawned
     /// workers are asked to self-report metrics (`--emit-metrics`) and each
     /// spawned child produces one terminal [`WorkerRunMetrics`] record.
@@ -280,7 +318,11 @@ impl NodeBridgeClient {
         // the nested validation budget; an analyze frame keeps the separate,
         // unchanged transport deadline.
         let budget = match request.kind() {
-            BridgeKind::BuildValidateCandidate => self.config.candidate_deadline,
+            // A baseline spawns the same tsc/vitest pair a candidate does, so
+            // it spends the same nested budget.
+            BridgeKind::BuildValidateCandidate | BridgeKind::ValidateBaseline => {
+                self.config.candidate_deadline
+            }
             BridgeKind::AnalyzeIntent => self.config.deadline,
         };
         let deadline = Instant::now()

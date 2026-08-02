@@ -201,7 +201,7 @@ impl CandidateExecutor for NodeCandidateExecutor {
                 BridgeRequest::BuildValidateCandidate(inner) => serde_json::to_vec(&inner.snapshot)
                     .context("serialize candidate snapshot for run metrics")?
                     .len() as u64,
-                BridgeRequest::AnalyzeIntent(_) => 0,
+                BridgeRequest::AnalyzeIntent(_) | BridgeRequest::ValidateBaseline(_) => 0,
             };
             observer::set_request_build(snapshot_bytes, snapshot_build_ns);
         }

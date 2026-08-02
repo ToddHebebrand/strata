@@ -80,7 +80,8 @@ impl SemanticProvider for NodeSemanticProvider {
                 BridgeRequest::AnalyzeIntent(inner) => serde_json::to_vec(&inner.snapshot)
                     .context("serialize analyze snapshot for run metrics")?
                     .len() as u64,
-                BridgeRequest::BuildValidateCandidate(_) => 0,
+                BridgeRequest::BuildValidateCandidate(_)
+                | BridgeRequest::ValidateBaseline(_) => 0,
             };
             observer::set_request_build(snapshot_bytes, snapshot_build_ns);
         }

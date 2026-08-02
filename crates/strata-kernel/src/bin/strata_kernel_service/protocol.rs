@@ -263,6 +263,25 @@ impl<'de> Deserialize<'de> for False {
     }
 }
 
+/// The daemon's validation regime, as published on the readiness line, the
+/// start audit event and the `hello` response. One vocabulary for all three so
+/// the three surfaces cannot drift.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum ValidationMode {
+    TscOnly,
+    Behavioral,
+}
+
+impl ValidationMode {
+    pub(super) fn as_label(self) -> &'static str {
+        match self {
+            Self::TscOnly => "tscOnly",
+            Self::Behavioral => "behavioral",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "type",
@@ -271,7 +290,16 @@ impl<'de> Deserialize<'de> for False {
     deny_unknown_fields
 )]
 pub(super) enum ResponseResult {
-    Ready {},
+    /// `hello`. Both fields are REQUIRED on the wire (B-2 Task 7): a client
+    /// must be able to read the daemon's validation regime off its first
+    /// response rather than infer it from a key's absence. The digest is
+    /// NULLABLE, not optional — `null` states "no operator manifest", which is
+    /// a different claim from "this daemon predates the field".
+    Ready {
+        validation_mode: ValidationMode,
+        #[serde(deserialize_with = "required_nullable_digest")]
+        validation_manifest_digest: Option<String>,
+    },
     Nodes {
         graph_generation: WireU64,
         nodes: Vec<InspectedNode>,
@@ -809,7 +837,10 @@ impl ErrorResponse {
 impl ResponseResult {
     fn validate(&self) -> Result<()> {
         match self {
-            Self::Ready {} => {}
+            Self::Ready {
+                validation_manifest_digest,
+                ..
+            } => validate_optional_digest(validation_manifest_digest)?,
             Self::Nodes { nodes, .. } => {
                 bounded_items(nodes.len(), 0, MAX_ARRAY_ITEMS, "nodes")?;
                 for node in nodes {
@@ -1138,6 +1169,20 @@ fn validate_diagnostics(diagnostics: &[Diagnostic]) -> Result<()> {
         diagnostic.validate()?;
     }
     Ok(())
+}
+
+/// Deserializes a NULLABLE-but-REQUIRED digest.
+///
+/// serde treats a bare `Option<T>` field as implicitly defaulted, so a
+/// `hello` response that simply omitted `validationManifestDigest` would parse
+/// as `None` and silently read as "no manifest". Naming a `deserialize_with`
+/// suppresses that implicit default, so the key must be present — `null` or a
+/// digest, never absent.
+fn required_nullable_digest<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
 }
 
 fn validate_optional_digest(value: &Option<String>) -> Result<()> {

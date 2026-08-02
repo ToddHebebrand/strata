@@ -485,7 +485,14 @@ function collectRenameTouchedStatements(
   }
 }
 
-function validateProfile(
+/**
+ * Shared profile gate for BOTH semantic wire kinds (candidate and the Task-7
+ * `validateBaseline`): roots exist and nest, every module stays inside the
+ * source root, and a behavioral profile names only trusted in-corpus test
+ * files. Exported so `baseline.ts` enforces the identical contract without
+ * either kind borrowing the other's request shape.
+ */
+export function validateProfile(
   profile: ValidationProfile,
   snapshot: KernelSnapshotV1
 ): BridgeErrorPayload | undefined {
@@ -602,7 +609,8 @@ function sameNode(
   );
 }
 
-function normalizeDiagnostics(
+/** Shared diagnostic bounding (see {@link validateProfile}). */
+export function normalizeDiagnostics(
   diagnostics: readonly (Diagnostic | BridgeDiagnostic)[]
 ): BridgeDiagnostic[] {
   const normalized: BridgeDiagnostic[] = [];
@@ -629,7 +637,8 @@ function normalizeDiagnostics(
   return normalized;
 }
 
-function errorPayload(
+/** Shared bounded error-payload builder (see {@link validateProfile}). */
+export function errorPayload(
   stage: BridgeErrorPayload["stage"],
   code: string,
   error: unknown,
