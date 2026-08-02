@@ -29,6 +29,22 @@ const MAX_MESSAGE_CODE_UNITS = 1_000;
 const MAX_DIAGNOSTIC_CODE_UNITS = 64 * 1_024;
 const MAX_DIAGNOSTICS = 256;
 
+// Mirrors @strata-code/store rename.ts's (unexported) DECLARATION_KINDS --
+// the set of statement kinds rename_symbol accepts as a rename target. Kept
+// as a local, manually-synced copy: this is a classification pre-check only
+// (worker `intentRejected` vs `mutationFailed`, no store behavior change),
+// so it deliberately does not touch the store package's public surface.
+const RENAME_TARGET_KINDS = new Set([
+  "InterfaceDeclaration",
+  "TypeAliasDeclaration",
+  "ClassDeclaration",
+  "FunctionDeclaration",
+  "FirstStatement"
+]);
+
+// Mirrors add_parameter's own target-kind check in @strata-code/store.
+const ADD_PARAMETER_TARGET_KINDS = new Set(["FunctionDeclaration"]);
+
 export type CandidateSuccess = {
   delta: KernelGraphDeltaV1;
   diagnostics: [];
@@ -91,6 +107,11 @@ export function buildValidateCandidateInScratch(
     bracket("mutate", () => {
       for (const intent of request.changeSet.orderedIntents) {
         if (intent.parameters.type === "renameSymbol") {
+          rejectUnknownIntentTarget(
+            db,
+            intent.parameters.declarationId,
+            RENAME_TARGET_KINDS
+          );
           collectRenameTouchedStatements(
             db,
             intent.parameters.declarationId,
@@ -103,6 +124,11 @@ export function buildValidateCandidateInScratch(
             intent.parameters.newName
           );
         } else {
+          rejectUnknownIntentTarget(
+            db,
+            intent.parameters.functionId,
+            ADD_PARAMETER_TARGET_KINDS
+          );
           const manifest = add_parameter(
             db,
             activeTx,
@@ -381,6 +407,35 @@ export function validateCandidateIdentity(
     }
   }
   return undefined;
+}
+
+/**
+ * Pre-check a mutation intent's target against the hydrated store BEFORE
+ * invoking rename_symbol/add_parameter. This is a classification pre-check
+ * only -- rename_symbol and add_parameter still perform their own (now
+ * redundant) existence/kind checks; store behavior is unchanged.
+ *
+ * A missing or wrong-kind target is a KNOWN application rejection: the
+ * intent asked for something the graph cannot satisfy, not an unexpected
+ * worker fault. Thrown as `intentRejected` (SEMANTIC downstream) so it is
+ * distinguished from residual, unanticipated mutate-stage exceptions, which
+ * keep mapping to `mutationFailed` (OPERATIONAL downstream, see the catch
+ * block below).
+ */
+function rejectUnknownIntentTarget(
+  db: Db,
+  targetId: string,
+  allowedKinds: ReadonlySet<string>
+): void {
+  const target = findNodeById(db, targetId);
+  if (target === undefined || !allowedKinds.has(target.kind)) {
+    throw new CandidateFailure(
+      "mutate",
+      "intentRejected",
+      [],
+      `intent target ${targetId} does not exist or is not applicable`
+    );
+  }
 }
 
 function collectRenameTouchedStatements(

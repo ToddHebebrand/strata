@@ -369,7 +369,7 @@ describe("validated scratch candidates", () => {
     }
   });
 
-  it("rolls back a valid first intent when the second intent fails", () => {
+  it("rolls back a valid first intent when the second intent is a known rejection", () => {
     const before = mediumSnapshot();
     const request = renameRequest(before);
     request.changeSet.orderedIntents.push({
@@ -392,6 +392,7 @@ describe("validated scratch candidates", () => {
     try {
       const error = expectFailure(buildValidateCandidateInScratch(request, db));
       expect(error.stage).toBe("mutate");
+      expect(error.code).toBe("intentRejected");
       expect(JSON.stringify(exportSnapshot(db, before.generation))).toBe(original);
       expect(
         db.prepare("SELECT status FROM transactions").all()
@@ -524,6 +525,68 @@ describe("validated scratch candidates", () => {
     const error = expectFailure(buildValidateCandidate(request));
 
     expect(error.stage).toBe("mutate");
+    // An internal invariant failure (a value the pre-check does not cover)
+    // must keep mapping to mutationFailed -- intentRejected is reserved for
+    // the KNOWN target-existence/kind pre-checks below.
+    expect(error.code).toBe("mutationFailed");
     expect(error.message.length).toBeLessThanOrEqual(1_000);
   });
+
+  it("rejects a rename intent whose target declaration does not exist as a known intent rejection", () => {
+    const before = mediumSnapshot();
+    const request = renameRequest(before);
+    const intent = request.changeSet.orderedIntents[0]!;
+    if (intent.parameters.type !== "renameSymbol") throw new Error("rename expected");
+    intent.parameters.declarationId = "missing-declaration";
+
+    const error = expectFailure(buildValidateCandidate(request));
+
+    expect(error.stage).toBe("mutate");
+    expect(error.code).toBe("intentRejected");
+    expect(error.message).toContain("missing-declaration");
+  });
+
+  it("rejects a rename intent whose target is not a supported declaration kind as a known intent rejection", () => {
+    const before = mediumSnapshot();
+    const request = renameRequest(before);
+    const intent = request.changeSet.orderedIntents[0]!;
+    if (intent.parameters.type !== "renameSymbol") throw new Error("rename expected");
+    const identifier = before.nodes.find((node) => node.kind === "Identifier")!;
+    intent.parameters.declarationId = identifier.id;
+
+    const error = expectFailure(buildValidateCandidate(request));
+
+    expect(error.stage).toBe("mutate");
+    expect(error.code).toBe("intentRejected");
+    expect(error.message).toContain(identifier.id);
+  });
+
+  it("rejects an add_parameter intent whose target is not a function as a known intent rejection", () => {
+    const before = mediumSnapshot();
+    const request = addParameterRequest(before);
+    const intent = request.changeSet.orderedIntents[0]!;
+    if (intent.parameters.type !== "addParameter") throw new Error("parameter expected");
+    intent.parameters.functionId = declarationId(before, /export interface User\s*\{/);
+
+    const error = expectFailure(buildValidateCandidate(request));
+
+    expect(error.stage).toBe("mutate");
+    expect(error.code).toBe("intentRejected");
+    expect(error.message).toContain(intent.parameters.functionId);
+  });
+
+  it("rejects an add_parameter intent whose target function does not exist as a known intent rejection", () => {
+    const before = mediumSnapshot();
+    const request = addParameterRequest(before);
+    const intent = request.changeSet.orderedIntents[0]!;
+    if (intent.parameters.type !== "addParameter") throw new Error("parameter expected");
+    intent.parameters.functionId = "missing-function";
+
+    const error = expectFailure(buildValidateCandidate(request));
+
+    expect(error.stage).toBe("mutate");
+    expect(error.code).toBe("intentRejected");
+    expect(error.message).toContain("missing-function");
+  });
+
 });
