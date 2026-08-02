@@ -16,8 +16,9 @@ use full_key_free_support::{
     localized_only_green_together_fixture, reopen_projected_kernel,
 };
 use strata_kernel::{
-    ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEventKind, IntentParameters, Kernel,
-    PublishClaimOutcome, PublishFailpoint, ReadyOffer, SubmissionOutcome, TicketState,
+    CandidateRejected, ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEventKind,
+    IntentParameters, Kernel, PublishClaimOutcome, PublishFailpoint, ReadyOffer, SubmissionOutcome,
+    TicketState,
 };
 use tempfile::tempdir;
 
@@ -1603,7 +1604,16 @@ fn row_10_add_parameter_alone_fails_validation_without_publication() {
 
     let error = actor.execute_claimed(&kernel, &claimed, 3).unwrap_err();
     let message = error.to_string();
-    assert!(message.contains("Validate/typescriptFailed"), "{error:#}");
+    // A tsc red is a SEMANTIC rejection, so since item-B2 Task 1 it arrives as
+    // a typed, downcastable `CandidateRejected` whose Display names the
+    // lowercased stage/code pair — not the old untyped `Validate/...` anyhow
+    // string.
+    let rejected = error
+        .downcast_ref::<CandidateRejected>()
+        .unwrap_or_else(|| panic!("a tsc red must be a typed rejection: {error:#}"));
+    assert_eq!(rejected.stage, "validate");
+    assert_eq!(rejected.code, "typescriptFailed");
+    assert!(message.contains("validate/typescriptFailed"), "{error:#}");
     assert!(
         message.contains("candidate TypeScript validation failed"),
         "{error:#}"
