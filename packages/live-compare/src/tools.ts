@@ -69,7 +69,10 @@ export const COORDINATION_TOOL_INPUT_SCHEMAS = {
 } as const;
 
 export interface CoordinationClientApi {
-  findDeclarations(name: string, kind?: string): Promise<CoordinationResult>;
+  findDeclarations(
+    name: string,
+    options?: { kind?: string }
+  ): Promise<CoordinationResult>;
   inspectNodes(nodeIds: string[]): Promise<CoordinationResult>;
   beginChangeSet(reasoning: string): Promise<CoordinationResult>;
   addIntent(changeSetId: string, intent: CoordinationIntent): Promise<CoordinationResult>;
@@ -138,7 +141,7 @@ export function createCoordinationTools(
       "find_declarations",
       "Find declarations by exact name, optionally narrowed by kind (interface, type-alias, class, function, variable). Returns stable node IDs with their module. This is your discovery entry point: use it to locate the declaration to change, then inspect_nodes on the returned IDs before mutating.",
       COORDINATION_TOOL_INPUT_SCHEMAS.find_declarations,
-      async ({ name, kind }) => textResult(await client.findDeclarations(name, kind))
+      async ({ name, kind }) => textResult(await client.findDeclarations(name, { kind }))
     ),
     strictTool(
       "inspect_nodes",

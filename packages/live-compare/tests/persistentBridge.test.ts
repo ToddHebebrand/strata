@@ -97,7 +97,7 @@ async function runMutation(
   toName: string
 ): Promise<MutationOutcome> {
   const discovery = expectResult(
-    await client.findDeclarations(fromName, "interface", DISCOVERY_DEADLINE_MS),
+    await client.findDeclarations(fromName, { kind: "interface" }, DISCOVERY_DEADLINE_MS),
     "declarations"
   );
   expect(discovery.declarations.length).toBe(1);

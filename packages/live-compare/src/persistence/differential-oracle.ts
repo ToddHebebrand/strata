@@ -344,7 +344,7 @@ async function findUniqueDeclaration(
   kind: "interface" | "function"
 ): Promise<{ nodeId: string; discovery: unknown }> {
   const discovery = expectResult(
-    await client.findDeclarations(name, kind, DISCOVERY_DEADLINE_MS),
+    await client.findDeclarations(name, { kind }, DISCOVERY_DEADLINE_MS),
     "declarations"
   );
   if (discovery.declarations.length !== 1) {
@@ -417,7 +417,7 @@ async function runAddParameterStep(
   // arms by the stable-ID invariant); the discovery fact still probes the
   // query surface for equality across arms.
   const discovery = expectResult(
-    await client.findDeclarations(target, "function", DISCOVERY_DEADLINE_MS),
+    await client.findDeclarations(target, { kind: "function" }, DISCOVERY_DEADLINE_MS),
     "declarations"
   );
   const driven = await driveChangeSet(client, `oracle: ${label}`, [

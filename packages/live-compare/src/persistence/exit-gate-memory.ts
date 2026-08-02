@@ -74,7 +74,7 @@ export interface MediumLeakCheckOutcome {
 /** One published rename through the coordination protocol (begin/add/submit/advance-until-published). */
 async function publishRename(client: CoordinationClient, fromName: string, toName: string): Promise<void> {
   const discovery = expectResult(
-    await client.findDeclarations(fromName, "interface", DISCOVERY_DEADLINE_MS),
+    await client.findDeclarations(fromName, { kind: "interface" }, DISCOVERY_DEADLINE_MS),
     "declarations"
   );
   if (discovery.declarations.length !== 1) {

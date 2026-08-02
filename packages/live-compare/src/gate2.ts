@@ -402,7 +402,7 @@ async function runColdLeg(corpusRoot: string, directory: string, metricsPath: st
     await client.hello(DISCOVERY_DEADLINE_MS);
 
     const discovery = expectResult(
-      await client.findDeclarations(OLD_NAME, "interface", DISCOVERY_DEADLINE_MS),
+      await client.findDeclarations(OLD_NAME, { kind: "interface" }, DISCOVERY_DEADLINE_MS),
       "declarations"
     );
     if (discovery.declarations.length !== 1) {

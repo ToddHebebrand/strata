@@ -228,7 +228,7 @@ async function resolveTargetDeclarationId(client: CoordinationClient, name: stri
   // (kernel Module nodes carry no path payload; all replicated copies are
   // structurally identical, so any copy is measurement-equivalent).
   const discovery = expectResult(
-    await client.findDeclarations(name, "interface", DISCOVERY_DEADLINE_MS),
+    await client.findDeclarations(name, { kind: "interface" }, DISCOVERY_DEADLINE_MS),
     "declarations"
   );
   if (discovery.declarations.length === 0) {

@@ -356,4 +356,241 @@ describe("unprivileged coordination Unix-socket client", () => {
       ).toThrow();
     }
   );
+
+  describe("paged discovery wrappers", () => {
+    it("serializes a bare findDeclarations call with no options and no idempotencyKey", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "declarations",
+            graphGeneration: "0",
+            declarations: [],
+            hasMore: false
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await client.findDeclarations("User", undefined, 1_000);
+
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({
+        type: "find_declarations",
+        name: "User"
+      });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("EXACT-serializes a scoped findDeclarations call carrying moduleId and afterNodeId on the wire", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "declarations",
+            graphGeneration: "0",
+            declarations: [],
+            hasMore: false
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await client.findDeclarations(
+        "User",
+        { kind: "interface", moduleId: "module:1", afterNodeId: "node:9" },
+        1_000
+      );
+
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({
+        type: "find_declarations",
+        name: "User",
+        kind: "interface",
+        moduleId: "module:1",
+        afterNodeId: "node:9"
+      });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("serializes listModules with omitted afterModuleId absent from the wire and no idempotencyKey", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "modules",
+            graphGeneration: "0",
+            modules: [],
+            hasMore: false
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await client.listModules(undefined, 32, 1_000);
+
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({
+        type: "list_modules",
+        limit: 32
+      });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("serializes listModules with afterModuleId present and defaults limit to 64", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "modules",
+            graphGeneration: "0",
+            modules: [],
+            hasMore: false
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await client.listModules({ afterModuleId: "module:5" }, undefined, 1_000);
+
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({
+        type: "list_modules",
+        afterModuleId: "module:5",
+        limit: 64
+      });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("serializes listModuleDeclarations with omitted afterNodeId absent from the wire and default limit 64", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "module_declarations",
+            graphGeneration: "0",
+            declarations: [],
+            hasMore: false
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await client.listModuleDeclarations("module:1", undefined, undefined, 1_000);
+
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({
+        type: "list_module_declarations",
+        moduleId: "module:1",
+        limit: 64
+      });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("serializes listModuleDeclarations with afterNodeId and a custom limit", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "module_declarations",
+            graphGeneration: "0",
+            declarations: [],
+            hasMore: false
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await client.listModuleDeclarations("module:1", { afterNodeId: "node:7" }, 10, 1_000);
+
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({
+        type: "list_module_declarations",
+        moduleId: "module:1",
+        afterNodeId: "node:7",
+        limit: 10
+      });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("serializes getReferences with omitted afterReferenceKey absent from the wire and default limit 256", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "references",
+            graphGeneration: "0",
+            references: [],
+            hasMore: false
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await client.getReferences("node:1", undefined, undefined, 1_000);
+
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({
+        type: "get_references",
+        nodeId: "node:1",
+        limit: 256
+      });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("serializes getReferences with afterReferenceKey and a custom limit", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "references",
+            graphGeneration: "0",
+            references: [],
+            hasMore: false
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await client.getReferences("node:1", { afterReferenceKey: "ref:3" }, 50, 1_000);
+
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({
+        type: "get_references",
+        nodeId: "node:1",
+        afterReferenceKey: "ref:3",
+        limit: 50
+      });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("does not retry any of the new paged discovery reads after an ambiguous disconnect", async () => {
+      const service = await unixServer((socket) => socket.destroy());
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await expect(client.listModules(undefined, 64, 250)).rejects.toThrow(
+        CoordinationClientError
+      );
+      expect(service.requests).toHaveLength(1);
+    });
+  });
 });

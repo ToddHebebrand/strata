@@ -348,7 +348,7 @@ export async function runKernelArmT03(
     // Discovery: the kernel find_declarations nodeId must equal the SQLite
     // declaration id (same ingest domain).
     const discovery = expectResult(
-      await client.findDeclarations(OLD_NAME, "interface", DISCOVERY_DEADLINE_MS),
+      await client.findDeclarations(OLD_NAME, { kind: "interface" }, DISCOVERY_DEADLINE_MS),
       "declarations"
     );
     if (discovery.declarations.length !== 1) {

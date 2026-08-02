@@ -210,7 +210,7 @@ describe("gate 1: second-client intrusion — stage-specific FIFO oracles", () =
         const stop = makeStop(service);
         try {
           const a = new CoordinationClient({ socketPath: service.socketPath, clientId: `intrusion-A:${stage}` });
-          const discovery = asDeclarations(await a.findDeclarations(OLD_NAME, "interface", READ_MS));
+          const discovery = asDeclarations(await a.findDeclarations(OLD_NAME, { kind: "interface" }, READ_MS));
           expect(discovery.declarations).toHaveLength(1);
           const declarationId = discovery.declarations[0]!.nodeId;
 
@@ -270,7 +270,7 @@ describe("gate 1: second-client intrusion — stage-specific FIFO oracles", () =
       const stop = makeStop(service);
       try {
         const a = new CoordinationClient({ socketPath: service.socketPath, clientId: `intrusion-A:after_submit` });
-        const discovery = asDeclarations(await a.findDeclarations(OLD_NAME, "interface", READ_MS));
+        const discovery = asDeclarations(await a.findDeclarations(OLD_NAME, { kind: "interface" }, READ_MS));
         const declarationId = discovery.declarations[0]!.nodeId;
 
         // A submits FIRST (older overlap).
@@ -335,10 +335,10 @@ describe("gate 1: second-client intrusion — stage-specific FIFO oracles", () =
           onStage: async (observed, ctx) => {
             if (observed !== stage) return;
             const b = new CoordinationClient({ socketPath: ctx.socketPath, clientId: `intrusion-Bdisjoint:${randomUUID()}` });
-            const formatDecl = asDeclarations(await b.findDeclarations(DISJOINT_OLD, "function", READ_MS));
+            const formatDecl = asDeclarations(await b.findDeclarations(DISJOINT_OLD, { kind: "function" }, READ_MS));
             expect(formatDecl.declarations).toHaveLength(1);
             formatModuleId = formatDecl.declarations[0]!.moduleId;
-            const userDecl = asDeclarations(await b.findDeclarations(OLD_NAME, "interface", READ_MS));
+            const userDecl = asDeclarations(await b.findDeclarations(OLD_NAME, { kind: "interface" }, READ_MS));
             userModuleId = userDecl.declarations[0]!.moduleId;
             const committed = await commitIntruder(
               ctx.socketPath,
@@ -396,7 +396,7 @@ describe("gate 1: second-client intrusion — stage-specific FIFO oracles", () =
       try {
         const a = new CoordinationClient({ socketPath: service.socketPath, clientId: `intrusion-A:concurrent` });
         const b = new CoordinationClient({ socketPath: service.socketPath, clientId: `intrusion-B:concurrent:${randomUUID()}` });
-        const discovery = asDeclarations(await a.findDeclarations(OLD_NAME, "interface", READ_MS));
+        const discovery = asDeclarations(await a.findDeclarations(OLD_NAME, { kind: "interface" }, READ_MS));
         const declarationId = discovery.declarations[0]!.nodeId;
 
         // A submits first (older), B submits after (younger); both overlapping.

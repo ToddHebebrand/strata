@@ -63,6 +63,9 @@ function isMutating(action: LocalServiceRequest["action"]): boolean {
     "hello",
     "inspect_nodes",
     "find_declarations",
+    "list_modules",
+    "list_module_declarations",
+    "get_references",
     "read_events",
     "read_operation"
   ].includes(action.type);
@@ -269,10 +272,72 @@ export class CoordinationClient {
 
   findDeclarations(
     name: string,
-    kind?: z.infer<typeof declarationKindFilterSchema>,
+    options?: {
+      kind?: z.infer<typeof declarationKindFilterSchema>;
+      moduleId?: string;
+      afterNodeId?: string;
+    },
     deadlineMs = DEFAULT_REQUEST_DEADLINE_MS
   ): Promise<CoordinationResult> {
-    return this.request({ type: "find_declarations", name, ...(kind ? { kind } : {}) }, deadlineMs);
+    return this.request(
+      {
+        type: "find_declarations",
+        name,
+        ...(options?.kind ? { kind: options.kind } : {}),
+        ...(options?.moduleId ? { moduleId: options.moduleId } : {}),
+        ...(options?.afterNodeId ? { afterNodeId: options.afterNodeId } : {})
+      },
+      deadlineMs
+    );
+  }
+
+  listModules(
+    options?: { afterModuleId?: string },
+    limit = 64,
+    deadlineMs = DEFAULT_REQUEST_DEADLINE_MS
+  ): Promise<CoordinationResult> {
+    return this.request(
+      {
+        type: "list_modules",
+        ...(options?.afterModuleId ? { afterModuleId: options.afterModuleId } : {}),
+        limit
+      },
+      deadlineMs
+    );
+  }
+
+  listModuleDeclarations(
+    moduleId: string,
+    options?: { afterNodeId?: string },
+    limit = 64,
+    deadlineMs = DEFAULT_REQUEST_DEADLINE_MS
+  ): Promise<CoordinationResult> {
+    return this.request(
+      {
+        type: "list_module_declarations",
+        moduleId,
+        ...(options?.afterNodeId ? { afterNodeId: options.afterNodeId } : {}),
+        limit
+      },
+      deadlineMs
+    );
+  }
+
+  getReferences(
+    nodeId: string,
+    options?: { afterReferenceKey?: string },
+    limit = 256,
+    deadlineMs = DEFAULT_REQUEST_DEADLINE_MS
+  ): Promise<CoordinationResult> {
+    return this.request(
+      {
+        type: "get_references",
+        nodeId,
+        ...(options?.afterReferenceKey ? { afterReferenceKey: options.afterReferenceKey } : {}),
+        limit
+      },
+      deadlineMs
+    );
   }
 
   beginChangeSet(

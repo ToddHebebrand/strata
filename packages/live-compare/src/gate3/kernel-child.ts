@@ -64,7 +64,7 @@ async function resolveTargetDeclarationId(
 ): Promise<string> {
   void target;
   const discovery = expectResult(
-    await client.findDeclarations(name, "interface", DISCOVERY_DEADLINE_MS),
+    await client.findDeclarations(name, { kind: "interface" }, DISCOVERY_DEADLINE_MS),
     "declarations"
   );
   if (discovery.declarations.length === 0) {
