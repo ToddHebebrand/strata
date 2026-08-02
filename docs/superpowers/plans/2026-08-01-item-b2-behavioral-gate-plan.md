@@ -1,201 +1,190 @@
-# Item B-2 — Behavioral Gate Implementation Plan (v1)
+# Item B-2 — Behavioral Gate Implementation Plan (v2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** v1, pre-review. Per the item-B spec's process section this plan
-goes v1 → independent methodology review → v2 before any build. Governing
-spec: `docs/superpowers/specs/2026-07-31-item-b-design.md` (Slice B-2 +
-Hard boundaries). B-1 is merged (main d708662); everything here builds on
-that state.
+**Status:** v2, post-review — READY TO EXECUTE. The v1 methodology review
+returned RE-GROUND (archive with in-session verification notes:
+`docs/superpowers/specs/2026-08-01-item-b2-plan-review-codex.md`; brief:
+`2026-08-01-item-b2-plan-review-brief.md`). v2 is a re-grounded rewrite:
+all four Blockers and five Majors are constitutive here, not bolted on.
+Governing spec: `docs/superpowers/specs/2026-07-31-item-b-design.md`
+(Slice B-2 + Hard boundaries). Baseline: main ≥ ce93a06 (B-1 merged).
 
-**Goal:** Wire the kernel's commit gate honestly for behavioral validation:
-typed candidate rejection carrying the worker's real diagnostics, a
-committed digested validation manifest with a seed-green startup invariant,
-safely nested subprocess deadlines with timeout/savepoint recovery proofs,
-a manifest-pinned fixture reader, and cost disclosure — while the tsc-only
-default stays byte-identical.
+**Review corrections constitutive in v2** (numbering = the archive's):
+1. (Blocker) `ValidationProfile` timeout fields are OPTIONAL/omitted on
+   `TscOnly` and REQUIRED on `Behavioral` — the no-manifest wire stays
+   byte-identical (the exact five-key pin in
+   `full_key_free_acceptance.rs:1943` keeps passing untouched); a
+   manifest-backed tscOnly profile may carry them.
+2. (Blocker) Real PROCESS-GROUP supervision: new ASYNC bounded runners
+   (`spawn` + `detached: true` + `kill(-pid, SIGKILL)`) used by the
+   kernel-bridge behavioral/baseline paths; the candidate validate stage
+   becomes async end-to-end in the worker. The sync product `commit` path
+   is untouched. No `--pool=threads` substitute, no "divergence" framing.
+3. (Blocker) Operational candidate failures RELEASE-AND-REQUEUE atomically
+   (`Kernel::release_claim_for_retry`, modeled on the lease-expiry
+   optimistic transition) so `retryable: true` is honest — a later
+   `advance` genuinely re-drives; no strandable claim.
+4. (Blocker) Persistent-path deadline split: the transport total =
+   `QUEUE_ALLOWANCE_MS + candidate_deadline`, with typed transport PHASES
+   (`Queued` / `Sync` / `Exchange`) on persistent-host errors so the
+   executor classifies without string matching; queue/sync time can no
+   longer consume the validation budget; existing persistent pins
+   (`persistent.rs:1143`, `:1164`) preserved by explicit tests.
+5. (Major) Semantic set = {`validate/typescriptFailed`,
+   `validate/behavioralFailed`, `mutate/intentRejected`}. The worker
+   gains `intentRejected` for KNOWN application rejections (pre-checked
+   targets); residual `mutationFailed` (unexpected store/invariant
+   errors) is OPERATIONAL. Unknown codes default operational.
+6. (Major) Green-state fixes: Task 1's tests live in the protocol
+   module (the parser is `pub(crate)`); Task 2 stages session.rs (the
+   `Diagnostic` literal at ~811 must compile); Task 3's sweep names and
+   stages `local_service_recovery.rs:915` and explicitly EXCLUDES
+   `live-compare/src/runner.ts:25` (a benchmark category, not the
+   fabricated diagnostic); Task 5 updates + stages
+   `full_key_free_acceptance.rs`, `bridge_protocol.rs:91`, and
+   `live-compare/tests/tasks.test.ts:268`.
+7. (Major) Task 9 (timeout gate) proves rollback/health/rehydration with
+   DISCRIMINATING observations: worker-start/rehydration/fallback
+   counter deltas across the failed and follow-up requests, a
+   deterministic pidfile-based group-kill proof, and a real
+   requeue-re-drive assertion — not "later publication happened".
+8. (Major) Seed-green runs for ANY supplied manifest (a tscOnly manifest
+   gets its tsc baseline; only the no-manifest default skips);
+   `service_started`/`service_recovered` audit finalization MOVES to
+   after the baseline (a refusing daemon never audits a start); audit
+   fields are optional/defaulted with a historical-line reopen test.
+9. (Major) Manifest fixtures get CANONICAL containment (canonicalize root
+   + fixture, containment before digesting, verified identity retained
+   for reads) — a symlinked fixture cannot make the reader a general
+   file reader.
+10. (Minor) Disclosure counters are optional/omitted in tsc-only records;
+    metrics implementation (Task 10) split from chain wiring + close
+    (Task 11).
+Also: the Task-9 lever fixture imports `../../src/users/greet.ts`
+(verified real path; v1's `src/features/greet` was wrong), and the
+`hello` fixture sweep updates NEGATIVE ready fixtures so they stay
+discriminating.
 
-**Architecture:** The worker already types its failures (`CandidateFailure`
-→ `CandidateError` responses with stage/code/diagnostics); B-2 stops the
-Rust side from collapsing them: a downcastable `CandidateRejected` error
-flows from `into_candidate_result`/the mirror router through
-`execute_claimed` to the session, which maps real bounded diagnostics
-(with corpus-relative `modulePath`) onto the wire and reserves
-`ValidationFailed` for semantic rejections only. A per-corpus manifest
-(`--validation-manifest`, single option) governs mode, fixtures, strict
-tsc scope, and subprocess deadlines; the daemon refuses to serve if the
-manifest suite is red at generation zero; the manifest digest rides
-startup/audit/hello. Two new read-only client actions expose the
-registered fixtures, digest-pinned.
+**Goal:** Wire the kernel's commit gate honestly for behavioral
+validation: typed candidate rejection carrying the worker's real
+diagnostics, a committed digested validation manifest with a seed-green
+startup invariant, safely nested subprocess deadlines with process-group
+cleanup and timeout/savepoint recovery proofs, a manifest-pinned fixture
+reader, and cost disclosure — while the no-manifest tsc-only default
+stays byte-identical.
+
+**Architecture:** The worker already types its failures; B-2 stops the
+Rust side from collapsing them: a downcastable `CandidateRejected` flows
+from `into_candidate_result`/the mirror router through `execute_claimed`
+to the session, which maps real bounded diagnostics (corpus-relative
+`modulePath`) onto the wire and reserves `ValidationFailed` for semantic
+rejections; operational failures atomically release-and-requeue and
+return retryable `candidate_execution_failed`. A per-corpus manifest
+(`--validation-manifest`, single flag) governs mode, fixtures (canonical
+containment), strict tsc scope, and subprocess deadlines; any
+manifest-backed daemon refuses to serve on a red generation-zero
+baseline; the manifest digest rides readiness/audit/hello. Two read-only
+client actions expose the registered fixtures, digest-pinned.
 
 **Tech Stack:** Rust (strata-kernel crate + service bin, serde, anyhow
-downcast chains), TypeScript (kernel-bridge worker, zod bridge schemas,
-live-compare client/protocol/tools, Vitest), shared golden fixtures, pnpm
-gate scripts.
+downcast, thiserror-style typed errors), TypeScript (kernel-bridge async
+validation pipeline, zod bridge schemas, live-compare client/protocol/
+tools, Vitest), shared golden fixtures, pnpm gate scripts.
 
 ## Global Constraints
 
-- **tsc-only default byte-identical (spec, hard).** A daemon started
-  without `--validation-manifest` behaves exactly as today: same
-  `NodeBridgeConfig::tsc_only`, same 30s deadline, same wire bytes for
-  every existing suite. Every task must keep the full pre-B-2 test corpus
-  green without modification EXCEPT where a task explicitly updates a test
-  (each such update is listed in that task).
-- **Only `CandidateRejected` produces `ValidationFailed`** (spec Blocker
-  1). Semantic rejection = worker `CandidateError` with stage `validate`
-  and code `typescriptFailed` or `behavioralFailed`, or stage `mutate` and
-  code `mutationFailed`. Everything else (protocol/hydrate/analyze/export
-  stages, `candidateFinalizeFailed`, `candidateExportFailed`,
-  `vitestTimedOut`, `tscTimedOut`, transport/spawn/poison errors) is
-  OPERATIONAL: error response code `candidate_execution_failed`,
-  `retryable: true`, change set stays claimed (no cancel follow-up, no
-  fabricated diagnostic). The generic `candidate_validation_failed`
-  fabrication is retired.
-- **A known validation timeout is NEVER auto-replayed through the one-shot
-  fallback** (spec point 1): the executor's mirror-fallback branch must
-  not re-run a candidate whose mirror error is a validation timeout.
-- **Manifest (spec point 2):** ONE `--validation-manifest <path>` option
-  (the argv parser already rejects repeated flags — pin it); manifest
-  defines mode (`tscOnly`|`behavioral`), normalized unique fixture entries
-  + content sha256 digests, strict tsc scope, `tscTimeoutMs`,
-  `vitestTimeoutMs`; Rust validates BEFORE binding the service; behavioral
-  mode is UNCONSTRUCTIBLE with zero fixtures (Rust construction invariant
-  + validate() + the existing worker check); manifest digest recorded in
-  startup readiness line, audit, `hello`, and artifacts.
-- **Seed-green invariant (spec point 2):** in behavioral mode the daemon
-  runs the manifest suite once against generation zero at startup and
-  REFUSES to serve if it is red. Red-by-design task fixtures are OUT of
-  scope (recorded house history — the manifest is a shared seed-green
-  regression gate).
-- **Deadline nesting (spec point 3):** manifest `tscTimeoutMs` +
-  `vitestTimeoutMs` (inner) < behavioral-candidate bridge deadline
-  (= tsc + vitest + `CANDIDATE_OVERHEAD_MS` 30_000, covering
-  materialization + rollback + fingerprint + cleanup) < client deadline +
-  queue allowance (`QUEUE_ALLOWANCE_MS` 30_000), all ≤ the protocol's
-  `MAX_DEADLINE_MS` 300_000. The fast analyze deadline stays the existing
-  separate 30s. Subprocess cleanup leaves no orphaned processes.
-- **Savepoint compatibility (spec point 4):** vitest reads a materialized
-  temp tree, never the mirror DB; the Task-7 savepoint + full-fingerprint
-  assertion is unchanged; timeout-recovery gates prove generation
-  unchanged, savepoint rolled back, fingerprint equality, temp/process
-  cleanup, healthy rehydration.
-- **Fixture reader (spec point 5):** `list_validation_fixtures` and
-  bounded chunked `read_validation_fixture { fixtureId, offset, length }`
-  pinned to the manifest digest; NOT a general filesystem tool; source
-  files stay non-first-class.
-- **Cost disclosure, not gating (spec point 6):** behavioral runs disclose
-  validation duration, persistent-worker queue wait, fallback/rehydration
-  and timeout counts. Recorded exit-gate artifacts are immutable and not
-  re-adjudicated.
-- **B-1 conventions carry over:** dual-language client-wire changes land
-  in lockstep with shared golden fixtures in one task; collection/bounds
-  contract; `packages/live-compare/src/tasks.ts` untouched and never
-  staged; protocol version stays 1 (lockstep).
-- **Deterministic, key-free gates only; no keyed spend.**
-- **Environment:** prefix all test commands with
-  `PATH=/opt/homebrew/bin:$PATH`; never `pnpm --filter X test -- name`
-  (write `pnpm --filter X test name`); NEVER `git stash` in any form;
-  never run builds/tests concurrently with another suite in the same tree;
-  worktree runs of verify/agent/bench suites hit known pre-existing
-  checkout-path/load failures (see memory + decisions.md 2026-08-01) —
-  reproduce on pristine main before attributing any failure to this
-  branch.
-- **Out of scope:** item-C stable IDs, multi-language, task
-  orchestration, changing the SQLite product gate's semantics
-  (`commitWithBehavioralGate` is consumed as-is for parity, not
-  refactored), re-running keyed benchmarks.
+- **No-manifest tsc-only default byte-identical (spec, hard).** Without
+  `--validation-manifest`: same `NodeBridgeConfig::tsc_only`, same 30s
+  deadlines, same wire bytes, same audit sequencing for the start event
+  relative to bind (see Task 7's sequencing note), and
+  `full_key_free_acceptance.rs`'s exact five-key profile pin passes
+  UNMODIFIED. Every task keeps the pre-B-2 suites green except where a
+  task explicitly lists a test update.
+- **Semantic/operational partition (fail-closed):** semantic =
+  {`validate/typescriptFailed`, `validate/behavioralFailed`,
+  `mutate/intentRejected`} → SUCCESS response, state
+  `validation_failed`, REAL bounded diagnostics, cancel follow-up.
+  EVERYTHING else — including unknown future codes, `mutationFailed`,
+  `candidateFinalizeFailed`, `tscTimedOut`, `vitestTimedOut`, transport,
+  spawn, poison — is OPERATIONAL → atomic release-and-requeue + error
+  response `candidate_execution_failed`, `retryable: true`; a later
+  `advance` re-drives. The `candidate_validation_failed` fabrication is
+  retired. `OptimisticRetryExhausted` arm untouched.
+- **A validation timeout is NEVER auto-replayed through the one-shot
+  fallback**: mirror candidate errors with timeout codes AND
+  `Exchange`-phase transport timeouts on candidate frames surface as
+  operational; only `Queued`-phase failures (worker untouched — the
+  existing pinned semantics) may fall back one-shot.
+- **Manifest:** ONE `--validation-manifest <path>`; defines mode
+  (`tscOnly`|`behavioral`), fixtures (unique, corpus-relative POSIX,
+  CANONICAL containment, sha256), `strictSrcOnlyTscScope`,
+  `tscTimeoutMs`, `vitestTimeoutMs`; validated before binding;
+  behavioral UNCONSTRUCTIBLE with zero fixtures (constructor + validate()
+  + worker check); digest on readiness/audit/hello/artifacts.
+- **Seed-green:** ANY manifest-backed daemon runs its baseline (tsc, plus
+  fixtures in behavioral mode) once against generation zero and REFUSES
+  to serve red — before the start event is audited and before the socket
+  binds. Red-by-design task fixtures out of scope.
+- **Deadline nesting:** `tscTimeoutMs + vitestTimeoutMs` (inner) <
+  `candidate_deadline` = inner + `CANDIDATE_OVERHEAD_MS` (30_000) <
+  transport total = `QUEUE_ALLOWANCE_MS` (30_000) + `candidate_deadline`
+  ≤ `MAX_DEADLINE_MS` (300_000). Analyze deadline stays the existing
+  separate 30s. Without a manifest, candidate frames keep today's 30s.
+- **Process cleanup:** bounded subprocesses run detached as group
+  leaders; timeout kills the WHOLE GROUP (`kill(-pid, SIGKILL)`);
+  fixture-spawned descendants die with it; the timeout gate proves it
+  with a pidfile.
+- **Savepoint compatibility:** vitest reads a materialized temp tree;
+  the Task-7 savepoint + fingerprint assertion unchanged; the timeout
+  gate proves generation unchanged, savepoint rollback, fingerprint
+  equality, cleanup, healthy SAME-WORKER recovery (counter deltas), and
+  re-drive.
+- **Fixture reader:** digest-pinned, manifest-registered files only.
+- **Cost disclosure, not gating:** metrics/audit surfaces; optional
+  fields; tsc-only records byte-identical. Exit-gate artifacts immutable.
+- **B-1 conventions:** lockstep dual-language wire tasks + golden-fixture
+  sweeps; protocol v1 lockstep; `tasks.ts` untouched/never staged;
+  deterministic key-free only; PATH prefix; no `--` in pnpm test
+  filters; NEVER `git stash`; no concurrent builds/tests in one tree;
+  known pre-existing worktree/load failures per decisions.md 2026-08-01.
+- **Out of scope:** red-by-design fixtures, per-change-set profiles,
+  general file reads, product-gate refactors (`commitWithBehavioralGate`
+  is the parity oracle, consumed as-is), item C, keyed runs.
 
 ## File Structure
 
-- `crates/strata-kernel/src/bridge/protocol.rs` — `CandidateRejected`
-  typed error + semantic/operational discriminator; `ValidationProfile`
-  gains timeouts + behavioral construction invariant;
-  `MirrorCandidateResponse::Failed` gains diagnostics; new
-  `ValidateBaseline` request/response frames.
-- `crates/strata-kernel/src/bridge/executor.rs`, `router.rs`,
-  `process.rs` — typed error propagation, per-kind deadlines
-  (`candidate_deadline`), no-replay-on-validation-timeout, baseline
-  invocation plumbing.
-- `crates/strata-kernel/src/bin/strata_kernel_service/manifest.rs` — NEW:
-  manifest schema, validation, canonical digest.
-- `crates/strata-kernel/src/bin/strata_kernel_service/main.rs` —
-  `--validation-manifest` argv; config construction.
-- `crates/strata-kernel/src/bin/strata_kernel_service/session.rs` —
-  taxonomy split in the advance path; diagnostics mapping + projection;
-  fixture-reader read handlers; manifest digest for audit/hello.
-- `crates/strata-kernel/src/bin/strata_kernel_service/server.rs` —
-  seed-green startup gate; readiness fields.
-- `crates/strata-kernel/src/bin/strata_kernel_service/protocol.rs` +
-  `packages/live-compare/src/protocol.ts` + protocol-v1 golden fixtures —
-  client-wire changes (Diagnostic.modulePath; hello validation fields;
-  fixture-reader actions/results).
-- `packages/kernel-bridge/src/candidate.ts`, `worker.ts`, `protocol.ts`,
-  NEW `baseline.ts` — worker-side timeouts, `validateBaseline` handler.
-- `packages/verify/src/corpusRun.ts` — bounded tsc/vitest subprocesses.
-- `packages/live-compare/src/client.ts`, `tools.ts`, tests — wrappers,
-  tools, behavioral/timeout/parity/reader gates.
-- `package.json`, `decisions.md`, `docs/product-roadmap.md` — gate wiring
-  and closing records.
+As v1, plus: `packages/verify/src/boundedRun.ts` (NEW — async
+process-group bounded runner), coordinator requeue method
+(`crates/strata-kernel/src/coordination/coordinator.rs` + kernel
+passthrough), typed transport phases (`bridge/persistent.rs` error
+surface), audit.rs (optional fields + reopen test). Name table as v1
+with these additions:
 
-Name table (used consistently in every task):
-
-| Concept | Rust | Wire (client) | TS |
-|---|---|---|---|
-| Typed semantic rejection | `CandidateRejected { stage, code, message, diagnostics }` | change_set result, state `validation_failed`, real diagnostics | — |
-| Operational failure | anyhow error (not downcastable to `CandidateRejected`) | error response code `candidate_execution_failed`, retryable true | — |
-| Diagnostic path | `Diagnostic.module_path: Option<String>` | `modulePath?` (optional, corpus-relative POSIX) | `modulePath: modulePathSchema.optional()` |
-| Manifest | `ValidationManifest { schema_version, mode, strict_src_only_tsc_scope, tsc_timeout_ms, vitest_timeout_ms, fixtures: Vec<ManifestFixture { path, sha256 }> }` | `hello` → `validationMode`, `validationManifestDigest` (nullable) | mirrored |
-| Fixture reader | `RequestAction::ListValidationFixtures {}` / `ReadValidationFixture { fixture_id, offset, length }` | `list_validation_fixtures` / `read_validation_fixture` | wrappers `listValidationFixtures()` / `readValidationFixture(fixtureId, offset, length)` |
-| Baseline frame | `BridgeRequest::ValidateBaseline` (internal bridge wire) | — | worker `validateBaseline` handler |
+| Concept | Name |
+|---|---|
+| Bounded async runner | `boundedProcessRun({ command, args, cwd, timeoutMs }) → Promise<{ status, stdout, stderr, timedOut }>` (verify/boundedRun.ts) |
+| Known application rejection | worker code `intentRejected` (stage `mutate`) |
+| Release-and-requeue | `Kernel::release_claim_for_retry(change_set_id: &str, tick: u64) -> Result<()>` |
+| Transport phase | `TransportPhase { Queued, Sync, Exchange }` on persistent-host errors (typed, downcastable) |
+| Baseline frame | `BridgeRequest::ValidateBaseline` (new kind — the Rust candidate protocol rejects empty `orderedIntents` at bridge/protocol.rs:528, so reusing the candidate frame would weaken a valid invariant) |
 
 ---
 
 ### Task 1: Typed candidate rejection in the Rust bridge
 
-**Files:**
-- Modify: `crates/strata-kernel/src/bridge/protocol.rs`
-- Modify: `crates/strata-kernel/src/bridge/router.rs` (~line 400 mirror
-  failure arm)
-- Modify: `crates/strata-kernel/src/bridge/executor.rs` (only if the
-  typed error needs explicit passthrough — expected no-op)
-- Test: `crates/strata-kernel/tests/bridge_rejection.rs` (NEW)
+As v1 Task 1 with two corrections: (a) ALL new tests live in
+`bridge/protocol.rs`'s `#[cfg(test)]` module (the parser surface is
+`pub(crate)` — no integration-test seam is added); (b) the semantic set
+is {`validate/typescriptFailed`, `validate/behavioralFailed`,
+`mutate/intentRejected`} — `mutationFailed` is OPERATIONAL.
 
-**Interfaces:**
-- Produces (protocol.rs, `pub(crate)`, re-exported from
-  `crate::bridge` so session.rs can downcast; make it `pub` at the crate
-  root via the existing `lib.rs` re-export style since the service bin
-  links the lib crate):
+**Files:** Modify `crates/strata-kernel/src/bridge/protocol.rs`,
+`router.rs`; verify-only `executor.rs`; Modify `lib.rs` (re-exports).
 
-```rust
-/// A SEMANTIC candidate rejection: the worker evaluated the candidate and
-/// the candidate itself is wrong (type-check red, behavioral red, or the
-/// mutation could not apply). Distinct from every operational failure
-/// (timeout, crash, transport, invariant), which stays an untyped anyhow
-/// error. Only this error may produce a `validation_failed` change-set
-/// state downstream.
-#[derive(Clone, Debug)]
-pub struct CandidateRejected {
-    pub stage: String,        // "validate" | "mutate" (ErrorStage, lowercased)
-    pub code: String,         // "typescriptFailed" | "behavioralFailed" | "mutationFailed"
-    pub message: String,
-    pub diagnostics: Vec<RejectionDiagnostic>,
-}
-
-/// The worker diagnostic surface preserved for the client: raw payload
-/// paths stay raw HERE (the service projects them before the wire).
-#[derive(Clone, Debug)]
-pub struct RejectionDiagnostic {
-    pub node_id: Option<String>,
-    pub module_path: Option<String>,
-    pub message: String,
-    pub code: i64,
-}
-
-impl std::fmt::Display for CandidateRejected { /* "candidate rejected at {stage}/{code}: {message}" */ }
-impl std::error::Error for CandidateRejected {}
-```
-
-- Discriminator (protocol.rs, private):
+**Interfaces:** `CandidateRejected` / `RejectionDiagnostic` structs and
+the shared `candidate_failure_to_error` helper exactly as v1's Task 1
+block, with the discriminator:
 
 ```rust
 fn is_semantic_rejection(stage: ErrorStage, code: &str) -> bool {
@@ -203,1079 +192,537 @@ fn is_semantic_rejection(stage: ErrorStage, code: &str) -> bool {
         (stage, code),
         (ErrorStage::Validate, "typescriptFailed")
             | (ErrorStage::Validate, "behavioralFailed")
-            | (ErrorStage::Mutate, "mutationFailed")
+            | (ErrorStage::Mutate, "intentRejected")
     )
 }
 ```
 
-- `into_candidate_result` (protocol.rs:1084): the `CandidateError` arm
-  becomes:
+`MirrorCandidateResponse::Failed` gains
+`diagnostics: Vec<BridgeDiagnostic>`; both paths build the identical
+typed error.
 
-```rust
-            Self::CandidateError(response) => {
-                let error = response.error;
-                if is_semantic_rejection(error.stage, &error.code) {
-                    return Err(anyhow::Error::new(CandidateRejected {
-                        stage: format!("{:?}", error.stage).to_lowercase(),
-                        code: error.code,
-                        message: error.message,
-                        diagnostics: error
-                            .diagnostics
-                            .into_iter()
-                            .map(|diagnostic| RejectionDiagnostic {
-                                node_id: diagnostic.node_id,
-                                module_path: diagnostic.module_path,
-                                message: diagnostic.message,
-                                code: diagnostic.code,
-                            })
-                            .collect(),
-                    }));
-                }
-                bail!(
-                    "Node bridge candidate failed at {:?}/{}: {}",
-                    error.stage,
-                    error.code,
-                    error.message
-                )
-            }
-```
-
-- `MirrorCandidateResponse::Failed` gains
-  `diagnostics: Vec<BridgeDiagnostic>` (populated from
-  `inner.error.diagnostics` in `parse_mirror_candidate_delta`); router.rs's
-  `MirrorCandidateResponse::Failed` arm builds the SAME typed error via a
-  shared helper `candidate_failure_to_error(stage, code, message,
-  diagnostics) -> anyhow::Error` used by both paths, so mirror and
-  one-shot rejections are indistinguishable downstream.
-- Consumed by: Task 3 (session downcast), Task 5 (no-replay
-  classification).
-
-- [ ] **Step 1: Write failing tests in
-  `crates/strata-kernel/tests/bridge_rejection.rs`.** This test file uses
-  `parse_bridge_response` + `into_candidate_result` on hand-built JSON
-  frames (copy the request/response construction pattern from
-  `bridge/executor.rs`'s existing
-  `candidate_response_rejects_malformed_or_misbound_data_before_rust_digesting`
-  unit test — same fixture snapshot, same binding fields). Cases:
-  - `typescript_failure_downcasts_to_candidate_rejected_with_diagnostics`:
-    a `CandidateError` frame with stage `"validate"`, code
-    `"typescriptFailed"`, two diagnostics (one with `modulePath` and
-    `nodeId`, one with nulls) → `into_candidate_result()` errors AND
-    `error.downcast_ref::<CandidateRejected>()` yields the exact
-    diagnostics (paths intact, codes intact).
-  - `behavioral_failure_downcasts_with_message`: code
-    `"behavioralFailed"` → downcast succeeds, `code == "behavioralFailed"`.
-  - `mutation_failure_downcasts`: stage `"mutate"`, code
-    `"mutationFailed"` → downcast succeeds.
-  - `operational_failures_do_not_downcast`: stage `"hydrate"` code
-    `"hydrateFailed"`, stage `"validate"` code
-    `"candidateFinalizeFailed"`, stage `"validate"` code
-    `"vitestTimedOut"` → each errors but
-    `downcast_ref::<CandidateRejected>()` is `None`.
-  - `context_wrapping_preserves_downcast`: wrap the typed error with
-    `.context("outer")` and assert `downcast_ref::<CandidateRejected>()`
-    still finds it (this pins the property Task 3 depends on across
-    `execute_claimed`'s context chain).
-  - `mirror_failure_carries_diagnostics`: `parse_mirror_candidate_delta`
-    on a `CandidateError` value → `MirrorCandidateResponse::Failed`
-    exposes the same diagnostics vector.
-
-- [ ] **Step 2: Run to verify failure** —
-  `cargo test -p strata-kernel --test bridge_rejection` — expected: FAIL
-  to compile (types absent). Add `bail!("unimplemented")`-style stubs only
-  if a compiling red is preferred; confirm genuine red either way.
-
-- [ ] **Step 3: Implement** per the Interfaces block: the two structs +
-  Display/Error impls, `is_semantic_rejection`, the shared
-  `candidate_failure_to_error` helper, the new `into_candidate_result`
-  arm, the `MirrorCandidateResponse::Failed { stage, code, message,
-  diagnostics }` field + `parse_mirror_candidate_delta` population, and
-  the router.rs arm switching to `candidate_failure_to_error`. Re-export
-  `CandidateRejected` + `RejectionDiagnostic` following `lib.rs`'s
-  existing bridge re-export style. executor.rs's
-  `Ok(MirrorCandidate::Failed(error)) => return Err(error)` already
-  passes the typed error through unchanged — verify by reading, adjust
-  only if the mirror path wraps errors in a way that drops the source
-  chain.
-
-- [ ] **Step 4: Run** —
-  `cargo test -p strata-kernel --test bridge_rejection` to green, then
-  `PATH=/opt/homebrew/bin:$PATH cargo test -p strata-kernel` (whole crate
-  — the session still treats every candidate error identically in this
-  task, so nothing else changes behavior). Expected: PASS.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 1 (RED):** in protocol.rs's test module, write the v1 Task-1
+  test cases (typescript/behavioral/intentRejected downcast with intact
+  diagnostics; `mutationFailed`, `candidateFinalizeFailed`,
+  `vitestTimedOut`, `hydrate/*` do NOT downcast; `.context()` wrapping
+  preserves downcast; mirror-failure diagnostics carried). Construct
+  frames with the same JSON-building style the module's existing tests
+  use. Run
+  `cargo test -p strata-kernel --lib` (or the module filter) — genuine
+  red, non-zero count.
+- [ ] **Step 2 (GREEN):** implement; re-export; whole crate green
+  (`PATH=/opt/homebrew/bin:$PATH cargo test -p strata-kernel` — session
+  behavior is unchanged in this task).
+- [ ] **Step 3: Commit**
 
 ```bash
-git add crates/strata-kernel/src/bridge/protocol.rs crates/strata-kernel/src/bridge/router.rs crates/strata-kernel/src/bridge/executor.rs crates/strata-kernel/src/lib.rs crates/strata-kernel/tests/bridge_rejection.rs
-git commit -m "feat(kernel): typed CandidateRejected carrying worker diagnostics through one-shot and mirror candidate paths"
+git add crates/strata-kernel/src/bridge/protocol.rs crates/strata-kernel/src/bridge/router.rs crates/strata-kernel/src/bridge/executor.rs crates/strata-kernel/src/lib.rs
+git commit -m "feat(kernel): typed CandidateRejected carrying worker diagnostics; mutationFailed classified operational"
 ```
 
 ---
 
-### Task 2: Client-wire `Diagnostic.modulePath` (dual-language + fixtures)
+### Task 2: Worker `intentRejected` for known application rejections
 
-One lockstep task, B-1 Task-1 style: both strict parsers + shared golden
-fixtures move together.
+**Files:** Modify `packages/kernel-bridge/src/candidate.ts`; Test
+`packages/kernel-bridge/tests/candidate.test.ts`.
 
-**Files:**
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/protocol.rs`
-  (`Diagnostic` struct ~line 373 + its `validate`)
-- Modify: `packages/live-compare/src/protocol.ts` (`diagnosticSchema`)
-- Modify: `packages/live-compare/tests/fixtures/protocol-v1/{accepted,rejected}.json`
-- Modify: `packages/live-compare/tests/protocol.test.ts`
+**Interfaces:** before invoking `rename_symbol`/`add_parameter`, the
+mutate stage pre-checks the intent's target in the hydrated store:
+target node must exist and be a supported declaration (rename) /
+function (add_parameter) — on failure `throw new
+CandidateFailure("mutate", "intentRejected", [], "intent target
+<id> does not exist or is not applicable")`. Residual mutate-stage
+exceptions keep mapping to `mutationFailed` (candidate.ts:181 —
+unchanged, now OPERATIONAL downstream). This is a classification
+pre-check only: no store behavior changes.
 
-**Interfaces:**
-- Produces (Rust):
-
-```rust
-pub(super) struct Diagnostic {
-    pub(super) code: String,
-    pub(super) message: String,
-    pub(super) node_id: Option<String>,
-    /// Corpus-relative POSIX display path of the module the diagnostic
-    /// points at, when the service could project one. NEVER a raw payload
-    /// path — the session projects (B-1 `project_module_path`) and drops
-    /// to absent on failure. Optional on the wire (absent when None) so
-    /// every pre-B-2 frame stays valid.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) module_path: Option<String>,
-}
-```
-
-  `Diagnostic::validate` gains: when `Some`, `validate_module_path`
-  (the B-1 validator — same rules: non-empty, ≤512 bytes, POSIX-relative,
-  no `.`/`..`/empty segments).
-- Produces (TS): `diagnosticSchema` gains
-  `modulePath: modulePathSchema.optional()` (the B-1 `modulePathSchema`).
-- Consumed by: Task 3's diagnostics mapping; Task 7's gate assertions.
-
-- [ ] **Step 1: Write the failing Rust unit test** in protocol.rs's test
-  module:
-
-```rust
-#[test]
-fn diagnostic_module_path_is_optional_but_validated() {
-    let bare = Diagnostic { code: "c".into(), message: "m".into(), node_id: None, module_path: None };
-    bare.validate().expect("absent modulePath must validate");
-    assert!(!serde_json::to_string(&bare).unwrap().contains("modulePath"));
-    let good = Diagnostic { module_path: Some("src/x.ts".into()), ..bare.clone() };
-    good.validate().expect("relative POSIX modulePath must validate");
-    for bad in ["/abs/x.ts", "src/../x.ts", ""] {
-        let diagnostic = Diagnostic { module_path: Some(bad.into()), ..bare.clone() };
-        assert!(diagnostic.validate().is_err(), "{bad:?} must be rejected");
-    }
-}
-```
-
-  (Derive or hand-write the `Clone` needed; if `Diagnostic` isn't
-  `Clone`, construct each case explicitly.)
-
-- [ ] **Step 2: Red** —
-  `cargo test -p strata-kernel --bin strata-kernel-service diagnostic_module_path`
-  — expected: FAIL to compile (field absent). Confirm genuine red.
-
-- [ ] **Step 3: Implement both parsers** per Interfaces. TS: add
-  `modulePath: modulePathSchema.optional()` to `diagnosticSchema` — note
-  `.optional()`, NOT `.nullable()`: the Rust side omits the key entirely
-  when `None`, and existing fixtures without the key must keep passing.
-
-- [ ] **Step 4: Update shared fixtures.** In `accepted.json`: extend one
-  existing diagnostics-carrying response case (or add
-  `change-set-validation-failed-response` if none carries diagnostics)
-  with a diagnostic including
-  `"modulePath": "src/types/user.ts"`, plus a sibling diagnostic without
-  the key. In `rejected.json`: `diagnostic-module-path-absolute-response`
-  (a diagnostics-carrying response whose diagnostic has
-  `"modulePath": "/etc/passwd"`).
-
-- [ ] **Step 5: Green both sides** —
-  `cargo test -p strata-kernel --bin strata-kernel-service` +
-  `cargo test -p strata-kernel --test local_service` +
-  `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare build && PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test protocol`
-  — expected: PASS.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 1 (RED):** kernel-bridge candidate tests: a rename intent
+  whose `declarationId` does not exist in the snapshot → `CandidateError`
+  with stage `mutate`, code `intentRejected` (today: `mutationFailed`);
+  an `add_parameter` whose `functionId` names a non-function →
+  `intentRejected`; an internal invariant failure path (reuse/extend the
+  existing corrupted-payload style test if present) stays
+  `mutationFailed`. Run
+  `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/kernel-bridge test candidate`
+  — red.
+- [ ] **Step 2 (GREEN):** implement the pre-checks; kernel-bridge suite
+  green.
+- [ ] **Step 3: Commit**
 
 ```bash
-git add crates/strata-kernel/src/bin/strata_kernel_service/protocol.rs packages/live-compare/src/protocol.ts packages/live-compare/tests/fixtures/protocol-v1 packages/live-compare/tests/protocol.test.ts
+git add packages/kernel-bridge/src/candidate.ts packages/kernel-bridge/tests
+git commit -m "feat(kernel-bridge): intentRejected for known application rejections; mutationFailed reserved for unexpected failures"
+```
+
+---
+
+### Task 3: Client-wire `Diagnostic.modulePath` (dual-language + fixtures)
+
+As v1 Task 2, with the review's compile fix: `session.rs` IS a listed
+and staged file — the existing fabricated-`Diagnostic` literal
+(~session.rs:811) gains `module_path: None` in this task so the crate
+compiles (the literal itself is retired in Task 4).
+
+**Files:** Modify service `protocol.rs`, `session.rs` (literal only),
+live-compare `protocol.ts`, golden fixtures, `protocol.test.ts`.
+
+Steps as v1 Task 2 (optional field + `validate_module_path` when
+present; TS `.optional()`; accepted fixture with-and-without the key;
+rejected absolute-path case; red → green both sides).
+
+- [ ] **Commit**
+
+```bash
+git add crates/strata-kernel/src/bin/strata_kernel_service/protocol.rs crates/strata-kernel/src/bin/strata_kernel_service/session.rs packages/live-compare/src/protocol.ts packages/live-compare/tests/fixtures/protocol-v1 packages/live-compare/tests/protocol.test.ts
 git commit -m "feat(kernel): optional corpus-relative modulePath on wire diagnostics, dual-language + fixtures"
 ```
 
 ---
 
-### Task 3: Session failure taxonomy — real diagnostics for rejections, `candidate_execution_failed` for operational
+### Task 4: Release-and-requeue + session failure taxonomy
 
-**Files:**
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/session.rs`
-  (the advance `Err(_error)` arm ~line 795-827, `change_set_result`'s
-  diagnostic parameter, audit kinds)
-- Test: `crates/strata-kernel/tests/local_service.rs`
+**Files:** Modify
+`crates/strata-kernel/src/coordination/coordinator.rs` (new method),
+`crates/strata-kernel/src/kernel.rs` (passthrough), service
+`session.rs`; Test `crates/strata-kernel/tests/local_service.rs`,
+`crates/strata-kernel/tests/local_service_recovery.rs` (updated
+assertion), plus a coordinator-level unit test beside the existing
+lease-expiry tests.
 
 **Interfaces:**
-- Consumes: `strata_kernel::CandidateRejected` (Task 1),
-  `Diagnostic.module_path` (Task 2), `project_module_path` +
-  `canonical_corpus_root` (B-1).
-- Produces (session behavior):
-  - `error.downcast_ref::<CandidateRejected>()` present → SUCCESS response
-    with state `validation_failed`, diagnostics = the rejection's
-    diagnostics mapped:
+- `Coordinator::release_claim_for_retry(change_set_id, now_tick)`
+  modeled ON the lease-expiry transition (`expire_leases`,
+  coordinator.rs:558: simulate release, recompute readiness without a
+  lock, persist expiry + fresh offers as ONE optimistic lifecycle
+  transition) but targeted at ONE claimed change set: claim released,
+  ticket back to `queued`, fresh offer emitted, `intent_queued`-class
+  event recorded. `Kernel::release_claim_for_retry` passthrough.
+- Session advance `Err` arm split (replacing v1 Task 3's design):
+  - `downcast_ref::<CandidateRejected>()` → SUCCESS response, state
+    `validation_failed`, diagnostics via `rejection_diagnostics` (the
+    v1 mapping block verbatim: `take(64)`, `code:
+    "{rejected.code}:{d.code}"`, projected-or-absent `module_path`,
+    non-empty fallback diagnostic), audit `validation_failed`, cancel
+    follow-up unchanged.
+  - otherwise (OPERATIONAL) →
+    `self.kernel.release_claim_for_retry(change_set_id, tick)?` FIRST,
+    then error response `("candidate_execution_failed", "candidate
+    execution failed before a validation verdict; the change set has
+    been requeued", retryable: true)`, audit
+    `candidate_execution_failed`, NO cancel follow-up. If the requeue
+    itself fails, fall through to the generic `request_failed` surface
+    (fail closed, claim state honest in the response).
+  - `change_set_result` diagnostic parameter → `Vec<Diagnostic>`
+    (compiler-led sweep).
+- Consumed by: Task 9's re-drive assertion.
 
-```rust
-fn rejection_diagnostics(&self, rejected: &CandidateRejected) -> Vec<Diagnostic> {
-    rejected
-        .diagnostics
-        .iter()
-        .take(MAX_WIRE_DIAGNOSTICS) // 64, mirror protocol MAX_DIAGNOSTICS
-        .map(|diagnostic| Diagnostic {
-            code: format!("{}:{}", rejected.code, diagnostic.code),
-            message: bounded_message(&diagnostic.message),
-            node_id: diagnostic.node_id.clone(),
-            // Projection failure or raw-path weirdness degrades to absent —
-            // never a raw payload path on the wire, and a display-path
-            // problem must not hide the diagnostic itself.
-            module_path: diagnostic.module_path.as_deref().and_then(|payload| {
-                project_module_path(&self.canonical_corpus_root, payload).ok()
-            }),
-        })
-        .collect()
-}
-```
-
-    Empty rejection diagnostics (possible for `behavioralFailed` whose
-    single synthetic diagnostic carries the vitest output, and for
-    `mutationFailed`) → one diagnostic
-    `{ code: rejected.code, message: bounded_message(&rejected.message), node_id: None, module_path: None }`
-    so the state is never diagnostic-free. Audit kind stays
-    `"validation_failed"`. Cancel follow-up unchanged for rejections.
-  - No downcast → OPERATIONAL: `LocalServiceResponse::error(request_id,
-    "candidate_execution_failed", "candidate execution failed before a
-    validation verdict", /* retryable */ true, Vec::new())`; audit kind
-    `"candidate_execution_failed"`; NO cancel follow-up (the claim stays
-    intact — the lease machinery re-offers, exactly the
-    `OptimisticRetryExhausted` precedent in the arm above); the
-    `OptimisticRetryExhausted` arm itself is untouched.
-  - `change_set_result`'s `Option<Diagnostic>` parameter becomes
-    `Vec<Diagnostic>` (compiler-led sweep of its call sites inside
-    session.rs; all existing callers pass `Vec::new()` or a one-element
-    vec).
-- Consumed by: Task 7 (gate asserts real diagnostics), Task 8 (operational
-  taxonomy under timeout).
-
-- [ ] **Step 1: Write failing daemon integration tests** in
-  local_service.rs (prefix `taxonomy_`, real spawned daemon, tsc-only
-  mode — semantic tsc rejection needs no manifest):
-  - `taxonomy_semantic_rejection_carries_real_tsc_diagnostics`: submit an
-    `add_parameter` intent on the registered `greet` function
-    (`FORMAT_TIMESTAMP_ID`-style: resolve `greet` via the B-1 discovery
-    actions or reuse an existing test constant) with
-    `typeText: "NoSuchType"`, `position: 1`, `value: "undefined as never"`
-    → advance to terminal → state `validation_failed`, diagnostics
-    non-empty, at least one diagnostic's `code` starts with
-    `"typescriptFailed:"` and its `message` contains `"NoSuchType"`
-    (the real tsc text, not "candidate validation failed"); every
-    diagnostic with a `modulePath` has a corpus-relative one
-    (`starts_with("src/")`); NO diagnostic has code
-    `candidate_validation_failed`.
-  - `taxonomy_rejection_still_cancels_and_audits`: after the rejection,
-    the audit log contains a `validation_failed` event and the change set
-    ends cancelled (follow-up preserved).
-  - `taxonomy_diagnostics_survive_needs_decision_free_path`: guard test —
-    a CLEAN rename still publishes with empty diagnostics (no regression
-    from the `Vec` refactor).
-
-  Operational-branch coverage at daemon level is deliberately deferred to
-  Task 8 (a deterministic operational failure needs the manifest timeout
-  machinery); the branch itself is covered here by a session-level unit
-  test if the module structure allows, otherwise by Task 8 alone — state
-  which in the report.
-
-- [ ] **Step 2: Red** —
-  `PATH=/opt/homebrew/bin:$PATH cargo test -p strata-kernel --test local_service taxonomy_`
-  — expected: FAIL (today the diagnostics are the fabricated generic one).
-
-- [ ] **Step 3: Implement** per Interfaces: the downcast split,
-  `rejection_diagnostics`, the `Vec<Diagnostic>` refactor, the audit
-  kinds, `bounded_message` reuse, `MAX_WIRE_DIAGNOSTICS: usize = 64`
-  const with a comment naming protocol `MAX_DIAGNOSTICS` as its mirror.
-
-- [ ] **Step 4: Green** — the `taxonomy_` filter, then
-  `cargo test -p strata-kernel --test local_service`, then the whole
-  crate. Expected: PASS (the pre-existing red-validation tests that
-  asserted the FABRICATED diagnostic must be updated in this task — grep
-  `candidate_validation_failed` across `crates/` and
-  `packages/live-compare/` and update every assertion to the new
-  taxonomy; list each file touched in the report).
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 1 (RED, coordinator unit):** beside the existing
+  lease/requeue tests: claim a change set (existing test helpers), call
+  `release_claim_for_retry`, assert ticket state `queued`, a fresh
+  offer exists, and a subsequent claim+publish succeeds; calling it on
+  a non-claimed change set errors. Red (method absent).
+- [ ] **Step 2 (RED, daemon):** local_service `taxonomy_` tests as v1
+  Task 3 Step 1 (semantic `NoSuchType` add_parameter → real tsc
+  diagnostics with corpus-relative modulePaths; rejection audits +
+  cancels; clean rename unaffected by the Vec refactor). Red.
+- [ ] **Step 3 (GREEN):** implement coordinator + kernel + session;
+  sweep `candidate_validation_failed` assertions — the review-verified
+  inventory: `crates/strata-kernel/tests/local_service_recovery.rs:915`
+  (update to the new taxonomy) and session.rs comments; do NOT touch
+  `packages/live-compare/src/runner.ts:25` (benchmark failure category,
+  unrelated). Whole crate green.
+- [ ] **Step 4: Commit**
 
 ```bash
-git add crates/strata-kernel/src/bin/strata_kernel_service/session.rs crates/strata-kernel/tests/local_service.rs
-git commit -m "feat(kernel): candidate failure taxonomy — real worker diagnostics for rejections, retryable candidate_execution_failed for operational"
+git add crates/strata-kernel/src/coordination/coordinator.rs crates/strata-kernel/src/kernel.rs crates/strata-kernel/src/bin/strata_kernel_service/session.rs crates/strata-kernel/tests/local_service.rs crates/strata-kernel/tests/local_service_recovery.rs
+git commit -m "feat(kernel): candidate failure taxonomy — real diagnostics for rejections; operational failures atomically release-and-requeue"
 ```
 
-  (Plus any test files the `candidate_validation_failed` sweep touched.)
+  (Plus the coordinator test file per its actual location.)
 
 ---
 
-### Task 4: Validation manifest — schema, digest, argv, construction invariant
+### Task 5: Validation manifest — schema, digest, canonical containment, argv
 
-**Files:**
-- Create: `crates/strata-kernel/src/bin/strata_kernel_service/manifest.rs`
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/main.rs`
-  (`mod manifest;`, `--validation-manifest` in the allowed list, config
-  construction)
-- Modify: `crates/strata-kernel/src/bridge/protocol.rs`
-  (`ValidationProfile::behavioral` constructor + non-empty invariant)
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/session.rs`
-  (`ServiceConfig` gains `validation: ValidationSettings`)
+As v1 Task 4 plus review Major 9: after the lexical checks,
+`load_validation_manifest` CANONICALIZES the corpus root and each
+fixture path (`std::fs::canonicalize`) and enforces containment of the
+canonical fixture under the canonical root BEFORE hashing; the
+`LoadedManifest` retains the canonical absolute path per fixture as the
+verified identity that Task 10's reader serves from (re-verified per
+read). A symlinked fixture escaping the root fails startup.
 
-**Interfaces:**
-- Produces (manifest.rs):
+All other Interfaces/steps/bounds exactly as v1 Task 4 (schema, digest,
+`--validation-manifest` in the allowed list, duplicate-flag pin,
+`ValidationProfile::behavioral` constructor + validate() invariant,
+nesting arithmetic at load time, tempdir-corpus unit tests + the
+symlink-escape case on platforms where tempdir symlinks are creatable —
+`std::os::unix::fs::symlink`, this repo is macOS/unix-only).
 
-```rust
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct ValidationManifest {
-    pub(super) schema_version: u32,               // must be 1
-    pub(super) mode: ManifestMode,                // TscOnly | Behavioral
-    pub(super) strict_src_only_tsc_scope: bool,
-    pub(super) tsc_timeout_ms: u64,               // 1_000..=180_000
-    pub(super) vitest_timeout_ms: u64,            // 1_000..=180_000
-    pub(super) fixtures: Vec<ManifestFixture>,    // unique normalized paths
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct ManifestFixture {
-    pub(super) path: String,    // corpus-relative POSIX, validate_module_path rules,
-                                // first segment "test"|"tests", .test./.spec. extension
-    pub(super) sha256: String,  // 64 lowercase hex
-}
-
-pub(super) struct LoadedManifest {
-    pub(super) manifest: ValidationManifest,
-    pub(super) digest: String, // sha256 hex of the canonical serde_json bytes
-}
-
-pub(super) fn load_validation_manifest(path: &Path, corpus_root: &Path) -> Result<LoadedManifest>;
-```
-
-  `load_validation_manifest`: read, parse (strict), validate — bounds
-  above; fixture paths unique + sorted check NOT required on disk but
-  entries are normalized and deduped-rejected (duplicate → error);
-  behavioral mode requires ≥1 fixture; tscOnly requires 0 fixtures; each
-  fixture file must exist under `corpus_root` and its sha256 must match;
-  `tsc_timeout_ms + vitest_timeout_ms + CANDIDATE_OVERHEAD_MS +
-  QUEUE_ALLOWANCE_MS ≤ 300_000` (the wire `MAX_DEADLINE_MS`) — the
-  deadline-nesting arithmetic lives HERE so an unsatisfiable manifest
-  fails before any daemon work. Digest = sha256 of
-  `serde_json::to_vec(&manifest)` (field order is struct order —
-  deterministic).
-- Produces (protocol.rs):
-
-```rust
-    pub(crate) fn behavioral(
-        source_root: impl Into<String>,
-        corpus_root: impl Into<String>,
-        behavioral_fixtures: Vec<String>,
-        strict_src_only_tsc_scope: bool,
-    ) -> Result<Self> {
-        ensure!(
-            !behavioral_fixtures.is_empty(),
-            "behavioral validation profile requires at least one fixture"
-        );
-        Ok(Self::Behavioral { /* … */ })
-    }
-```
-
-  and `validate()`'s Behavioral arm gains
-  `ensure!(!behavioral_fixtures.is_empty(), …)` (the review-verified gap:
-  Rust never required non-empty fixtures).
-- Produces (session.rs):
-
-```rust
-pub(super) struct ValidationSettings {
-    pub mode: &'static str,                 // "tscOnly" | "behavioral"
-    pub manifest_digest: Option<String>,    // None without --validation-manifest
-    pub fixtures: Vec<(String, String)>,    // (corpus-relative path, sha256); empty in tscOnly
-    pub tsc_timeout_ms: u64,
-    pub vitest_timeout_ms: u64,
-}
-```
-
-  stored on `ServiceSession` (consumed by Tasks 6/9). Constructed in
-  main.rs: without the flag → `mode: "tscOnly", manifest_digest: None,
-  fixtures: vec![], timeouts: the DEFAULT_* consts below` and — the
-  byte-identical guarantee — `NodeBridgeConfig::tsc_only` built EXACTLY
-  as today.
-- Constants (manifest.rs): `CANDIDATE_OVERHEAD_MS: u64 = 30_000`,
-  `QUEUE_ALLOWANCE_MS: u64 = 30_000`, `DEFAULT_TSC_TIMEOUT_MS: u64 =
-  60_000`, `DEFAULT_VITEST_TIMEOUT_MS: u64 = 90_000`.
-- Consumed by: Tasks 5 (timeouts into the bridge config), 6 (seed-green +
-  identity), 9 (fixture reader).
-
-- [ ] **Step 1: Write failing unit tests** in manifest.rs's
-  `#[cfg(test)]` module (declare `mod manifest;` in main.rs FIRST with a
-  bailing stub so the red run compiles with a non-zero test count — the
-  B-1 Task-2 lesson). Cases: valid behavioral manifest round-trips with a
-  stable digest (same bytes → same digest, field mutation → different
-  digest); zero-fixture behavioral rejected; fixture-carrying tscOnly
-  rejected; duplicate fixture path rejected; wrong sha256 rejected;
-  missing file rejected; absolute/`..` fixture path rejected; timeout of
-  0 and of 200_000 rejected; nesting bound rejected when
-  `tsc + vitest + 60_000 > 300_000`; unknown JSON field rejected. Use a
-  tempdir corpus with one real fixture file whose sha256 the test
-  computes.
-
-- [ ] **Step 2: Red** —
-  `cargo test -p strata-kernel --bin strata-kernel-service manifest` —
-  expected: genuine failures against the stub, non-zero test count.
-
-- [ ] **Step 3: Implement** manifest.rs per Interfaces; add
-  `"--validation-manifest"` to main.rs's `allowed` vec and the
-  construction split; add the `ValidationProfile::behavioral` constructor
-  + invariant; add one protocol.rs unit test:
-
-```rust
-#[test]
-fn behavioral_profile_is_unconstructible_with_zero_fixtures() {
-    assert!(ValidationProfile::behavioral("/c/src", "/c", Vec::new(), true).is_err());
-    let manual = ValidationProfile::Behavioral {
-        source_root: "/c/src".into(),
-        corpus_root: "/c".into(),
-        behavioral_fixtures: Vec::new(),
-        strict_src_only_tsc_scope: true,
-    };
-    assert!(manual.validate().is_err(), "validate() must also enforce the invariant");
-}
-```
-
-  Also pin the single-flag property in local_service.rs (or a main-level
-  unit test if one exists for argv): spawning `serve` with
-  `--validation-manifest a --validation-manifest b` exits non-zero with
-  "invalid or duplicate option".
-
-- [ ] **Step 4: Green** — the manifest filter, then
-  `PATH=/opt/homebrew/bin:$PATH cargo test -p strata-kernel` — expected:
-  PASS; every pre-existing suite untouched (no manifest → identical
-  config path).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add crates/strata-kernel/src/bin/strata_kernel_service/manifest.rs crates/strata-kernel/src/bin/strata_kernel_service/main.rs crates/strata-kernel/src/bin/strata_kernel_service/session.rs crates/strata-kernel/src/bridge/protocol.rs crates/strata-kernel/tests/local_service.rs
-git commit -m "feat(kernel): committed digested validation manifest — single flag, nesting arithmetic, behavioral unconstructible without fixtures"
-```
+- [ ] Steps: stub+`mod manifest;` first → RED → implement → GREEN →
+  commit as v1 Task 4 Step 5 (same staged files).
 
 ---
 
-### Task 5: Subprocess timeouts + per-kind bridge deadlines (worker + Rust)
+### Task 6: Bounded subprocesses (process groups) + per-kind deadlines + typed transport phases
 
 **Files:**
+- Create: `packages/verify/src/boundedRun.ts`
+- Modify: `packages/verify/src/corpusRun.ts` (async bounded variants
+  BESIDE the untouched sync ones), `packages/verify/src/validate.ts`
+  (`commitWithBehavioralGate` gains an async bounded sibling used by the
+  worker — the sync product path untouched),
+  `packages/kernel-bridge/src/candidate.ts` + `worker.ts` (async
+  validate stage), `packages/kernel-bridge/src/protocol.ts` (profile
+  timeouts)
 - Modify: `crates/strata-kernel/src/bridge/protocol.rs`
-  (`ValidationProfile` gains `tsc_timeout_ms`/`vitest_timeout_ms`)
-- Modify: `crates/strata-kernel/src/bridge/process.rs` (`NodeBridgeConfig`
-  gains `candidate_deadline: Duration`; `run` picks the deadline by
-  request kind)
-- Modify: `crates/strata-kernel/src/bridge/router.rs` (mirror candidate
-  path passes `candidate_deadline`; the validation-timeout no-replay
-  classification)
-- Modify: `crates/strata-kernel/src/bridge/executor.rs` (no-replay branch)
-- Modify: `crates/strata-kernel/src/kernel.rs` (config wiring)
-- Modify: `packages/kernel-bridge/src/protocol.ts` (profile schema),
-  `candidate.ts` (thread timeouts), `packages/verify/src/corpusRun.ts`
-  (`tscNoEmit`/`runVitest` gain `timeoutMs`)
-- Test: `packages/kernel-bridge/tests/candidate.test.ts` additions;
-  `crates/strata-kernel/tests/bridge_protocol.rs` or `node_bridge.rs`
-  additions
+  (`ValidationProfile` timeouts — OPTIONAL on TscOnly, REQUIRED on
+  Behavioral), `process.rs` (`candidate_deadline` + per-kind selection
+  in `run`), `persistent.rs` (typed `TransportPhase` error wrapper +
+  transport total = queue allowance + candidate deadline for candidate
+  frames), `router.rs` (candidate call sites), `executor.rs`
+  (classification: `Queued`-phase failure → one-shot fallback allowed;
+  `Sync`/`Exchange`-phase failure or worker timeout codes on candidate
+  frames → operational error, NO fallback), `kernel.rs` (wiring)
+- Update + stage: `crates/strata-kernel/tests/full_key_free_acceptance.rs`
+  (five-key pin must still pass for the default path — add a SEPARATE
+  assertion for a manifest-backed behavioral profile's seven keys),
+  `crates/strata-kernel/tests/bridge_protocol.rs` (direct
+  `NodeBridgeConfig` construction at :91),
+  `packages/live-compare/tests/tasks.test.ts` (request builder at :268),
+  persistent deadline-preservation tests (the :1143 poison and :1164
+  queued-before-worker pins get explicit sibling tests for the new
+  split).
 
 **Interfaces:**
-- Wire (bridge protocol, ships lockstep Rust↔worker): BOTH
-  `ValidationProfile` variants gain
-
-```rust
-    tsc_timeout_ms: u64,
-    vitest_timeout_ms: u64,
-```
-
-  (required fields — the internal bridge wire has no cross-version
-  clients; update `tsc_only()` to fill `DEFAULT_TSC_TIMEOUT_MS`/
-  `DEFAULT_VITEST_TIMEOUT_MS` — move those two consts into the bridge
-  layer (protocol.rs) and have manifest.rs import them so there is ONE
-  definition), `behavioral(…)` gains the two parameters, `validate()`
-  bounds them `1_000..=180_000`.
-- TS mirror (kernel-bridge/src/protocol.ts): profile schema gains
-  `tscTimeoutMs: z.number().int().min(1000).max(180000)`,
-  `vitestTimeoutMs: …` (required).
-- corpusRun.ts:
+- boundedRun.ts:
 
 ```ts
-export function tscNoEmit(treeRoot: string, timeoutMs?: number): { tscClean: boolean; output: string; timedOut: boolean }
-export function runVitest(treeRoot: string, fixtures?: string[], timeoutMs?: number): { vitestPassed: boolean; output: string; timedOut: boolean }
+export interface BoundedRunResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}
+/**
+ * Spawns the command DETACHED as its own process group and awaits exit.
+ * On timeout, SIGKILLs the whole group (kill(-pid)) so descendants the
+ * child spawned die with it, then resolves { timedOut: true }.
+ */
+export function boundedProcessRun(options: {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+}): Promise<BoundedRunResult>;
 ```
 
-  Both `spawnSync` calls gain `timeout: timeoutMs, killSignal: "SIGKILL"`
-  when provided; `timedOut = result.error?.code === "ETIMEDOUT" ||
-  result.signal === "SIGKILL"`. `runVitest` additionally appends
-  `"--pool=threads"` to its args so test execution stays inside the ONE
-  vitest process — killing it therefore leaves no orphaned pool children.
-  **This satisfies the spec's "kills the spawned process groups" intent
-  by construction (single-process subprocesses) rather than by group
-  kill; flag this as an explicit divergence-of-mechanism in the closing
-  decisions entry.** All existing callers (product `commit` path) pass
-  no timeout → byte-identical behavior.
-- candidate.ts: `commitWithBehavioralGate` acceptance context gains the
-  two timeouts (threaded from `request.validationProfile`); a timeout
-  surfaces as `CandidateFailure("validate", "tscTimedOut" |
-  "vitestTimedOut", [], "…")` — codes the Rust discriminator (Task 1)
-  already classifies as OPERATIONAL. (verify's `commitWithBehavioralGate`
-  signature change: additive optional fields on its options object; the
-  product `commit` path is untouched.)
-- Rust deadlines: `NodeBridgeConfig` gains
-  `candidate_deadline: Duration`; `tsc_only()` sets it =
-  `Duration::from_millis(DEFAULT_TSC_TIMEOUT_MS + DEFAULT_VITEST_TIMEOUT_MS + CANDIDATE_OVERHEAD_MS)`
-  — WAIT: the byte-identical constraint. Today one-shot candidates run
-  under the single 30s `deadline`. Changing the default candidate
-  deadline changes tsc-only behavior (a >30s tsc-only candidate that
-  timed out today would now succeed). RESOLUTION (spec-faithful,
-  documented): `candidate_deadline` defaults to the EXISTING
-  `config.deadline` (30s) when no manifest is supplied — byte-identical —
-  and is derived from the manifest timeouts
-  (`tsc + vitest + CANDIDATE_OVERHEAD_MS`) only when a manifest is
-  loaded. `process.rs::run` and the router's candidate request path pick
-  `candidate_deadline` for `BuildValidateCandidate` frames and `deadline`
-  for everything else. `MirrorCandidateResponse`-level classification: a
-  mirror candidate error that is a TIMEOUT (transport deadline exceeded
-  OR worker `tscTimedOut`/`vitestTimedOut`) must NOT fall through to the
-  one-shot retry in executor.rs:150-157 — it returns the operational
-  error directly. Non-timeout transport failures keep the existing
-  fallback.
-- Consumed by: Tasks 6 (baseline uses the same bounded runs), 8 (timeout
-  gates).
-
-- [ ] **Step 1: Write failing TS tests** (kernel-bridge candidate tests +
-  a corpusRun-focused test in packages/verify): a fixture test tree whose
-  vitest fixture sleeps 10s; `runVitest(tree, [fixture], 1500)` returns
-  `{ vitestPassed: false, timedOut: true }` in <5s and leaves no
-  `vitest` process running (`ps` check by absence of the scratch-tree cwd
-  in the process list — keep the assertion loose enough for CI);
-  `tscNoEmit(tree, 60000)` on a real tree still passes with
-  `timedOut: false`. Kernel-bridge test: a behavioral candidate request
-  whose profile carries `vitestTimeoutMs: 1500` against the sleeping
-  fixture returns a `CandidateError` with code `vitestTimedOut` and stage
-  `validate`.
-
-- [ ] **Step 2: Red** — the named test filters
-  (`PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/verify test corpusRun`,
-  `… --filter @strata-code/kernel-bridge test candidate`) — expected:
-  FAIL (signatures/behavior absent).
-
-- [ ] **Step 3: Implement TS side** per Interfaces (corpusRun bounded
-  runs, schema fields, candidate threading, timeout failure codes).
-
-- [ ] **Step 4: Write failing Rust tests**: `ValidationProfile` validate
-  bounds (0 and 200_000 rejected on both fields);
-  `tsc_only()` fills the defaults; a `bridge_protocol.rs` round-trip of a
-  profile with timeouts; a `process.rs`/`router.rs` unit or integration
-  test pinning per-kind deadline selection (candidate frames get
-  `candidate_deadline`) — follow the existing test seam
-  (`test_with_deadline`) style; and an executor-level test that a mirror
-  candidate failure with code `vitestTimedOut` does NOT reach the
-  one-shot path (assert via the existing spawn counter:
-  `worker_starts_total` unchanged across the failed request in persistent
-  mode — reuse the `node_bridge_failures.rs` harness patterns).
-
-- [ ] **Step 5: Implement Rust side**, run
-  `PATH=/opt/homebrew/bin:$PATH cargo test -p strata-kernel` +
-  `PATH=/opt/homebrew/bin:$PATH pnpm kernel:bridge:test` — expected: PASS
-  (tsc-only defaults keep every existing suite green).
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add crates/strata-kernel/src/bridge crates/strata-kernel/src/kernel.rs packages/kernel-bridge/src packages/kernel-bridge/tests packages/verify/src/corpusRun.ts packages/verify/tests
-git commit -m "feat(kernel): bounded tsc/vitest subprocesses, per-kind bridge deadlines, no one-shot replay of validation timeouts"
-```
-
----
-
-### Task 6: Seed-green startup gate + manifest identity on startup/audit/hello
-
-**Files:**
-- Modify: `crates/strata-kernel/src/bridge/protocol.rs` (internal
-  `ValidateBaseline` frames), `process.rs`/`router.rs` (dispatch),
-  `kernel.rs` (a `pub fn validate_baseline(&self) -> Result<BaselineVerdict>`)
-- Create: `packages/kernel-bridge/src/baseline.ts` (+ `worker.ts`
-  dispatch, `protocol.ts` schema)
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/server.rs`
-  (seed-green refusal + readiness fields), `session.rs` (audit fields,
-  `hello` result), `main.rs` (threading)
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/protocol.rs`
-  + `packages/live-compare/src/protocol.ts` + golden fixtures (`hello`
-  `Ready` gains validation fields — lockstep)
-- Test: `crates/strata-kernel/tests/local_service.rs` (behavioral daemon
-  spawn tests), kernel-bridge baseline tests
-
-**Interfaces:**
-- Internal bridge frame (Rust + TS, lockstep):
+  Implementation: `spawn(command, args, { cwd, detached: true, stdio:
+  ["ignore", "pipe", "pipe"] })`; collect bounded output; timer →
+  `process.kill(-child.pid, "SIGKILL")` (fallback to `child.kill` if
+  the group kill throws ESRCH); always `unref`-free (we await exit).
+- corpusRun.ts gains `boundedTscNoEmit(treeRoot, timeoutMs)` and
+  `boundedRunVitest(treeRoot, fixtures, timeoutMs)` (async, via
+  `boundedProcessRun`, same tsc/vitest argv as the sync versions);
+  validate.ts gains `commitWithBehavioralGateBounded(db, tx, acceptance
+  & { tscTimeoutMs, vitestTimeoutMs }): Promise<GatedCommitResult>`;
+  the SYNC `tscNoEmit`/`runVitest`/`commitWithBehavioralGate` are
+  byte-identical untouched (product path).
+- candidate.ts: the pipeline becomes async
+  (`Promise<BuildValidateCandidateResult>`) — the validate bracket
+  awaits the bounded gate in behavioral mode and keeps the sync
+  `commit` call in tscOnly mode; worker.ts awaits; the mirror savepoint
+  wrapper brackets the awaited pipeline (single-connection sqlite —
+  holding the savepoint across the await is safe and is asserted by the
+  existing fingerprint machinery). Timeouts surface as
+  `CandidateFailure("validate", "tscTimedOut" | "vitestTimedOut", [],
+  …)` (operational downstream).
+- Rust profile:
 
 ```rust
-// request: kind "validateBaseline", carries binding + snapshot + validation_profile
-// response: { ok: true, result: { green: bool, diagnostics: Vec<BridgeDiagnostic> } } or standard error
-pub(crate) struct ValidateBaselineRequest { /* binding, snapshot, validation_profile */ }
-```
-
-  Worker `baseline.ts`: hydrate snapshot → materialize tree (reuse the
-  candidate pipeline's materialization WITHOUT any mutation step) → run
-  `tscNoEmit(tree, tscTimeoutMs)` + `runVitest(tree, fixtures,
-  vitestTimeoutMs)` → `{ green, diagnostics }` (red carries the bounded
-  tsc/vitest output as diagnostics; timeout is an error response with the
-  Task-5 timeout codes).
-- `Kernel::validate_baseline()` → runs the frame one-shot (baseline runs
-  once at startup; no mirror involvement) against the CURRENT snapshot;
-  returns `BaselineVerdict { green: bool, diagnostics: Vec<…> }`.
-- server.rs: when `config.validation.mode == "behavioral"`, AFTER
-  `ServiceSession::open` and BEFORE `bind_private_socket`:
-  `session.validate_baseline()?` — red → `bail!` with up to 8 bounded
-  diagnostic lines (daemon exits 2 pre-readiness, the existing
-  startup-failure surface); operational baseline error → also refuse
-  (fail-closed startup). `Readiness` gains
-
-```rust
-    validation_mode: String,                    // "tscOnly" | "behavioral"
-    #[serde(skip_serializing_if = "Option::is_none")]
-    validation_manifest_digest: Option<String>,
-```
-
-- Client wire `hello` (lockstep, B-1 style): `ResponseResult::Ready {}` →
-
-```rust
-    Ready {
-        validation_mode: String,
-        validation_manifest_digest: Option<String>,  // null on the wire when absent? NO:
+    TscOnly {
+        source_root: String,
+        corpus_root: String,
+        behavioral_fixtures: Vec<String>,
+        strict_src_only_tsc_scope: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tsc_timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vitest_timeout_ms: Option<u64>,
+    },
+    Behavioral {
+        source_root: String,
+        corpus_root: String,
+        behavioral_fixtures: Vec<String>,
+        strict_src_only_tsc_scope: bool,
+        tsc_timeout_ms: u64,
+        vitest_timeout_ms: u64,
     },
 ```
 
-  Use `#[serde(default, skip_serializing_if = "Option::is_none")]` on the
-  digest and `#[serde(default)]`… — NO DEFAULTS on a strict wire: make
-  BOTH fields required with digest NULLABLE
-  (`Option<String>` serialized as `null`), update the TS `ready` schema
-  to `{ type, validationMode: z.enum(["tscOnly","behavioral"]),
-  validationManifestDigest: digestSchema.nullable() }`, and update every
-  golden fixture + hand-built `ready` result in tests (grep
-  `"type":"ready"` / `type: "ready"` across live-compare and
-  local_service fixtures — same sweep discipline as B-1's `hasMore`).
-- Audit: `service_started`/`service_recovered` events gain
-  `validation_mode` + `validation_manifest_digest` fields (audit schema is
-  service-internal JSONL — additive).
-- Consumed by: Task 7 (behavioral daemons), Task 9 (digest pinning).
+  (`tsc_only()` fills `None` — the default wire is BYTE-IDENTICAL and
+  the five-key acceptance pin passes untouched; `behavioral(…)` requires
+  both.) TS zod mirrors the split (optional on tscOnly variant, required
+  on behavioral). `validate()` bounds present values `1_000..=180_000`.
+- Deadlines: `NodeBridgeConfig.candidate_deadline: Duration` — equals
+  `deadline` (30s) without a manifest; manifest-derived
+  (`tsc + vitest + CANDIDATE_OVERHEAD_MS`) with one. `process.rs::run`
+  selects by `request.kind()`. Persistent candidate calls pass
+  `QUEUE_ALLOWANCE_MS + candidate_deadline` as the transport deadline;
+  the host's error surface wraps failures in a typed
+  `TransportFailure { phase: TransportPhase, source }` (thiserror-style,
+  downcastable) where phase is `Queued` (deadline elapsed before any
+  worker interaction — the existing :1164 semantics), `Sync`
+  (hydration/attestation), or `Exchange` (semantic frame in flight).
+  executor.rs: candidate mirror errors — `Queued` → one-shot fallback
+  (worker untouched, replay safe); `Sync`/`Exchange`/worker timeout
+  codes → operational error, no fallback. Analyze path classification
+  unchanged.
 
-- [ ] **Step 1: Write failing kernel-bridge baseline tests** (TS):
-  `validateBaseline` on a green tree+fixture → `{ green: true }`; on a
-  tree whose fixture asserts false → `{ green: false }` with diagnostics
-  containing the vitest failure text; sleeping fixture + small timeout →
-  error with code `vitestTimedOut`.
-
-- [ ] **Step 2: Red, implement worker side, green** (kernel-bridge
-  filters).
-
-- [ ] **Step 3: Write failing Rust tests**: internal frame round-trip +
-  binding validation (bridge_protocol.rs pattern); local_service
-  behavioral daemon tests:
-  - `seed_green_daemon_serves_and_reports_digest`: temp corpus copy of
-    `examples/medium` + one PASSING fixture
-    (`tests/behavioral/baseline-pin.test.ts` asserting a trivial true
-    import-free property of the corpus — e.g. importing `greet` and
-    asserting its current output) + manifest JSON with correct sha256 →
-    daemon starts; readiness JSON carries `validationMode: "behavioral"`
-    and the manifest digest; `hello` echoes both; audit start event
-    carries both.
-  - `seed_red_daemon_refuses_to_serve`: same corpus but the fixture
-    asserts a false property → daemon exits non-zero BEFORE any readiness
-    line; stderr contains the fixture failure text.
-  - `tsc_only_daemon_reports_null_digest`: existing tsc-only spawn now
-    asserts `validationMode: "tscOnly"`, digest null, `hello` matches.
-
-- [ ] **Step 4: Red** (the new filters), **implement Rust + wire + fixture
-  sweep, green** — including
-  `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test`
-  full package (hello shape changed — client.test/service.test/gate
-  harness assertions may pin `ready`; sweep and update, list files in
-  report).
-
+- [ ] **Step 1 (RED, TS):** boundedRun tests: a script that spawns a
+  detached-grandchild sleeper writing `process.pid` of BOTH processes to
+  files, timeoutMs 1000 → `timedOut: true`, and `process.kill(pid, 0)`
+  throws ESRCH for BOTH pids within a bounded wait (group kill proven);
+  a fast command → `timedOut: false`, status 0. Kernel-bridge candidate
+  test: behavioral profile with `vitestTimeoutMs: 1500` + sleeping
+  fixture → `CandidateError` code `vitestTimedOut`. Red.
+- [ ] **Step 2 (GREEN, TS):** implement boundedRun + bounded gate +
+  async pipeline; kernel-bridge + verify suites green (product-path
+  suites untouched by construction — verify this claim by running
+  `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/verify test`).
+- [ ] **Step 3 (RED, Rust):** profile serde tests (TscOnly default omits
+  the keys — assert EXACT key set; Behavioral requires them; bounds);
+  per-kind deadline selection test; `TransportPhase` classification
+  tests (Queued → fallback, Exchange → no fallback) via the persistent
+  test harness patterns; the :1143/:1164 sibling preservation tests. Red.
+- [ ] **Step 4 (GREEN, Rust):** implement; update + stage
+  `full_key_free_acceptance.rs` (default pin unchanged + new behavioral
+  seven-key assertion), `bridge_protocol.rs`, `tasks.test.ts`. Whole
+  crate + kernel:bridge:test green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/strata-kernel/src packages/kernel-bridge/src packages/kernel-bridge/tests packages/live-compare/src/protocol.ts packages/live-compare/tests crates/strata-kernel/tests
-git commit -m "feat(kernel): seed-green behavioral startup gate; manifest identity on readiness, audit, and hello"
+git add packages/verify/src packages/verify/tests packages/kernel-bridge/src packages/kernel-bridge/tests crates/strata-kernel/src/bridge crates/strata-kernel/src/kernel.rs crates/strata-kernel/tests/full_key_free_acceptance.rs crates/strata-kernel/tests/bridge_protocol.rs packages/live-compare/tests/tasks.test.ts
+git commit -m "feat(kernel): process-group-bounded tsc/vitest, per-kind deadlines with typed transport phases, no replay of validation timeouts"
 ```
 
 ---
 
-### Task 7: Behavioral rejection/parity gate
+### Task 7: Seed-green startup gate + manifest identity (any manifest)
 
-**Files:**
-- Create: `packages/live-compare/tests/behavioralGate.test.ts`
-- Create: `packages/verify/tests/behavioralParity.test.ts`
-- Modify: `packages/live-compare/src/service.ts` (`startKernelService`
-  gains optional `validationManifestPath` passed through as
-  `--validation-manifest`; additive, default absent)
+As v1 Task 6 with review Major 8 constitutive:
+- Baseline runs for ANY supplied manifest: tscOnly manifest → tsc-only
+  baseline (no fixtures); behavioral → tsc + fixtures. Only the
+  no-manifest default skips (and its startup sequencing stays
+  byte-identical).
+- Audit sequencing: `ServiceSession::open` is split — the
+  `service_started`/`service_recovered` audit append moves OUT of
+  `open()` into a new `finalize_startup()` called by `server::serve`
+  AFTER a green baseline (and immediately after `open()` in the
+  no-manifest path, preserving today's ordering). A red daemon audits
+  NOTHING and exits 2 pre-readiness with bounded diagnostics.
+- Audit fields `validation_mode`/`validation_manifest_digest` are
+  `#[serde(default)]`-optional on `AuditEvent` (strict deserializer at
+  audit.rs:291 keeps reopening HISTORICAL lines — add a reopen test
+  feeding a pre-B-2 audit line verbatim); `audit.rs` is listed and
+  staged.
+- `hello` `Ready` fields required + digest nullable (v1 design), with
+  the fixture sweep ALSO updating negative/rejected ready fixtures so
+  they remain discriminating (fail for their original reason, not for
+  the missing new fields).
+- `ValidateBaseline` stays a NEW frame kind (the candidate protocol's
+  non-empty `orderedIntents` invariant at bridge/protocol.rs:528 stays
+  intact); the worker factors shared materialize/validate internals
+  (using Task 6's bounded runners) without conflating wire kinds.
 
-**Interfaces:**
-- Consumes: everything from Tasks 1–6 over the wire; `examples/medium`;
-  `commitWithBehavioralGate` (verify) as-is.
-- Gate scenario (deterministic, key-free): temp corpus = copy of
-  `examples/medium` + `tests/behavioral/greet-contract.test.ts`:
+Files/steps/tests otherwise as v1 Task 6 (worker baseline.ts red/green;
+Rust frame round-trip; the three daemon spawn tests gain a fourth:
+`seed_tsc_only_manifest_daemon_gets_tsc_baseline` — a tscOnly manifest
+over a corpus with a type error refuses to serve).
+
+- [ ] **Commit**
+
+```bash
+git add crates/strata-kernel/src packages/kernel-bridge/src packages/kernel-bridge/tests packages/live-compare/src/protocol.ts packages/live-compare/tests crates/strata-kernel/tests crates/strata-kernel/src/bin/strata_kernel_service/audit.rs
+git commit -m "feat(kernel): seed-green baseline for any manifest; audited start only after green; manifest identity on readiness, audit, hello"
+```
+
+---
+
+### Task 8: Behavioral rejection/parity gate
+
+As v1 Task 7 with the corrected fixture import (verified real corpus
+path):
 
 ```ts
-import { describe, expect, it } from "vitest";
-import { greet } from "../../src/features/greet";   // adjust to the real module path
+import { greet } from "../../src/users/greet";
+import type { User } from "../../src/types/user";
 
 describe("greet behavioral contract", () => {
   it("greets by name", () => {
-    expect(greet("Ada")).toContain("Ada");
+    const user = { name: "Ada", email: "ada@example.com" } as unknown as User;
+    expect(greet(user)).toContain("Ada");
   });
 });
 ```
 
-  (Resolve the real import path/signature from the corpus before writing
-  the fixture; the fixture MUST pass at generation zero — the seed-green
-  startup gate enforces this, which is itself part of the test.)
-  Manifest: behavioral, that one fixture + its sha256, strict scope true,
-  timeouts 60_000/90_000.
-  - **Rejected mutation (compiles-but-behaviorally-wrong):** rename
-    `greet` → `welcomeUser`. Under `strictSrcOnlyTscScope` the tsc pass
-    covers `src/**` only → tree compiles; the fixture's `import { greet }`
-    then fails at vitest time → behavioral red. Assert: state
-    `validation_failed`; diagnostics non-empty; at least one diagnostic
-    `code` starts with `"behavioralFailed"`; message contains the vitest
-    failure text (`"greet"`); generation unchanged; NO
-    `candidate_validation_failed` anywhere.
-  - **Clean mutation publishes:** rename `User` → `Account` (the fixture
-    imports only `greet`) → published, fixture still green (implicitly:
-    publication passed the behavioral gate), digest present.
-  - **Parity (same inputs through the product gate):**
-    `behavioralParity.test.ts` in packages/verify: ingest the same temp
-    corpus into a SQLite store, apply the same rename `greet` →
-    `welcomeUser` via `rename_symbol`, `commitWithBehavioralGate` with
-    the same fixture list → `ok: false` with `testFailures` containing
-    the same vitest failure marker; the clean `User` → `Account` rename →
-    `ok: true`. (Product gate consumed AS-IS — any behavioral difference
-    between kernel and product verdicts on these two mutations is a
-    genuine finding: STOP and report, do not normalize.)
-- Produces: the spec's B-2 gate (c).
+(Resolve `User`'s actual required fields from `src/types/user.ts` when
+writing the fixture; it must pass at generation zero — the seed-green
+gate enforces it.) Scenario, assertions, parity oracle, and the STOP
+rule on parity divergence exactly as v1 Task 7. `startKernelService`
+gains the optional `validationManifestPath` passthrough.
 
-- [ ] **Step 1: Write both test files** (they are acceptance gates against
-  Tasks 1–6 behavior — label them as such, not failing-first TDD; the
-  service.ts passthrough is the only production edit and is covered by
-  the gate itself).
-- [ ] **Step 2: Run** —
-  `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test behavioralGate`
-  and `… --filter @strata-code/verify test behavioralParity` — expected:
-  PASS. On the parity assertion failing: STOP, report both verdicts
-  verbatim (this is the gate doing its job).
-- [ ] **Step 3: Commit**
-
-```bash
-git add packages/live-compare/tests/behavioralGate.test.ts packages/live-compare/src/service.ts packages/verify/tests/behavioralParity.test.ts
-git commit -m "test(kernel): behavioral rejection + product parity gate — real diagnostics on the kernel path, identical product verdicts"
-```
+- [ ] **Commit** as v1 Task 7 Step 3.
 
 ---
 
-### Task 8: Timeout / savepoint recovery gates
+### Task 9: Timeout / savepoint recovery gate (discriminating observations)
 
-**Files:**
-- Create: `packages/live-compare/tests/behavioralTimeout.test.ts`
-- Test additions: `crates/strata-kernel/tests/local_service.rs` only if a
-  Rust-side assertion (metrics parse) is easier there — default is the TS
-  file.
-
-**Interfaces:**
-- Consumes: Tasks 1–7. Scenario: temp corpus + a manifest whose fixture
-  set includes BOTH the green `greet-contract` fixture AND
-  `tests/behavioral/slow.test.ts` (sleeps 10s)… **No** — seed-green would
-  hang on the slow fixture at startup. Instead: manifest carries the
-  green fixture with `vitestTimeoutMs: 120_000` for startup? The manifest
-  is per-daemon and startup uses the same timeouts. RESOLUTION: the slow
-  fixture sleeps only when an env-independent MARKER FILE exists in the
-  tree — no: candidate trees are materialized from the graph, and
-  `tests/**` ride the corpus copy, so the fixture content is identical at
-  startup and at candidate time. CORRECT deterministic lever: the sleep
-  triggers on the MUTATED content — the fixture does
-  `if (greet("Ada").includes("Bonjour")) { await sleep(10_000); }` and
-  the test's mutation is an `add_parameter`-free rename… renames don't
-  change strings. USE `add_parameter` on `greet` with
-  `value: "\"Bonjour\""`-style? `add_parameter` appends a parameter with
-  a uniform value at callsites — it does not change `greet`'s output
-  either. FINAL, SIMPLE LEVER: the fixture sleeps
-  `if (typeof (globalThis as Record<string, unknown>).__strataNever === "undefined")`
-  — i.e. ALWAYS sleeps — and the DAEMON manifest sets
-  `vitestTimeoutMs: 2_000` while the fixture sleeps 10s. Seed-green would
-  then fail at startup… which means: **the timeout gate cannot use the
-  startup-gated manifest path with an always-slow fixture.** Resolve by
-  testing the timeout at the WORKER/bridge layer instead (Task 5 already
-  pins `vitestTimedOut` at the kernel-bridge layer) and, at the daemon
-  layer, by driving the operational branch via the one REMAINING
-  deterministic daemon-level lever: a behavioral daemon whose manifest is
-  green, plus a candidate whose mutation makes the fixture slow — a
-  rename `greet` → name the fixture keys its sleep on:
+As v1 Task 8 with review Major 7 + Blocker 3 constitutive. Lever
+(review-validated): fixture
 
 ```ts
-import * as mod from "../../src/features/greet";
+import * as mod from "../../src/users/greet";
+import { writeFileSync } from "node:fs";
+
 it("contract", async () => {
-  if (!("greet" in mod)) { await new Promise((r) => setTimeout(r, 10_000)); }
+  if (!("greet" in mod)) {
+    writeFileSync(process.env.STRATA_TEST_PID_FILE ?? "/dev/null", String(process.pid));
+    await new Promise((resolve) => setTimeout(resolve, 10_000));
+  }
   expect(true).toBe(true);
 });
 ```
 
-  Generation zero: `greet` exists → no sleep → seed-green fast. After
-  rename `greet` → `welcomeUser`: the export disappears → fixture sleeps
-  10s → with `vitestTimeoutMs: 2_000` the candidate validation TIMES OUT
-  deterministically. This is the timeout lever.
-- Assertions (the spec's point-4 gate, all in one daemon lifetime,
-  persistent-bridge mode `--persistent-bridge`):
-  1. advance of the sleepy rename → `ok: false`, code
-     `candidate_execution_failed`, `retryable: true` (operational, NOT
-     `validation_failed`).
-  2. generation unchanged (hello/`list_modules` generation identical
-     before/after).
-  3. no one-shot auto-replay: with `--metrics` active, the metrics JSONL
-     shows `worker_starts_total` (or the per-run records) consistent with
-     ZERO one-shot candidate spawns for that request — parse the sink;
-     exact field names from `metrics.rs` (read it during implementation
-     and pin the real field).
-  4. savepoint rolled back + mirror healthy: a subsequent CLEAN rename
-     (`User` → `Account`) on the SAME daemon publishes green (the Task-7
-     poison latch + fingerprint assertion would refuse if the savepoint
-     had leaked — publishing at all proves rollback + fingerprint
-     equality + healthy rehydration).
-  5. process cleanup: within a bounded wait after the timeout response,
-     no vitest process whose cwd is under the daemon's scratch tree
-     remains (best-effort `ps`-based assertion with a generous
-     tolerance; skip-with-note on platforms where `ps` output is
-     unavailable).
-  6. change set non-terminal: a follow-up `advance` returns a
-     non-terminal state (claim intact), and after `cancel_change_set` the
-     daemon is fully usable.
-- Produces: spec gate (d).
+Generation zero: `greet` exported → no sleep → seed-green fast. After
+rename `greet` → `welcomeUser`: namespace import still loads, `"greet"
+in mod` false → pidfile written → sleep → `vitestTimeoutMs: 2_000`
+times out deterministically. Daemon spawned with
+`STRATA_TEST_PID_FILE` in its env (inherited down to vitest),
+`--persistent-bridge`, `--metrics`.
 
-- [ ] **Step 1: Write the gate** (acceptance style, per above, timeout
-  240_000).
-- [ ] **Step 2: Run** —
-  `PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test behavioralTimeout`
-  — expected: PASS.
-- [ ] **Step 3: Commit**
+Assertions (all deterministic):
+1. advance → `ok: false`, `candidate_execution_failed`,
+   `retryable: true`.
+2. generation unchanged.
+3. REQUEUE + RE-DRIVE: the change set is observably `queued` after the
+   failure; a SECOND advance of the SAME change set re-drives it (the
+   fixture still sleeps → same operational failure again — proving the
+   re-drive actually re-executed, via a fresh metrics record for the
+   second attempt); then `cancel_change_set` succeeds and a DIFFERENT
+   clean rename publishes.
+4. Same-worker health (discriminating): parse the metrics sink —
+   `worker_starts_total` delta across the whole scenario is exactly the
+   eagerly-hydrated 1 (no respawn, no one-shot fallback spawn); the
+   rehydration/fallback counters (Task 10 adds them — THIS assertion is
+   added in Task 10's step and cross-referenced here; Task 9 asserts
+   the spawn counter which already exists).
+5. Group-kill proof: the pidfile's pid is dead
+   (`process.kill(pid, 0)` throws ESRCH) within a bounded wait — a
+   deterministic cleanup gate, replacing v1's skippable `ps` check.
+6. Savepoint/fingerprint: the clean publish after cancellation succeeds
+   on the SAME daemon — combined with assertion 4's no-respawn proof,
+   this discriminates same-worker rollback health from
+   respawn-rehydration (a poisoned-then-respawned worker would show a
+   spawn-counter increment).
+
+- [ ] **Steps:** write gate → run
+  (`PATH=/opt/homebrew/bin:$PATH pnpm --filter @strata-code/live-compare test behavioralTimeout`)
+  → PASS → commit as v1 Task 8 Step 3.
+
+---
+
+### Task 10: Registered-fixture reader + disclosure metrics
+
+Reader exactly as v1 Task 9 (wire lockstep, digest-pinned reads served
+from the manifest's CANONICAL verified identities per Task 5, bounds,
+wrappers, 2 tools → 15 total, daemon integration tests incl. the
+tamper-after-startup pin).
+
+Disclosure metrics (v1 Task 10's metrics half, corrected per Minor 10):
+ALL new record fields optional/omitted —
+
+```rust
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation_wall_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_wait_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    one_shot_fallbacks_total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rehydrations_total: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    validation_timeouts_total: Option<u64>,
+```
+
+populated only on behavioral-mode advances (kernel AtomicU64 counters +
+persistent queue-wait measurement per v1); a serialization unit test
+pins that tsc-only records are byte-identical to pre-B-2 records.
+Extend `behavioralTimeout.test.ts` with the counter assertions
+cross-referenced by Task 9 assertion 4 (`validation_timeouts_total`
+increments across the two failed attempts; `rehydrations_total` and
+`one_shot_fallbacks_total` stay 0).
+
+- [ ] **Steps:** wire RED (B-1 Task-1 pattern) → daemon reader tests RED
+  → implement → GREEN full live-compare + crate → commit:
 
 ```bash
-git add packages/live-compare/tests/behavioralTimeout.test.ts
-git commit -m "test(kernel): behavioral timeout recovery gate — operational taxonomy, intact claim, healthy mirror, no one-shot replay"
+git add crates/strata-kernel/src packages/live-compare/src packages/live-compare/tests crates/strata-kernel/tests
+git commit -m "feat(kernel): digest-pinned fixture reader + behavioral cost-disclosure metrics (optional fields, tsc-only records byte-identical)"
 ```
 
 ---
 
-### Task 9: Registered-fixture reader (client wire, lockstep)
+### Task 11: Gate wiring, full chain, closing records
 
-**Files:**
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/protocol.rs`,
-  `session.rs`; `packages/live-compare/src/protocol.ts`, `client.ts`,
-  `tools.ts`; golden fixtures; `packages/live-compare/tests/{protocol,client,tools}.test.ts`
-- Test: `crates/strata-kernel/tests/local_service.rs` (reader integration)
-
-**Interfaces:**
-- Wire requests (read-only, no idempotency key — extend `is_mutating`
-  omission lists BOTH sides):
-
-```rust
-    ListValidationFixtures {},
-    ReadValidationFixture {
-        fixture_id: String,          // the fixture's sha256 (64 lowercase hex)
-        offset: u64,                 // byte offset
-        length: u32,                 // 1..=8_192
-    },
-```
-
-- Wire results:
-
-```rust
-    ValidationFixtures {
-        validation_mode: String,
-        validation_manifest_digest: Option<String>,
-        fixtures: Vec<FixtureSummary>,   // ≤ 64
-    },
-    // FixtureSummary { fixture_id: String (sha256), path: String (corpus-relative POSIX), bytes: u64 }
-    ValidationFixtureChunk {
-        fixture_id: String,
-        offset: WireU64,
-        content_base64: String,          // ≤ ceil(8192/3)*4 bytes
-        eof: bool,
-    },
-```
-
-  TS mirrors with `.strict()` schemas; bounds pinned in both validators;
-  golden fixtures for accepted (list on behavioral, list on tscOnly
-  (empty, digest null), chunk with eof) and rejected (length 0, length
-  8193, bad fixture_id hex).
-- Session semantics: reads the fixture file from disk at request time,
-  re-verifies its sha256 against `ValidationSettings.fixtures`
-  (digest-pinned: content drift after startup → `request_failed`, never
-  stale bytes); unknown fixture_id → `request_failed`; offset past EOF →
-  empty content + `eof: true`. tscOnly mode: list returns empty + null
-  digest; read → `request_failed` ("no registered fixtures").
-- Client wrappers:
-
-```ts
-listValidationFixtures(deadlineMs = DEFAULT_REQUEST_DEADLINE_MS)
-readValidationFixture(fixtureId: string, offset: string, length: number, deadlineMs = DEFAULT_REQUEST_DEADLINE_MS)
-```
-
-  (offset as canonical-u64 string, the `WireU64` convention.)
-- Tools (2 new, 15 total), descriptions in the worldview register:
-  - `list_validation_fixtures`: "List the registered behavioral fixtures
-    that define this codebase's validation contract: stable fixture IDs,
-    display paths, sizes, and the validation manifest digest they are
-    pinned to. Empty under tsc-only validation. These are the tests your
-    change must keep green; read them with read_validation_fixture before
-    choosing a change that could alter behavior."
-  - `read_validation_fixture`: "Read one registered validation fixture in
-    bounded chunks by its fixture ID: base64 content from a byte offset,
-    at most 8192 bytes per call, with eof marking the end. This is not a
-    general file reader — only manifest-registered fixtures are readable,
-    and content is verified against the manifest digest on every read."
-- Produces: spec point 5 + gate (e) reader schemas.
-
-- [ ] **Step 1: Failing wire tests** (B-1 Task-1 pattern: types first
-  compile-only, validator tests red, validators green, fixtures, TS
-  lockstep, `is_mutating` omission lists, journal-replay bail arm).
-- [ ] **Step 2: Failing daemon integration tests** (`fixture_reader_`
-  prefix): behavioral daemon lists the manifest fixture with matching
-  sha256/bytes; chunked read at length 64 reassembles the exact file
-  bytes with correct eof; tscOnly daemon lists empty; tampering with the
-  fixture file after startup makes the read fail (digest pin); bounds
-  rejections.
-- [ ] **Step 3: Implement session handlers + wrappers + tools; green** the
-  filters, then full live-compare suite + whole crate.
-- [ ] **Step 4: Commit**
-
-```bash
-git add crates/strata-kernel/src/bin/strata_kernel_service packages/live-compare/src packages/live-compare/tests crates/strata-kernel/tests/local_service.rs
-git commit -m "feat(kernel): digest-pinned registered-fixture reader — list_validation_fixtures + chunked read_validation_fixture, dual-language + tools"
-```
-
----
-
-### Task 10: Cost disclosure, gate wiring, full chain, closing records
-
-**Files:**
-- Modify: `crates/strata-kernel/src/bin/strata_kernel_service/metrics.rs`
-  (+ the request-record emission path in session.rs),
-  `crates/strata-kernel/src/bridge/persistent.rs` (queue-wait
-  measurement)
-- Modify: `package.json`, `decisions.md`, `docs/product-roadmap.md`
-
-**Interfaces:**
-- Cost disclosure (spec point 6 — disclosure surfaces are the metrics
-  sink + audit, NOT the client wire): the per-request metrics record for
-  behavioral-mode advances gains
-
-```rust
-    // all Option/defaulted so tsc-only records are byte-identical
-    validation_wall_ms: Option<u64>,       // candidate bracket wall (worker self-metrics validate stage)
-    queue_wait_ms: Option<u64>,            // persistent host: started -> lock acquired
-    one_shot_fallbacks_total: u64,         // session-lifetime counters, emitted per record
-    rehydrations_total: u64,
-    validation_timeouts_total: u64,
-```
-
-  `persistent.rs::request_at_with_size` measures `started → after
-  lock_state` and exposes it to the router's per-run record (follow the
-  existing `WorkerRunMetrics` plumbing; read `metrics.rs` +
-  `router.rs`'s record fields and extend in-style). Counters live on the
-  kernel (AtomicU64, same style as `spawns_total`). Behavioral-mode-only:
-  when `ValidationSettings.mode == "tscOnly"` and no `--metrics`, no
-  behavior change at all.
-- Gate wiring:
+v1 Task 10's wiring/close half, standalone:
 
 ```json
-"kernel:behavioral:test": "pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && pnpm --filter @strata-code/verify build && cargo build -p strata-kernel && cargo test -p strata-kernel --test bridge_rejection && pnpm --filter @strata-code/verify test behavioralParity && pnpm --filter @strata-code/live-compare test behavioralGate behavioralTimeout"
+"kernel:behavioral:test": "pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && pnpm --filter @strata-code/verify build && cargo build -p strata-kernel && pnpm --filter @strata-code/verify test behavioralParity && pnpm --filter @strata-code/live-compare test behavioralGate behavioralTimeout"
 ```
 
-  appended to `kernel:full-key-free:test` (after `kernel:discovery:test`).
-- Closing records: decisions.md APPENDED entry (2026-08-0X): what shipped
-  (taxonomy, manifest, seed-green, nesting, reader, disclosure); explicit
-  divergences to record: (a) the `--pool=threads` single-process
-  mechanism standing in for literal process-group kill; (b) the tsc-only
-  `candidate_deadline` defaulting to the legacy 30s for byte-identical
-  behavior (manifest-driven daemons get the derived deadline); (c) the
-  semantic/operational code partition (exact code lists); (d) anything
-  discovered during build. Roadmap: item B complete (B-1 + B-2), next
-  item unblocked (D). `strata-design.md` NOT edited.
-- Produces: spec gates (a)–(e) all wired key-free; slice close.
+appended to `kernel:full-key-free:test` after `kernel:discovery:test`.
+Full chain detached (Orca) with log evidence; workspace sweep with the
+documented pre-existing exceptions; decisions.md APPENDED close entry
+recording: what shipped; the semantic/operational code partition (exact
+lists); `intentRejected`'s introduction; the release-and-requeue
+contract; transport phases; the optional-timeout profile split
+preserving the five-key pin; canonical fixture containment; anything
+discovered during build. Roadmap: item B fully complete (B-1 + B-2),
+item D unblocked. `strata-design.md` untouched.
 
-- [ ] **Step 1: Failing metrics tests** (unit: record serialization with
-  the new optional fields absent → byte-identical to today's records;
-  integration: a behavioral daemon with `--metrics` emits
-  `validation_wall_ms` + `queue_wait_ms` on a published behavioral
-  mutation and increments `validation_timeouts_total` across the Task-8
-  timeout scenario — extend `behavioralTimeout.test.ts`'s metrics
-  parsing).
-- [ ] **Step 2: Implement, green the filters.**
-- [ ] **Step 3: package.json wiring; run
-  `PATH=/opt/homebrew/bin:$PATH pnpm kernel:behavioral:test` green.**
-- [ ] **Step 4: Full chain** —
-  `PATH=/opt/homebrew/bin:$PATH pnpm kernel:full-key-free:test`, detached
-  (Orca), log evidence captured; known load-sensitive steps per the B-1
-  ledger (gate3) handled the same way: sole-failure → check `uptime`,
-  re-run that step once, document.
-- [ ] **Step 5: Workspace sweep** with the known pre-existing exceptions
-  (verify extraction, agent replay, bench — see decisions.md 2026-08-01);
-  anything NEW is yours.
-- [ ] **Step 6: decisions.md + roadmap; commit**
+- [ ] **Steps:** wiring → `PATH=/opt/homebrew/bin:$PATH pnpm
+  kernel:behavioral:test` green → full chain green (evidence) →
+  workspace sweep → records → commit:
 
 ```bash
-git add crates/strata-kernel/src packages package.json decisions.md docs/product-roadmap.md
-git commit -m "chore(kernel): behavioral-gate cost disclosure, gate wiring into key-free chain; record B-2 close"
+git add package.json decisions.md docs/product-roadmap.md
+git commit -m "chore(kernel): behavioral gate wired into key-free chain; record B-2 close"
 ```
 
 ---
 
 ## Explicit non-goals
 
-- No red-by-design task fixtures, no task-scoped/baseline-relative gate
-  design (recorded house history — B-2's manifest is seed-green shared
-  regression only).
-- No change-set-selectable validation profiles (every agent pays the same
-  gate).
-- No general file reads; the reader serves manifest-registered fixtures
-  only.
-- No refactor of `commitWithBehavioralGate`/product-gate semantics; it is
-  the parity ORACLE.
-- No re-adjudication of recorded exit-gate artifacts; no keyed runs.
-- No item-C structural-ID work; no changes to `tasks.ts` (never staged).
+As v1 (no red-by-design fixtures, no per-change-set profiles, no general
+file reads, product gate is the oracle not a refactor target, no
+exit-gate re-adjudication, no item C, no keyed runs, `tasks.ts` never
+staged).
 
-## Self-Review (v1)
+## Self-Review (v2)
 
-Spec coverage: point 1 → Tasks 1–3; point 2 → Tasks 4+6; point 3 → Task 5;
-point 4 → Task 8 (+ Task 5 worker bounds); point 5 → Task 9; point 6 →
-Task 10; gates (a) unit surfaces spread across 1–6, (b) Task 6, (c) Task
-7, (d) Task 8, (e) Tasks 9–10. Type-consistency pass done (CandidateRejected /
-ValidationSettings / manifest names used identically across tasks).
-Known open questions deliberately left for the methodology review:
-1. The semantic/operational CODE PARTITION (is `mutationFailed` semantic?
-   is stage-based dispatch robust against future worker codes — should
-   unknown validate-stage codes default operational (fail-closed) as
-   drafted?).
-2. `--pool=threads` as the process-cleanup mechanism vs literal group
-   kill (divergence of mechanism, spec-intent argument in Task 5).
-3. tsc-only `candidate_deadline` staying 30s for byte-identicality vs
-   deriving from defaults (Task 5 resolution).
-4. Operational failures leaving the claim intact relying on lease-expiry
-   re-offer (Task 3) — is a stuck-claim scenario reachable if the lease
-   never expires under a quiet scheduler?
-5. Task 8's export-disappearance sleep lever — is there a simpler
-   deterministic timeout lever?
-6. `hello` Ready gaining REQUIRED fields (strict, lockstep) vs optional —
-   drafted required+nullable; fixture sweep cost is real.
-7. Whether Task 6's `ValidateBaseline` should reuse the candidate frame
-   with zero intents instead of a new frame kind.
+All ten review findings mapped: 1→Task 6 profile split (+acceptance-pin
+preservation), 2→Task 6 boundedRun group supervision (+Task 9 pidfile
+proof), 3→Task 4 release-and-requeue (+Task 9 re-drive assertion),
+4→Task 6 transport phases + queue-allowance split (+preservation tests),
+5→Tasks 1-2 (`intentRejected`), 6→Tasks 1/3/4/6 staging+seam fixes,
+7→Task 9 discriminating observations, 8→Task 7 any-manifest baseline +
+audit sequencing + reopen test, 9→Task 5 canonical containment, 10→Task
+10/11 split + optional counters. Spec gates: (a) Tasks 1-7 units,
+(b) Task 7, (c) Task 8, (d) Task 9 (+Task 10 counters), (e) Tasks
+10-11. Type-consistency pass done. Open items intentionally left to
+execution-time discovery: exact coordinator internals for
+`release_claim_for_retry` (the lease-expiry transition is the named
+model; the implementer follows it), and the `User` fixture literal in
+Task 8 (resolved against the real type at write time).
