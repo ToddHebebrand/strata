@@ -439,6 +439,13 @@ pub(super) struct Diagnostic {
     pub(super) code: String,
     pub(super) message: String,
     pub(super) node_id: Option<String>,
+    /// Corpus-relative POSIX display path of the module the diagnostic
+    /// points at, when the service could project one. NEVER a raw payload
+    /// path — the session projects (B-1 `project_module_path`) and drops
+    /// to absent on failure. Optional on the wire (absent when None) so
+    /// every pre-B-2 frame stays valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) module_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -1015,7 +1022,11 @@ impl Diagnostic {
     fn validate(&self) -> Result<()> {
         validate_string(&self.code, MAX_ID_BYTES, false, "diagnostic code")?;
         validate_string(&self.message, MAX_TEXT_BYTES, true, "diagnostic message")?;
-        validate_optional_id(&self.node_id, "diagnostic nodeId")
+        validate_optional_id(&self.node_id, "diagnostic nodeId")?;
+        if let Some(module_path) = &self.module_path {
+            validate_module_path(module_path)?;
+        }
+        Ok(())
     }
 }
 
@@ -1268,6 +1279,31 @@ mod tests {
             );
         }
         validate_module_path("src/types/user.ts").expect("relative POSIX path must validate");
+    }
+
+    #[test]
+    fn diagnostic_module_path_is_optional_but_validated() {
+        let bare = Diagnostic {
+            code: "c".into(),
+            message: "m".into(),
+            node_id: None,
+            module_path: None,
+        };
+        bare.validate().expect("absent modulePath must validate");
+        assert!(!serde_json::to_string(&bare).unwrap().contains("modulePath"));
+        let good = Diagnostic {
+            module_path: Some("src/x.ts".into()),
+            ..bare.clone()
+        };
+        good.validate()
+            .expect("relative POSIX modulePath must validate");
+        for bad in ["/abs/x.ts", "src/../x.ts", ""] {
+            let diagnostic = Diagnostic {
+                module_path: Some(bad.into()),
+                ..bare.clone()
+            };
+            assert!(diagnostic.validate().is_err(), "{bad:?} must be rejected");
+        }
     }
 
     #[test]

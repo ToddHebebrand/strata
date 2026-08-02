@@ -229,7 +229,8 @@ const diagnosticSchema = z
   .object({
     code: boundedString(MAX_ID_BYTES),
     message: textSchema,
-    nodeId: opaqueIdSchema.nullable()
+    nodeId: opaqueIdSchema.nullable(),
+    modulePath: modulePathSchema.optional()
   })
   .strict();
 

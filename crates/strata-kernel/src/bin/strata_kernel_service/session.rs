@@ -812,6 +812,7 @@ impl ServiceSession {
                                     code: "candidate_validation_failed".into(),
                                     message: "candidate validation failed".into(),
                                     node_id: None,
+                                    module_path: None,
                                 }),
                             )?
                             .with_state(ChangeSetState::ValidationFailed),

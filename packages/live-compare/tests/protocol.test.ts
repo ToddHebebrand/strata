@@ -244,6 +244,46 @@ describe("local service protocol v1", () => {
     expect(result.type).toBe("references");
   });
 
+  it("accepts a diagnostic modulePath as optional, absent, and rejects an absolute path", () => {
+    const withPath = responseResultSchema.parse({
+      type: "change_set",
+      changeSetId: "change:1",
+      state: "needs_decision",
+      ticketState: "needs_decision",
+      graphGeneration: "8",
+      operationId: null,
+      affectedNodeIds: [],
+      diagnostics: [
+        { code: "c", message: "m", nodeId: "node:user", modulePath: "src/types/user.ts" },
+        { code: "c2", message: "m2", nodeId: null }
+      ],
+      publicationDigest: null,
+      renamedSymbols: []
+    });
+    if (withPath.type !== "change_set") throw new Error("expected change_set");
+    expect(withPath.diagnostics[0]).toEqual({
+      code: "c",
+      message: "m",
+      nodeId: "node:user",
+      modulePath: "src/types/user.ts"
+    });
+    expect(withPath.diagnostics[1]).toEqual({ code: "c2", message: "m2", nodeId: null });
+    expect(() =>
+      responseResultSchema.parse({
+        type: "change_set",
+        changeSetId: "change:1",
+        state: "needs_decision",
+        ticketState: "needs_decision",
+        graphGeneration: "8",
+        operationId: null,
+        affectedNodeIds: [],
+        diagnostics: [{ code: "c", message: "m", nodeId: null, modulePath: "/etc/passwd" }],
+        publicationDigest: null,
+        renamedSymbols: []
+      })
+    ).toThrow();
+  });
+
   it("round-trips read_operation request and operation result", () => {
     const action = requestActionSchema.parse({
       type: "read_operation",
