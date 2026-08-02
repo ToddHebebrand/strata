@@ -7,6 +7,13 @@ mod storage;
 mod sync_digest;
 
 pub use bridge::{NodeBridgeConfig, WorkerRunMetrics, WorkerSelfMetrics};
+/// The typed candidate-rejection surface (Task 1 of the behavioral gate):
+/// callers downcast a candidate-execution `anyhow::Error` to
+/// [`CandidateRejected`] to distinguish a SEMANTIC rejection (type-check
+/// red, behavioral red, mutation intent rejected) from every operational
+/// failure, which stays untyped. Re-exported at the crate root because the
+/// service binary links this crate as a library.
+pub use bridge::protocol::{CandidateRejected, RejectionDiagnostic};
 
 #[cfg(feature = "coordination-test-api")]
 pub use coordination::affected_resource_keys;

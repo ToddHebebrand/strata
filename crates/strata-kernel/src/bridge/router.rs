@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use super::observer::{self, WorkerRunMetrics};
@@ -50,7 +50,7 @@ use super::process::{NodeBridgeClient, NodeBridgeConfig, elapsed_ns};
 use super::protocol::{
     BridgeBinding, CandidateBinding, ChangeSet, Hash64, MirrorCandidateResponse,
     PROTOCOL_VERSION, SemanticFacts, ValidationProfile, WireGraphDelta, WireU64,
-    parse_mirror_analyze_facts, parse_mirror_candidate_delta,
+    candidate_failure_to_error, parse_mirror_analyze_facts, parse_mirror_candidate_delta,
 };
 use super::provider::wire_intent;
 use super::sync_state::SyncShared;
@@ -409,11 +409,14 @@ impl PersistentBridgeRouter {
                 stage,
                 code,
                 message,
-            } => MirrorCandidate::Failed(anyhow!(
+                diagnostics,
+            } => MirrorCandidate::Failed(
                 // EXACT one-shot failure surface (into_candidate_result), so
-                // a failing candidate reports identically on both routes.
-                "Node bridge candidate failed at {stage:?}/{code}: {message}"
-            )),
+                // a failing candidate reports identically — semantic
+                // (typed CandidateRejected, downcastable) or operational
+                // (untyped anyhow) — on both routes.
+                candidate_failure_to_error(stage, code, message, diagnostics),
+            ),
         })
     }
 

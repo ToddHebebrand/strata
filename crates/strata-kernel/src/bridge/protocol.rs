@@ -1,5 +1,5 @@
 use crate::{GraphChange, GraphDelta, GraphSnapshot, NodeRecord, ReferenceRecord, SCHEMA_VERSION};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
@@ -978,6 +978,88 @@ impl BridgeErrorPayload {
     }
 }
 
+/// A SEMANTIC candidate rejection: the worker evaluated the candidate and
+/// the candidate itself is wrong (type-check red, behavioral red, or the
+/// mutation could not apply). Distinct from every operational failure
+/// (timeout, crash, transport, invariant), which stays an untyped anyhow
+/// error. Only this error may produce a `validation_failed` change-set
+/// state downstream.
+#[derive(Clone, Debug)]
+pub struct CandidateRejected {
+    pub stage: String, // "validate" | "mutate" (ErrorStage, lowercased)
+    pub code: String,  // "typescriptFailed" | "behavioralFailed" | "intentRejected"
+    pub message: String,
+    pub diagnostics: Vec<RejectionDiagnostic>,
+}
+
+/// The worker diagnostic surface preserved for the client: raw payload
+/// paths stay raw HERE (the service projects them before the wire).
+#[derive(Clone, Debug)]
+pub struct RejectionDiagnostic {
+    pub node_id: Option<String>,
+    pub module_path: Option<String>,
+    pub message: String,
+    pub code: i64,
+}
+
+impl fmt::Display for CandidateRejected {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "candidate rejected at {}/{}: {}",
+            self.stage, self.code, self.message
+        )
+    }
+}
+
+impl std::error::Error for CandidateRejected {}
+
+/// Distinguishes a SEMANTIC candidate rejection (the worker evaluated the
+/// candidate and it is wrong) from every OPERATIONAL failure (timeout,
+/// crash, transport, invariant — including a bare `mutationFailed`, which
+/// is the mutate-stage counterpart of `candidateFinalizeFailed`/
+/// `vitestTimedOut`: the worker could not FINISH the attempt, not that it
+/// evaluated the candidate and rejected it). Only the semantic set
+/// downcasts to [`CandidateRejected`].
+fn is_semantic_rejection(stage: ErrorStage, code: &str) -> bool {
+    matches!(
+        (stage, code),
+        (ErrorStage::Validate, "typescriptFailed")
+            | (ErrorStage::Validate, "behavioralFailed")
+            | (ErrorStage::Mutate, "intentRejected")
+    )
+}
+
+/// Builds the identical typed error for a candidate failure regardless of
+/// which transport observed it (one-shot [`BridgeResponse::into_candidate_result`]
+/// or the persistent mirror route), so callers downstream (Task 3's session
+/// downcast, Task 5's no-replay classification) see one shape.
+pub(crate) fn candidate_failure_to_error(
+    stage: ErrorStage,
+    code: String,
+    message: String,
+    diagnostics: Vec<BridgeDiagnostic>,
+) -> anyhow::Error {
+    if is_semantic_rejection(stage, &code) {
+        anyhow::Error::new(CandidateRejected {
+            stage: format!("{stage:?}").to_lowercase(),
+            code,
+            message,
+            diagnostics: diagnostics
+                .into_iter()
+                .map(|diagnostic| RejectionDiagnostic {
+                    node_id: diagnostic.node_id,
+                    module_path: diagnostic.module_path,
+                    message: diagnostic.message,
+                    code: diagnostic.code,
+                })
+                .collect(),
+        })
+    } else {
+        anyhow!("Node bridge candidate failed at {stage:?}/{code}: {message}")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AnalyzeResult {
@@ -1084,12 +1166,15 @@ impl BridgeResponse {
     pub(crate) fn into_candidate_result(self) -> Result<WireGraphDelta> {
         match self {
             Self::CandidateSuccess(response) => Ok(response.result.delta),
-            Self::CandidateError(response) => bail!(
-                "Node bridge candidate failed at {:?}/{}: {}",
-                response.error.stage,
-                response.error.code,
-                response.error.message
-            ),
+            Self::CandidateError(response) => {
+                let error = response.error;
+                Err(candidate_failure_to_error(
+                    error.stage,
+                    error.code,
+                    error.message,
+                    error.diagnostics,
+                ))
+            }
             _ => bail!("Node bridge response is not a buildValidateCandidate response"),
         }
     }
@@ -1275,6 +1360,7 @@ pub(crate) enum MirrorCandidateResponse {
         stage: ErrorStage,
         code: String,
         message: String,
+        diagnostics: Vec<BridgeDiagnostic>,
     },
 }
 
@@ -1333,6 +1419,7 @@ pub(crate) fn parse_mirror_candidate_delta(
                 stage: inner.error.stage,
                 code: inner.error.code,
                 message: inner.error.message,
+                diagnostics: inner.error.diagnostics,
             })
         }
         _ => bail!("mirror candidate response is not a buildValidateCandidate response"),
@@ -1388,4 +1475,174 @@ fn compare_references(left: &WireReference, right: &WireReference) -> Ordering {
     compare_code_units(&left.from_node_id, &right.from_node_id)
         .then_with(|| compare_code_units(&left.to_node_id, &right.to_node_id))
         .then_with(|| compare_code_units(&left.kind, &right.kind))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diagnostic_json(node_id: Option<&str>, module_path: Option<&str>, code: i64) -> serde_json::Value {
+        serde_json::json!({
+            "nodeId": node_id,
+            "modulePath": module_path,
+            "message": "diagnostic message",
+            "code": code,
+        })
+    }
+
+    fn sample_candidate_binding() -> CandidateBinding {
+        CandidateBinding {
+            service_epoch: WireU64::new(1),
+            graph_generation: WireU64::new(0),
+            graph_digest: Hash64::parse("a".repeat(64)).unwrap(),
+            attempt_id: "attempt:test".into(),
+            scope_fingerprint: Hash64::parse("b".repeat(64)).unwrap(),
+        }
+    }
+
+    fn candidate_binding_json(binding: &CandidateBinding) -> serde_json::Value {
+        serde_json::json!({
+            "serviceEpoch": binding.service_epoch.get().to_string(),
+            "graphGeneration": binding.graph_generation.get().to_string(),
+            "graphDigest": binding.graph_digest.as_str(),
+            "attemptId": binding.attempt_id,
+            "scopeFingerprint": binding.scope_fingerprint.as_str(),
+        })
+    }
+
+    fn candidate_error_response_json(
+        binding: &CandidateBinding,
+        stage: &str,
+        code: &str,
+        diagnostics: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "requestId": "candidate:test",
+            "kind": "buildValidateCandidate",
+            "binding": candidate_binding_json(binding),
+            "ok": false,
+            "error": {
+                "stage": stage,
+                "code": code,
+                "message": "candidate rejected",
+                "diagnostics": diagnostics,
+            },
+        })
+    }
+
+    fn candidate_error_response(
+        stage: &str,
+        code: &str,
+        diagnostics: Vec<serde_json::Value>,
+    ) -> BridgeResponse {
+        let binding = sample_candidate_binding();
+        let value = candidate_error_response_json(&binding, stage, code, diagnostics);
+        serde_json::from_value(value).expect("valid candidate error response frame")
+    }
+
+    #[test]
+    fn typescript_failure_downcasts_to_candidate_rejected_with_diagnostics() {
+        let diagnostics = vec![
+            diagnostic_json(Some("node-1"), Some("src/a.ts"), 2322),
+            diagnostic_json(None, None, 9999),
+        ];
+        let response = candidate_error_response("validate", "typescriptFailed", diagnostics);
+        let error = response.into_candidate_result().unwrap_err();
+        let rejected = error
+            .downcast_ref::<CandidateRejected>()
+            .expect("expected CandidateRejected");
+        assert_eq!(rejected.stage, "validate");
+        assert_eq!(rejected.code, "typescriptFailed");
+        assert_eq!(rejected.diagnostics.len(), 2);
+        assert_eq!(rejected.diagnostics[0].node_id.as_deref(), Some("node-1"));
+        assert_eq!(
+            rejected.diagnostics[0].module_path.as_deref(),
+            Some("src/a.ts")
+        );
+        assert_eq!(rejected.diagnostics[0].code, 2322);
+        assert_eq!(rejected.diagnostics[1].node_id, None);
+        assert_eq!(rejected.diagnostics[1].module_path, None);
+        assert_eq!(rejected.diagnostics[1].code, 9999);
+    }
+
+    #[test]
+    fn behavioral_failure_downcasts_with_message() {
+        let response = candidate_error_response("validate", "behavioralFailed", vec![]);
+        let error = response.into_candidate_result().unwrap_err();
+        let rejected = error
+            .downcast_ref::<CandidateRejected>()
+            .expect("expected CandidateRejected");
+        assert_eq!(rejected.code, "behavioralFailed");
+        assert_eq!(rejected.message, "candidate rejected");
+    }
+
+    #[test]
+    fn mutation_failure_downcasts() {
+        // v2 correction: the semantic mutate-stage rejection code is
+        // "intentRejected", not "mutationFailed" (see
+        // operational_failures_do_not_downcast for the latter).
+        let response = candidate_error_response("mutate", "intentRejected", vec![]);
+        let error = response.into_candidate_result().unwrap_err();
+        let rejected = error
+            .downcast_ref::<CandidateRejected>()
+            .expect("expected CandidateRejected");
+        assert_eq!(rejected.stage, "mutate");
+        assert_eq!(rejected.code, "intentRejected");
+    }
+
+    #[test]
+    fn operational_failures_do_not_downcast() {
+        let cases = [
+            ("hydrate", "hydrateFailed"),
+            ("validate", "candidateFinalizeFailed"),
+            ("validate", "vitestTimedOut"),
+            // v2 correction: mutationFailed is OPERATIONAL, not semantic.
+            ("mutate", "mutationFailed"),
+        ];
+        for (stage, code) in cases {
+            let response = candidate_error_response(stage, code, vec![]);
+            let error = response.into_candidate_result().unwrap_err();
+            assert!(
+                error.downcast_ref::<CandidateRejected>().is_none(),
+                "expected {stage}/{code} to stay operational, not downcast"
+            );
+        }
+    }
+
+    #[test]
+    fn context_wrapping_preserves_downcast() {
+        let response = candidate_error_response("validate", "typescriptFailed", vec![]);
+        let error = response
+            .into_candidate_result()
+            .unwrap_err()
+            .context("outer");
+        assert!(error.downcast_ref::<CandidateRejected>().is_some());
+    }
+
+    #[test]
+    fn mirror_failure_carries_diagnostics() {
+        let binding = sample_candidate_binding();
+        let diagnostics = vec![diagnostic_json(Some("node-2"), None, 555)];
+        let value =
+            candidate_error_response_json(&binding, "validate", "typescriptFailed", diagnostics);
+        let result = parse_mirror_candidate_delta(value, &binding, 64 * 1024).unwrap();
+        match result {
+            MirrorCandidateResponse::Failed {
+                stage,
+                code,
+                message,
+                diagnostics,
+            } => {
+                assert_eq!(stage, ErrorStage::Validate);
+                assert_eq!(code, "typescriptFailed");
+                assert_eq!(message, "candidate rejected");
+                assert_eq!(diagnostics.len(), 1);
+                assert_eq!(diagnostics[0].node_id.as_deref(), Some("node-2"));
+                assert_eq!(diagnostics[0].module_path, None);
+                assert_eq!(diagnostics[0].code, 555);
+            }
+            MirrorCandidateResponse::Delta(_) => panic!("expected Failed"),
+        }
+    }
 }
