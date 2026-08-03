@@ -1516,15 +1516,28 @@ const RED_FIXTURE: &str = concat!(
 /// A private, canonicalized copy of `examples/medium` the seed-green tests
 /// write their fixtures into. Canonicalized because the daemon canonicalizes
 /// `--corpus-root`, and module payloads are matched lexically against it.
+///
+/// `node_modules` is never copied — matching the TS `baselineMedium` helper.
+/// A stale vitest cache (`node_modules/.vite`) left in the shared corpus by an
+/// unrelated local run breaks the spawned baseline in the copy, which would
+/// make these tests fail for reasons that have nothing to do with the gate.
 fn private_medium_corpus(directory: &TempDir) -> PathBuf {
+    let source = repo_root().join("examples/medium");
     let root = directory.path().join("corpus");
-    let status = Command::new("cp")
-        .arg("-R")
-        .arg(repo_root().join("examples/medium"))
-        .arg(&root)
-        .status()
-        .unwrap();
-    assert!(status.success(), "corpus copy failed");
+    fs::create_dir_all(&root).unwrap();
+    for entry in fs::read_dir(&source).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_name() == "node_modules" {
+            continue;
+        }
+        let status = Command::new("cp")
+            .arg("-R")
+            .arg(entry.path())
+            .arg(root.join(entry.file_name()))
+            .status()
+            .unwrap();
+        assert!(status.success(), "corpus copy failed for {:?}", entry.path());
+    }
     fs::canonicalize(&root).unwrap()
 }
 
@@ -1901,5 +1914,184 @@ fn seed_green_baseline_operational_failure_is_fail_closed() {
     assert!(
         fs::read_to_string(&audit).unwrap_or_default().trim().is_empty(),
         "a refusing daemon must audit nothing"
+    );
+}
+
+/// Crash-then-restart helper for the recovery-buffering gates: spawns a daemon
+/// with a journal failpoint armed, sends one mutating request, and asserts the
+/// daemon died at the boundary leaving an unresolved journal entry behind.
+#[cfg(feature = "coordination-test-api")]
+fn crash_pending_request(
+    directory: &TempDir,
+    corpus: &Path,
+    snapshot: &Path,
+    audit: &Path,
+    token: &str,
+) {
+    let worker = bridge_worker();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
+        .args([
+            "serve",
+            "--db",
+            directory.path().join("kernel.redb").to_str().unwrap(),
+            "--snapshot",
+            snapshot.to_str().unwrap(),
+            "--bridge-worker",
+            worker.to_str().unwrap(),
+            "--source-root",
+            corpus.join("src").to_str().unwrap(),
+            "--corpus-root",
+            corpus.to_str().unwrap(),
+            "--socket-token",
+            token,
+            "--audit",
+            audit.to_str().unwrap(),
+            "--test-failpoint",
+            "after_pending",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(!line.trim().is_empty(), "failpoint daemon never became ready");
+    let ready: Value = serde_json::from_str(&line).unwrap();
+    let socket = PathBuf::from(ready["socketPath"].as_str().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let mut stream = UnixStream::connect(&socket).unwrap();
+    stream
+        .write_all(&frame(&json!({
+            "protocolVersion": 1,
+            "requestId": "recovery:begin",
+            "clientId": "client:recovery",
+            "deadlineMs": "120000",
+            "idempotencyKey": "recovery:begin",
+            "action": {"type":"begin_change_set","reasoning":"crash before the gate"},
+        })))
+        .unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).unwrap();
+    assert!(response.is_empty(), "crash boundary returned a response");
+    assert!(
+        !child.wait().unwrap().success(),
+        "failpoint did not terminate the daemon"
+    );
+}
+
+/// Review finding 1. Recovery runs INSIDE `open`, before the gate — it must,
+/// because the gate has to judge the post-recovery graph. Its audit events are
+/// therefore buffered: a RECOVERING daemon that then fails the gate must leave
+/// the audit log exactly as it found it, `request_recovered` included.
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn seed_red_recovering_daemon_audits_nothing_including_recovery_events() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let snapshot = private_corpus_snapshot(&directory, &corpus, false);
+    let audit = directory.path().join("audit.jsonl");
+    crash_pending_request(
+        &directory,
+        &corpus,
+        &snapshot,
+        &audit,
+        "seed-red-recovery-crash",
+    );
+    let before = fs::read_to_string(&audit).unwrap();
+    assert!(
+        before.contains("service_started"),
+        "the crashed run should have audited its own start: {before}"
+    );
+    assert!(
+        !before.contains("request_recovered"),
+        "nothing has recovered yet: {before}"
+    );
+
+    let fixture = write_corpus_fixture(&corpus, "baseline-pin.test.ts", RED_FIXTURE);
+    let manifest = write_validation_manifest(&directory, "behavioral", vec![fixture]);
+    let (code, stderr) = await_readiness(spawn_gated_service(
+        &directory,
+        "seed-red-recovery-refuses",
+        &corpus,
+        &snapshot,
+        &audit,
+        Some(&manifest),
+    ))
+    .err()
+    .unwrap_or_else(|| panic!("a red recovering daemon must refuse to serve"));
+
+    assert_eq!(code, 2, "{stderr}");
+    let after = fs::read_to_string(&audit).unwrap();
+    assert_eq!(
+        after, before,
+        "a refusing daemon must append NOTHING — recovery events included"
+    );
+}
+
+/// The other half of the same fix: buffering must not change what a HEALTHY
+/// recovering daemon writes. The recovery events still land, still before the
+/// start event, in the order they always did.
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn healthy_recovering_daemon_keeps_its_recovery_then_start_audit_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let snapshot = private_corpus_snapshot(&directory, &corpus, false);
+    let audit = directory.path().join("audit.jsonl");
+    crash_pending_request(
+        &directory,
+        &corpus,
+        &snapshot,
+        &audit,
+        "seed-green-recovery-crash",
+    );
+    let before_lines = fs::read_to_string(&audit).unwrap().lines().count();
+
+    let fixture = write_corpus_fixture(&corpus, "baseline-pin.test.ts", GREEN_FIXTURE);
+    let manifest = write_validation_manifest(&directory, "behavioral", vec![fixture]);
+    let service = await_readiness(spawn_gated_service(
+        &directory,
+        "seed-green-recovery-serves",
+        &corpus,
+        &snapshot,
+        &audit,
+        Some(&manifest),
+    ))
+    .unwrap_or_else(|(code, stderr)| panic!("green recovering daemon refused ({code}): {stderr}"));
+    assert_eq!(service.readiness["recovered"], true, "{}", service.readiness);
+
+    let contents = fs::read_to_string(&audit).unwrap();
+    let kinds: Vec<&str> = contents
+        .lines()
+        .skip(before_lines)
+        .map(|line| {
+            if line.contains("request_recovered") {
+                "request_recovered"
+            } else if line.contains("service_recovered") {
+                "service_recovered"
+            } else {
+                "other"
+            }
+        })
+        .collect();
+    assert!(
+        kinds.contains(&"request_recovered"),
+        "the pending request must still be audited as recovered: {contents}"
+    );
+    assert_eq!(
+        kinds.last(),
+        Some(&"service_recovered"),
+        "the start event must remain LAST, after every recovery event: {contents}"
+    );
+    assert!(
+        !kinds.contains(&"other"),
+        "buffering must not introduce or reorder events: {contents}"
     );
 }

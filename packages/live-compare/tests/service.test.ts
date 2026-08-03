@@ -8,7 +8,12 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CoordinationClient } from "../src/client.js";
-import { startKernelService } from "../src/service.js";
+import {
+  DEFAULT_READINESS_TIMEOUT_MS,
+  GATED_READINESS_TIMEOUT_MS,
+  readinessTimeoutMsFor,
+  startKernelService
+} from "../src/service.js";
 import { createQualifiedTaskManifest, type TaskAssignment } from "../src/tasks.js";
 import { advanceUntilTerminal, beginAndSubmit, credentialFreeEnv, ensureBuilt } from "./serviceHarness.js";
 
@@ -67,4 +72,53 @@ describe("kernel service directory lifecycle", () => {
     },
     240_000
   );
+});
+
+/**
+ * B-2 Task 7: a manifest-gated daemon runs a full tsc (plus fixtures) against
+ * generation zero BEFORE its readiness line, which the historic hard-coded 10s
+ * budget cannot meet. The budget scales off the manifest; the no-manifest
+ * default is untouched.
+ */
+describe("kernel service readiness budget", () => {
+  it("keeps 10s without a manifest and scales for a gated daemon", () => {
+    expect(readinessTimeoutMsFor()).toBe(DEFAULT_READINESS_TIMEOUT_MS);
+    expect(readinessTimeoutMsFor({})).toBe(DEFAULT_READINESS_TIMEOUT_MS);
+    expect(readinessTimeoutMsFor({ env: credentialFreeEnv() })).toBe(
+      DEFAULT_READINESS_TIMEOUT_MS
+    );
+
+    expect(readinessTimeoutMsFor({ validationManifestPath: "/tmp/m.json" })).toBe(
+      GATED_READINESS_TIMEOUT_MS
+    );
+    // A manifest smuggled in through extraArgs scales the budget too.
+    expect(
+      readinessTimeoutMsFor({ extraArgs: ["--validation-manifest", "/tmp/m.json"] })
+    ).toBe(GATED_READINESS_TIMEOUT_MS);
+
+    // An explicit override always wins, in both directions.
+    expect(
+      readinessTimeoutMsFor({ validationManifestPath: "/tmp/m.json", readinessTimeoutMs: 25 })
+    ).toBe(25);
+    expect(readinessTimeoutMsFor({ readinessTimeoutMs: 999_000 })).toBe(999_000);
+  });
+
+  it("plumbs validationManifestPath through to the daemon's argv", async () => {
+    ensureBuilt();
+    const directory = mkdtempSync(join(tmpdir(), "strata-service-manifest-"));
+    temporary.push(directory);
+    const missingManifest = join(directory, "no-such-manifest.json");
+
+    // The daemon must FAIL naming this exact path — which it can only do if the
+    // flag reached its argv. The failure is immediate, so the (240s) gated
+    // budget is never actually waited on here; Task 8's gate exercises the
+    // long-readiness path end to end.
+    await expect(
+      startKernelService(corpusRoot, {
+        env: credentialFreeEnv(),
+        directory,
+        validationManifestPath: missingManifest
+      })
+    ).rejects.toThrow(/load validation manifest .*no-such-manifest\.json/s);
+  }, 60_000);
 });

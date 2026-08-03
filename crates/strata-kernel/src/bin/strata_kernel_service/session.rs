@@ -153,6 +153,23 @@ pub(super) struct ServiceSession {
     /// Present only under `--metrics`. Behind a `Mutex` because connections are
     /// served on independent threads and each may emit records.
     metrics: Option<Mutex<MetricsSink>>,
+    /// Startup holding pens (B-2 Task 7). `Some` from construction until
+    /// `finalize_startup`, which flushes them in order and then latches them to
+    /// `None` so every later append/emit writes straight through.
+    ///
+    /// Recovery (`resolve_pending_before_bind`) runs INSIDE `open`, before the
+    /// seed-green gate — it has to, because the gate must judge the
+    /// post-recovery graph. But recovery is observable: it appends
+    /// `request_recovered` (and, through `execute_pending`, any advance-path
+    /// audit event) and emits the recovery metrics record. Writing those
+    /// straight to disk would leave a refusing daemon's fingerprints in an
+    /// audit log for a session that never served. Buffering makes "a refusing
+    /// daemon leaves nothing behind" true for the whole startup path, and —
+    /// because nothing runs between `open` and `finalize_startup` on the
+    /// no-manifest path — leaves that path's audit content AND ordering
+    /// byte-identical.
+    startup_audit: Mutex<Option<Vec<AuditEvent>>>,
+    startup_metrics: Mutex<Option<Vec<MetricsRecord>>>,
     #[cfg(feature = "redb-spike-api")]
     publish_failpoint: strata_kernel::PublishFailpoint,
     recovered: bool,
@@ -210,17 +227,16 @@ impl ServiceSession {
             validation: config.validation,
             failpoint: config.failpoint,
             metrics,
+            startup_audit: Mutex::new(Some(Vec::new())),
+            startup_metrics: Mutex::new(Some(Vec::new())),
             #[cfg(feature = "redb-spike-api")]
             publish_failpoint: config.publish_failpoint,
             recovered: existed,
         });
         // One recovery record per daemon start, before the socket is reachable.
-        // `existed` is exactly the `recovered` flag surfaced on the wire.
-        if let Some(sink) = session.metrics.as_ref() {
-            if let Ok(mut sink) = sink.lock() {
-                sink.emit(&MetricsRecord::recovery(existed, &recovery));
-            }
-        }
+        // `existed` is exactly the `recovered` flag surfaced on the wire. Held
+        // in the startup buffer until the gate admits the session.
+        session.emit_metric(MetricsRecord::recovery(existed, &recovery));
         session.resolve_pending_before_bind()?;
         Ok((session, recovery.service_epoch))
     }
@@ -237,6 +253,23 @@ impl ServiceSession {
     /// stream's content and its order relative to hydration and the socket
     /// bind are exactly what they were before this split.
     pub fn finalize_startup(&self) -> Result<()> {
+        // Flush the recovery-time side effects the gate was holding, in the
+        // order they happened and strictly BEFORE the start event — exactly
+        // where they landed before the gate existed.
+        if let Some(records) = self.startup_metrics.lock().map_err(lock_error)?.take()
+            && let Some(sink) = self.metrics.as_ref()
+            && let Ok(mut sink) = sink.lock()
+        {
+            for record in &records {
+                sink.emit(record);
+            }
+        }
+        if let Some(events) = self.startup_audit.lock().map_err(lock_error)?.take() {
+            let mut audit = self.audit.lock().map_err(lock_error)?;
+            for event in events {
+                audit.append(event)?;
+            }
+        }
         self.append_audit(AuditEvent {
             kind: if self.recovered {
                 "service_recovered".into()
@@ -1405,7 +1438,29 @@ impl ServiceSession {
     }
 
     fn append_audit(&self, event: AuditEvent) -> Result<()> {
+        if let Some(buffer) = self.startup_audit.lock().map_err(lock_error)?.as_mut() {
+            buffer.push(event);
+            return Ok(());
+        }
         self.audit.lock().map_err(lock_error)?.append(event)
+    }
+
+    /// Single emit path for every observability record, so the startup buffer
+    /// catches recovery-time records without each call site knowing about it.
+    /// Best-effort throughout: observability must never fail a request.
+    fn emit_metric(&self, record: MetricsRecord) {
+        let Some(sink) = self.metrics.as_ref() else {
+            return;
+        };
+        if let Ok(mut guard) = self.startup_metrics.lock()
+            && let Some(buffer) = guard.as_mut()
+        {
+            buffer.push(record);
+            return;
+        }
+        if let Ok(mut sink) = sink.lock() {
+            sink.emit(&record);
+        }
     }
 
     fn apply_follow_up(&self, follow_up: Option<&FollowUp>) -> Result<()> {

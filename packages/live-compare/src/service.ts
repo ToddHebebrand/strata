@@ -31,15 +31,51 @@ export interface RunningKernelService {
  * directory's `snapshot.json`, but ignores it on that branch) — this is the
  * parity/crash harness's restart-against-the-same-store path.
  */
+export interface StartKernelServiceOptions {
+  binaryPath?: string;
+  bridgeWorkerPath?: string;
+  env?: NodeJS.ProcessEnv;
+  directory?: string;
+  extraArgs?: string[];
+  /**
+   * Operator validation manifest (`--validation-manifest`). Supplying it puts
+   * the daemon under the B-2 seed-green startup gate: it runs a full tsc (plus
+   * the manifest's fixtures under vitest) against generation zero BEFORE it
+   * prints its readiness line. Readiness therefore takes minutes, not
+   * milliseconds — see {@link readinessTimeoutMsFor}.
+   */
+  validationManifestPath?: string;
+  /** Explicit readiness budget; overrides the manifest-derived default. */
+  readinessTimeoutMs?: number;
+}
+
+/** Readiness budget without a manifest — unchanged pre-B-2 behavior. */
+export const DEFAULT_READINESS_TIMEOUT_MS = 10_000;
+/**
+ * Readiness budget for a manifest-gated daemon. Generous on purpose: the
+ * seed-green baseline spawns a real tsc and (behaviorally) a real vitest over
+ * the whole corpus before the socket binds, and the manifest's own per-step
+ * budgets can legitimately total three minutes.
+ */
+export const GATED_READINESS_TIMEOUT_MS = 240_000;
+
+/**
+ * The readiness budget for a given start. An explicit override always wins;
+ * otherwise a manifest — passed either as `validationManifestPath` or already
+ * present in `extraArgs` — scales the budget, and everything else keeps the
+ * historic 10s.
+ */
+export function readinessTimeoutMsFor(options?: StartKernelServiceOptions): number {
+  if (options?.readinessTimeoutMs !== undefined) return options.readinessTimeoutMs;
+  const gated =
+    options?.validationManifestPath !== undefined ||
+    (options?.extraArgs ?? []).includes("--validation-manifest");
+  return gated ? GATED_READINESS_TIMEOUT_MS : DEFAULT_READINESS_TIMEOUT_MS;
+}
+
 export async function startKernelService(
   corpusRoot: string,
-  options?: {
-    binaryPath?: string;
-    bridgeWorkerPath?: string;
-    env?: NodeJS.ProcessEnv;
-    directory?: string;
-    extraArgs?: string[];
-  }
+  options?: StartKernelServiceOptions
 ): Promise<RunningKernelService> {
   const binary = options?.binaryPath ?? join(repoRoot, "target/debug/strata-kernel-service");
   const bridgeWorker = options?.bridgeWorkerPath ?? join(repoRoot, "packages/kernel-bridge/dist/worker.js");
@@ -56,13 +92,20 @@ export async function startKernelService(
     "--bridge-worker", bridgeWorker,
     "--source-root", join(corpusRoot, "src"), "--corpus-root", corpusRoot,
     "--audit", auditPath, "--socket-token", randomUUID(),
+    ...(options?.validationManifestPath === undefined
+      ? []
+      : ["--validation-manifest", options.validationManifestPath]),
     ...(options?.extraArgs ?? [])
   ], { cwd: repoRoot, env: options?.env ?? process.env, stdio: ["ignore", "pipe", "pipe"] });
   const stderr: Buffer[] = [];
   child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
   const line = await new Promise<string>((resolveLine, reject) => {
     const reader = createInterface({ input: child.stdout });
-    const timer = setTimeout(() => reject(new Error("service readiness timed out")), 10_000);
+    const readinessTimeoutMs = readinessTimeoutMsFor(options);
+    const timer = setTimeout(
+      () => reject(new Error(`service readiness timed out after ${readinessTimeoutMs}ms`)),
+      readinessTimeoutMs
+    );
     reader.once("line", (value) => { clearTimeout(timer); reader.close(); resolveLine(value); });
     child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`service exited ${code}: ${Buffer.concat(stderr)}`)); });
   });
