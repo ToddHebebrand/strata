@@ -240,9 +240,96 @@ impl OpenSession {
     }
 }
 
+/// What a connection may say first.
+///
+/// `health` is a FIRST FRAME, never an action, and that placement is the whole
+/// point: D-2 proved the handshake never reaches `bind_request`, so health
+/// inherits that property. A health probe on the journalled request path would
+/// make ordinary monitoring generate durable fsync traffic forever.
+///
+/// `open_session`'s wire bytes are unchanged — the D-2 golden corpus asserts
+/// them. This is an addition, not a reshape.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(super) enum FirstFrame {
+    #[serde(rename_all = "camelCase")]
+    OpenSession {
+        protocol_version: u8,
+        actor: String,
+        role: SessionRole,
+        client_instance: String,
+        connection_generation: WireU64,
+    },
+    #[serde(rename_all = "camelCase")]
+    Health { protocol_version: u8 },
+}
+
+/// The health reply.
+///
+/// The COMPLETE shape is defined in D-3a, including `draining` and
+/// `active_requests`, which are constants here. D-3b makes them vary but
+/// changes no shape — a frame that gained fields between slices would be
+/// exactly the wire-freeze problem the D-3 split had to answer for.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case", rename_all_fields = "camelCase")]
+pub(super) enum HealthReply {
+    HealthOk {
+        protocol_version: u8,
+        service_epoch: WireU64,
+        recovered: bool,
+        validation_mode: ValidationMode,
+        #[serde(deserialize_with = "required_nullable_digest")]
+        validation_manifest_digest: Option<String>,
+        /// The request-admission state. Always false in D-3a.
+        draining: bool,
+        /// Requests between the request-start boundary and response flush.
+        /// Always "0" in D-3a.
+        active_requests: WireU64,
+    },
+}
+
+pub(super) fn serialize_health_reply(reply: &HealthReply) -> Result<Vec<u8>> {
+    encode_frame(reply, MAX_HANDSHAKE_FRAME_BYTES)
+}
+
+pub(super) fn parse_health_reply_frame(bytes: &[u8]) -> Result<HealthReply> {
+    let payload = decode_frame(bytes, MAX_HANDSHAKE_FRAME_BYTES)?;
+    serde_json::from_str(payload).context("invalid health reply JSON")
+}
+
 /// Parses the first frame of a connection. Deliberately NOT a variant of
-/// `parse_request_frame`: the handshake never reaches the journalled request
+/// `parse_request_frame`: the first frame never reaches the journalled request
 /// path, so it must not share a validator that a request context can mutate.
+pub(super) fn parse_first_frame(bytes: &[u8]) -> Result<FirstFrame> {
+    let payload = decode_frame(bytes, MAX_HANDSHAKE_FRAME_BYTES)?;
+    let frame: FirstFrame =
+        serde_json::from_str(payload).context("invalid first frame JSON")?;
+    match &frame {
+        FirstFrame::OpenSession {
+            protocol_version,
+            actor,
+            client_instance,
+            connection_generation,
+            ..
+        } => {
+            if *protocol_version != PROTOCOL_VERSION {
+                bail!("unsupported protocol version");
+            }
+            validate_string(actor, MAX_ID_BYTES, false, "actor")?;
+            validate_string(client_instance, MAX_ID_BYTES, false, "clientInstance")?;
+            if connection_generation.get() == 0 {
+                bail!("connectionGeneration must be a positive canonical integer");
+            }
+        }
+        FirstFrame::Health { protocol_version } => {
+            if *protocol_version != PROTOCOL_VERSION {
+                bail!("unsupported protocol version");
+            }
+        }
+    }
+    Ok(frame)
+}
+
 pub(super) fn parse_open_session_frame(bytes: &[u8]) -> Result<OpenSession> {
     let payload = decode_frame(bytes, MAX_HANDSHAKE_FRAME_BYTES)?;
     let handshake: OpenSession =

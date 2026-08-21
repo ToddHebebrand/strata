@@ -1,0 +1,460 @@
+//! D-3a: ownership and health, driven through the real daemon binary.
+//!
+//! Every test injects its OWN socket root. The production `/tmp/strata-lc`
+//! holds live daemons' sockets, and an earlier draft of this suite would have
+//! removed and symlinked it — capable of destroying a running daemon's endpoint
+//! or a parallel test's.
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Barrier};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use tempfile::TempDir;
+
+fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// A socket root short enough to leave room for the incarnation basename.
+///
+/// The budget is tight and worth stating: the basename is
+/// `<64 hex>.<11 hex>.sock` = 81 bytes, and the limit is 96, so the root plus
+/// its separator gets 15. Production's `/tmp/strata-lc` is 14 -- meaning the
+/// real path lands at EXACTLY 96 bytes and the 11-hex nonce bound is precisely
+/// what makes it fit. Test roots therefore have to be shorter than a default
+/// `tempdir` name.
+struct TestRoot {
+    path: PathBuf,
+}
+
+impl TestRoot {
+    fn new() -> Self {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+        // The daemon CREATES this directory, exactly as production does, so
+        // mkdir's atomic 0700 applies. Handing it a pre-existing directory
+        // with default permissions is refused -- correctly.
+        let path = PathBuf::from(format!("/tmp/d{:x}{unique:x}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TestRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn token_hash(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
+fn bridge_worker() -> PathBuf {
+    let worker = repo_root().join("packages/kernel-bridge/dist/worker.js");
+    if !worker.exists() {
+        let status = Command::new("pnpm")
+            .args(["--filter", "@strata-code/kernel-bridge", "build"])
+            .current_dir(repo_root())
+            .status()
+            .unwrap();
+        assert!(status.success(), "kernel bridge fixture build failed");
+    }
+    worker
+}
+
+struct Daemon {
+    child: Child,
+    socket_path: PathBuf,
+    epoch: u64,
+    readiness: Value,
+    pid: u32,
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+struct Refusal {
+    code: Option<i32>,
+    stderr: String,
+}
+
+fn snapshot(directory: &Path) -> PathBuf {
+    let value: Value =
+        serde_json::from_str(include_str!("fixtures/examples-medium.snapshot.json")).unwrap();
+    let path = directory.join("snapshot.json");
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    path
+}
+
+fn daemon_command(state: &Path, token: &str, root: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"));
+    command.args([
+        "serve",
+        "--db",
+        state.join("kernel.redb").to_str().unwrap(),
+        "--snapshot",
+        snapshot(state).to_str().unwrap(),
+        "--bridge-worker",
+        bridge_worker().to_str().unwrap(),
+        "--source-root",
+        repo_root().join("examples/medium/src").to_str().unwrap(),
+        "--corpus-root",
+        repo_root().join("examples/medium").to_str().unwrap(),
+        "--socket-token",
+        token,
+        "--audit",
+        state.join("audit.jsonl").to_str().unwrap(),
+        "--socket-root",
+        root.to_str().unwrap(),
+    ]);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+}
+
+fn start_daemon(state: &TempDir, token: &str, root: &Path) -> Daemon {
+    match try_start_daemon(state, token, root) {
+        Ok(daemon) => daemon,
+        Err(refusal) => panic!("daemon refused to start: {}", refusal.stderr),
+    }
+}
+
+fn try_start_daemon(state: &TempDir, token: &str, root: &Path) -> Result<Daemon, Refusal> {
+    let mut child = daemon_command(state.path(), token, root).spawn().unwrap();
+    let pid = child.id();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    if line.trim().is_empty() {
+        let mut stderr = String::new();
+        child.stderr.take().unwrap().read_to_string(&mut stderr).unwrap();
+        let code = child.wait().unwrap().code();
+        return Err(Refusal { code, stderr });
+    }
+    let readiness: Value = serde_json::from_str(&line).unwrap();
+    let socket_path = PathBuf::from(readiness["socketPath"].as_str().unwrap());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !socket_path.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    Ok(Daemon {
+        child,
+        epoch: readiness["serviceEpoch"].as_str().unwrap().parse().unwrap(),
+        readiness,
+        socket_path,
+        pid,
+    })
+}
+
+fn start_daemon_expecting_failure(state: &TempDir, token: &str, root: &Path) -> Refusal {
+    match try_start_daemon(state, token, root) {
+        Ok(_) => panic!("daemon started when it should have refused"),
+        Err(refusal) => refusal,
+    }
+}
+
+fn kill_hard(daemon: &mut Daemon) {
+    let _ = daemon.child.kill();
+    let _ = daemon.child.wait();
+}
+
+fn read_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
+    let mut buffer = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => return if buffer.is_empty() { None } else { Some(buffer) },
+            Ok(_) => {
+                buffer.push(byte[0]);
+                if byte[0] == b'\n' {
+                    return Some(buffer);
+                }
+            }
+            Err(_) => return if buffer.is_empty() { None } else { Some(buffer) },
+        }
+    }
+}
+
+fn health_probe(socket: &Path) -> Value {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut frame = serde_json::to_vec(&json!({"protocolVersion": 2, "type": "health"})).unwrap();
+    frame.push(b'\n');
+    stream.write_all(&frame).unwrap();
+    let reply = read_frame(&mut stream).expect("no health reply");
+    serde_json::from_slice(&reply[..reply.len() - 1]).unwrap()
+}
+
+fn audit_len(state: &TempDir) -> u64 {
+    std::fs::metadata(state.path().join("audit.jsonl"))
+        .map(|meta| meta.len())
+        .unwrap_or(0)
+}
+
+fn journal_len(state: &TempDir) -> u64 {
+    std::fs::metadata(state.path().join("kernel.redb.service-journal.jsonl"))
+        .map(|meta| meta.len())
+        .unwrap_or(0)
+}
+
+fn owner_metadata_pid(state: &TempDir) -> Option<u64> {
+    let raw = std::fs::read_to_string(state.path().join(".strata-owner")).ok()?;
+    serde_json::from_str::<Value>(raw.trim())
+        .ok()?
+        .get("pid")?
+        .as_u64()
+}
+
+// ---------------------------------------------------------------------------
+// Task 4 — health
+// ---------------------------------------------------------------------------
+
+/// Health reports the session's identity and appends NOTHING durable.
+///
+/// The second half is the load-bearing one. D-2 proved the handshake never
+/// reaches `bind_request`; health inherits that. If health ran on the
+/// journalled request path, ordinary monitoring would generate durable fsync
+/// traffic forever.
+#[test]
+fn health_reports_the_exact_identity_key_set_and_appends_nothing_durable() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let service = start_daemon(&state, "d3a-health", &root);
+
+    let journal = journal_len(&state);
+    let audit = audit_len(&state);
+    // Non-vacuity anchor: the audit log really is written at startup, so the
+    // "did not grow" assertions below are measuring an absence of growth rather
+    // than an absence of a file. The journal is deliberately still ZERO here --
+    // it is created by the first journalled request, and health must never be
+    // one, so it staying at zero is itself the claim.
+    assert!(audit > 0, "precondition: startup wrote a start event");
+    assert_eq!(journal, 0, "precondition: nothing has journalled a request yet");
+
+    for _ in 0..25 {
+        let reply = health_probe(&service.socket_path);
+        let mut keys: Vec<&str> = reply.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "activeRequests",
+                "draining",
+                "protocolVersion",
+                "recovered",
+                "serviceEpoch",
+                "type",
+                "validationManifestDigest",
+                "validationMode",
+            ],
+            "health_ok must carry its complete shape: {reply}"
+        );
+        assert_eq!(reply["type"], "health_ok", "{reply}");
+        assert_eq!(reply["serviceEpoch"], service.epoch.to_string(), "{reply}");
+        assert_eq!(reply["recovered"], false, "{reply}");
+        assert_eq!(
+            reply["validationMode"], service.readiness["validationMode"],
+            "{reply}"
+        );
+        assert_eq!(reply["validationManifestDigest"], Value::Null, "{reply}");
+        // Constants in D-3a, with the semantics D-3b will supply live values
+        // for. Present now so no frame gains fields between the slices.
+        assert_eq!(reply["draining"], false, "{reply}");
+        assert_eq!(reply["activeRequests"], "0", "{reply}");
+    }
+
+    assert_eq!(journal_len(&state), journal, "health wrote to the journal");
+    assert_eq!(audit_len(&state), audit, "health wrote to the audit log");
+}
+
+// ---------------------------------------------------------------------------
+// Task 3 — exclusion before recovery
+// ---------------------------------------------------------------------------
+
+/// A SIMULTANEOUS race, not sequential exclusion. Starting the second daemon
+/// after the first is ready proves only that a running daemon blocks a new one;
+/// the spec asks that a race resolve to exactly one server.
+#[test]
+fn two_daemons_started_simultaneously_yield_exactly_one_server() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    // Pre-build the bridge worker so neither racer pays for it inside the race.
+    bridge_worker();
+    snapshot(state.path());
+
+    let barrier = Arc::new(Barrier::new(2));
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let barrier = Arc::clone(&barrier);
+            let state_path = state.path().to_owned();
+            let root_path = root.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                let mut child = daemon_command(&state_path, "d3a-simultaneous", &root_path)
+                    .spawn()
+                    .unwrap();
+                let mut line = String::new();
+                BufReader::new(child.stdout.take().unwrap())
+                    .read_line(&mut line)
+                    .unwrap();
+                let ready = !line.trim().is_empty();
+                if ready {
+                    let _ = child.kill();
+                }
+                let code = child.wait().unwrap().code();
+                (ready, code)
+            })
+        })
+        .collect();
+
+    let outcomes: Vec<(bool, Option<i32>)> =
+        handles.into_iter().map(|handle| handle.join().unwrap()).collect();
+    let served = outcomes.iter().filter(|(ready, _)| *ready).count();
+    assert_eq!(served, 1, "exactly one daemon may serve: {outcomes:?}");
+    let refused = outcomes.iter().find(|(ready, _)| !*ready).unwrap();
+    assert_eq!(refused.1, Some(2), "the loser must exit 2: {outcomes:?}");
+}
+
+/// The loser's guarantee is "no canonical-state mutation", not "no observable
+/// work" — argument parsing and manifest reading are read-only preflight and
+/// legitimately already happened.
+#[test]
+fn a_losing_daemon_mutates_no_canonical_state_and_writes_no_diagnostics() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let first = start_daemon(&state, "d3a-race", &root);
+    let audit = audit_len(&state);
+    let journal = journal_len(&state);
+    let winner_pid = u64::from(first.pid);
+    assert_eq!(owner_metadata_pid(&state), Some(winner_pid));
+
+    let refusal = start_daemon_expecting_failure(&state, "d3a-race", &root);
+    assert_eq!(refusal.code, Some(2), "{}", refusal.stderr);
+    assert!(
+        refusal.stderr.contains("already owns"),
+        "the refusal must name its reason: {}",
+        refusal.stderr
+    );
+
+    // EXACT lengths. `starts_with` cannot prove nothing was appended, because
+    // every append preserves the prefix.
+    assert_eq!(audit_len(&state), audit, "the loser wrote to the audit log");
+    assert_eq!(journal_len(&state), journal, "the loser wrote to the journal");
+    assert_eq!(
+        owner_metadata_pid(&state),
+        Some(winner_pid),
+        "the loser overwrote the winner's owner metadata"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 — per-incarnation paths and exact-record reclamation
+// ---------------------------------------------------------------------------
+
+/// The heart of D-3a: a crash orphan is a DIFFERENT path from the restart, so
+/// there was never a live-or-stale decision to make.
+#[test]
+fn a_crash_orphan_is_a_different_path_and_is_reclaimed_by_exact_record() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let mut crashed = start_daemon(&state, "d3a-orphan", &root);
+    let orphan = crashed.socket_path.clone();
+    kill_hard(&mut crashed);
+    assert!(orphan.exists(), "precondition: a crash leaves the socket behind");
+
+    let restarted = start_daemon(&state, "d3a-orphan", &root);
+    assert_ne!(
+        restarted.socket_path, orphan,
+        "a restart must never reuse a socket name"
+    );
+    assert_eq!(health_probe(&restarted.socket_path)["type"], "health_ok");
+    assert!(!orphan.exists(), "the recorded predecessor was not reclaimed");
+}
+
+/// Exact-record reclamation touches nothing it cannot name. A wildcard sweep
+/// over `<hash>.*.sock` would have deleted this.
+#[test]
+fn an_unrecorded_socket_matching_our_token_is_left_alone() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let hash = token_hash("d3a-unrecorded");
+    // Create the root with the permissions the daemon insists on, so a
+    // socket can be planted before it starts.
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let planted = &root.join(format!("{hash}.beef1234.sock"));
+    let _listener = std::os::unix::net::UnixListener::bind(&planted).unwrap();
+
+    let service = start_daemon(&state, "d3a-unrecorded", &root);
+    assert_ne!(service.socket_path, planted.as_path());
+    assert!(
+        planted.exists(),
+        "reclamation deleted a socket it had no record of creating"
+    );
+}
+
+/// Another token's socket is never in scope, recorded or not.
+#[test]
+fn reclamation_never_touches_another_token() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    // Create the root with the permissions the daemon insists on, so a
+    // socket can be planted before it starts.
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let foreign = &root.join(format!("{}.deadbeef.sock", "b".repeat(64)));
+    let _listener = std::os::unix::net::UnixListener::bind(&foreign).unwrap();
+
+    let _service = start_daemon(&state, "d3a-other", &root);
+    assert!(foreign.exists(), "reclamation deleted another token's socket");
+}
+
+#[test]
+fn validate_socket_accepts_the_incarnation_shape_and_still_rejects_junk() {
+    let hash = "a".repeat(64);
+    let good = format!("/tmp/strata-lc/{hash}.0123abcd.sock");
+    let run = |socket: &str| {
+        Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
+            .args(["validate-socket", "--socket", socket])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(run(&good), "the incarnation shape must be accepted");
+    for bad in [
+        // The OLD shape: no incarnation nonce at all.
+        format!("/tmp/strata-lc/{hash}.sock"),
+        "/tmp/strata-lc/short.sock".to_owned(),
+        "/tmp/strata-lc/../escape.sock".to_owned(),
+        format!("/elsewhere/{hash}.0123abcd.sock"),
+        format!("/tmp/strata-lc/{hash}.0123abcd.notsock"),
+        // Nonce past the 11-hex bound, which would risk the 96-byte limit.
+        format!("/tmp/strata-lc/{hash}.{}.sock", "0".repeat(12)),
+        format!("/tmp/strata-lc/{hash}.NOTHEX01.sock"),
+    ] {
+        assert!(!run(&bad), "{bad} should have been rejected");
+    }
+}

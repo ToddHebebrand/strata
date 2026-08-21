@@ -958,7 +958,11 @@ fn read_operation_returns_canonical_audit_record_and_rejects_unknown_id() {
 
 #[test]
 fn daemon_rejects_unsafe_or_overlong_socket_paths_before_bind() {
-    let overlong = format!("/tmp/strata-lc/{}.sock", "a".repeat(100));
+    // D-3a: the incarnation form (`<hash>.<nonce>.sock`). The old shape had no
+    // nonce, so this assertion used to be satisfied by a length rejection that
+    // never consulted the basename shape at all -- it would have kept passing
+    // through the D-3a change while testing nothing about it.
+    let overlong = format!("/tmp/strata-lc/{}.0123abcd.sock", "a".repeat(100));
     let output = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
         .args(["validate-socket", "--socket", &overlong])
         .output()
@@ -981,7 +985,7 @@ fn daemon_rejects_unsafe_or_overlong_socket_paths_before_bind() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("/tmp/strata-lc/"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("/tmp/strata-lc"));
 }
 
 /// The single-flag pin for `--validation-manifest` (B-2 Task 5): the shared

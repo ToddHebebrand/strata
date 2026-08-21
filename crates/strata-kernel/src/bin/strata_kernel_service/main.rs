@@ -78,6 +78,11 @@ fn serve(arguments: &[OsString]) -> Result<()> {
         // runs exactly as before B-2 (tscOnly, no fixtures, default
         // timeouts) — the byte-identical no-flag guarantee.
         "--validation-manifest",
+        // D-3a: the directory holding endpoint locks, records, and sockets.
+        // Absent means the production `/tmp/strata-lc`. This exists so tests
+        // never operate on the shared directory — it holds live daemons'
+        // sockets, and a test that removed or replaced it could destroy them.
+        "--socket-root",
     ];
     #[cfg(feature = "coordination-test-api")]
     allowed.push("--test-failpoint");
@@ -91,6 +96,10 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     let corpus_root = required_path(&values, "--corpus-root")?;
     let audit_path = required_path(&values, "--audit")?;
     let token = required_text(&values, "--socket-token")?;
+    let socket_root = match optional_path(&values, "--socket-root") {
+        Some(path) => lifecycle::SocketRoot::open(&path)?,
+        None => lifecycle::SocketRoot::production()?,
+    };
     let metrics_path = optional_path(&values, "--metrics");
     // Resolved BEFORE corpus_root moves into NodeBridgeConfig::tsc_only
     // below. Produces both the ValidationSettings the session publishes as
@@ -184,7 +193,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     if persistent_bridge {
         bridge_config = bridge_config.with_persistent_bridge(true);
     }
-    server::serve(
+    server::serve_in_root(
         ServiceConfig {
             db_path,
             snapshot_path,
@@ -198,6 +207,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             publish_failpoint,
         },
         &token,
+        socket_root,
     )
 }
 

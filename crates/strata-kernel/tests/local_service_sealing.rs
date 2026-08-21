@@ -38,7 +38,7 @@ fn default_build_service_has_no_test_authority_surface() {
         .args([
             "validate-socket",
             "--socket",
-            "/tmp/strata-lc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.sock",
+            "/tmp/strata-lc/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.0123abcd.sock",
             "--test-failpoint",
             "after_pending",
         ])

@@ -11,7 +11,8 @@ use sha2::{Digest, Sha256};
 
 use super::protocol::{
     LocalServiceResponse, MAX_HANDSHAKE_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, PROTOCOL_VERSION,
-    SessionReply, SessionRole, WireU64, parse_open_session_frame, serialize_response_frame,
+    FirstFrame, HealthReply, OpenSession, OpenSessionTag, SessionReply, SessionRole, WireU64,
+    parse_first_frame, serialize_health_reply, serialize_response_frame,
     serialize_session_reply,
 };
 use super::lifecycle::{self, CanonicalStateDir, EndpointClaim, OwnerLock, SocketRoot};
@@ -122,7 +123,7 @@ pub(super) fn serve_in_root(
     lifecycle::EndpointRecord::publish(&root, &token_hash, &socket_name)?;
     let (bound, listener) = lifecycle::BoundEndpoint::bind(&root, &token_hash, &nonce)?;
     let socket_path = bound.path().to_owned();
-    validate_socket_path(&socket_path)?;
+    validate_socket_path_in(&socket_path, root.path())?;
     let ready = Readiness {
         protocol_version: PROTOCOL_VERSION,
         socket_path: socket_path.to_string_lossy().into_owned(),
@@ -195,15 +196,23 @@ fn refuse_unless_seed_green(session: &ServiceSession) -> Result<()> {
     bail!(message)
 }
 
-pub(super) fn validate_socket_path(path: &Path) -> Result<()> {
+/// Validates a socket path against the root it is supposed to live in.
+///
+/// The root is a PARAMETER rather than the hard-coded production constant, so
+/// that a test-injected root flows through the same validation production uses
+/// instead of bypassing it.
+pub(super) fn validate_socket_path_in(path: &Path, root: &Path) -> Result<()> {
     let encoded = path
         .to_str()
         .context("local service socket path must be valid UTF-8")?;
     let parent = path
         .parent()
         .context("local service socket path has no parent")?;
-    if parent != Path::new(SOCKET_DIRECTORY) {
-        bail!("local service socket must be directly under /tmp/strata-lc/");
+    if parent != root {
+        bail!(
+            "local service socket must be directly under {}",
+            root.display()
+        );
     }
     if encoded.len() > MAX_SOCKET_PATH_BYTES {
         bail!("local service socket path exceeds 96 UTF-8 bytes");
@@ -540,8 +549,46 @@ fn handle_connection(
     }) {
         // The peer closed before saying anything. Nothing to reject.
         Ok(None) => return Ok(()),
-        Ok(Some(frame)) => match parse_open_session_frame(&frame) {
-            Ok(handshake) => handshake,
+        Ok(Some(frame)) => match parse_first_frame(&frame) {
+            Ok(FirstFrame::Health { .. }) => {
+                // Answered and closed immediately: no session binding, no entry
+                // in the ownership registry, and the admission permit is held
+                // only for the probe. Critically, this never touches the
+                // journalled request path, so polling health generates no
+                // durable writes.
+                let reply = HealthReply::HealthOk {
+                    protocol_version: PROTOCOL_VERSION,
+                    service_epoch: WireU64::new(service_epoch),
+                    recovered: session.recovered(),
+                    validation_mode: session.validation_mode(),
+                    validation_manifest_digest: session
+                        .validation_manifest_digest()
+                        .map(str::to_owned),
+                    // Constants in D-3a with their FINAL semantics; D-3b makes
+                    // them vary without changing the shape.
+                    draining: false,
+                    active_requests: WireU64::new(0),
+                };
+                if let Ok(frame) = serialize_health_reply(&reply) {
+                    let _ = stream.write_all(&frame);
+                    let _ = stream.flush();
+                }
+                return Ok(());
+            }
+            Ok(FirstFrame::OpenSession {
+                protocol_version: _,
+                actor,
+                role,
+                client_instance,
+                connection_generation,
+            }) => OpenSession {
+                protocol_version: PROTOCOL_VERSION,
+                frame_type: OpenSessionTag::OpenSession,
+                actor,
+                role,
+                client_instance,
+                connection_generation,
+            },
             Err(error) => {
                 // Fail-fast, both directions: a v1 client's first frame is a
                 // request, which fails to parse as a handshake and lands here.
@@ -715,4 +762,9 @@ mod tests {
         assert_eq!(parsed["requestId"], "events:oversized");
         assert_eq!(parsed["error"]["code"], "response_too_large");
     }
+}
+
+/// Production-rooted validation, for the `validate-socket` subcommand.
+pub(super) fn validate_socket_path(path: &Path) -> Result<()> {
+    validate_socket_path_in(path, Path::new(lifecycle::SOCKET_DIRECTORY))
 }
