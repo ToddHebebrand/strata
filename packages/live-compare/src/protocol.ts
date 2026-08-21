@@ -13,7 +13,14 @@ const MAX_ARRAY_ITEMS = 256;
 const MAX_DIAGNOSTICS = 64;
 const MAX_EVENT_LIMIT = 256;
 const MAX_DECLARATION_MATCHES = 64;
-const MAX_OPERATION_INTENTS = 16;
+/**
+ * Must track the daemon's `MAX_INTENTS` (crates/.../session.rs), which the Rust
+ * response validator also mirrors and asserts equal
+ * (`read_operation_response_accepts_max_intents_boundary`). A change set may
+ * legitimately carry this many intents, so a smaller bound here rejects
+ * responses the daemon is entitled to send.
+ */
+export const MAX_OPERATION_INTENTS = 256;
 const MAX_MODULE_PAGE_ITEMS = 64;
 const MAX_MODULE_DECLARATION_PAGE_ITEMS = 64;
 const MAX_REFERENCE_PAGE_ITEMS = 256;
