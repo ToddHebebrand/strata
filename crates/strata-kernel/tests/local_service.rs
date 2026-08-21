@@ -1,5 +1,7 @@
 #[path = "../src/bin/strata_kernel_service/protocol.rs"]
 mod protocol;
+#[path = "support/session.rs"]
+mod session;
 
 use protocol::{
     LocalServiceProtocolContext, MAX_REQUEST_FRAME_BYTES, MAX_RESPONSE_FRAME_BYTES,
@@ -14,6 +16,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -45,7 +48,7 @@ struct FixtureCase {
 
 fn fixture(name: &str) -> FixtureFile {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/coordination-client/tests/fixtures/protocol-v1")
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v2")
         .join(format!("{name}.json"));
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
@@ -76,14 +79,14 @@ fn rejected_value(name: &str) -> Value {
 
 fn raw_rejected_frame(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/coordination-client/tests/fixtures/protocol-v1/raw-rejected")
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v2/raw-rejected")
         .join(format!("{name}.json"));
     fs::read(path).unwrap()
 }
 
 fn raw_accepted_frame(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/coordination-client/tests/fixtures/protocol-v1/raw-accepted")
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v2/raw-accepted")
         .join(format!("{name}.json"));
     fs::read(path).unwrap()
 }
@@ -535,7 +538,7 @@ fn request(
     action: Value,
 ) -> Value {
     let mut value = json!({
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "requestId": request_id,
         "clientId": client_id,
         "deadlineMs": "120000",
@@ -544,12 +547,11 @@ fn request(
     if let Some(key) = idempotency_key {
         value["idempotencyKey"] = json!(key);
     }
-    let mut stream = UnixStream::connect(&service.socket_path).unwrap();
-    stream.write_all(&frame(&value)).unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes).unwrap();
-    serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap()
+    // One session per call. That is not how a real client behaves -- it holds
+    // its lanes open -- but it keeps every existing assertion in this suite
+    // about request semantics rather than about connection reuse, which the
+    // dedicated session tests below cover directly.
+    session::send_one(&service.socket_path, client_id, &value)
 }
 
 fn begin(service: &RunningService, client: &str, suffix: &str) -> String {
@@ -1965,10 +1967,10 @@ fn crash_pending_request(
         thread::sleep(Duration::from_millis(10));
     }
 
-    let mut stream = UnixStream::connect(&socket).unwrap();
+    let mut stream = session::open_work_session(&socket, "client:recovery");
     stream
-        .write_all(&frame(&json!({
-            "protocolVersion": 1,
+        .write_all(&session::frame(&json!({
+            "protocolVersion": 2,
             "requestId": "recovery:begin",
             "clientId": "client:recovery",
             "deadlineMs": "120000",
@@ -1976,10 +1978,12 @@ fn crash_pending_request(
             "action": {"type":"begin_change_set","reasoning":"crash before the gate"},
         })))
         .unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).unwrap();
-    assert!(response.is_empty(), "crash boundary returned a response");
+    // The failpoint kills the daemon mid-request, so the session ends without
+    // a response frame rather than returning one.
+    assert!(
+        session::read_frame(&mut stream).is_none(),
+        "crash boundary returned a response"
+    );
     assert!(
         !child.wait().unwrap().success(),
         "failpoint did not terminate the daemon"
@@ -2391,7 +2395,7 @@ fn protocol_action_partition_matches_the_shared_fixture() {
     }
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/coordination-client/tests/fixtures/protocol-v1/action-partition.json");
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v2/action-partition.json");
     let partition: Partition = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
 
     for name in partition.mutating.iter().chain(partition.read_only.iter()) {
@@ -2433,4 +2437,1090 @@ fn protocol_action_partition_matches_the_shared_fixture() {
         declared, sampled,
         "every partitioned action needs an accepted golden request sampling it"
     );
+}
+
+// ---------------------------------------------------------------------------
+// D-2 Task 1/2: the connection is a session.
+// ---------------------------------------------------------------------------
+
+/// The handshake binds identity and reports the session's own identity back,
+/// and it does so WITHOUT touching the journalled request path.
+///
+/// That last clause is the load-bearing one. Every previously-unseen request
+/// appends a `RequestBound` record ending in `sync_data()`; if the handshake
+/// went through that path, every connection would buy an fsync before doing
+/// any work. The assertion here is that the audit log is byte-identical across
+/// a handshake that opens ten sessions and does nothing else.
+#[test]
+fn handshake_binds_identity_and_appends_nothing_durable() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-handshake");
+    let audit_path = directory.path().join("service-audit.jsonl");
+    let before = fs::read_to_string(&audit_path).unwrap_or_default();
+
+    // Ten DISTINCT actors, each one instance. Ten instances of one actor would
+    // be a `lane_conflict` -- correctly, since that is a duplicate-process
+    // collision -- and would be testing ownership rather than durability.
+    let mut streams = Vec::new();
+    for index in 0..10 {
+        let actor = format!("client:alpha:{index}");
+        let (stream, reply) = session::open_session(
+            &service.socket_path,
+            &actor,
+            if index % 2 == 0 { "work" } else { "observation" },
+            &format!("instance:{index}"),
+            1,
+        );
+        assert_eq!(reply["protocolVersion"], 2, "{reply}");
+        assert_eq!(reply["actor"], actor, "{reply}");
+        assert_eq!(
+            reply["role"],
+            if index % 2 == 0 { "work" } else { "observation" },
+            "{reply}"
+        );
+        assert_eq!(
+            reply["serviceEpoch"],
+            service.epoch.to_string(),
+            "handshake must report the session's own epoch: {reply}"
+        );
+        assert_eq!(
+            reply["validationMode"], service.readiness["validationMode"],
+            "{reply}"
+        );
+        streams.push(stream);
+    }
+
+    let after = fs::read_to_string(&audit_path).unwrap_or_default();
+    assert_eq!(
+        before, after,
+        "opening sessions must not append to the durable audit log"
+    );
+}
+
+/// Fail-fast direction one: a v1 client reaches a v2 daemon. Its first frame
+/// is a request, not a handshake, so it is refused -- and refused with a
+/// WRITTEN rejection followed by a close, so the peer learns why instead of
+/// hanging until its own deadline.
+#[test]
+fn v1_first_frame_is_refused_and_the_connection_closed() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-v1-refusal");
+
+    let started = Instant::now();
+    let mut stream = UnixStream::connect(&service.socket_path).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(&frame(&json!({
+            "protocolVersion": 1,
+            "requestId": "request:v1",
+            "clientId": "client:v1",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        })))
+        .unwrap();
+
+    let rejection = session::read_frame(&mut stream).expect("v1 client got no rejection frame");
+    let rejection: Value = serde_json::from_slice(&rejection[..rejection.len() - 1]).unwrap();
+    assert_eq!(rejection["type"], "session_rejected", "{rejection}");
+    assert_eq!(rejection["protocolVersion"], 2, "{rejection}");
+    assert_eq!(
+        rejection["error"]["code"], "unsupported_protocol_version",
+        "{rejection}"
+    );
+    // ...and then the connection ends, rather than idling until a deadline.
+    assert!(
+        session::read_frame(&mut stream).is_none(),
+        "daemon kept a refused connection open"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "refusal took {:?}, which is not fail-fast",
+        started.elapsed()
+    );
+}
+
+/// A handshake naming a lane the daemon does not have is a rejection, not a
+/// silent default onto some other lane.
+#[test]
+fn handshake_with_an_unknown_role_is_refused() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-bad-role");
+
+    let mut stream = UnixStream::connect(&service.socket_path).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(&session::frame(&json!({
+            "protocolVersion": 2,
+            "type": "open_session",
+            "actor": "client:alpha",
+            "role": "administrator",
+            "clientInstance": "instance:1",
+            "connectionGeneration": "1",
+        })))
+        .unwrap();
+
+    let rejection = session::read_frame(&mut stream).expect("bad role got no rejection frame");
+    let rejection: Value = serde_json::from_slice(&rejection[..rejection.len() - 1]).unwrap();
+    assert_eq!(rejection["type"], "session_rejected", "{rejection}");
+}
+
+/// Task 2: one socket, many requests. Request, response, request, response --
+/// on a single connection, with a single handshake.
+#[test]
+fn one_session_serves_many_sequential_requests() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-sequential");
+
+    let mut stream = session::open_observation_session(&service.socket_path, "client:alpha");
+    for index in 0..5 {
+        let response = session::exchange(
+            &mut stream,
+            &json!({
+                "protocolVersion": 2,
+                "requestId": format!("request:hello:{index}"),
+                "clientId": "client:alpha",
+                "deadlineMs": "120000",
+                "action": {"type":"hello"},
+            }),
+        );
+        assert_eq!(response["ok"], true, "{response}");
+        assert_eq!(response["requestId"], format!("request:hello:{index}"));
+        assert_eq!(response["result"]["type"], "ready", "{response}");
+    }
+}
+
+/// A session that sits idle well past the old 5-second socket read timeout is
+/// still served afterwards. Under v1 the read timeout WAS the connection's
+/// lifetime; under v2 it is only a poll interval, and an established session's
+/// real bound is the 15-minute idle timeout.
+#[test]
+fn an_idle_session_survives_past_the_old_read_timeout() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-idle");
+
+    let mut stream = session::open_observation_session(&service.socket_path, "client:alpha");
+    thread::sleep(Duration::from_secs(7));
+
+    let response = session::exchange(
+        &mut stream,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:after-idle",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// A peer that starts a frame and then trickles is killed at the ABSOLUTE
+/// partial-frame deadline, measured from the frame's first byte rather than
+/// reset by each byte. Without the absolute bound, one byte per second holds a
+/// handler open forever.
+#[test]
+fn a_half_written_frame_dies_at_the_absolute_deadline_with_no_response() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-trickle");
+
+    let mut stream = session::open_observation_session(&service.socket_path, "client:alpha");
+    let started = Instant::now();
+    // A valid request frame, minus its terminating LF, dripped one byte at a
+    // time so that a per-read timeout would keep being reset.
+    let partial = session::frame(&json!({
+        "protocolVersion": 2,
+        "requestId": "request:trickle",
+        "clientId": "client:alpha",
+        "deadlineMs": "120000",
+        "action": {"type":"hello"},
+    }));
+    for byte in &partial[..partial.len() - 1] {
+        if stream.write_all(&[*byte]).is_err() {
+            break;
+        }
+        let _ = stream.flush();
+        thread::sleep(Duration::from_millis(200));
+        if started.elapsed() > Duration::from_secs(20) {
+            break;
+        }
+    }
+
+    assert!(
+        session::read_frame(&mut stream).is_none(),
+        "a never-completed frame must get no response"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the trickle was not cut off at the absolute deadline"
+    );
+}
+
+/// Task 3: admission is bounded, and the bound is announced rather than
+/// enforced by a silent close.
+///
+/// Before D-2 every accepted connection spawned an uncapped detached thread,
+/// and a valid request could hold one for the protocol's 300-second ceiling.
+/// This is the regression test for that being a LIVE exhaustion path.
+#[test]
+fn over_cap_connections_are_refused_with_server_busy() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-admission");
+
+    // Fill the un-handshaken budget: connections that say nothing at all.
+    let mut silent = Vec::new();
+    for _ in 0..16 {
+        silent.push(UnixStream::connect(&service.socket_path).unwrap());
+    }
+
+    // The next silent connector is over the un-handshaken cap and is told so.
+    let mut refused = UnixStream::connect(&service.socket_path).unwrap();
+    refused
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let frame = session::read_frame(&mut refused).expect("over-cap peer got no refusal frame");
+    let frame: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+    assert_eq!(frame["type"], "session_rejected", "{frame}");
+    assert_eq!(frame["error"]["code"], "server_busy", "{frame}");
+    assert_eq!(
+        frame["error"]["retryable"], true,
+        "server_busy must tell the client to back off rather than give up: {frame}"
+    );
+
+    // Un-handshaken pressure must not lock out real work. Once the silent
+    // connectors go away their permits are released by the RAII guard, and a
+    // legitimate session opens immediately.
+    drop(silent);
+    drop(refused);
+    // Permits come back when each handler thread NOTICES the peer is gone,
+    // which is bounded by the read poll interval rather than instantaneous.
+    // Waiting for that is the honest test; asserting it happens synchronously
+    // would just be asserting a race we happened to win.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let mut probe = UnixStream::connect(&service.socket_path).unwrap();
+        probe.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        probe
+            .write_all(&session::frame(&json!({
+                "protocolVersion": 2,
+                "type": "open_session",
+                "actor": "client:probe",
+                "role": "observation",
+                "clientInstance": "instance:probe",
+                "connectionGeneration": "1",
+            })))
+            .unwrap();
+        let reply = session::read_frame(&mut probe).expect("probe got no handshake reply");
+        let reply: Value = serde_json::from_slice(&reply[..reply.len() - 1]).unwrap();
+        if reply["type"] == "session_opened" {
+            break;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    let mut stream = session::open_observation_session(&service.socket_path, "client:after-cap");
+    let response = session::exchange(
+        &mut stream,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:after-cap",
+            "clientId": "client:after-cap",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// The handshake deadline is absolute and short: a connection that opens and
+/// then says nothing is reclaimed, so silent connectors cannot accumulate.
+#[test]
+fn a_silent_connection_is_reclaimed_at_the_handshake_deadline() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-silent");
+
+    let mut silent = UnixStream::connect(&service.socket_path).unwrap();
+    silent
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let started = Instant::now();
+    // Answered, not silently dropped: a bare close is indistinguishable from a
+    // crashed daemon, and the two call for different client behavior. The
+    // timeout is reported as its own retryable code rather than being
+    // collapsed into the terminal version-mismatch refusal.
+    let frame = session::read_frame(&mut silent).expect("silent peer got no refusal frame");
+    let frame: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+    assert_eq!(frame["type"], "session_rejected", "{frame}");
+    assert_eq!(frame["error"]["code"], "handshake_timeout", "{frame}");
+    assert_eq!(frame["error"]["retryable"], true, "{frame}");
+    assert!(
+        session::read_frame(&mut silent).is_none(),
+        "the daemon kept a timed-out connection open"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "silent connection held for {:?}",
+        started.elapsed()
+    );
+}
+
+/// The Rust half of the dual-language action-LANE lockstep (D-2 Task 6).
+///
+/// Lane assignment is its own authority, and the fixture is what keeps the two
+/// languages from drifting. Getting it wrong is quiet in a way that matters:
+/// if the client sends `ack_events` on the work lane while `read_events` goes
+/// on the observation lane, the read/ack ordering that exactly-once delivery
+/// depends on is silently lost.
+///
+/// The test also asserts the lane split is NOT the mutation split, so nobody
+/// can later "simplify" `lane()` into `is_mutating()` and still pass.
+#[test]
+fn protocol_action_lane_matches_the_shared_fixture() {
+    #[derive(Deserialize)]
+    struct Lanes {
+        work: Vec<String>,
+        observation: Vec<String>,
+    }
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v2/action-lane.json");
+    let lanes: Lanes = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+
+    for name in lanes.work.iter() {
+        assert!(
+            !lanes.observation.contains(name),
+            "{name} appears in both lanes"
+        );
+    }
+
+    let mut sampled = BTreeSet::new();
+    for case in fixture("accepted").cases {
+        if case.direction != "request" {
+            continue;
+        }
+        let request = parse_request_frame(&frame(&case.value), None)
+            .unwrap_or_else(|error| panic!("accepted request {} must parse: {error:#}", case.name));
+        let name = request.action.name();
+        sampled.insert(name.to_owned());
+        let expected_work = lanes.work.iter().any(|entry| entry == name);
+        assert!(
+            expected_work || lanes.observation.iter().any(|entry| entry == name),
+            "action {name} is missing from the shared lane fixture"
+        );
+        assert_eq!(
+            request.action.lane().as_label(),
+            if expected_work { "work" } else { "observation" },
+            "action {name} disagrees with the shared lane fixture"
+        );
+    }
+
+    let declared: BTreeSet<String> = lanes
+        .work
+        .iter()
+        .chain(lanes.observation.iter())
+        .cloned()
+        .collect();
+    assert_eq!(
+        declared, sampled,
+        "every lane-assigned action needs an accepted golden request sampling it"
+    );
+
+    // The load-bearing negative: `ack_events` is MUTATING but OBSERVATIONAL.
+    // If lanes were ever derived from the mutation partition, this fails.
+    assert!(
+        lanes.observation.iter().any(|entry| entry == "ack_events"),
+        "ack_events must ride the observation lane with read_events"
+    );
+    let partition_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../packages/coordination-client/tests/fixtures/protocol-v2/action-partition.json",
+    );
+    let partition: Value = serde_json::from_slice(&fs::read(partition_path).unwrap()).unwrap();
+    assert!(
+        partition["mutating"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry == "ack_events"),
+        "ack_events must still be mutating -- that is what makes the lane split \
+         a separate authority rather than a rename of the mutation split"
+    );
+}
+
+/// Task 7: identity and lane are checked BETWEEN decode and journal binding.
+///
+/// The ordering is the whole finding. `bind_request` appends a `RequestBound`
+/// record ending in `sync_data()`, so a check that ran afterwards would let a
+/// spoofed request buy a durable write before being refused -- an unauthorized
+/// caller could make the daemon fsync on demand. These tests assert the
+/// journal file does not grow by one byte.
+#[test]
+fn a_spoofed_actor_is_refused_before_anything_durable_is_written() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-spoof");
+
+    // Establish a real session so the journal reaches a steady state first.
+    let mut honest = session::open_observation_session(&service.socket_path, "client:alpha");
+    let warmup = session::exchange(
+        &mut honest,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:warmup",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(warmup["ok"], true, "{warmup}");
+
+    let journal = private_journal_len(directory.path());
+    // Guards against a vacuous 0 == 0: the honest request above really did
+    // append a journalled binding, so the assertions below are measuring an
+    // absence of growth rather than an absence of a journal.
+    assert!(journal > 0, "the warmup request should have journalled a binding");
+
+    // Same connection, but the frame claims to be somebody else.
+    let spoofed = session::exchange(
+        &mut honest,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:spoof",
+            "clientId": "client:victim",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(spoofed["ok"], false, "{spoofed}");
+    assert_eq!(spoofed["error"]["code"], "identity_mismatch", "{spoofed}");
+    assert_eq!(
+        private_journal_len(directory.path()),
+        journal,
+        "a spoofed request must not append to the request journal"
+    );
+
+    // The session is still usable afterwards: one bad frame is refused, not
+    // treated as grounds to tear down a legitimate session.
+    let after = session::exchange(
+        &mut honest,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:after-spoof",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(after["ok"], true, "{after}");
+}
+
+/// A mutation sent down the observation lane is refused, and likewise costs
+/// nothing durable. Lanes carry the ordering guarantees, so letting an action
+/// ride the wrong one would silently void them.
+#[test]
+fn a_wrong_lane_request_is_refused_before_anything_durable_is_written() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-wrong-lane");
+
+    let mut observation =
+        session::open_observation_session(&service.socket_path, "client:alpha");
+    let warmup = session::exchange(
+        &mut observation,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:lane-warmup",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(warmup["ok"], true, "{warmup}");
+
+    let journal = private_journal_len(directory.path());
+    // Guards against a vacuous 0 == 0: the honest request above really did
+    // append a journalled binding, so the assertions below are measuring an
+    // absence of growth rather than an absence of a journal.
+    assert!(journal > 0, "the warmup request should have journalled a binding");
+
+    let misrouted = session::exchange(
+        &mut observation,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:misrouted",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "idempotencyKey": "idem:misrouted",
+            "action": {"type":"begin_change_set","reasoning":"wrong lane"},
+        }),
+    );
+    assert_eq!(misrouted["ok"], false, "{misrouted}");
+    assert_eq!(misrouted["error"]["code"], "lane_mismatch", "{misrouted}");
+    assert_eq!(
+        private_journal_len(directory.path()),
+        journal,
+        "a wrong-lane request must not append to the request journal"
+    );
+
+    // The same action on its own lane is accepted, so the refusal above is
+    // about the lane and not about the action being unsupported.
+    let mut work = session::open_work_session(&service.socket_path, "client:alpha");
+    let accepted = session::exchange(
+        &mut work,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:right-lane",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "idempotencyKey": "idem:right-lane",
+            "action": {"type":"begin_change_set","reasoning":"right lane"},
+        }),
+    );
+    assert_eq!(accepted["ok"], true, "{accepted}");
+}
+
+/// Size of the daemon's private request journal -- the file `bind_request`
+/// appends to and fsyncs (`<db>.service-journal.jsonl`). Zero before the first
+/// journalled request, which is exactly the state these tests preserve.
+fn private_journal_len(root: &Path) -> u64 {
+    fs::metadata(root.join("kernel.redb.service-journal.jsonl"))
+        .map(|meta| meta.len())
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// D-2 Task 5: ownership and takeover. One named test per arm of the rule.
+//
+// The rule these replace was "take over a lane that is not currently
+// executing", which was rejected for three reasons: it let a fresh duplicate
+// process steal an idle but healthy lane, it let two duplicates displace each
+// other indefinitely, and it raced unless admission and takeover shared a lock.
+// ---------------------------------------------------------------------------
+
+/// Attempts a handshake and returns the reply WITHOUT asserting it succeeded,
+/// keeping the stream alive so the caller controls when the lane is released.
+fn try_open(
+    socket: &Path,
+    actor: &str,
+    role: &str,
+    instance: &str,
+    generation: u64,
+) -> (UnixStream, Value) {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(&session::frame(&json!({
+            "protocolVersion": 2,
+            "type": "open_session",
+            "actor": actor,
+            "role": role,
+            "clientInstance": instance,
+            "connectionGeneration": generation.to_string(),
+        })))
+        .unwrap();
+    let reply = session::read_frame(&mut stream).expect("no handshake reply");
+    let reply: Value = serde_json::from_slice(&reply[..reply.len() - 1]).unwrap();
+    (stream, reply)
+}
+
+/// Arm 2: same instance, same lane, strictly higher generation supersedes --
+/// whether the old connection is idle or busy. A reconnecting client is
+/// authoritative about its own newer connection, and the old one is fenced.
+#[test]
+fn a_higher_generation_from_the_same_instance_takes_over_and_fences_the_old_lane() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-generation");
+
+    let (mut first, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "observation",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    let (mut second, reopened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "observation",
+        "instance:a",
+        2,
+    );
+    assert_eq!(reopened["type"], "session_opened", "{reopened}");
+
+    // The displaced connection is fenced, not merely forgotten.
+    assert!(
+        session::read_frame(&mut first).is_none(),
+        "the superseded connection was left open"
+    );
+    // ...and the survivor works.
+    let response = session::exchange(
+        &mut second,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:after-takeover",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// Arm 3: an equal or lower generation from the same instance is stale. This
+/// is what stops a delayed or replayed reconnect from displacing the live one.
+#[test]
+fn an_equal_or_lower_generation_is_refused_as_stale() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-stale");
+
+    let (_live, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        7,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    for generation in [7_u64, 6, 1] {
+        let (_stale, reply) = try_open(
+            &service.socket_path,
+            "client:alpha",
+            "work",
+            "instance:a",
+            generation,
+        );
+        assert_eq!(reply["type"], "session_rejected", "{reply}");
+        assert_eq!(
+            reply["error"]["code"], "stale_generation",
+            "generation {generation} should be stale: {reply}"
+        );
+    }
+}
+
+/// Arm 5, refusal half: a DIFFERENT instance is refused while any lane of the
+/// incumbent is live -- even a completely idle one.
+///
+/// This is the case the rejected heuristic got wrong. An idle lane is not an
+/// abandoned lane, and a fresh duplicate process must not be able to steal one
+/// just because its owner happens to be between requests.
+#[test]
+fn a_different_instance_cannot_steal_an_idle_but_live_lane() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-idle-live");
+
+    let (_incumbent, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+    // Deliberately idle: no request is ever sent on it.
+    thread::sleep(Duration::from_millis(300));
+
+    let (_duplicate, reply) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:b",
+        99,
+    );
+    assert_eq!(reply["type"], "session_rejected", "{reply}");
+    assert_eq!(reply["error"]["code"], "lane_conflict", "{reply}");
+    assert_eq!(
+        reply["error"]["retryable"], true,
+        "a conflict resolves when the other instance exits, so it is worth retrying: {reply}"
+    );
+}
+
+/// Ownership is per ACTOR, not per (actor, role).
+///
+/// Without this, two duplicate clients race to a split state where one owns
+/// `work` and the other owns `observation` -- a configuration in which neither
+/// can make progress and nothing detects it.
+#[test]
+fn ownership_is_actor_level_so_two_instances_cannot_split_the_lanes() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-actor-level");
+
+    let (_work, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    // A duplicate reaching for the OTHER lane is refused, even though that
+    // lane is unbound: the actor already belongs to instance:a.
+    let (_other, reply) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "observation",
+        "instance:b",
+        1,
+    );
+    assert_eq!(reply["type"], "session_rejected", "{reply}");
+    assert_eq!(reply["error"]["code"], "lane_conflict", "{reply}");
+
+    // The owning instance may of course open its own second lane.
+    let (_observation, mine) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "observation",
+        "instance:a",
+        1,
+    );
+    assert_eq!(mine["type"], "session_opened", "{mine}");
+}
+
+/// Arm 5, admission half: a different instance takes over only after POSITIVE
+/// transport evidence that every incumbent lane is dead -- an actual HUP, not
+/// an inference from idleness.
+#[test]
+fn a_different_instance_takes_over_once_the_old_lanes_are_provably_dead() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-hup");
+
+    let (incumbent, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    // The old process dies. THIS is the evidence; nothing before it was.
+    drop(incumbent);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut admitted = None;
+    while Instant::now() < deadline {
+        let (stream, reply) = try_open(
+            &service.socket_path,
+            "client:alpha",
+            "work",
+            "instance:b",
+            1,
+        );
+        if reply["type"] == "session_opened" {
+            admitted = Some(stream);
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let mut admitted = admitted.expect("a replacement instance never took over a dead lane");
+
+    let response = session::exchange(
+        &mut admitted,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:replacement",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "idempotencyKey": "idem:replacement",
+            "action": {"type":"begin_change_set","reasoning":"replacement instance"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// The binding token, exercised through the shutdown race it exists to stop.
+///
+/// A superseded handler unwinds AFTER its replacement is bound. If cleanup
+/// removed the entry by (actor, role) alone, that late unwind would unregister
+/// the replacement, leaving the actor unowned while a live connection still
+/// believed it held the lane -- and a duplicate could then walk in.
+#[test]
+fn a_fenced_handler_cannot_unregister_its_own_replacement() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-token");
+
+    let (first, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    let (mut second, reopened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        2,
+    );
+    assert_eq!(reopened["type"], "session_opened", "{reopened}");
+
+    // Let the fenced handler finish unwinding.
+    drop(first);
+    thread::sleep(Duration::from_secs(2));
+
+    // A duplicate instance must STILL be refused: generation 2 is alive and
+    // owns the actor, whatever the older handler did on its way out.
+    let (_duplicate, reply) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:b",
+        9,
+    );
+    assert_eq!(
+        reply["type"], "session_rejected",
+        "the fenced handler unregistered its replacement: {reply}"
+    );
+    assert_eq!(reply["error"]["code"], "lane_conflict", "{reply}");
+
+    // And the replacement is still serving.
+    let response = session::exchange(
+        &mut second,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:survivor",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "idempotencyKey": "idem:survivor",
+            "action": {"type":"begin_change_set","reasoning":"survivor"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// Takeover under load: the incumbent is mid-request when its own newer
+/// generation arrives. The replacement must be admitted rather than deadlock
+/// behind work the old connection is still doing.
+#[test]
+fn a_higher_generation_takes_over_while_the_old_lane_is_mid_request() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-under-load");
+
+    let (mut busy, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    // Start a real mutation and do NOT read its response, so the lane is
+    // genuinely occupied when the takeover lands.
+    busy.write_all(&session::frame(&json!({
+        "protocolVersion": 2,
+        "requestId": "request:in-flight",
+        "clientId": "client:alpha",
+        "deadlineMs": "120000",
+        "idempotencyKey": "idem:in-flight",
+        "action": {"type":"begin_change_set","reasoning":"in flight during takeover"},
+    })))
+    .unwrap();
+
+    let (mut replacement, reopened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        2,
+    );
+    assert_eq!(
+        reopened["type"], "session_opened",
+        "takeover deadlocked behind an in-flight request: {reopened}"
+    );
+
+    let response = session::exchange(
+        &mut replacement,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:post-takeover",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "idempotencyKey": "idem:post-takeover",
+            "action": {"type":"begin_change_set","reasoning":"after takeover"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// D-2 Task 10: the ten-client gate.
+///
+/// Ten actors, twenty lanes, all open at once, doing concurrent work over the
+/// session transport. Deterministic and key-free: no model, no network, no
+/// sleeps standing in for synchronization.
+///
+/// What it is actually gating:
+/// - twenty simultaneous lanes are admitted (the cap is 64 precisely so this
+///   fits with room for takeover replacements),
+/// - every actor's work lane makes progress -- no lane starves behind another,
+/// - each actor's observation lane serves reads WHILE its work lane is busy,
+/// - the two lanes of one actor stay bound to one instance.
+#[test]
+fn ten_clients_run_twenty_concurrent_lanes_without_starvation() {
+    const CLIENTS: usize = 10;
+
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "gate-ten-clients");
+    let socket = service.socket_path.clone();
+
+    // A barrier, not a sleep: every lane is provably open before any request
+    // is sent, so the daemon really does hold twenty sessions at once rather
+    // than a rolling few.
+    let ready = Arc::new(Barrier::new(CLIENTS));
+    let mut workers = Vec::new();
+
+    for index in 0..CLIENTS {
+        let socket = socket.clone();
+        let ready = Arc::clone(&ready);
+        workers.push(thread::spawn(move || -> (String, Value, Value) {
+            let actor = format!("client:gate:{index}");
+            let instance = format!("instance:gate:{index}");
+            let (mut work, opened_work) =
+                session::open_session(&socket, &actor, "work", &instance, 1);
+            let (mut observation, opened_observation) =
+                session::open_session(&socket, &actor, "observation", &instance, 1);
+            // Both lanes of one actor are bound to the SAME instance.
+            assert_eq!(opened_work["actor"], actor);
+            assert_eq!(opened_observation["actor"], actor);
+            assert_eq!(opened_work["role"], "work");
+            assert_eq!(opened_observation["role"], "observation");
+
+            ready.wait();
+
+            let begun = session::exchange(
+                &mut work,
+                &json!({
+                    "protocolVersion": 2,
+                    "requestId": format!("gate:{index}:begin"),
+                    "clientId": actor,
+                    "deadlineMs": "120000",
+                    "idempotencyKey": format!("gate:{index}:begin"),
+                    "action": {"type":"begin_change_set","reasoning":format!("gate client {index}")},
+                }),
+            );
+            // The observation lane answers while the work lane is in use --
+            // the isolation the two-lane split exists to provide.
+            let observed = session::exchange(
+                &mut observation,
+                &json!({
+                    "protocolVersion": 2,
+                    "requestId": format!("gate:{index}:read"),
+                    "clientId": actor,
+                    "deadlineMs": "120000",
+                    "action": {"type":"read_events","afterSequence":"0","limit":32},
+                }),
+            );
+            (actor, begun, observed)
+        }));
+    }
+
+    let mut change_sets = BTreeSet::new();
+    for worker in workers {
+        let (actor, begun, observed) = worker.join().expect("a gate client panicked");
+        assert_eq!(begun["ok"], true, "{actor} work lane starved: {begun}");
+        assert_eq!(
+            observed["ok"], true,
+            "{actor} observation lane starved: {observed}"
+        );
+        assert_eq!(observed["result"]["type"], "events", "{observed}");
+        change_sets.insert(begun["result"]["changeSetId"].as_str().unwrap().to_owned());
+    }
+
+    // Every client got its OWN change set: twenty lanes of concurrent work
+    // produced ten distinct results rather than colliding on one.
+    assert_eq!(
+        change_sets.len(),
+        CLIENTS,
+        "expected one change set per client, got {change_sets:?}"
+    );
+}
+
+/// The gate's negative half: with the admission cap saturated, further
+/// connections are refused with `server_busy` rather than queued, dropped, or
+/// allowed to exhaust the daemon's threads.
+///
+/// Saturates with ESTABLISHED sessions rather than silent connectors, and that
+/// choice is deliberate. An earlier version filled the un-handshaken budget
+/// with connections that never spoke, which was flaky for a reason worth
+/// recording: silent connections are reclaimed at the 5-second handshake
+/// deadline, so under full-gate parallel load the test outran its own premise
+/// and a later connector was legitimately admitted. Established sessions hold
+/// their permits for the 15-minute idle timeout, so saturation is a fact about
+/// the daemon rather than a race the test has to win.
+///
+/// This also exercises the TOTAL cap (64), which the un-handshaken test above
+/// does not reach.
+#[test]
+fn the_admission_cap_holds_under_a_connection_storm() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "gate-storm");
+
+    // 32 actors x 2 lanes = the full 64-connection budget. Two lanes per actor
+    // rather than 64 actors because ownership is actor-level: a second
+    // instance of one actor would be refused for a different reason entirely.
+    let mut established = Vec::new();
+    for index in 0..32 {
+        let actor = format!("client:storm:{index}");
+        let instance = format!("instance:storm:{index}");
+        established.push(session::open_session(&service.socket_path, &actor, "work", &instance, 1).0);
+        established.push(
+            session::open_session(&service.socket_path, &actor, "observation", &instance, 1).0,
+        );
+    }
+    assert_eq!(established.len(), 64, "the cap was not actually saturated");
+
+    // Every further connector is told to back off, and told so promptly.
+    for attempt in 0..8 {
+        let started = Instant::now();
+        let mut refused = UnixStream::connect(&service.socket_path).unwrap();
+        // Best-effort: a socket the daemon has already refused and closed can
+        // reject the timeout option, and that is not what this test is about.
+        let _ = refused.set_read_timeout(Some(Duration::from_secs(5)));
+        let frame = session::read_frame(&mut refused)
+            .unwrap_or_else(|| panic!("storm peer {attempt} got no refusal frame"));
+        let frame: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        assert_eq!(frame["type"], "session_rejected", "{frame}");
+        assert_eq!(frame["error"]["code"], "server_busy", "{frame}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "refusal took {:?}; the accept loop is stalling on refusals",
+            started.elapsed()
+        );
+    }
+
+    // Freeing a permit lets real work back in, so the cap throttles rather
+    // than latches.
+    established.truncate(60);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut admitted = false;
+    while Instant::now() < deadline && !admitted {
+        let mut probe = UnixStream::connect(&service.socket_path).unwrap();
+        let _ = probe.set_read_timeout(Some(Duration::from_secs(5)));
+        probe
+            .write_all(&session::frame(&json!({
+                "protocolVersion": 2,
+                "type": "open_session",
+                "actor": "client:storm:late",
+                "role": "work",
+                "clientInstance": "instance:storm:late",
+                "connectionGeneration": "1",
+            })))
+            .unwrap();
+        if let Some(reply) = session::read_frame(&mut probe) {
+            let reply: Value = serde_json::from_slice(&reply[..reply.len() - 1]).unwrap();
+            admitted = reply["type"] == "session_opened";
+        }
+        if !admitted {
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+    assert!(admitted, "the admission cap latched instead of throttling");
 }

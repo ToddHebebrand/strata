@@ -7,6 +7,114 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-08-21 — D-2 closed: a connection is a session, and identity stops being self-asserted
+
+**Decision:** D-2 (design `docs/superpowers/specs/2026-08-20-item-d-design.md`
+§ Slice D-2, plan v2
+`docs/superpowers/plans/2026-08-21-item-d2-sessions-plan.md` after a
+PROCEED-WITH-CORRECTIONS methodology review) is CLOSED on
+`worktree-item-d2-sessions`. `protocolVersion` is now **2** on both sides. The
+first frame of every connection is an `open_session` handshake, connections
+persist across requests, and the actor a request claims is checked against what
+its connection was bound to rather than believed.
+
+**The plan shipped as ONE contract, not two.** A transport-only D-2a would have
+defined a `protocolVersion: 2` whose authority model then changed again in
+D-2b — freezing two incompatible meanings of v2, or temporarily shipping the
+identity-bypass route the governing spec prohibits. Internal commits stage the
+work; the merge is atomic.
+
+**Corrections that changed the work, and what they cost:**
+
+1. **My "no caller issues concurrent requests on one client" claim was wrong,
+   and I had verified it myself.** I enumerated the explicit `Promise.all`
+   sites and concluded serial-per-lane broke nobody. True of harness code,
+   false of the live agent path: `createCoordinationToolServer` hands ONE
+   client to all fifteen MCP tool handlers, and the SDK may emit several tool
+   calls in one assistant message. The client now serializes with a per-lane
+   FIFO queue. The installed SDK is minified, so its dispatch ordering could
+   not be read from source — which is the argument FOR queueing rather than a
+   reason to go looking. This is the entry to point at next time an enumeration
+   feels conclusive: it was, of the thing I enumerated, and that was not the
+   thing that mattered.
+
+2. **The takeover discriminator I proposed was wrong.** "Not currently
+   executing" lets a fresh duplicate steal an idle but healthy lane and lets
+   two duplicates displace each other indefinitely. Replaced by: monotonic
+   connection generation, ownership at the ACTOR level (per-role ownership lets
+   two duplicates split the lanes, one owning `work` and the other
+   `observation`, with neither able to progress), positive HUP evidence before
+   any cross-instance takeover, and binding tokens so a dying handler cannot
+   unregister its replacement. Where the two cases are genuinely
+   indistinguishable — a fresh instance id with no observable HUP — the
+   contract is **rejection**, not a busy/idle guess.
+
+3. **Unbounded thread admission was a LIVE issue, not a latent one.** Verified:
+   no cap on threads, one spawned per accept, and a valid request can hold one
+   for the protocol's full 300-second ceiling because the socket timeout does
+   not bound request execution. Now 64 admitted connections, at most 16
+   un-handshaken, capacity taken before the handler spawns and released by an
+   RAII guard. The cap is 64 rather than 20 because takeover needs replacement
+   lanes to connect while the old ones still hold permits.
+
+4. **The frame-level version bump was under-specified in the plan**, which
+   claimed the migration preserved the golden corpus "byte-for-byte". That was
+   true of the request SCHEMA and false of the bytes: `protocolVersion` appears
+   on every golden frame. The corpus moved to `fixtures/protocol-v2` with the
+   field rewritten, plus new rejection cases for a v1 request, a v1 response,
+   and a future version. `kernel-bridge`'s own `protocol-v1` fixtures are a
+   different wire and are untouched.
+
+**Three defects the tests found that the plan did not predict:**
+
+- A peer FIN left the client socket eligible for reuse, so the next request was
+  written into a socket the daemon had stopped reading — turning a clean
+  reconnect into a spurious ambiguous-disconnect retry.
+- `close()` cleared the lane map without marking the client closed, so the next
+  request silently rebuilt a lane and reacquired an admission permit the caller
+  believed it had released.
+- A handshake that never completed was answered with
+  `unsupported_protocol_version`, collapsing a terminal condition into the same
+  code as a retryable one and telling a slow-but-correct client to give up.
+  Split into `handshake_timeout`.
+
+**Lane assignment is its own authority, not the mutation partition.**
+`ack_events` is mutating (it needs an idempotency key) but observational (it is
+the back half of the read/ack cycle), and read and ack must share one serial
+lane to keep their ordering. Both languages assert against a shared
+`action-lane.json`, and both carry the load-bearing negative so nobody can
+later "simplify" `lane()` into `is_mutating()` and still pass.
+
+**Identity and lane are rejected BETWEEN decode and journal binding.**
+`bind_request` appends a record ending in `sync_data()`, so a check placed after
+it would let a spoofed request buy a durable write before being refused — an
+unauthorized caller could make the daemon fsync on demand. The tests assert the
+journal does not grow, and first assert it is non-zero after an honest request
+so they cannot pass vacuously.
+
+**The measurement, and how it redirects the concern.** A successful read costs
+TWO `sync_data()` calls, not one (the request journal and the audit log). On
+this machine that is ~0.036 ms per fsynced append versus ~0.0033 ms un-synced,
+so ~0.07 ms per read: ten pollers do NOT meaningfully serialize on disk. The
+caveat matters more than the number — macOS `fsync` flushes to the drive's
+write cache and does not force a device flush, so this is a page-cache figure
+and would be far worse elsewhere. **The before/after D-2 owes is therefore lock
+hold time, not disk**: the protocol, journal, and audit mutexes are each taken
+globally per request and merely happen to contain an fsync.
+
+**Design-doc impact:** none. D-2 implements § Slice D-2 as specified; the
+divergences above are plan-level, not design-level.
+
+**Revisit when:** D-3 lifecycle work lands (the ownership registry is the
+natural home for lease expiry), or when the lock-hold-time measurement above is
+actually taken — it is named here as owed, not done.
+
+**Carried, unchanged by this slice:** unbounded `request_bindings` (insert-only,
+rebuilt by a full journal scan at startup); `change_set_locks` insert-only;
+in-memory-only delivered ceilings, so after a restart, acking events delivered
+before the crash fails until the client rereads — the client should deliberately
+reread and deduplicate on a service-epoch change.
+
 ## 2026-08-20 — D-1 closed: the typed client is its own package, and two wire defects are gone
 
 **Decision:** D-1 (design `docs/superpowers/specs/2026-08-20-item-d-design.md`

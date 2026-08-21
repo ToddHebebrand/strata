@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ALL_ACTION_TYPES,
   isMutatingAction,
+  laneForAction,
   LocalServiceProtocolContext,
   MAX_OPERATION_INTENTS,
   MAX_REQUEST_FRAME_BYTES,
@@ -26,7 +27,7 @@ const RAW_REJECTED_FIXTURES = [
 ] as const;
 
 function fixture<T>(name: "accepted" | "rejected"): T {
-  const path = fileURLToPath(new URL(`fixtures/protocol-v1/${name}.json`, import.meta.url));
+  const path = fileURLToPath(new URL(`fixtures/protocol-v2/${name}.json`, import.meta.url));
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
@@ -36,14 +37,14 @@ function frame(value: unknown): Uint8Array {
 
 function rawRejectedFrame(name: (typeof RAW_REJECTED_FIXTURES)[number]): Uint8Array {
   const path = fileURLToPath(
-    new URL(`fixtures/protocol-v1/raw-rejected/${name}.json`, import.meta.url)
+    new URL(`fixtures/protocol-v2/raw-rejected/${name}.json`, import.meta.url)
   );
   return readFileSync(path);
 }
 
 function rawAcceptedFrame(name: "reordered-whitespace" | "surrogate-pair"): Uint8Array {
   const path = fileURLToPath(
-    new URL(`fixtures/protocol-v1/raw-accepted/${name}.json`, import.meta.url)
+    new URL(`fixtures/protocol-v2/raw-accepted/${name}.json`, import.meta.url)
   );
   return readFileSync(path);
 }
@@ -360,7 +361,7 @@ describe("local service protocol v1", () => {
 
   it("rejects a read_validation_fixture request carrying an idempotency key", () => {
     const request = {
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: "request:fixtures",
       clientId: "client:alpha",
       deadlineMs: "30000",
@@ -526,7 +527,7 @@ describe("local service protocol v1", () => {
   it("matches the shared dual-language action partition exactly", () => {
     const partition = JSON.parse(
       readFileSync(
-        fileURLToPath(new URL("fixtures/protocol-v1/action-partition.json", import.meta.url)),
+        fileURLToPath(new URL("fixtures/protocol-v2/action-partition.json", import.meta.url)),
         "utf8"
       )
     ) as { mutating: string[]; readOnly: string[] };
@@ -545,5 +546,39 @@ describe("local service protocol v1", () => {
     for (const type of partition.readOnly) {
       expect(isMutatingAction(type)).toBe(false);
     }
+  });
+
+  // Lane assignment is a SECOND dual-language authority, kept separate from
+  // the mutation partition above on purpose. The Rust suite asserts
+  // `RequestAction::lane` against this same file.
+  it("matches the shared dual-language action lane authority exactly", () => {
+    const lanes = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("fixtures/protocol-v2/action-lane.json", import.meta.url)),
+        "utf8"
+      )
+    ) as { work: string[]; observation: string[] };
+
+    expect([...lanes.work, ...lanes.observation].sort()).toEqual([...ALL_ACTION_TYPES].sort());
+    for (const type of lanes.work) {
+      expect(lanes.observation).not.toContain(type);
+      expect(laneForAction(type)).toBe("work");
+    }
+    for (const type of lanes.observation) {
+      expect(laneForAction(type)).toBe("observation");
+    }
+    // An unknown action has no lane, and saying so beats guessing one.
+    expect(() => laneForAction("teleport_declaration")).toThrow();
+  });
+
+  // The load-bearing negative, mirrored from the Rust suite: the lane split is
+  // NOT the mutation split. `ack_events` mutates (for exactly-once) but rides
+  // the observation lane so that read and ack keep their natural ordering.
+  // Deriving lanes from `isMutatingAction` would pass every other assertion
+  // here and quietly break that ordering.
+  it("keeps ack_events mutating but observational", () => {
+    expect(isMutatingAction("ack_events")).toBe(true);
+    expect(laneForAction("ack_events")).toBe("observation");
+    expect(laneForAction("read_events")).toBe(laneForAction("ack_events"));
   });
 });

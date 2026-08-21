@@ -1,0 +1,22 @@
+{
+  "work": [
+    "begin_change_set",
+    "add_intent",
+    "submit_change_set",
+    "advance_change_set",
+    "cancel_change_set"
+  ],
+  "observation": [
+    "hello",
+    "inspect_nodes",
+    "find_declarations",
+    "list_modules",
+    "list_module_declarations",
+    "get_references",
+    "read_events",
+    "ack_events",
+    "read_operation",
+    "list_validation_fixtures",
+    "read_validation_fixture"
+  ]
+}

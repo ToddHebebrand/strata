@@ -1,7 +1,20 @@
 import { z } from "zod";
 
-export const PROTOCOL_VERSION = 1 as const;
+/**
+ * Protocol v2 (D-2). A connection is a session: the FIRST frame is an
+ * `open_session` handshake, and every request frame afterwards carries this
+ * same version as a consistency check -- NOT as a second negotiation point.
+ * There is no v1 compatibility mode; a v1 frame is refused and the connection
+ * closed. Mirrors `PROTOCOL_VERSION` in the daemon's protocol.rs.
+ */
+export const PROTOCOL_VERSION = 2 as const;
 export const MAX_REQUEST_FRAME_BYTES = 64 * 1024;
+/**
+ * The handshake is small and fixed-shape, so it gets a far tighter bound than
+ * a request frame: an un-handshaken connection must not be able to make the
+ * daemon buffer 64 KiB before it has proven who it is.
+ */
+export const MAX_HANDSHAKE_FRAME_BYTES = 4 * 1024;
 export const MAX_RESPONSE_FRAME_BYTES = 256 * 1024;
 export const MAX_DEADLINE_MS = 300_000n;
 export const DEFAULT_PROTOCOL_CONTEXT_CAPACITY = 1_024;
@@ -563,6 +576,131 @@ export const responseSchema = z.union([successResponseSchema, errorResponseSchem
 
 export type LocalServiceRequest = z.infer<typeof requestSchema>;
 export type LocalServiceResponse = z.infer<typeof responseSchema>;
+
+/**
+ * The two serial lanes a client opens. An ordering authority, not a
+ * permission: see `laneForAction`. A closed enum on the wire, so an unknown
+ * lane name is a handshake rejection rather than a silent default.
+ */
+export const sessionRoleSchema = z.enum(["work", "observation"]);
+export type SessionRole = z.infer<typeof sessionRoleSchema>;
+
+/**
+ * The first frame on every v2 connection, and the SOLE negotiation point.
+ *
+ * `clientInstance` is stable across BOTH lanes for one client lifetime;
+ * `connectionGeneration` is monotonic per role lane. Together they are what
+ * the daemon's ownership rule decides on -- which is why they are established
+ * here, before any request, rather than asserted per request.
+ */
+export const openSessionSchema = z
+  .object({
+    protocolVersion: z.literal(PROTOCOL_VERSION),
+    type: z.literal("open_session"),
+    actor: opaqueIdSchema,
+    role: sessionRoleSchema,
+    clientInstance: opaqueIdSchema,
+    connectionGeneration: canonicalU64Schema.refine(
+      (value) => value !== "0",
+      "connectionGeneration must be a positive canonical integer"
+    )
+  })
+  .strict();
+
+export type OpenSession = z.infer<typeof openSessionSchema>;
+
+/**
+ * The handshake reply. `session_opened` carries the session identity a client
+ * would otherwise have to ask for with a `hello`; `session_rejected` is the
+ * fail-fast direction -- written and followed by a close, so neither side ever
+ * waits on EOF to learn the handshake failed.
+ */
+export const sessionReplySchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      protocolVersion: z.literal(PROTOCOL_VERSION),
+      type: z.literal("session_opened"),
+      serviceEpoch: canonicalU64Schema,
+      validationMode: z.enum(["tscOnly", "behavioral"]),
+      validationManifestDigest: digestSchema.nullable(),
+      actor: opaqueIdSchema,
+      role: sessionRoleSchema
+    })
+    .strict(),
+  z
+    .object({
+      protocolVersion: z.literal(PROTOCOL_VERSION),
+      type: z.literal("session_rejected"),
+      error: z
+        .object({
+          code: boundedString(MAX_ID_BYTES),
+          message: textSchema,
+          retryable: z.boolean(),
+          diagnostics: z.array(diagnosticSchema).max(MAX_DIAGNOSTICS)
+        })
+        .strict()
+    })
+    .strict()
+]);
+
+export type SessionReply = z.infer<typeof sessionReplySchema>;
+
+/**
+ * Which serial lane each action travels on.
+ *
+ * This is its OWN authority and is deliberately NOT derived from
+ * `isMutatingAction`: the two answer different questions. `ack_events` is
+ * mutating (it needs an idempotency key) but observational (it is part of the
+ * read/ack cycle), and keeping read and ack on the SAME serial lane preserves
+ * their natural ordering. Deriving lanes from mutation would split them.
+ *
+ * Exhaustive by construction -- an action with no entry throws rather than
+ * defaulting, and `action-lane.json` asserts the same mapping in both
+ * languages.
+ */
+const ACTION_LANES = {
+  begin_change_set: "work",
+  add_intent: "work",
+  submit_change_set: "work",
+  advance_change_set: "work",
+  cancel_change_set: "work",
+  hello: "observation",
+  inspect_nodes: "observation",
+  find_declarations: "observation",
+  list_modules: "observation",
+  list_module_declarations: "observation",
+  get_references: "observation",
+  read_events: "observation",
+  ack_events: "observation",
+  read_operation: "observation",
+  list_validation_fixtures: "observation",
+  read_validation_fixture: "observation"
+} as const satisfies Record<string, SessionRole>;
+
+export function laneForAction(type: string): SessionRole {
+  const lane = (ACTION_LANES as Record<string, SessionRole | undefined>)[type];
+  if (lane === undefined) {
+    throw new Error(`action ${type} has no lane authority`);
+  }
+  return lane;
+}
+
+export function serializeOpenSessionFrame(handshake: OpenSession): Uint8Array {
+  return encodeFrame(openSessionSchema.parse(handshake), MAX_HANDSHAKE_FRAME_BYTES);
+}
+
+export function parseOpenSessionFrame(bytes: Uint8Array): OpenSession {
+  return openSessionSchema.parse(decodeFrame(bytes, MAX_HANDSHAKE_FRAME_BYTES));
+}
+
+export function serializeSessionReplyFrame(reply: SessionReply): Uint8Array {
+  return encodeFrame(sessionReplySchema.parse(reply), MAX_HANDSHAKE_FRAME_BYTES);
+}
+
+export function parseSessionReplyFrame(bytes: Uint8Array): SessionReply {
+  return sessionReplySchema.parse(decodeFrame(bytes, MAX_HANDSHAKE_FRAME_BYTES));
+}
+
 
 function changeSetId(request: LocalServiceRequest): string | undefined {
   switch (request.action.type) {

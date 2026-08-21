@@ -1,6 +1,7 @@
 mod audit;
 mod manifest;
 mod metrics;
+mod ownership;
 mod paths;
 mod protocol;
 mod server;

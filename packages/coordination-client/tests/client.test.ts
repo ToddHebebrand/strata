@@ -8,10 +8,13 @@ import {
 } from "../src/client";
 import {
   MAX_RESPONSE_FRAME_BYTES,
+  parseOpenSessionFrame,
   parseRequestFrame,
   serializeResponseFrame,
+  serializeSessionReplyFrame,
   type LocalServiceRequest,
-  type LocalServiceResponse
+  type LocalServiceResponse,
+  type OpenSession
 } from "../src/protocol";
 
 const roots: string[] = [];
@@ -29,33 +32,76 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+/**
+ * A PERSISTENT, handshake-aware fake daemon.
+ *
+ * The v1 fake was one-frame-per-connection: it concatenated everything it
+ * received, dispatched once, and never looked again. That shape cannot express
+ * anything D-2 needs to prove -- a second request on the same socket, a
+ * response split across chunk boundaries, or a handshake at all -- so it is
+ * replaced rather than extended.
+ *
+ * `options.handshake` lets a test take over the first frame (to reject it, to
+ * stall, or to answer something deliberately wrong). Returning `false` means
+ * "I answered it myself"; the default replies `session_opened`.
+ */
 async function unixServer(
-  handler: (socket: Socket, request: LocalServiceRequest, connection: number) => void
+  handler: (socket: Socket, request: LocalServiceRequest, connection: number) => void,
+  options?: {
+    handshake?: (socket: Socket, open: OpenSession, connection: number) => boolean;
+  }
 ): Promise<{
   socketPath: string;
   requests: LocalServiceRequest[];
   rawRequests: Buffer[];
+  handshakes: OpenSession[];
+  connections: () => number;
 }> {
   const root = mkdtempSync("/tmp/strata-lc-client-");
   roots.push(root);
   const socketPath = path.join(root, "service.sock");
   const requests: LocalServiceRequest[] = [];
   const rawRequests: Buffer[] = [];
+  const handshakes: OpenSession[] = [];
   let connections = 0;
   const server = createServer((socket) => {
     sockets.push(socket);
     connections += 1;
-    const chunks: Buffer[] = [];
-    let handled = false;
+    const connection = connections;
+    let buffer = Buffer.alloc(0);
+    let opened = false;
     socket.on("data", (chunk) => {
-      chunks.push(Buffer.from(chunk));
-      const raw = Buffer.concat(chunks);
-      if (handled || !raw.includes(0x0a)) return;
-      handled = true;
-      rawRequests.push(Buffer.from(raw));
-      const request = parseRequestFrame(raw);
-      requests.push(request);
-      handler(socket, request, connections);
+      buffer = Buffer.concat([buffer, chunk]);
+      for (;;) {
+        const delimiter = buffer.indexOf(0x0a);
+        if (delimiter === -1) return;
+        const frame = Buffer.from(buffer.subarray(0, delimiter + 1));
+        buffer = Buffer.from(buffer.subarray(delimiter + 1));
+        if (!opened) {
+          opened = true;
+          const open = parseOpenSessionFrame(frame);
+          handshakes.push(open);
+          const replied = options?.handshake?.(socket, open, connection) ?? true;
+          if (replied) {
+            socket.write(
+              serializeSessionReplyFrame({
+                protocolVersion: 2,
+                type: "session_opened",
+                serviceEpoch: "1",
+                validationMode: "tscOnly",
+                validationManifestDigest: null,
+                actor: open.actor,
+                role: open.role
+              })
+            );
+          }
+          continue;
+        }
+        rawRequests.push(frame);
+        const request = parseRequestFrame(frame);
+        requests.push(request);
+        handler(socket, request, connection);
+      }
     });
   });
   servers.push(server);
@@ -63,7 +109,7 @@ async function unixServer(
     server.once("error", reject);
     server.listen(socketPath, resolve);
   });
-  return { socketPath, requests, rawRequests };
+  return { socketPath, requests, rawRequests, handshakes, connections: () => connections };
 }
 
 function success(
@@ -71,7 +117,7 @@ function success(
   result: Extract<LocalServiceResponse, { ok: true }>["result"]
 ): Uint8Array {
   return serializeResponseFrame({
-    protocolVersion: 1,
+    protocolVersion: 2,
     requestId,
     ok: true,
     result
@@ -102,7 +148,7 @@ describe("unprivileged coordination Unix-socket client", () => {
     await expect(client.hello(1_000)).resolves.toEqual(READY_RESULT);
     expect(service.requests).toHaveLength(1);
     expect(service.requests[0]).toMatchObject({
-      protocolVersion: 1,
+      protocolVersion: 2,
       clientId: "client:alpha",
       deadlineMs: "1000",
       action: { type: "hello" }
@@ -152,8 +198,11 @@ describe("unprivileged coordination Unix-socket client", () => {
   });
 
   it("honors an explicit idempotencyKey override across replayed requests", async () => {
+    // `write`, not `end`: a v2 daemon keeps the session open after answering,
+    // so this fake must too. Closing per response would model the v1 wire and
+    // would test reconnect behavior instead of the replay identity.
     const service = await unixServer((socket, request) => {
-      socket.end(
+      socket.write(
         success(request.requestId, {
           type: "change_set",
           changeSetId: "change:replay",
@@ -189,12 +238,17 @@ describe("unprivileged coordination Unix-socket client", () => {
     expect(service.requests[1]!.idempotencyKey).toBe("fixed-crash-replay-key");
     expect(service.requests[0]!.requestId).not.toBe(service.requests[1]!.requestId);
     expect(second).toEqual(first);
+    // Both requests rode ONE connection and ONE handshake -- the persistent
+    // transport's whole point.
+    expect(service.connections()).toBe(1);
+    expect(service.handshakes).toHaveLength(1);
+    client.close();
   });
 
   it("retries a mutation after a nonempty response is truncated before LF", async () => {
     const service = await unixServer((socket, request, connection) => {
       if (connection === 1) {
-        socket.end(Buffer.from('{"protocolVersion":1,"requestId":"truncated"'));
+        socket.end(Buffer.from('{"protocolVersion":2,"requestId":"truncated"'));
         return;
       }
       socket.end(
@@ -282,9 +336,8 @@ describe("unprivileged coordination Unix-socket client", () => {
   });
 
   it.each([
-    ["unknown response field", (requestId: string) => Buffer.from(`${JSON.stringify({ protocolVersion: 1, requestId, ok: true, result: { ...READY_RESULT, redbPath: "/secret" } })}\n`)],
-    ["missing validation identity", (requestId: string) => Buffer.from(`${JSON.stringify({ protocolVersion: 1, requestId, ok: true, result: { type: "ready" } })}\n`)],
-    ["multiple response frames", (requestId: string) => Buffer.concat([success(requestId, READY_RESULT), success(requestId, READY_RESULT)])],
+    ["unknown response field", (requestId: string) => Buffer.from(`${JSON.stringify({ protocolVersion: 2, requestId, ok: true, result: { ...READY_RESULT, redbPath: "/secret" } })}\n`)],
+    ["missing validation identity", (requestId: string) => Buffer.from(`${JSON.stringify({ protocolVersion: 2, requestId, ok: true, result: { type: "ready" } })}\n`)],
     ["oversized response", () => Buffer.alloc(MAX_RESPONSE_FRAME_BYTES + 1, 0x78)]
   ])("fails closed on %s", async (_name, response) => {
     const service = await unixServer((socket, request) => {
@@ -298,12 +351,42 @@ describe("unprivileged coordination Unix-socket client", () => {
     await expect(client.hello(500)).rejects.toBeInstanceOf(CoordinationClientError);
   });
 
+  // REPLACES the v1 "multiple response frames fails closed" case, which
+  // contradicted the very contract it was meant to protect: under v1 a
+  // connection carried exactly one frame, so two frames in one chunk were
+  // garbage. Under v2 the reader must SPLIT frames -- that is the whole point
+  // of the persistent transport -- so the honest contract is narrower: the
+  // first frame answers the outstanding request, and a second unsolicited
+  // frame is a protocol violation that kills the connection WITHOUT
+  // retroactively corrupting the request that was already answered.
+  it("answers from the first frame and drops the connection on an unsolicited second", async () => {
+    const service = await unixServer((socket, request) => {
+      socket.write(
+        Buffer.concat([
+          success(request.requestId, READY_RESULT),
+          success(request.requestId, READY_RESULT)
+        ])
+      );
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:alpha"
+    });
+
+    await expect(client.hello(500)).resolves.toEqual(READY_RESULT);
+    // The unsolicited frame tore the session down, so the next call has to
+    // open a second connection rather than reuse a socket we distrust.
+    await expect(client.hello(500)).resolves.toEqual(READY_RESULT);
+    expect(service.connections()).toBe(2);
+    client.close();
+  });
+
   it("redacts sensitive string values from service and transport errors", async () => {
     const clientToken = "client-token-value-must-not-leak";
     const service = await unixServer((socket, request) => {
       socket.end(
         serializeResponseFrame({
-          protocolVersion: 1,
+          protocolVersion: 2,
           requestId: request.requestId,
           ok: false,
           error: {
@@ -331,7 +414,7 @@ describe("unprivileged coordination Unix-socket client", () => {
       const overlappingClientToken = `${service.socketPath}-client-token-suffix`;
       socket.end(
         serializeResponseFrame({
-          protocolVersion: 1,
+          protocolVersion: 2,
           requestId: request.requestId,
           ok: false,
           error: {
@@ -689,5 +772,505 @@ describe("unprivileged coordination Unix-socket client", () => {
       ).rejects.toThrow(CoordinationClientError);
       expect(service.requests).toHaveLength(2);
     });
+  });
+});
+
+describe("protocol v2 sessions", () => {
+  it("opens one lane per role and reuses each across requests", async () => {
+    const service = await unixServer((socket, request) => {
+      socket.write(
+        request.action.type === "hello"
+          ? success(request.requestId, READY_RESULT)
+          : success(request.requestId, {
+              type: "change_set",
+              changeSetId: "change:lane",
+              state: "draft",
+              ticketState: null,
+              graphGeneration: "0",
+              operationId: null,
+              affectedNodeIds: [],
+              diagnostics: [],
+              publicationDigest: null,
+              renamedSymbols: []
+            })
+      );
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:lanes"
+    });
+
+    await client.hello(1_000);
+    await client.beginChangeSet("open the work lane", 1_000);
+    await client.hello(1_000);
+    await client.beginChangeSet("reuse the work lane", 1_000);
+
+    // Four requests, two connections: one per lane, each handshaken once.
+    expect(service.connections()).toBe(2);
+    expect(service.handshakes.map((open) => open.role).sort()).toEqual([
+      "observation",
+      "work"
+    ]);
+    // Both lanes are the SAME client instance -- that is what lets the daemon
+    // tell a reconnect apart from a duplicate process.
+    expect(new Set(service.handshakes.map((open) => open.clientInstance)).size).toBe(1);
+    expect(service.handshakes.every((open) => open.actor === "client:lanes")).toBe(true);
+    expect(service.handshakes.every((open) => open.connectionGeneration === "1")).toBe(true);
+    client.close();
+  });
+
+  // The correction that overturned the plan's own verified claim. One client
+  // is shared across all fifteen MCP tool handlers and the agent SDK may emit
+  // several tool calls per assistant message, so concurrent same-lane calls
+  // are reachable in the live path even though no harness code writes them.
+  it("does not write a second same-lane request until the first response arrives", async () => {
+    const arrivals: number[] = [];
+    let inFlight = 0;
+    let overlapped = false;
+    const service = await unixServer((socket, request) => {
+      arrivals.push(Date.now());
+      inFlight += 1;
+      if (inFlight > 1) overlapped = true;
+      setTimeout(() => {
+        inFlight -= 1;
+        socket.write(success(request.requestId, READY_RESULT));
+      }, 60);
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:serial"
+    });
+
+    // Issued together, deliberately not awaited in sequence.
+    await Promise.all([client.hello(2_000), client.hello(2_000), client.hello(2_000)]);
+
+    expect(overlapped).toBe(false);
+    expect(service.requests).toHaveLength(3);
+    expect(service.connections()).toBe(1);
+    // Serialization is observable in the arrival gaps, not just in a counter.
+    expect(arrivals[1]! - arrivals[0]!).toBeGreaterThanOrEqual(50);
+    expect(arrivals[2]! - arrivals[1]!).toBeGreaterThanOrEqual(50);
+    client.close();
+  });
+
+  it("runs the work and observation lanes concurrently", async () => {
+    let helloSeen: (() => void) | undefined;
+    const helloArrived = new Promise<void>((resolve) => {
+      helloSeen = resolve;
+    });
+    const service = await unixServer((socket, request) => {
+      if (request.action.type === "begin_change_set") {
+        // Hold the work lane open until an observation request has landed --
+        // if the lanes shared one connection, this would deadlock.
+        void helloArrived.then(() =>
+          socket.write(
+            success(request.requestId, {
+              type: "change_set",
+              changeSetId: "change:concurrent",
+              state: "draft",
+              ticketState: null,
+              graphGeneration: "0",
+              operationId: null,
+              affectedNodeIds: [],
+              diagnostics: [],
+              publicationDigest: null,
+              renamedSymbols: []
+            })
+          )
+        );
+        return;
+      }
+      socket.write(success(request.requestId, READY_RESULT));
+      helloSeen?.();
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:concurrent"
+    });
+
+    const work = client.beginChangeSet("hold the work lane", 2_000);
+    const observation = client.hello(2_000);
+
+    await expect(observation).resolves.toEqual(READY_RESULT);
+    await expect(work).resolves.toMatchObject({ changeSetId: "change:concurrent" });
+    client.close();
+  });
+
+  it("assembles a response split across chunk boundaries", async () => {
+    const service = await unixServer((socket, request) => {
+      const frame = Buffer.from(success(request.requestId, READY_RESULT));
+      // One byte at a time is the pathological case the v1 reader could not
+      // express, because it only ever looked for a whole-buffer terminator.
+      for (const byte of frame) socket.write(Buffer.from([byte]));
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:split"
+    });
+
+    await expect(client.hello(2_000)).resolves.toEqual(READY_RESULT);
+    client.close();
+  });
+
+  it("bounds bytes PER FRAME rather than per connection", async () => {
+    // Each response is legal on its own; their sum on one connection is far
+    // over the frame bound. A cumulative counter -- which is what v1 had --
+    // would kill this session partway through.
+    const filler = "n".repeat(400);
+    const service = await unixServer((socket, request) => {
+      socket.write(
+        success(request.requestId, {
+          type: "nodes",
+          graphGeneration: "1",
+          nodes: Array.from({ length: 200 }, (_unused, index) => ({
+            nodeId: `node:${index}`,
+            kind: "FunctionDeclaration",
+            payload: `${filler}${index}`,
+            relationships: []
+          }))
+        })
+      );
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:frames"
+    });
+
+    let total = 0;
+    for (let call = 0; call < 6; call += 1) {
+      const result = await client.inspectNodes(["node:0"], 2_000);
+      total += JSON.stringify(result).length;
+    }
+    expect(total).toBeGreaterThan(MAX_RESPONSE_FRAME_BYTES);
+    expect(service.connections()).toBe(1);
+    client.close();
+  });
+
+  it("fails a queued request UNSENT when its own deadline expires while waiting", async () => {
+    const service = await unixServer(() => undefined);
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:queued"
+    });
+
+    // The first request occupies the lane for its full deadline; the second
+    // has a shorter deadline that expires entirely inside that wait.
+    const first = client.hello(400);
+    const second = client.hello(120);
+
+    await expect(first).rejects.toMatchObject({ code: "request_timeout" });
+    await expect(second).rejects.toMatchObject({ code: "request_timeout" });
+    // The point: queue wait counts against the ORIGINAL deadline, and an
+    // expired queued request is never written. The daemon saw exactly one.
+    expect(service.requests).toHaveLength(1);
+    client.close();
+  });
+
+  // The other fail-fast direction: a v2 client reaching a v1 daemon. A v1
+  // daemon cannot parse the handshake, answers with a v1 error response, and
+  // closes. The client must surface that promptly rather than wait for EOF.
+  it("fails fast against a v1 daemon that cannot parse the handshake", async () => {
+    const service = await unixServer(() => undefined, {
+      handshake: (socket) => {
+        socket.end(
+          Buffer.from(
+            `${JSON.stringify({
+              protocolVersion: 1,
+              requestId: "",
+              ok: false,
+              error: {
+                code: "invalid_request",
+                message: "invalid local-service request JSON",
+                retryable: false,
+                diagnostics: []
+              }
+            })}\n`
+          )
+        );
+        return false;
+      }
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:v1-daemon"
+    });
+
+    const started = Date.now();
+    await expect(client.hello(30_000)).rejects.toBeInstanceOf(CoordinationClientError);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    client.close();
+  });
+
+  it("surfaces a session_rejected handshake as its own error code", async () => {
+    const service = await unixServer(() => undefined, {
+      handshake: (socket) => {
+        socket.write(
+          serializeSessionReplyFrame({
+            protocolVersion: 2,
+            type: "session_rejected",
+            error: {
+              code: "lane_conflict",
+              message: "another instance owns this actor",
+              retryable: false,
+              diagnostics: []
+            }
+          })
+        );
+        return false;
+      }
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:rejected"
+    });
+
+    await expect(client.hello(2_000)).rejects.toMatchObject({ code: "lane_conflict" });
+    expect(service.requests).toHaveLength(0);
+    client.close();
+  });
+
+  it("refuses a handshake that binds a different identity than it asked for", async () => {
+    const service = await unixServer(() => undefined, {
+      handshake: (socket, open) => {
+        socket.write(
+          serializeSessionReplyFrame({
+            protocolVersion: 2,
+            type: "session_opened",
+            serviceEpoch: "1",
+            validationMode: "tscOnly",
+            validationManifestDigest: null,
+            actor: "client:somebody-else",
+            role: open.role
+          })
+        );
+        return false;
+      }
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:identity"
+    });
+
+    await expect(client.hello(2_000)).rejects.toMatchObject({
+      code: "session_identity_mismatch"
+    });
+    client.close();
+  });
+
+  it("has a close() that is safe twice and safe with nothing open", async () => {
+    const service = await unixServer((socket, request) => {
+      socket.write(success(request.requestId, READY_RESULT));
+    });
+
+    const untouched = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:never-connected"
+    });
+    expect(() => untouched.close()).not.toThrow();
+    expect(() => untouched.close()).not.toThrow();
+
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:closed"
+    });
+    await client.hello(1_000);
+    expect(() => client.close()).not.toThrow();
+    expect(() => client.close()).not.toThrow();
+    // A closed client refuses further work rather than silently reconnecting.
+    await expect(client.hello(1_000)).rejects.toBeInstanceOf(CoordinationClientError);
+  });
+
+  it("reconnects with a higher connection generation after the lane drops", async () => {
+    const service = await unixServer((socket, request, connection) => {
+      if (connection === 1) {
+        socket.destroy();
+        return;
+      }
+      socket.write(success(request.requestId, READY_RESULT));
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:generation"
+    });
+
+    await expect(client.hello(1_000)).rejects.toBeInstanceOf(CoordinationClientError);
+    await expect(client.hello(1_000)).resolves.toEqual(READY_RESULT);
+
+    expect(service.handshakes.map((open) => open.connectionGeneration)).toEqual(["1", "2"]);
+    // Same process, so the instance identity is stable across the reconnect.
+    expect(new Set(service.handshakes.map((open) => open.clientInstance)).size).toBe(1);
+    client.close();
+  });
+});
+
+// The retry matrix, one named case per row. The rows differ in what the client
+// KNOWS about whether the daemon saw the request, and that knowledge is what
+// decides whether replaying identical bytes is safe.
+describe("the retry contract", () => {
+  const CHANGE_SET = {
+    type: "change_set",
+    changeSetId: "change:retry",
+    state: "draft",
+    ticketState: null,
+    graphGeneration: "0",
+    operationId: null,
+    affectedNodeIds: [],
+    diagnostics: [],
+    publicationDigest: null,
+    renamedSymbols: []
+  } as const;
+
+  function errorFrame(
+    requestId: string,
+    code: string,
+    retryable: boolean
+  ): Uint8Array {
+    return serializeResponseFrame({
+      protocolVersion: 2,
+      requestId,
+      ok: false,
+      error: { code, message: `daemon says ${code}`, retryable, diagnostics: [] }
+    });
+  }
+
+  it("replays a sent-but-unanswered MUTATION with byte-identical bytes", async () => {
+    const service = await unixServer((socket, request, connection) => {
+      if (connection === 1) {
+        socket.destroy();
+        return;
+      }
+      socket.write(success(request.requestId, CHANGE_SET));
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:replay"
+    });
+
+    await expect(client.beginChangeSet("ambiguous send", 2_000)).resolves.toMatchObject({
+      changeSetId: "change:retry"
+    });
+    expect(service.rawRequests).toHaveLength(2);
+    expect(service.rawRequests[0]!.equals(service.rawRequests[1]!)).toBe(true);
+    client.close();
+  });
+
+  it("does NOT replay a sent-but-unanswered READ", async () => {
+    // Reissuing a read may observe a LATER generation than the one the caller
+    // was reasoning about, so the transport does not decide that silently.
+    const service = await unixServer((socket) => socket.destroy());
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:read"
+    });
+
+    await expect(client.listModules(undefined, 8, 2_000)).rejects.toBeInstanceOf(
+      CoordinationClientError
+    );
+    expect(service.requests).toHaveLength(1);
+    client.close();
+  });
+
+  it("backs off on request_in_progress and keeps the SAME identity", async () => {
+    let answered = 0;
+    const service = await unixServer((socket, request) => {
+      answered += 1;
+      socket.write(
+        answered < 3
+          ? errorFrame(request.requestId, "request_in_progress", true)
+          : success(request.requestId, CHANGE_SET)
+      );
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:in-progress"
+    });
+
+    await expect(client.beginChangeSet("wait for it", 5_000)).resolves.toMatchObject({
+      changeSetId: "change:retry"
+    });
+    expect(service.requests).toHaveLength(3);
+    // Same identity throughout -- this is one request being asked about again,
+    // not three different requests.
+    const ids = new Set(service.requests.map((request) => request.requestId));
+    const keys = new Set(service.requests.map((request) => request.idempotencyKey));
+    expect(ids.size).toBe(1);
+    expect(keys.size).toBe(1);
+    client.close();
+  });
+
+  it("surfaces a retryable OPERATIONAL failure instead of replaying it", async () => {
+    // The daemon durably caches a retryable error against the request
+    // identity, so replaying the same identity would just re-read the cached
+    // error. Recovery means a NEW request with a NEW key, which is the
+    // caller's decision.
+    const service = await unixServer((socket, request) => {
+      socket.write(errorFrame(request.requestId, "validation_unavailable", true));
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:operational"
+    });
+
+    await expect(client.beginChangeSet("operational failure", 2_000)).rejects.toMatchObject({
+      code: "validation_unavailable",
+      retryable: true
+    });
+    expect(service.requests).toHaveLength(1);
+    client.close();
+  });
+
+  it("backs off on server_busy, which was never sent at all", async () => {
+    let refusals = 0;
+    const service = await unixServer(
+      (socket, request) => {
+        socket.write(success(request.requestId, READY_RESULT));
+      },
+      {
+        handshake: (socket) => {
+          refusals += 1;
+          if (refusals > 2) return true;
+          socket.write(
+            serializeSessionReplyFrame({
+              protocolVersion: 2,
+              type: "session_rejected",
+              error: {
+                code: "server_busy",
+                message: "at the admission cap",
+                retryable: true,
+                diagnostics: []
+              }
+            })
+          );
+          return false;
+        }
+      }
+    );
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:busy"
+    });
+
+    await expect(client.hello(5_000)).resolves.toEqual(READY_RESULT);
+    expect(refusals).toBe(3);
+    client.close();
+  });
+
+  it("gives up on the ORIGINAL deadline rather than overshooting it by a backoff", async () => {
+    const service = await unixServer((socket, request) => {
+      socket.write(errorFrame(request.requestId, "request_in_progress", true));
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:deadline"
+    });
+
+    const started = Date.now();
+    await expect(client.beginChangeSet("never ready", 300)).rejects.toMatchObject({
+      code: "request_timeout"
+    });
+    // Comfortably bounded by the deadline plus scheduling slack, and NOT by
+    // the deadline plus a full backoff interval.
+    expect(Date.now() - started).toBeLessThan(1_500);
+    client.close();
   });
 });

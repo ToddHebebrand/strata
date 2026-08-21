@@ -1,18 +1,23 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::protocol::{LocalServiceResponse, MAX_REQUEST_FRAME_BYTES, serialize_response_frame};
-use super::session::{ServiceConfig, ServiceSession};
+use super::protocol::{
+    LocalServiceResponse, MAX_HANDSHAKE_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, PROTOCOL_VERSION,
+    SessionReply, SessionRole, WireU64, parse_open_session_frame, serialize_response_frame,
+    serialize_session_reply,
+};
+use super::ownership::{Binding, OwnershipRegistry};
+use super::session::{ServiceConfig, ServiceSession, SessionBinding};
 
 const SOCKET_DIRECTORY: &str = "/tmp/strata-lc";
 const MAX_SOCKET_PATH_BYTES: usize = 96;
@@ -76,7 +81,7 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
     }
     let listener = bind_private_socket(&socket_path)?;
     let ready = Readiness {
-        protocol_version: 1,
+        protocol_version: PROTOCOL_VERSION,
         socket_path: socket_path.to_string_lossy().into_owned(),
         service_epoch: service_epoch.to_string(),
         recovered: session.recovered(),
@@ -91,12 +96,22 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
     stdout.flush()?;
     drop(stdout);
 
+    let admission = Arc::new(Admission::default());
+    let ownership = Arc::new(OwnershipRegistry::default());
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
+                // Capacity FIRST. An over-cap connection is refused without
+                // ever costing a handler thread.
+                let Some(permit) = admission.admit() else {
+                    refuse_over_cap(stream);
+                    continue;
+                };
                 let session = Arc::clone(&session);
+                let ownership = Arc::clone(&ownership);
                 thread::spawn(move || {
-                    let _ = handle_connection(stream, &session);
+                    let _ =
+                        handle_connection(stream, &session, service_epoch, permit, ownership);
                 });
             }
             Err(error) => return Err(error).context("accept local service connection"),
@@ -192,26 +207,417 @@ fn bind_private_socket(path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-fn handle_connection(mut stream: UnixStream, session: &ServiceSession) -> Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let mut request = Vec::new();
-    let mut chunk = [0_u8; 4096];
-    while request.len() <= MAX_REQUEST_FRAME_BYTES && !request.contains(&b'\n') {
-        let read = stream
-            .read(&mut chunk)
-            .context("read local service request")?;
-        if read == 0 {
-            break;
+/// Total connections the daemon will hold open at once.
+///
+/// Ten actors imply twenty normal lanes. The cap is not twenty: takeover
+/// requires a replacement lane to CONNECT while the lane it replaces still
+/// holds its permit, so a cap sized to the steady state would deadlock exactly
+/// the recovery path it was meant to protect.
+const MAX_ADMITTED_CONNECTIONS: usize = 64;
+/// Of those, how many may simultaneously be un-handshaken. A peer that
+/// connects and says nothing is the cheapest possible attack, so it gets the
+/// tightest budget -- exhausting this cannot touch established sessions.
+const MAX_UNHANDSHAKEN_CONNECTIONS: usize = 16;
+/// How long the ACCEPT LOOP will spend writing a refusal to an over-cap peer.
+/// Deliberately short: this write is inline, because spawning a thread to
+/// deliver a refusal would reintroduce the unbounded-thread problem the cap
+/// exists to solve. A peer that will not read its own refusal costs the
+/// listener this much and no more.
+const BUSY_REFUSAL_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Bounded connection admission.
+///
+/// Before D-2 every accepted connection spawned a detached thread with no cap,
+/// and a valid request could occupy one for the protocol's full 300-second
+/// ceiling because the socket timeout does not bound request execution. That
+/// made connection and request storms a live resource-exhaustion path on the
+/// running daemon, not a theoretical one.
+#[derive(Default)]
+struct Admission {
+    counts: Mutex<AdmissionCounts>,
+}
+
+#[derive(Default)]
+struct AdmissionCounts {
+    admitted: usize,
+    unhandshaken: usize,
+}
+
+impl Admission {
+    /// Takes a permit, or `None` when either cap is reached. Called BEFORE the
+    /// handler thread is spawned, so an over-cap connection never costs a
+    /// thread at all.
+    fn admit(self: &Arc<Self>) -> Option<AdmissionPermit> {
+        // Recover from poisoning rather than propagating it. A poisoned
+        // admission mutex would otherwise refuse EVERY future connection for
+        // the daemon's remaining lifetime -- a permanent outage caused by one
+        // panic in a critical section that only does arithmetic.
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if counts.admitted >= MAX_ADMITTED_CONNECTIONS
+            || counts.unhandshaken >= MAX_UNHANDSHAKEN_CONNECTIONS
+        {
+            return None;
         }
-        request.extend_from_slice(&chunk[..read]);
+        counts.admitted += 1;
+        counts.unhandshaken += 1;
+        Some(AdmissionPermit {
+            admission: Arc::clone(self),
+            handshaken: false,
+        })
     }
-    let response = session.handle_frame(&request);
-    let frame = bounded_response_frame(&response)?;
-    // A peer may disconnect after the durable effect and before receiving the response.
-    let _ = stream.write_all(&frame);
-    let _ = stream.flush();
+}
+
+/// RAII: the permit is released when the handler thread unwinds or returns,
+/// including on panic. Nothing in the handler has to remember to give it back.
+struct AdmissionPermit {
+    admission: Arc<Admission>,
+    handshaken: bool,
+}
+
+impl AdmissionPermit {
+    /// Moves this connection out of the un-handshaken budget and into the
+    /// established one. Called once, the moment the handshake succeeds.
+    fn handshaken(&mut self) {
+        if self.handshaken {
+            return;
+        }
+        self.handshaken = true;
+        let mut counts = self
+            .admission
+            .counts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        counts.unhandshaken = counts.unhandshaken.saturating_sub(1);
+    }
+}
+
+impl Drop for AdmissionPermit {
+    fn drop(&mut self) {
+        // Must not silently skip on poisoning: a permit that is never given
+        // back is a permanently lost slot out of 64.
+        let mut counts = self
+            .admission
+            .counts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        counts.admitted = counts.admitted.saturating_sub(1);
+        if !self.handshaken {
+            counts.unhandshaken = counts.unhandshaken.saturating_sub(1);
+        }
+    }
+}
+
+/// Absolute wall-clock a connection gets to complete its handshake, measured
+/// from accept. Absolute rather than per-read: a peer that trickles one byte
+/// per second must not be able to hold a handler open indefinitely.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(5);
+/// Absolute wall-clock a PARTIAL request frame may remain incomplete, measured
+/// from its first byte rather than reset by each byte, for the same reason.
+const PARTIAL_FRAME_DEADLINE: Duration = Duration::from_secs(5);
+/// How long an established, fully-drained session may sit idle before the
+/// daemon reclaims its handler. Clients reconnect lazily, so this is invisible
+/// to a caller that simply pauses.
+const ESTABLISHED_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Socket read timeout. This is only a POLL granularity — it wakes the reader
+/// so it can re-check whichever absolute deadline is in force. It is never
+/// itself the timeout a peer observes.
+const READ_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Incremental line-delimited frame reader.
+///
+/// Splits at the FIRST `\n` and retains the remainder as the next frame's
+/// prefix, so a peer that writes two frames into one chunk does not lose the
+/// second. The scan resumes from the last examined offset instead of
+/// rescanning the whole buffer, which keeps a large partial frame from costing
+/// O(n^2) as it arrives.
+///
+/// Deliberately does NOT relax `decode_frame`'s interior-newline check: this
+/// layer splits BEFORE calling the shared frame validator, so that validator
+/// is untouched and still refuses a frame with an embedded newline.
+struct FrameReader {
+    buffer: Vec<u8>,
+    scanned: usize,
+}
+
+impl FrameReader {
+    fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            scanned: 0,
+        }
+    }
+
+    /// True when bytes of a partial frame are already buffered — the caller
+    /// uses this to decide whether the idle deadline or the (much shorter)
+    /// partial-frame deadline applies.
+    fn partial(&self) -> bool {
+        !self.buffer.is_empty()
+    }
+
+    /// Pops one complete frame if the buffer holds a delimiter, else `None`.
+    fn take_frame(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+        if let Some(offset) = self.buffer[self.scanned..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let end = self.scanned + offset + 1;
+            if end > max_bytes {
+                bail!("frame exceeds {max_bytes} byte bound");
+            }
+            let frame: Vec<u8> = self.buffer.drain(..end).collect();
+            self.scanned = 0;
+            return Ok(Some(frame));
+        }
+        self.scanned = self.buffer.len();
+        if self.buffer.len() > max_bytes {
+            bail!("frame exceeds {max_bytes} byte bound");
+        }
+        Ok(None)
+    }
+
+    /// Reads until one whole frame is available. `Ok(None)` is a CLEAN end of
+    /// stream — the peer closed between frames, which is a normal session
+    /// close, not an error. EOF with a partial frame buffered is an error.
+    ///
+    /// `deadline` is recomputed by the caller-supplied closure on every wake so
+    /// that the applicable bound can change the moment the first byte of a
+    /// frame arrives.
+    fn read_frame(
+        &mut self,
+        stream: &mut UnixStream,
+        max_bytes: usize,
+        mut deadline: impl FnMut(&Self) -> Instant,
+    ) -> Result<Option<Vec<u8>>> {
+        let mut chunk = [0_u8; 4096];
+        loop {
+            if let Some(frame) = self.take_frame(max_bytes)? {
+                return Ok(Some(frame));
+            }
+            if Instant::now() >= deadline(self) {
+                bail!("frame deadline exceeded");
+            }
+            match stream.read(&mut chunk) {
+                Ok(0) => {
+                    if self.partial() {
+                        bail!("connection ended mid-frame");
+                    }
+                    return Ok(None);
+                }
+                Ok(read) => self.buffer.extend_from_slice(&chunk[..read]),
+                // The poll interval elapsing is not a failure; it is the
+                // reader waking to re-check the absolute deadline above.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error).context("read local service frame"),
+            }
+        }
+    }
+}
+
+/// Serves ONE connection: handshake first, then request/response until the
+/// peer closes or a deadline fires.
+///
+/// Strictly one outstanding request per connection — request, response,
+/// request. The retry contract depends on there being at most one ambiguous
+/// request per lane, so pipelining is deliberately not supported; a peer that
+/// writes two request frames back-to-back has its second frame served only
+/// after the first response is written.
+/// Tells an over-cap peer WHY, in a frame it can parse, then closes.
+///
+/// A silent close would be indistinguishable from a crashed daemon, and a
+/// client that cannot tell those apart cannot choose between backing off and
+/// giving up. `server_busy` is marked retryable so it backs off with jitter.
+fn refuse_over_cap(mut stream: UnixStream) {
+    let _ = stream.set_write_timeout(Some(BUSY_REFUSAL_WRITE_TIMEOUT));
+    let reply = SessionReply::rejected(
+        "server_busy",
+        "daemon is at its connection admission cap; retry with backoff",
+        true,
+    );
+    if let Ok(frame) = serialize_session_reply(&reply) {
+        let _ = stream.write_all(&frame);
+        let _ = stream.flush();
+    }
+}
+
+/// Writes a handshake refusal and ends the connection. Always `Ok`: refusing a
+/// peer is a normal outcome of serving one, not a failure of the daemon.
+fn refuse_handshake(
+    stream: &mut UnixStream,
+    code: &str,
+    message: &str,
+    retryable: bool,
+) -> Result<()> {
+    let reply = SessionReply::rejected(code, message, retryable);
+    if let Ok(frame) = serialize_session_reply(&reply) {
+        let _ = stream.write_all(&frame);
+        let _ = stream.flush();
+    }
     Ok(())
+}
+
+/// Releases a lane binding when the handler leaves, by any route including a
+/// panic. Removal is token-checked, so a fenced handler unwinding late cannot
+/// unregister the connection that replaced it.
+struct LaneGuard {
+    ownership: Arc<OwnershipRegistry>,
+    actor: String,
+    role: SessionRole,
+    token: u64,
+}
+
+impl Drop for LaneGuard {
+    fn drop(&mut self) {
+        self.ownership.release(&self.actor, self.role, self.token);
+    }
+}
+
+fn handle_connection(
+    mut stream: UnixStream,
+    session: &ServiceSession,
+    service_epoch: u64,
+    mut permit: AdmissionPermit,
+    ownership: Arc<OwnershipRegistry>,
+) -> Result<()> {
+    stream.set_read_timeout(Some(READ_POLL_INTERVAL))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut reader = FrameReader::new();
+
+    let accepted = Instant::now();
+    // The two failure modes are kept apart because they mean different things
+    // to a client: "you spoke a protocol I do not serve" is terminal, while
+    // "you did not finish speaking in time" is a transport problem worth
+    // retrying. Collapsing them into one code would tell a slow-but-correct
+    // client to give up.
+    let handshake = match reader.read_frame(&mut stream, MAX_HANDSHAKE_FRAME_BYTES, |_| {
+        accepted + HANDSHAKE_DEADLINE
+    }) {
+        // The peer closed before saying anything. Nothing to reject.
+        Ok(None) => return Ok(()),
+        Ok(Some(frame)) => match parse_open_session_frame(&frame) {
+            Ok(handshake) => handshake,
+            Err(error) => {
+                // Fail-fast, both directions: a v1 client's first frame is a
+                // request, which fails to parse as a handshake and lands here.
+                // The rejection is WRITTEN and then the connection closed, so
+                // the peer learns why instead of waiting on EOF.
+                return refuse_handshake(
+                    &mut stream,
+                    "unsupported_protocol_version",
+                    &bounded_handshake_message(&error.to_string()),
+                    false,
+                );
+            }
+        },
+        Err(_) => {
+            return refuse_handshake(
+                &mut stream,
+                "handshake_timeout",
+                "no complete open_session frame arrived within the handshake deadline",
+                true,
+            );
+        }
+    };
+
+    // Ownership is decided BEFORE the acceptance is written, so a refused
+    // handshake never sees a `session_opened` it then has to walk back.
+    let Binding { token, fenced } = match ownership.bind(
+        &handshake.actor,
+        handshake.role,
+        &handshake.client_instance,
+        handshake.connection_generation.get(),
+        &stream,
+    ) {
+        Ok(binding) => binding,
+        Err(refusal) => {
+            return refuse_handshake(
+                &mut stream,
+                refusal.code(),
+                refusal.message(),
+                refusal.retryable(),
+            );
+        }
+    };
+    // Fencing happens OUTSIDE the registry lock: a shutdown syscall under the
+    // lock would stall every other handshake on the daemon.
+    if let Some(displaced) = fenced {
+        let _ = displaced.shutdown(std::net::Shutdown::Both);
+    }
+    // The guard releases this lane on EVERY exit path, and only if this
+    // handler still owns it -- see `OwnershipRegistry::release`.
+    let _lane = LaneGuard {
+        ownership: Arc::clone(&ownership),
+        actor: handshake.actor.clone(),
+        role: handshake.role,
+        token,
+    };
+
+    let reply = SessionReply::SessionOpened {
+        protocol_version: PROTOCOL_VERSION,
+        service_epoch: WireU64::new(service_epoch),
+        validation_mode: session.validation_mode(),
+        validation_manifest_digest: session.validation_manifest_digest().map(str::to_owned),
+        actor: handshake.actor.clone(),
+        role: handshake.role,
+    };
+    stream.write_all(&serialize_session_reply(&reply)?)?;
+    stream.flush()?;
+    // Established. Release the un-handshaken budget so a burst of silent
+    // connectors cannot starve clients that are actually working.
+    permit.handshaken();
+    // Every request on this connection is now checked against what the
+    // handshake bound, before it can reach the journal.
+    let binding = SessionBinding {
+        actor: handshake.actor,
+        role: handshake.role,
+    };
+
+    loop {
+        let idle_since = Instant::now();
+        let frame = reader.read_frame(&mut stream, MAX_REQUEST_FRAME_BYTES, |reader| {
+            if reader.partial() {
+                // The clock started at the frame's FIRST byte and is not reset
+                // by later bytes, so a slow trickle still dies at the bound.
+                idle_since + PARTIAL_FRAME_DEADLINE
+            } else {
+                idle_since + ESTABLISHED_IDLE_TIMEOUT
+            }
+        });
+        let request = match frame {
+            Ok(Some(frame)) => frame,
+            // Clean close between frames, or a deadline: either way the
+            // session is over and there is nothing meaningful to answer.
+            Ok(None) | Err(_) => return Ok(()),
+        };
+        let response = session.handle_frame(&request, &binding);
+        let frame = bounded_response_frame(&response)?;
+        // A peer may disconnect after the durable effect and before receiving
+        // the response; that is the retry contract's problem, not ours.
+        if stream.write_all(&frame).is_err() || stream.flush().is_err() {
+            return Ok(());
+        }
+    }
+}
+
+/// Keeps a rejection reason inside the handshake frame bound. The reason is
+/// diagnostic text derived from a parse failure, so it is truncated rather
+/// than trusted to be short.
+fn bounded_handshake_message(message: &str) -> String {
+    const MAX: usize = 512;
+    if message.len() <= MAX {
+        return message.to_owned();
+    }
+    let mut end = MAX;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &message[..end])
 }
 
 fn bounded_response_frame(response: &LocalServiceResponse) -> Result<Vec<u8>> {

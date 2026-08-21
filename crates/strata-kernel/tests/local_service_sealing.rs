@@ -1,7 +1,9 @@
+#[path = "support/session.rs"]
+mod session;
+
 use serde_json::{Value, json};
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use tempfile::tempdir;
@@ -100,17 +102,11 @@ fn actor_containment_malformed_and_bridge_failures_publish_nothing() {
     let ready: Value = serde_json::from_str(&line).unwrap();
     let socket = PathBuf::from(ready["socketPath"].as_str().unwrap());
     let send = |request: Value| -> Value {
-        let mut bytes = serde_json::to_vec(&request).unwrap();
-        bytes.push(b'\n');
-        let mut stream = UnixStream::connect(&socket).unwrap();
-        stream.write_all(&bytes).unwrap();
-        stream.shutdown(std::net::Shutdown::Write).unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
-        serde_json::from_slice(&response[..response.len() - 1]).unwrap()
+        let client = request["clientId"].as_str().unwrap_or("client:sealing").to_owned();
+        session::send_one(&socket, &client, &request)
     };
     let base = |request_id: &str, client: &str, key: Option<&str>, action: Value| {
-        let mut request = json!({"protocolVersion":1,"requestId":request_id,"clientId":client,"deadlineMs":"120000","action":action});
+        let mut request = json!({"protocolVersion":2,"requestId":request_id,"clientId":client,"deadlineMs":"120000","action":action});
         if let Some(key) = key {
             request["idempotencyKey"] = json!(key);
         }
