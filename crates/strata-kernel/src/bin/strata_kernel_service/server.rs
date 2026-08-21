@@ -1,8 +1,6 @@
-use std::fs;
 use std::io::{ErrorKind, Read, Write};
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,6 +14,7 @@ use super::protocol::{
     SessionReply, SessionRole, WireU64, parse_open_session_frame, serialize_response_frame,
     serialize_session_reply,
 };
+use super::lifecycle::{self, CanonicalStateDir, EndpointClaim, OwnerLock, SocketRoot};
 use super::ownership::{Binding, OwnershipRegistry};
 use super::session::{ServiceConfig, ServiceSession, SessionBinding};
 
@@ -44,12 +43,39 @@ struct Readiness {
 }
 
 pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
+    serve_in_root(config, socket_token, SocketRoot::production()?)
+}
+
+pub(super) fn serve_in_root(
+    config: ServiceConfig,
+    socket_token: &str,
+    root: SocketRoot,
+) -> Result<()> {
     validate_token(socket_token)?;
-    let socket_path = socket_path(socket_token);
-    validate_socket_path(&socket_path)?;
+    let token_hash = token_hash(socket_token);
+
+    // OWNERSHIP FIRST, and the ordering is the whole point. `open` below
+    // recovers and constructs durable state, so a daemon that owns neither the
+    // state directory nor the endpoint must be excluded BEFORE any of that
+    // work -- not when it eventually tries to bind. The loser's guarantee is
+    // "no canonical-state mutation"; argument parsing and manifest reading are
+    // read-only preflight and legitimately already happened.
+    //
+    // Fixed order, state then endpoint. LOCK_NB is what actually makes
+    // deadlock impossible, but the order is the property that survives if
+    // these ever become blocking.
+    let canonical = CanonicalStateDir::resolve(&config.db_path)?;
+    let owner = OwnerLock::acquire(&canonical)
+        .map_err(|refusal| refusal.into_error("this state directory"))?;
+    let _endpoint = EndpointClaim::acquire(&root, &token_hash)
+        .map_err(|refusal| refusal.into_error("this socket endpoint"))?;
 
     // Recovery is intentionally complete before the authority becomes reachable.
     let (session, service_epoch) = ServiceSession::open(config)?;
+    // Only now are BOTH locks held AND the epoch real. Publishing earlier would
+    // leave misleading owner metadata behind for a daemon that won the state
+    // lock and then lost the endpoint claim.
+    owner.publish_diagnostics(std::process::id(), service_epoch)?;
     // Seed-green gate (B-2 Task 7). Runs for ANY operator manifest — a
     // `tscOnly` manifest gets a tsc-only baseline, a behavioral one gets tsc +
     // fixtures — and strictly BEFORE both the start audit event and the socket
@@ -79,7 +105,24 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
              first use: {error:#}"
         );
     }
-    let listener = bind_private_socket(&socket_path)?;
+    // Record BEFORE bind. This ordering is what makes every crash point exactly
+    // recoverable: a crash after the record leaves a record naming the exact
+    // socket, and a crash before it leaves no new socket at all. Binding first
+    // would leave an UNRECORDED orphan on every crash in that window, which is
+    // debris that grows without limit and needs a directory sweep to clean up.
+    let root = std::sync::Arc::new(root);
+    lifecycle::reclaim_recorded_predecessor(&root, &token_hash)?;
+    let mut nonce = lifecycle::fresh_nonce();
+    // Never unlink a colliding candidate merely because its name matches --
+    // regenerate instead.
+    while root.child_is_socket(&SocketRoot::socket_name(&token_hash, &nonce)) {
+        nonce = lifecycle::fresh_nonce();
+    }
+    let socket_name = SocketRoot::socket_name(&token_hash, &nonce);
+    lifecycle::EndpointRecord::publish(&root, &token_hash, &socket_name)?;
+    let (bound, listener) = lifecycle::BoundEndpoint::bind(&root, &token_hash, &nonce)?;
+    let socket_path = bound.path().to_owned();
+    validate_socket_path(&socket_path)?;
     let ready = Readiness {
         protocol_version: PROTOCOL_VERSION,
         socket_path: socket_path.to_string_lossy().into_owned(),
@@ -169,22 +212,31 @@ pub(super) fn validate_socket_path(path: &Path) -> Result<()> {
         .file_name()
         .and_then(|value| value.to_str())
         .context("local service socket has no UTF-8 basename")?;
-    let hash = name
+    let stem = name
         .strip_suffix(".sock")
         .context("local service socket must end in .sock")?;
-    if hash.len() != 64
-        || !hash
+    // D-3a: `<sha256-token-hash>.<incarnation-nonce>`. The nonce is what makes
+    // a leftover socket impossible to confuse with a live one, so the shape is
+    // enforced rather than merely tolerated.
+    let (hash, nonce) = stem
+        .split_once('.')
+        .context("local service socket basename must carry an incarnation nonce")?;
+    let hex = |value: &str| {
+        value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        bail!("local service socket basename must be a SHA-256 token hash");
+    };
+    if hash.len() != 64 || !hex(hash) {
+        bail!("local service socket basename must begin with a SHA-256 token hash");
+    }
+    if nonce.is_empty() || nonce.len() > lifecycle::MAX_NONCE_HEX || !hex(nonce) {
+        bail!("local service socket incarnation nonce must be 1..=11 lowercase hex characters");
     }
     Ok(())
 }
 
-fn socket_path(token: &str) -> PathBuf {
-    let digest = Sha256::digest(token.as_bytes());
-    Path::new(SOCKET_DIRECTORY).join(format!("{digest:x}.sock"))
+pub(super) fn token_hash(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
 fn validate_token(token: &str) -> Result<()> {
@@ -194,18 +246,6 @@ fn validate_token(token: &str) -> Result<()> {
     Ok(())
 }
 
-fn bind_private_socket(path: &Path) -> Result<UnixListener> {
-    fs::create_dir_all(SOCKET_DIRECTORY).context("create local service socket directory")?;
-    fs::set_permissions(SOCKET_DIRECTORY, fs::Permissions::from_mode(0o700))
-        .context("protect local service socket directory")?;
-    if path.exists() {
-        fs::remove_file(path).context("remove stale local service socket")?;
-    }
-    let listener = UnixListener::bind(path).context("bind local service Unix socket")?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .context("protect local service Unix socket")?;
-    Ok(listener)
-}
 
 /// Total connections the daemon will hold open at once.
 ///

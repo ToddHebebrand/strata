@@ -30,7 +30,7 @@
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -326,6 +326,141 @@ impl EndpointClaim {
             .map_err(LockRefusal::Unavailable)?;
         lock_verified(file).map(|file| Self { file })
     }
+}
+
+/// The record naming the socket this token is currently bound to.
+///
+/// A SEPARATE file from the lock, and that separation is load-bearing: the
+/// record is replaced by `rename`, and renaming over the lock file would
+/// replace the very inode the `flock` protects.
+///
+/// Versioned and fail-closed — an unreadable or unrecognized record is treated
+/// as "no predecessor to reclaim", never as permission to guess.
+pub(super) struct EndpointRecord;
+
+impl EndpointRecord {
+    /// Reads the recorded predecessor's basename, if there is a usable one.
+    pub(super) fn read(root: &SocketRoot, token_hash: &str) -> Option<String> {
+        let raw = std::fs::read_to_string(root.join(&SocketRoot::record_name(token_hash))).ok()?;
+        let parsed: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        if parsed.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+            return None;
+        }
+        let name = parsed.get("socket")?.as_str()?.to_owned();
+        // Only a name this token could legitimately own is actionable.
+        if name.starts_with(&format!("{token_hash}.")) && name.ends_with(".sock") {
+            Some(name)
+        } else {
+            None
+        }
+    }
+
+    /// Publishes the new record durably: temp file, fsync, rename, then sync
+    /// the directory so the rename itself is durable.
+    ///
+    /// Called BEFORE binding. That ordering is what makes every crash point
+    /// exactly recoverable — a crash after this leaves a record naming the
+    /// exact socket, and a crash before it leaves no new socket at all.
+    pub(super) fn publish(root: &SocketRoot, token_hash: &str, socket_name: &str) -> Result<()> {
+        use std::io::Write;
+        let temp = root.join(&format!("{token_hash}.record.tmp"));
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(&temp)
+                .context("create endpoint record")?;
+            let body = serde_json::json!({ "version": 1, "socket": socket_name });
+            file.write_all(serde_json::to_string(&body)?.as_bytes())
+                .context("write endpoint record")?;
+            file.sync_data().context("sync endpoint record")?;
+        }
+        std::fs::rename(&temp, root.join(&SocketRoot::record_name(token_hash)))
+            .context("publish endpoint record")?;
+        // Make the rename itself durable, not just the bytes.
+        if let Ok(dir) = std::fs::File::open(root.path()) {
+            let _ = dir.sync_all();
+        }
+        Ok(())
+    }
+}
+
+/// The bound socket, unlinked on drop.
+///
+/// D-3a adds no graceful shutdown — that is D-3b — so this is exercised
+/// directly in tests rather than through a process-level clean exit.
+pub(super) struct BoundEndpoint {
+    root: std::sync::Arc<SocketRoot>,
+    name: String,
+    path: PathBuf,
+}
+
+impl BoundEndpoint {
+    pub(super) fn bind(
+        root: &std::sync::Arc<SocketRoot>,
+        token_hash: &str,
+        nonce: &str,
+    ) -> Result<(Self, std::os::unix::net::UnixListener)> {
+        let name = SocketRoot::socket_name(token_hash, nonce);
+        let path = root.join(&name);
+        // `bind` is pathname-based and cannot go through the held fd, so
+        // confirm the root is still the directory we verified.
+        root.reverify()?;
+        let listener = std::os::unix::net::UnixListener::bind(&path)
+            .with_context(|| format!("bind {}", path.display()))?;
+        root.reverify()?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .context("protect local service Unix socket")?;
+        Ok((
+            Self {
+                root: std::sync::Arc::clone(root),
+                name,
+                path,
+            },
+            listener,
+        ))
+    }
+
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for BoundEndpoint {
+    fn drop(&mut self) {
+        // Only remove it if it is still a socket in the root we hold.
+        if self.root.child_is_socket(&self.name) {
+            let _ = self.root.unlink_child(&self.name);
+        }
+    }
+}
+
+/// A fresh incarnation nonce, bounded so the basename fits the socket path
+/// limit.
+pub(super) fn fresh_nonce() -> String {
+    uuid::Uuid::new_v4().simple().to_string()[..MAX_NONCE_HEX].to_owned()
+}
+
+/// Reclaims the exact recorded predecessor, if it is still there.
+///
+/// Deliberately NOT a directory sweep. A wildcard sweep would need a `read_dir`
+/// traversal that cannot be meaningfully bounded, and it would delete sockets
+/// this daemon has no record of ever creating. Exact reclamation is one
+/// `unlinkat` and touches nothing it cannot name.
+pub(super) fn reclaim_recorded_predecessor(root: &SocketRoot, token_hash: &str) -> Result<()> {
+    let Some(name) = EndpointRecord::read(root, token_hash) else {
+        return Ok(());
+    };
+    if !root.child_is_socket(&name) {
+        // The record names something absent, or something that is not a socket.
+        // Either way it is not ours to remove.
+        return Ok(());
+    }
+    root.unlink_child(&name)
+        .with_context(|| format!("reclaim recorded predecessor {name}"))
 }
 
 #[cfg(test)]
