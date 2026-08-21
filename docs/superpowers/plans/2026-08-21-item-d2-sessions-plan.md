@@ -1,224 +1,235 @@
-# Item D-2 — Protocol v2 sessions: implementation plan (v1)
+# Item D-2 — Protocol v2 sessions: implementation plan (v2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** v1, pre-review. Governing spec:
-`docs/superpowers/specs/2026-08-20-item-d-design.md` § Slice D-2. Charter:
-decisions.md 2026-08-20. Baseline: `main` ≥ 9d06770 (D-1 merged).
+**Status:** v2, post-review — READY TO EXECUTE. The v1 methodology review
+returned **PROCEED-WITH-CORRECTIONS** (archived:
+`docs/superpowers/specs/2026-08-21-item-d2-plan-review-codex.md`). Every
+correction is folded in, including one that overturns a claim I had verified
+myself. Governing spec: `docs/superpowers/specs/2026-08-20-item-d-design.md`
+§ Slice D-2. Baseline: `main` ≥ 9d06770.
 
 **Goal:** connections stop being per-request, and identity stops being a string
 a client asserts about itself. Both change bytes on the wire, on both sides.
 
-## The proposed sub-split (REVIEWER: adjudicate this first)
+## What v1 got wrong
 
-D-2 as specified carries framing, lanes, handshake identity, reconnect
-takeover, timeout policy, admission control, and a retry contract. That is
-larger than D-1 and larger than either B slice. I propose splitting it so each
-half is independently green:
+1. **The split is rejected. D-2 ships as ONE mergeable contract.** A
+   transport-only D-2a would define a `protocolVersion: 2` whose first frame and
+   authority model then change again in D-2b — freezing two incompatible
+   meanings of v2, or temporarily shipping exactly the identity-bypass route the
+   governing spec prohibits. Internal commits still stage the work; only the
+   merge is atomic.
+2. **My takeover discriminator was wrong, and so was my justification for it.**
+   See Task 5.
+3. **My "no existing caller issues concurrent requests" claim was wrong.** I
+   enumerated explicit `Promise.all` sites and concluded serial-per-lane broke
+   nobody. But `createCoordinationToolServer(client)` hands ONE client to all 15
+   MCP tool handlers (`agent.ts:186`, `tools.ts:190`, `:341` — verified: 15 call
+   sites close over the same instance), and the agent SDK permits several tool
+   calls in one assistant message. **The live agent path can therefore produce
+   concurrent calls on one client**, even though no harness code does so
+   explicitly. The client must serialize internally.
 
-- **D-2a — framed persistent transport.** Server read loop, client leftover
-  buffer, per-frame byte accounting, idle-vs-partial-frame timeouts, admission
-  cap, v2 negotiation with v1 fail-fast. ONE connection per client, one
-  outstanding request. No identity, no lanes.
-- **D-2b — session identity and lanes.** `(actor, role, client-instance)`
-  handshake, connection-bound actor, duplicate-lane detection, reconnect
-  takeover, two role lanes, the retry contract.
-
-The seam is real: D-2a is a transport change provable by existing suites
-running unchanged over persistent connections; D-2b is a semantics change on
-top. **If you disagree, say so and I will do D-2 as one slice** — this is the
-first question, because everything below is organized around it.
-
-Risk of the split: the design says the final D surface must retain no route
-that bypasses connection-bound identity. D-2a is such a route. It is acceptable
-ONLY as an intermediate state inside item D, and D must not close until D-2b
-lands. Alternative if that is too loose: fold a minimal handshake into D-2a and
-leave only lanes/takeover for D-2b.
+   *Honesty note for the implementer:* the installed SDK is minified, so I could
+   not verify its dispatch ordering from source. That does not matter — FIFO
+   queueing is correct whether or not the SDK happens to await between handlers,
+   and assuming it serializes would be betting the transport on an unverifiable
+   internal. Do not spend time reverse-engineering `sdk.mjs`.
 
 ## Global constraints
 
 - **No agent-visible semantic change.** Same actions, same results, same
-  validation. This slice changes how a client talks to the daemon, not what it
-  can ask for.
-- **Every existing suite must pass over the new transport**, not a v1
-  compatibility path. That is the acceptance bar: if `gate1`/`gate3`/behavioral
-  suites go green with persistent connections, the transport is honest.
-- **The request-ID check stays GLOBAL** (review-adjudicated). The bounded
-  protocol context is a transient validation window drained immediately after
-  journal binding (`session.rs:404-406`); making it per-connection would weaken
-  cross-connection replay checking.
-- **No permanent v1 mode.** A v1 client waits for EOF and would HANG against a
-  persistent server, so v1 must fail fast and close, never linger.
+  validation.
+- **Every existing suite must pass over the new transport**, not a compatibility
+  path. That is the acceptance bar.
+- **The request-ID check stays GLOBAL.** The bounded protocol context is a
+  transient validation window drained right after journal binding
+  (`session.rs:404-406`).
+- **No v1 compatibility mode.** A v1 first frame gets a narrow fail-fast
+  rejection and close.
 - Bounded everything; strict JSON and `deny_unknown_fields` / `.strict()` stay.
 - No lifecycle work (D-3), no packaging, no item-C work, no keyed runs.
 - `packages/live-compare/src/tasks.ts` is never staged.
 
 ---
 
-## D-2a — framed persistent transport
+### Task 1: The `open_session` handshake — the sole negotiation point
 
-### Task 1: Server read loop
-
-**Files:** `crates/strata-kernel/src/bin/strata_kernel_service/server.rs`.
-
-Today `handle_connection` (`:195-215`) reads until the first `\n`, handles,
-writes one response, and drops the connection. It must loop.
-
-**Interfaces / behavior:**
-- Read into a persistent buffer; on each iteration, split at the FIRST `\n` and
-  retain the remainder as the next frame's prefix. Today's
-  `request.contains(&b'\n')` is an O(n) rescan of the whole buffer per read —
-  replace with a scan from the last examined offset.
-- **Do not relax `decode_frame`'s interior-newline check**
-  (`protocol.rs:1203-1213`). The connection layer splits BEFORE calling it, so
-  the frame validator keeps rejecting multi-frame payloads exactly as today.
-  This is deliberately the lower-blast-radius option: `decode_frame` is shared
-  with the offline oracle and both languages' fixture suites.
-- **Timeout policy split.** The blanket `set_read_timeout(5s)` (`:196`) would
-  disconnect every thinking agent. Replace with: an IDLE timeout between frames
-  (generous — a client may sit idle for minutes), and a short PARTIAL-FRAME
-  timeout once a frame's first byte has arrived. A timeout must close the
-  connection cleanly, not propagate as an `Err` that skips the response.
-- **Bound the retained prefix** so a client cannot buy unbounded memory by
-  sending 63KB of a frame and stopping.
-- **One outstanding request per connection.** The loop is serial by
-  construction; reject (or simply never read) a second frame while one is
-  executing. No pipelining.
-- **Admission cap.** The accept loop spawns an unbounded OS thread per
-  connection (`:94-101`). Cap concurrent sessions; beyond the cap, refuse with
-  a typed error and close, so a reconnect storm cannot exhaust threads. Ten
-  actors imply ~20 connections in D-2b; pick a cap with headroom and state it.
-
-- [ ] **Step 1 (RED).** Rust integration test: two request frames written
-  back-to-back on ONE connection each get their own response, in order.
-- [ ] **Step 2 (RED).** Idle connection survives well past 5s and then serves a
-  request; a half-written frame times out and closes without a response.
-- [ ] **Step 3.** Implement; green those plus the whole existing
-  `local_service*` suite (which still uses one-request connections — the server
-  must serve both shapes, since a client that sends one frame and closes is
-  just a session of length one).
-- [ ] **Step 4: commit.**
-
-### Task 2: Client persistent connection
-
-**Files:** `packages/coordination-client/src/client.ts`.
-
-`requestOnce` (`:100-173`) completes a response only at EOF and counts
-`MAX_RESPONSE_FRAME_BYTES` per CONNECTION (`:139-142`).
-
-**Interfaces / behavior:**
-- Replace EOF-completion with an incremental scan for the first `0x0a`, keeping
-  any bytes past it as the next response's prefix.
-- **Per-FRAME byte accounting** (review): reset the counter at every delimiter.
-- A connection object with explicit lifecycle: connect lazily, reuse, `close()`.
-  The class currently has no `close()`/`dispose()` — add one, and make it safe
-  to call twice.
-- **v2 negotiation with v1 fail-fast.** State on the wire which version the
-  connection speaks; a v1 peer must fail immediately and close rather than hang.
-  Decide and record: is the version a field on the handshake frame (D-2b) or on
-  every request frame? If D-2a ships before the handshake exists, it needs its
-  own negotiation point — **this is the strongest argument for folding a minimal
-  handshake into D-2a.**
-- Keep the existing deadline semantics: `deadlineMs` remains the absolute wall
-  budget for the whole `request()` call.
-
-- [ ] **Step 1 (RED).** Client unit tests over the existing `unixServer` fake,
-  which is one-frame-per-connection today (`client.test.ts:32-66`) and needs a
-  persistent variant: two sequential requests use ONE connection; a response
-  arriving split across chunk boundaries is assembled; two responses in one
-  chunk are demultiplexed in order; a frame over the bound fails per-frame, not
-  per-connection.
-- [ ] **Step 2.** Implement; green the client suite.
-- [ ] **Step 3: commit.**
-
-### Task 3: Transport parity gate
-
-- [ ] **Step 1.** Run the ENTIRE existing suite over persistent connections
-  unchanged — `gate1`, `gate2`, `gate3`, oracle, memory, discovery, behavioral.
-  This is the real acceptance: no semantic test should notice.
-- [ ] **Step 2.** A connection-count assertion proving reuse actually happened
-  (the fake server already counts connections; the daemon side can be observed
-  via the admission counter). Without this the slice could "pass" while silently
-  still opening one connection per request.
-- [ ] **Step 3.** Full key-free chain; commit.
-
----
-
-## D-2b — session identity and lanes
-
-### Task 4: The handshake
-
-**Wire shape (draft — reviewer, critique this):**
+The first frame on every connection is the final handshake. Request frames may
+carry `protocolVersion: 2` as a consistency check, but that is NOT a second
+negotiation mechanism.
 
 ```json
-{"protocolVersion":2,"type":"open_session","actor":"client:alpha","role":"work","clientInstance":"<uuid>"}
+{"protocolVersion":2,"type":"open_session","actor":"client:alpha","role":"work",
+ "clientInstance":"<uuid>","connectionGeneration":"1"}
 ```
 
-replying with the session's identity — service epoch, validation mode, manifest
-digest, and the bound lane.
-
-**Decisions taken, with reasons (challenge them):**
-- **`clientId` stays REQUIRED on request frames and is rejected on mismatch**,
-  rather than omitted. The design allows either. Keeping it preserves the
-  request schema and the entire golden corpus byte-for-byte, and the
-  impersonation hole closes either way — the daemon stops believing the field
-  and starts checking it against the connection's binding.
+- `clientInstance` is stable across BOTH lanes for one `CoordinationClient`
+  lifetime. `connectionGeneration` is monotonic **per role lane**.
+- The reply carries the session identity: service epoch, validation mode,
+  manifest digest, bound actor and role.
 - **The handshake does NOT go through the journalled request path.** Every
-  previously-unseen request currently appends a `RequestBound` record ending in
-  `sync_data()` (`audit.rs:170-182`, `:241-255`). A handshake per connection —
-  and later a health probe — must not buy an fsync each.
+  previously-unseen request appends a `RequestBound` record ending in
+  `sync_data()` (`audit.rs:170-182`, `:241-255`) — a handshake per connection
+  must not buy one.
+- **Both failure directions are tested:** v1 client → v2 server, and v2 client →
+  v1 server. Both must fail promptly; neither may wait for EOF indefinitely.
+- `clientId` stays REQUIRED on request frames and is rejected on mismatch with
+  the connection's binding, rather than omitted — this preserves the request
+  schema and the whole golden corpus byte-for-byte, and closes the impersonation
+  hole either way.
 
-- [ ] **Steps:** wire RED (dual-language, golden fixtures as B-1 Task 1) →
-  session binding in `server.rs`/`session.rs` → requests validated against the
-  binding → green → commit.
+- [ ] Steps: wire RED (dual-language + golden fixtures, B-1 Task 1 pattern) →
+  handshake handling in `server.rs` ahead of the request path → both fail-fast
+  directions → green → commit.
 
-### Task 5: Duplicate lanes and reconnect takeover
+### Task 2: Server read loop
 
-**The tension to resolve (REVIEWER: this is the second question).** Two rules
-pull against each other:
-- *Duplicate detection*: two live processes misconfigured with the same
-  `(actor, role)` must not silently share an identity — that is the
-  ten-client failure mode the design cites as plausible with no attacker.
-- *Reconnect takeover*: a client whose lane died must be able to replace it
-  without waiting out a 300s deadline.
+**File:** `crates/strata-kernel/src/bin/strata_kernel_service/server.rs`
+(`handle_connection`, `:195-215`).
 
-Both present as "a second connection claims an existing `(actor, role)`."
-Distinguishing them by `clientInstance` alone fails: a misconfigured second
-process also has a fresh instance id, so it would take over rather than be
-refused.
+- Persistent buffer; split at the FIRST `\n`, retain the remainder as the next
+  frame's prefix. Replace the whole-buffer `contains(&b'\n')` rescan with a scan
+  from the last examined offset.
+- **Do not relax `decode_frame`'s interior-newline check**
+  (`protocol.rs:1203-1213`) — the connection layer splits before calling it, so
+  the shared frame validator is untouched.
+- **Strictly one outstanding request per connection: request → response →
+  request.** v1 contradicted itself by forbidding pipelining while testing two
+  frames written back-to-back and two responses in one chunk. Those tests are
+  replaced. The retry proof depends on at most one ambiguous request per lane,
+  so pipelining must not be accidentally frozen in.
 
-**My proposal:** accept a takeover only when the existing lane is NOT currently
-executing a request; if it is, refuse with a typed error naming the conflict.
-Then a genuine reconnect (old lane dead or idle) succeeds immediately, while two
-live misconfigured clients collide as soon as both are active. **This is a
-heuristic, not a proof** — it mistakes a genuinely dead-but-mid-request lane for
-a conflict, stranding the client until that request's deadline. Is there a
-better discriminator?
+- [ ] Steps: RED (same-socket request→response→request→response; idle survives
+  past 5s then serves; half-written frame times out and closes with no
+  response) → implement → green including the whole existing `local_service*`
+  suite → commit.
 
-- [ ] **Steps:** lane registry keyed `(actor, role)` → binding; takeover rule
-  with the executing-request guard; old lane closed on takeover; typed
-  `lane_conflict` error; tests for both arms.
+### Task 3: Timeouts and admission — a LIVE issue, not a latent one
 
-### Task 6: Two role lanes in the client
+The review's answer to open question 5 was unambiguous, and I verified the
+mechanism: every accepted connection spawns a detached OS thread with no cap
+(`server.rs:94-101`); a valid request can occupy that handler for the protocol's
+300-second maximum (`MAX_DEADLINE_MS`, `protocol.rs:16`) because the socket
+timeout does not bound synchronous request execution. **A connection or
+valid-request storm can exhaust threads on today's daemon.**
 
-Work lane (change-set operations) and observation lane (reads, events, acks),
-each serial. This is what buys the head-of-line-blocking fix: an
-`advance_change_set` may hold the work lane for its full deadline while events
-still flow.
+Policy to implement, with the review's numbers:
+- 64 total admitted connections; at most 16 un-handshaken.
+- 5s absolute handshake deadline.
+- 5s absolute partial-frame deadline **measured from the first byte, not reset
+  by every byte** (otherwise a slow trickle holds a thread forever).
+- 15-minute established-idle timeout; lazy reconnect afterwards.
+- Keep the 5s per-response write timeout.
+- Capacity acquired BEFORE spawning a handler, released via an RAII guard.
+- Over-cap connections get a small pre-session `server_busy` frame and close;
+  clients retry with bounded jitter.
 
-- [ ] **Steps:** route each action to its lane by the SAME partition source of
-  truth D-1 introduced where possible (note: the work/observation split is NOT
-  identical to mutating/read-only — `read_events`/`ack_events` are observation
-  but `ack_events` is mutating; state the mapping explicitly and fixture it) →
-  lane-isolation gate: an observation read completes while the work lane is
-  mid-advance → commit.
+**Why 64 and not 20:** ten actors imply 20 normal lanes, but takeover needs
+replacement lanes to connect while the old ones still hold permits. A cap of 20
+would deadlock takeover.
 
-### Task 7: The retry contract
+- [ ] Steps: RED (cap refuses with `server_busy`; slow-trickle frame is killed
+  at the absolute deadline; idle lane survives 10 minutes) → implement →
+  commit.
 
-Transport replay and semantic redrive are different things and the client must
-not conflate them (verified: `session.rs:699` durably caches a retryable error
-against the request identity, so replaying the same key returns the cached
-error).
+### Task 4: Client persistent connection + internal FIFO queue
+
+**File:** `packages/coordination-client/src/client.ts` (`requestOnce` is now
+lines **90–163** after the D-1 extraction — v1's anchors were stale).
+
+- Replace EOF-completion with an incremental scan for the first `0x0a`, keeping
+  bytes past it as the next response's prefix.
+- **Per-FRAME byte accounting**: reset at every delimiter. Today's counter is
+  cumulative per connection (`client.ts:136`).
+- Explicit lifecycle: connect lazily, reuse, `close()` that is safe to call
+  twice.
+- **Internal FIFO queue per lane** (the correction to my wrong claim): same-lane
+  calls queue; one work and one observation request may be in flight
+  concurrently. **Queue wait counts against the request's ORIGINAL wall-clock
+  deadline** — the client already tracks that as `expiresAt` (`client.ts:199`),
+  and an expired queued request must fail UNSENT rather than be written.
+
+- [ ] Steps: RED — the existing `unixServer` fake is one-frame-per-connection
+  (`client.test.ts:32-66`) and needs a persistent variant. Cases: two sequential
+  requests use ONE connection; a response split across chunk boundaries is
+  assembled; per-frame bound; **a direct concurrent-call test proving request 2
+  is not written until response 1 arrives**; a queued request whose deadline
+  expires fails unsent → implement → commit.
+
+### Task 5: Ownership, takeover, and the honest boundary
+
+**v1's rule is rejected.** "Not currently executing" lets a fresh duplicate
+process steal an idle but healthy lane, lets two duplicates repeatedly displace
+each other, and has a check/start race unless admission and takeover share one
+lock.
+
+**The rule to implement:**
+- Ownership is **actor-level, not `(actor, role)`-level** — otherwise duplicate
+  clients race such that A owns `work` while B owns `observation`. The registry
+  enforces one `clientInstance` owner per actor, with two role slots beneath it.
+- Same actor + role + `clientInstance`, strictly higher `connectionGeneration`:
+  **accept and fence the old connection**, whether idle or executing.
+- Same or lower generation: reject as stale.
+- Different `clientInstance` while any lane of the old instance is live: reject
+  `lane_conflict`.
+- Different `clientInstance` may take over **only after positive transport
+  evidence that every old-instance lane is dead** — EOF/HUP from a
+  non-consuming socket probe — never merely because a lane looks idle.
+- Atomically replace the registry binding; shut the old socket down OUTSIDE the
+  registry lock.
+- **Handler cleanup compares a unique binding token before removing itself**, so
+  a dying old handler cannot unregister its replacement.
+
+**The information boundary, stated rather than papered over:** if a new process
+presents a fresh instance id and the old socket shows no observable HUP, it is
+genuinely indistinguishable from a live duplicate. In that state the honest
+contract is **rejection**, not a busy/idle guess.
+
+A fenced-but-admitted old mutation may still complete; exact replay stays safe
+because completed requests return the cached response and
+pending/effect-result requests serialize or return `request_in_progress`
+(`session.rs:544`).
+
+- [ ] Steps: registry with binding tokens → the five-arm rule above, each arm a
+  named test → takeover-under-load case → commit.
+
+### Task 6: Lane assignment is its own authority
+
+**Do NOT derive lanes from `isMutatingAction`** — they answer different
+questions. `ack_events` is mutating (for idempotency) but observational (for
+scheduling), and keeping read and ack on the SAME serial lane preserves their
+natural ordering.
+
+- **Work:** `begin_change_set`, `add_intent`, `submit_change_set`,
+  `advance_change_set`, `cancel_change_set`.
+- **Observation:** all discovery/inspection actions, `read_events`,
+  `ack_events`, `read_operation`, and the validation-fixture reads.
+
+Create an exhaustive `laneForAction` authority with its own dual-language
+fixture, in the same shape as D-1's `action-partition.json`.
+
+- [ ] Steps: `laneForAction` + `action-lane.json` fixture, asserted exhaustively
+  in BOTH languages → client routes by it → lane-isolation gate (an observation
+  read completes while the work lane is mid-`advance`) → commit.
+
+### Task 7: Reject identity and lane mismatches BEFORE journal binding
+
+Today `handle_frame` parses and then immediately calls `bind_request` with its
+fsync (`session.rs:388-402`), and reads then trust `request.client_id` directly
+(`session.rs:449`). Connection-bound actor/role validation must sit **between
+decode and `bind_request`**, so a spoofed or wrong-lane request costs no durable
+write.
+
+- [ ] Steps: RED (a wrong-actor request appends nothing to the journal) →
+  implement → commit.
+
+### Task 8: The retry contract
+
+Transport replay and semantic redrive are different (verified: `session.rs:699`
+durably caches a retryable error against the request identity, so replaying the
+same key returns the cached error).
 
 - Unsent → send normally after reconnect.
 - Sent mutation, no response → replay exact bytes, same `requestId` and
@@ -226,48 +237,63 @@ error).
 - Read, no response → do NOT auto-replay; reissuing may observe a later
   generation. Caller-driven.
 - `request_in_progress` → backoff with jitter, same identity.
-- **Retryable operational failure → NOT transport replay.** Surface
-  retryability upward; a later `advance_change_set` is a NEW request with a NEW
-  idempotency key. Bounded backoff with jitter so ten clients do not redrive in
-  lockstep.
+- **Retryable operational failure → NOT transport replay.** Surface it upward; a
+  later `advance_change_set` is a NEW request with a NEW idempotency key.
+  Bounded jitter so ten clients do not redrive in lockstep.
 
-- [ ] **Steps:** encode the matrix as tests first (each row a named case) →
-  implement → commit.
+- [ ] Steps: encode the matrix as named tests first → implement → commit.
 
-### Task 8: Ten-client transport gate, chain, close
+### Task 9: Migrate ownership sites to `close()`
+
+Adding `close()` without calling it leaves persistent sockets referenced —
+twenty leaked lane sockets can keep Node alive AND consume the admission cap.
+Verified: `agent.ts` constructs a client, awaits the session, and returns with
+no cleanup (no `close()` or `finally` anywhere in the file);
+`liveAdapter.ts:192`'s harness client is likewise never closed.
+
+- [ ] Steps: `try/finally` at `agent.ts:182+` and `liveAdapter.ts:192+`; a test
+  asserting no lingering handles after a session → commit.
+
+### Task 10: Ten-client gate, chain, close
 
 - [ ] Deterministic ten-client gate: 20 lanes, concurrent work, no lane
-  starvation, admission cap respected, reconnect takeover under load.
+  starvation, admission cap respected, takeover under load, `server_busy` above
+  the cap.
 - [ ] Full chain detached (Orca) + workspace sweep with the documented
   path-dependent exceptions; decisions.md close; roadmap.
 
 ---
 
-## Risks to disclose, not fix here
+## Risks carried, with one now measured
 
-The design's "risks to gate" list stays open in D-2 and must not be silently
-absorbed: per-request fsync on the read path (ten pollers serialize on disk
-before transport matters — **measure before crediting D-2 with any latency
-win**), unbounded `request_bindings`, `change_set_locks` insert-only, and
-in-memory-only delivered ceilings meaning acks fail after restart until reread.
+- **Per-request fsync — measured, and it redirects the concern.** A successful
+  read costs TWO `sync_data()` calls, not one: the request journal
+  (`audit.rs:252`, via `bind_request`) and the audit log (`audit.rs:331`). A
+  synthetic probe of the same write shape on this machine: **0.036 ms per
+  fsynced append vs 0.0033 ms un-synced**, so ~0.07 ms per read. Ten pollers
+  therefore do NOT "serialize on disk" in any meaningful sense (~0.7 ms
+  aggregate). **Caveat that matters more than the number:** macOS `fsync` flushes
+  to the drive's write cache and does not force a device flush (`F_FULLFSYNC`
+  would), so this is a page-cache figure and would be far worse elsewhere.
+  **Therefore the before/after D-2 owes is LOCK HOLD TIME, not disk** — the
+  protocol context, journal, and audit mutexes are each taken globally per
+  request, and their critical sections happen to contain an fsync.
+- Unbounded `request_bindings` (`audit.rs:83`, insert-only, rebuilt by a full
+  journal scan at startup `audit.rs:87`) — untouched by the above, still open.
+- `change_set_locks` insert-only (`session.rs:162`, `:1549`).
+- In-memory-only delivered ceilings: after a restart, acking events delivered
+  before the crash fails until the client rereads. The client should deliberately
+  reread and deduplicate on a service-epoch change.
 
-## Open questions for the methodology review
+## Self-review (v2)
 
-1. **The D-2a/D-2b split** — right seam, or one slice? And if split, does D-2a
-   need a minimal handshake for version negotiation anyway (which would argue
-   for folding identity in)?
-2. **The takeover discriminator** (Task 5) — is the executing-request guard the
-   right rule, or is there a cleaner one?
-3. **Work/observation lane assignment** — `ack_events` is mutating but
-   observational. Does splitting by lane rather than by mutating-ness create a
-   case where a lane must carry both, defeating the isolation?
-4. *(Answered before review, by enumeration — retained for the record.)* No
-   existing harness issues concurrent requests on ONE client. The two
-   concurrent sites both use separate clients:
-   `tests/gate1Intrusion.test.ts:412` fires two advances via
-   `Promise.allSettled` on distinct clients `a` and `b`, and
-   `src/liveAdapter.ts:155` runs one agent per assignment, each with its own
-   `clientId`. So the serial-per-lane model breaks no current caller and needs
-   no migration step. **Reviewer: confirm I have not missed a site.**
-5. Anything in the timeout/admission policy that is a live DoS today rather than
-   a latent hazard.
+All review corrections mapped: split rejected → one merge, Task 1 as sole
+negotiation point; takeover heuristic rejected → Task 5's generation +
+liveness + actor-level ownership + binding token; lane authority → Task 6;
+concurrency claim overturned → Task 4's FIFO queue; live admission exhaustion →
+Task 3 with concrete caps; pre-binding rejection → Task 7; pipelining
+contradiction → Task 2's replaced tests; `close()` migration → Task 9; stale
+client anchors corrected to 90–163. The three factual claims I could check
+myself (shared client across 15 handlers, no cleanup in `agent.ts`, the 300s
+deadline ceiling) were verified before adoption; the SDK's internal dispatch
+ordering could not be, and the design is deliberately correct either way.
