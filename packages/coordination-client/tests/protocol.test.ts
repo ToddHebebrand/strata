@@ -26,7 +26,7 @@ const RAW_REJECTED_FIXTURES = [
 ] as const;
 
 function fixture<T>(name: "accepted" | "rejected"): T {
-  const path = fileURLToPath(new URL(`fixtures/protocol-v1/${name}.json`, import.meta.url));
+  const path = fileURLToPath(new URL(`fixtures/protocol-v2/${name}.json`, import.meta.url));
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
 
@@ -36,14 +36,14 @@ function frame(value: unknown): Uint8Array {
 
 function rawRejectedFrame(name: (typeof RAW_REJECTED_FIXTURES)[number]): Uint8Array {
   const path = fileURLToPath(
-    new URL(`fixtures/protocol-v1/raw-rejected/${name}.json`, import.meta.url)
+    new URL(`fixtures/protocol-v2/raw-rejected/${name}.json`, import.meta.url)
   );
   return readFileSync(path);
 }
 
 function rawAcceptedFrame(name: "reordered-whitespace" | "surrogate-pair"): Uint8Array {
   const path = fileURLToPath(
-    new URL(`fixtures/protocol-v1/raw-accepted/${name}.json`, import.meta.url)
+    new URL(`fixtures/protocol-v2/raw-accepted/${name}.json`, import.meta.url)
   );
   return readFileSync(path);
 }
@@ -360,7 +360,7 @@ describe("local service protocol v1", () => {
 
   it("rejects a read_validation_fixture request carrying an idempotency key", () => {
     const request = {
-      protocolVersion: 1,
+      protocolVersion: 2,
       requestId: "request:fixtures",
       clientId: "client:alpha",
       deadlineMs: "30000",
@@ -526,7 +526,7 @@ describe("local service protocol v1", () => {
   it("matches the shared dual-language action partition exactly", () => {
     const partition = JSON.parse(
       readFileSync(
-        fileURLToPath(new URL("fixtures/protocol-v1/action-partition.json", import.meta.url)),
+        fileURLToPath(new URL("fixtures/protocol-v2/action-partition.json", import.meta.url)),
         "utf8"
       )
     ) as { mutating: string[]; readOnly: string[] };

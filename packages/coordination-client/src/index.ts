@@ -8,6 +8,7 @@ export {
   LocalServiceProtocolContext,
   MAX_DEADLINE_MS,
   MAX_FIXTURE_CHUNK_BYTES,
+  MAX_HANDSHAKE_FRAME_BYTES,
   MAX_OPERATION_INTENTS,
   MAX_REQUEST_FRAME_BYTES,
   MAX_RESPONSE_FRAME_BYTES,
@@ -18,16 +19,30 @@ export {
   discoveryStatementKindSchema,
   intentSchema,
   isMutatingAction,
+  laneForAction,
+  openSessionSchema,
+  parseOpenSessionFrame,
   parseRequestFrame,
   parseResponseFrame,
+  parseSessionReplyFrame,
   requestActionSchema,
   requestSchema,
   responseResultSchema,
   responseSchema,
+  serializeOpenSessionFrame,
   serializeRequestFrame,
-  serializeResponseFrame
+  serializeResponseFrame,
+  serializeSessionReplyFrame,
+  sessionReplySchema,
+  sessionRoleSchema
 } from "./protocol.js";
-export type { LocalServiceRequest, LocalServiceResponse } from "./protocol.js";
+export type {
+  LocalServiceRequest,
+  LocalServiceResponse,
+  OpenSession,
+  SessionReply,
+  SessionRole
+} from "./protocol.js";
 
 export {
   CoordinationClient,

@@ -1,17 +1,21 @@
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use super::protocol::{LocalServiceResponse, MAX_REQUEST_FRAME_BYTES, serialize_response_frame};
+use super::protocol::{
+    LocalServiceResponse, MAX_HANDSHAKE_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, PROTOCOL_VERSION,
+    SessionReply, WireU64, parse_open_session_frame, serialize_response_frame,
+    serialize_session_reply,
+};
 use super::session::{ServiceConfig, ServiceSession};
 
 const SOCKET_DIRECTORY: &str = "/tmp/strata-lc";
@@ -76,7 +80,7 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
     }
     let listener = bind_private_socket(&socket_path)?;
     let ready = Readiness {
-        protocol_version: 1,
+        protocol_version: PROTOCOL_VERSION,
         socket_path: socket_path.to_string_lossy().into_owned(),
         service_epoch: service_epoch.to_string(),
         recovered: session.recovered(),
@@ -96,7 +100,7 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
             Ok(stream) => {
                 let session = Arc::clone(&session);
                 thread::spawn(move || {
-                    let _ = handle_connection(stream, &session);
+                    let _ = handle_connection(stream, &session, service_epoch);
                 });
             }
             Err(error) => return Err(error).context("accept local service connection"),
@@ -192,26 +196,215 @@ fn bind_private_socket(path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-fn handle_connection(mut stream: UnixStream, session: &ServiceSession) -> Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    let mut request = Vec::new();
-    let mut chunk = [0_u8; 4096];
-    while request.len() <= MAX_REQUEST_FRAME_BYTES && !request.contains(&b'\n') {
-        let read = stream
-            .read(&mut chunk)
-            .context("read local service request")?;
-        if read == 0 {
-            break;
+/// Absolute wall-clock a connection gets to complete its handshake, measured
+/// from accept. Absolute rather than per-read: a peer that trickles one byte
+/// per second must not be able to hold a handler open indefinitely.
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(5);
+/// Absolute wall-clock a PARTIAL request frame may remain incomplete, measured
+/// from its first byte rather than reset by each byte, for the same reason.
+const PARTIAL_FRAME_DEADLINE: Duration = Duration::from_secs(5);
+/// How long an established, fully-drained session may sit idle before the
+/// daemon reclaims its handler. Clients reconnect lazily, so this is invisible
+/// to a caller that simply pauses.
+const ESTABLISHED_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+/// Socket read timeout. This is only a POLL granularity — it wakes the reader
+/// so it can re-check whichever absolute deadline is in force. It is never
+/// itself the timeout a peer observes.
+const READ_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Incremental line-delimited frame reader.
+///
+/// Splits at the FIRST `\n` and retains the remainder as the next frame's
+/// prefix, so a peer that writes two frames into one chunk does not lose the
+/// second. The scan resumes from the last examined offset instead of
+/// rescanning the whole buffer, which keeps a large partial frame from costing
+/// O(n^2) as it arrives.
+///
+/// Deliberately does NOT relax `decode_frame`'s interior-newline check: this
+/// layer splits BEFORE calling the shared frame validator, so that validator
+/// is untouched and still refuses a frame with an embedded newline.
+struct FrameReader {
+    buffer: Vec<u8>,
+    scanned: usize,
+}
+
+impl FrameReader {
+    fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            scanned: 0,
         }
-        request.extend_from_slice(&chunk[..read]);
     }
-    let response = session.handle_frame(&request);
-    let frame = bounded_response_frame(&response)?;
-    // A peer may disconnect after the durable effect and before receiving the response.
-    let _ = stream.write_all(&frame);
-    let _ = stream.flush();
-    Ok(())
+
+    /// True when bytes of a partial frame are already buffered — the caller
+    /// uses this to decide whether the idle deadline or the (much shorter)
+    /// partial-frame deadline applies.
+    fn partial(&self) -> bool {
+        !self.buffer.is_empty()
+    }
+
+    /// Pops one complete frame if the buffer holds a delimiter, else `None`.
+    fn take_frame(&mut self, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+        if let Some(offset) = self.buffer[self.scanned..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+        {
+            let end = self.scanned + offset + 1;
+            if end > max_bytes {
+                bail!("frame exceeds {max_bytes} byte bound");
+            }
+            let frame: Vec<u8> = self.buffer.drain(..end).collect();
+            self.scanned = 0;
+            return Ok(Some(frame));
+        }
+        self.scanned = self.buffer.len();
+        if self.buffer.len() > max_bytes {
+            bail!("frame exceeds {max_bytes} byte bound");
+        }
+        Ok(None)
+    }
+
+    /// Reads until one whole frame is available. `Ok(None)` is a CLEAN end of
+    /// stream — the peer closed between frames, which is a normal session
+    /// close, not an error. EOF with a partial frame buffered is an error.
+    ///
+    /// `deadline` is recomputed by the caller-supplied closure on every wake so
+    /// that the applicable bound can change the moment the first byte of a
+    /// frame arrives.
+    fn read_frame(
+        &mut self,
+        stream: &mut UnixStream,
+        max_bytes: usize,
+        mut deadline: impl FnMut(&Self) -> Instant,
+    ) -> Result<Option<Vec<u8>>> {
+        let mut chunk = [0_u8; 4096];
+        loop {
+            if let Some(frame) = self.take_frame(max_bytes)? {
+                return Ok(Some(frame));
+            }
+            if Instant::now() >= deadline(self) {
+                bail!("frame deadline exceeded");
+            }
+            match stream.read(&mut chunk) {
+                Ok(0) => {
+                    if self.partial() {
+                        bail!("connection ended mid-frame");
+                    }
+                    return Ok(None);
+                }
+                Ok(read) => self.buffer.extend_from_slice(&chunk[..read]),
+                // The poll interval elapsing is not a failure; it is the
+                // reader waking to re-check the absolute deadline above.
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                    ) => {}
+                Err(error) => return Err(error).context("read local service frame"),
+            }
+        }
+    }
+}
+
+/// Serves ONE connection: handshake first, then request/response until the
+/// peer closes or a deadline fires.
+///
+/// Strictly one outstanding request per connection — request, response,
+/// request. The retry contract depends on there being at most one ambiguous
+/// request per lane, so pipelining is deliberately not supported; a peer that
+/// writes two request frames back-to-back has its second frame served only
+/// after the first response is written.
+fn handle_connection(
+    mut stream: UnixStream,
+    session: &ServiceSession,
+    service_epoch: u64,
+) -> Result<()> {
+    stream.set_read_timeout(Some(READ_POLL_INTERVAL))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    let mut reader = FrameReader::new();
+
+    let accepted = Instant::now();
+    let opened = reader
+        .read_frame(&mut stream, MAX_HANDSHAKE_FRAME_BYTES, |_| {
+            accepted + HANDSHAKE_DEADLINE
+        })
+        .and_then(|frame| match frame {
+            // The peer closed before saying anything. Nothing to reject.
+            None => Ok(None),
+            Some(frame) => parse_open_session_frame(&frame).map(Some),
+        });
+    let handshake = match opened {
+        Ok(Some(handshake)) => handshake,
+        Ok(None) => return Ok(()),
+        Err(error) => {
+            // Fail-fast, both directions: a v1 client's first frame is a
+            // request, which fails to parse as a handshake and lands here. The
+            // rejection is WRITTEN and then the connection closed, so the peer
+            // learns why instead of waiting on EOF.
+            let reply = SessionReply::rejected(
+                "unsupported_protocol_version",
+                &bounded_handshake_message(&error.to_string()),
+                false,
+            );
+            if let Ok(frame) = serialize_session_reply(&reply) {
+                let _ = stream.write_all(&frame);
+                let _ = stream.flush();
+            }
+            return Ok(());
+        }
+    };
+
+    let reply = SessionReply::SessionOpened {
+        protocol_version: PROTOCOL_VERSION,
+        service_epoch: WireU64::new(service_epoch),
+        validation_mode: session.validation_mode(),
+        validation_manifest_digest: session.validation_manifest_digest().map(str::to_owned),
+        actor: handshake.actor.clone(),
+        role: handshake.role,
+    };
+    stream.write_all(&serialize_session_reply(&reply)?)?;
+    stream.flush()?;
+
+    loop {
+        let idle_since = Instant::now();
+        let frame = reader.read_frame(&mut stream, MAX_REQUEST_FRAME_BYTES, |reader| {
+            if reader.partial() {
+                // The clock started at the frame's FIRST byte and is not reset
+                // by later bytes, so a slow trickle still dies at the bound.
+                idle_since + PARTIAL_FRAME_DEADLINE
+            } else {
+                idle_since + ESTABLISHED_IDLE_TIMEOUT
+            }
+        });
+        let request = match frame {
+            Ok(Some(frame)) => frame,
+            // Clean close between frames, or a deadline: either way the
+            // session is over and there is nothing meaningful to answer.
+            Ok(None) | Err(_) => return Ok(()),
+        };
+        let response = session.handle_frame(&request);
+        let frame = bounded_response_frame(&response)?;
+        // A peer may disconnect after the durable effect and before receiving
+        // the response; that is the retry contract's problem, not ours.
+        if stream.write_all(&frame).is_err() || stream.flush().is_err() {
+            return Ok(());
+        }
+    }
+}
+
+/// Keeps a rejection reason inside the handshake frame bound. The reason is
+/// diagnostic text derived from a parse failure, so it is truncated rather
+/// than trusted to be short.
+fn bounded_handshake_message(message: &str) -> String {
+    const MAX: usize = 512;
+    if message.len() <= MAX {
+        return message.to_owned();
+    }
+    let mut end = MAX;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &message[..end])
 }
 
 fn bounded_response_frame(response: &LocalServiceResponse) -> Result<Vec<u8>> {

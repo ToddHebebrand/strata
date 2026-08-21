@@ -1,5 +1,7 @@
 #[path = "../src/bin/strata_kernel_service/protocol.rs"]
 mod protocol;
+#[path = "support/session.rs"]
+mod session;
 
 use protocol::{
     LocalServiceProtocolContext, MAX_REQUEST_FRAME_BYTES, MAX_RESPONSE_FRAME_BYTES,
@@ -45,7 +47,7 @@ struct FixtureCase {
 
 fn fixture(name: &str) -> FixtureFile {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/coordination-client/tests/fixtures/protocol-v1")
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v2")
         .join(format!("{name}.json"));
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
@@ -76,14 +78,14 @@ fn rejected_value(name: &str) -> Value {
 
 fn raw_rejected_frame(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/coordination-client/tests/fixtures/protocol-v1/raw-rejected")
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v2/raw-rejected")
         .join(format!("{name}.json"));
     fs::read(path).unwrap()
 }
 
 fn raw_accepted_frame(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/coordination-client/tests/fixtures/protocol-v1/raw-accepted")
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v2/raw-accepted")
         .join(format!("{name}.json"));
     fs::read(path).unwrap()
 }
@@ -535,7 +537,7 @@ fn request(
     action: Value,
 ) -> Value {
     let mut value = json!({
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "requestId": request_id,
         "clientId": client_id,
         "deadlineMs": "120000",
@@ -544,12 +546,12 @@ fn request(
     if let Some(key) = idempotency_key {
         value["idempotencyKey"] = json!(key);
     }
-    let mut stream = UnixStream::connect(&service.socket_path).unwrap();
-    stream.write_all(&frame(&value)).unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes).unwrap();
-    serde_json::from_slice(&bytes[..bytes.len() - 1]).unwrap()
+    // One session per call. That is not how a real client behaves -- it holds
+    // its lanes open -- but it keeps every existing assertion in this suite
+    // about request semantics rather than about connection reuse, which the
+    // dedicated session tests below cover directly.
+    let mut stream = session::open_work_session(&service.socket_path, client_id);
+    session::exchange(&mut stream, &value)
 }
 
 fn begin(service: &RunningService, client: &str, suffix: &str) -> String {
@@ -1965,10 +1967,10 @@ fn crash_pending_request(
         thread::sleep(Duration::from_millis(10));
     }
 
-    let mut stream = UnixStream::connect(&socket).unwrap();
+    let mut stream = session::open_work_session(&socket, "client:recovery");
     stream
-        .write_all(&frame(&json!({
-            "protocolVersion": 1,
+        .write_all(&session::frame(&json!({
+            "protocolVersion": 2,
             "requestId": "recovery:begin",
             "clientId": "client:recovery",
             "deadlineMs": "120000",
@@ -1976,10 +1978,12 @@ fn crash_pending_request(
             "action": {"type":"begin_change_set","reasoning":"crash before the gate"},
         })))
         .unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).unwrap();
-    assert!(response.is_empty(), "crash boundary returned a response");
+    // The failpoint kills the daemon mid-request, so the session ends without
+    // a response frame rather than returning one.
+    assert!(
+        session::read_frame(&mut stream).is_none(),
+        "crash boundary returned a response"
+    );
     assert!(
         !child.wait().unwrap().success(),
         "failpoint did not terminate the daemon"
@@ -2391,7 +2395,7 @@ fn protocol_action_partition_matches_the_shared_fixture() {
     }
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/coordination-client/tests/fixtures/protocol-v1/action-partition.json");
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v2/action-partition.json");
     let partition: Partition = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
 
     for name in partition.mutating.iter().chain(partition.read_only.iter()) {
@@ -2432,5 +2436,221 @@ fn protocol_action_partition_matches_the_shared_fixture() {
     assert_eq!(
         declared, sampled,
         "every partitioned action needs an accepted golden request sampling it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D-2 Task 1/2: the connection is a session.
+// ---------------------------------------------------------------------------
+
+/// The handshake binds identity and reports the session's own identity back,
+/// and it does so WITHOUT touching the journalled request path.
+///
+/// That last clause is the load-bearing one. Every previously-unseen request
+/// appends a `RequestBound` record ending in `sync_data()`; if the handshake
+/// went through that path, every connection would buy an fsync before doing
+/// any work. The assertion here is that the audit log is byte-identical across
+/// a handshake that opens ten sessions and does nothing else.
+#[test]
+fn handshake_binds_identity_and_appends_nothing_durable() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-handshake");
+    let audit_path = directory.path().join("service-audit.jsonl");
+    let before = fs::read_to_string(&audit_path).unwrap_or_default();
+
+    let mut streams = Vec::new();
+    for index in 0..10 {
+        let (stream, reply) = session::open_session(
+            &service.socket_path,
+            "client:alpha",
+            if index % 2 == 0 { "work" } else { "observation" },
+            &format!("instance:{index}"),
+            1,
+        );
+        assert_eq!(reply["protocolVersion"], 2, "{reply}");
+        assert_eq!(reply["actor"], "client:alpha", "{reply}");
+        assert_eq!(
+            reply["role"],
+            if index % 2 == 0 { "work" } else { "observation" },
+            "{reply}"
+        );
+        assert_eq!(
+            reply["serviceEpoch"],
+            service.epoch.to_string(),
+            "handshake must report the session's own epoch: {reply}"
+        );
+        assert_eq!(
+            reply["validationMode"], service.readiness["validationMode"],
+            "{reply}"
+        );
+        streams.push(stream);
+    }
+
+    let after = fs::read_to_string(&audit_path).unwrap_or_default();
+    assert_eq!(
+        before, after,
+        "opening sessions must not append to the durable audit log"
+    );
+}
+
+/// Fail-fast direction one: a v1 client reaches a v2 daemon. Its first frame
+/// is a request, not a handshake, so it is refused -- and refused with a
+/// WRITTEN rejection followed by a close, so the peer learns why instead of
+/// hanging until its own deadline.
+#[test]
+fn v1_first_frame_is_refused_and_the_connection_closed() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-v1-refusal");
+
+    let started = Instant::now();
+    let mut stream = UnixStream::connect(&service.socket_path).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(&frame(&json!({
+            "protocolVersion": 1,
+            "requestId": "request:v1",
+            "clientId": "client:v1",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        })))
+        .unwrap();
+
+    let rejection = session::read_frame(&mut stream).expect("v1 client got no rejection frame");
+    let rejection: Value = serde_json::from_slice(&rejection[..rejection.len() - 1]).unwrap();
+    assert_eq!(rejection["type"], "session_rejected", "{rejection}");
+    assert_eq!(rejection["protocolVersion"], 2, "{rejection}");
+    assert_eq!(
+        rejection["error"]["code"], "unsupported_protocol_version",
+        "{rejection}"
+    );
+    // ...and then the connection ends, rather than idling until a deadline.
+    assert!(
+        session::read_frame(&mut stream).is_none(),
+        "daemon kept a refused connection open"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "refusal took {:?}, which is not fail-fast",
+        started.elapsed()
+    );
+}
+
+/// A handshake naming a lane the daemon does not have is a rejection, not a
+/// silent default onto some other lane.
+#[test]
+fn handshake_with_an_unknown_role_is_refused() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-bad-role");
+
+    let mut stream = UnixStream::connect(&service.socket_path).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(&session::frame(&json!({
+            "protocolVersion": 2,
+            "type": "open_session",
+            "actor": "client:alpha",
+            "role": "administrator",
+            "clientInstance": "instance:1",
+            "connectionGeneration": "1",
+        })))
+        .unwrap();
+
+    let rejection = session::read_frame(&mut stream).expect("bad role got no rejection frame");
+    let rejection: Value = serde_json::from_slice(&rejection[..rejection.len() - 1]).unwrap();
+    assert_eq!(rejection["type"], "session_rejected", "{rejection}");
+}
+
+/// Task 2: one socket, many requests. Request, response, request, response --
+/// on a single connection, with a single handshake.
+#[test]
+fn one_session_serves_many_sequential_requests() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-sequential");
+
+    let mut stream = session::open_work_session(&service.socket_path, "client:alpha");
+    for index in 0..5 {
+        let response = session::exchange(
+            &mut stream,
+            &json!({
+                "protocolVersion": 2,
+                "requestId": format!("request:hello:{index}"),
+                "clientId": "client:alpha",
+                "deadlineMs": "120000",
+                "action": {"type":"hello"},
+            }),
+        );
+        assert_eq!(response["ok"], true, "{response}");
+        assert_eq!(response["requestId"], format!("request:hello:{index}"));
+        assert_eq!(response["result"]["type"], "ready", "{response}");
+    }
+}
+
+/// A session that sits idle well past the old 5-second socket read timeout is
+/// still served afterwards. Under v1 the read timeout WAS the connection's
+/// lifetime; under v2 it is only a poll interval, and an established session's
+/// real bound is the 15-minute idle timeout.
+#[test]
+fn an_idle_session_survives_past_the_old_read_timeout() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-idle");
+
+    let mut stream = session::open_work_session(&service.socket_path, "client:alpha");
+    thread::sleep(Duration::from_secs(7));
+
+    let response = session::exchange(
+        &mut stream,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:after-idle",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// A peer that starts a frame and then trickles is killed at the ABSOLUTE
+/// partial-frame deadline, measured from the frame's first byte rather than
+/// reset by each byte. Without the absolute bound, one byte per second holds a
+/// handler open forever.
+#[test]
+fn a_half_written_frame_dies_at_the_absolute_deadline_with_no_response() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-trickle");
+
+    let mut stream = session::open_work_session(&service.socket_path, "client:alpha");
+    let started = Instant::now();
+    // A valid request frame, minus its terminating LF, dripped one byte at a
+    // time so that a per-read timeout would keep being reset.
+    let partial = session::frame(&json!({
+        "protocolVersion": 2,
+        "requestId": "request:trickle",
+        "clientId": "client:alpha",
+        "deadlineMs": "120000",
+        "action": {"type":"hello"},
+    }));
+    for byte in &partial[..partial.len() - 1] {
+        if stream.write_all(&[*byte]).is_err() {
+            break;
+        }
+        let _ = stream.flush();
+        thread::sleep(Duration::from_millis(200));
+        if started.elapsed() > Duration::from_secs(20) {
+            break;
+        }
+    }
+
+    assert!(
+        session::read_frame(&mut stream).is_none(),
+        "a never-completed frame must get no response"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "the trickle was not cut off at the absolute deadline"
     );
 }

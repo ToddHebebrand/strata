@@ -10,8 +10,17 @@ use strata_kernel::{
     MAX_REFERENCE_PAGE_ITEMS,
 };
 
-pub const PROTOCOL_VERSION: u8 = 1;
+/// Protocol v2 (D-2). A connection is a session: the FIRST frame is an
+/// `open_session` handshake, and every request frame afterwards carries this
+/// same version as a consistency check — NOT as a second negotiation point.
+/// There is no v1 compatibility mode; a v1 frame is refused and the
+/// connection closed.
+pub const PROTOCOL_VERSION: u8 = 2;
 pub const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
+/// The handshake is small and fixed-shape, so it gets a far tighter bound than
+/// a request frame: an un-handshaken connection must not be able to make the
+/// daemon buffer 64 KiB before it has proven who it is.
+pub const MAX_HANDSHAKE_FRAME_BYTES: usize = 4 * 1024;
 pub const MAX_RESPONSE_FRAME_BYTES: usize = 256 * 1024;
 pub const MAX_DEADLINE_MS: u64 = 300_000;
 pub const DEFAULT_PROTOCOL_CONTEXT_CAPACITY: usize = 1_024;
@@ -99,6 +108,160 @@ impl<'de> Deserialize<'de> for WireU64 {
     {
         deserializer.deserialize_str(WireU64Visitor)
     }
+}
+
+/// The two serial lanes a client opens. They are an ordering authority, not a
+/// permission: see `lane_for_action`. Kept a closed enum on the wire so an
+/// unknown lane name is a handshake rejection rather than a silent default.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq, Ord, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum SessionRole {
+    Work,
+    Observation,
+}
+
+impl SessionRole {
+    pub(super) fn as_label(self) -> &'static str {
+        match self {
+            Self::Work => "work",
+            Self::Observation => "observation",
+        }
+    }
+}
+
+/// Enforces the literal `"type":"open_session"` tag. A bare `String` field
+/// would let any tag through to a later hand-rolled comparison; a unit-variant
+/// enum makes the tag part of the schema, in the same spirit as `True`.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum OpenSessionTag {
+    OpenSession,
+}
+
+/// The first frame on every v2 connection, and the SOLE negotiation point.
+///
+/// `clientInstance` is stable across BOTH lanes for one client lifetime;
+/// `connectionGeneration` is monotonic per role lane. Together they are what
+/// Task 5's ownership rule decides on — which is why they are established here,
+/// before any request, rather than asserted per request.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct OpenSession {
+    pub(super) protocol_version: u8,
+    #[serde(rename = "type")]
+    pub(super) frame_type: OpenSessionTag,
+    pub(super) actor: String,
+    pub(super) role: SessionRole,
+    pub(super) client_instance: String,
+    pub(super) connection_generation: WireU64,
+}
+
+/// The handshake reply. `session_opened` carries the session identity the
+/// client would otherwise have to ask for with a `hello`; `session_rejected`
+/// is the fail-fast direction — written and followed by a close, so neither
+/// side ever waits on EOF to learn the handshake failed.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub(super) enum SessionReply {
+    SessionOpened {
+        protocol_version: u8,
+        service_epoch: WireU64,
+        validation_mode: ValidationMode,
+        #[serde(deserialize_with = "required_nullable_digest")]
+        validation_manifest_digest: Option<String>,
+        actor: String,
+        role: SessionRole,
+    },
+    SessionRejected {
+        protocol_version: u8,
+        error: ErrorPayload,
+    },
+}
+
+impl SessionReply {
+    pub(super) fn rejected(code: &str, message: &str, retryable: bool) -> Self {
+        Self::SessionRejected {
+            protocol_version: PROTOCOL_VERSION,
+            error: ErrorPayload {
+                code: code.to_owned(),
+                message: message.to_owned(),
+                retryable,
+                diagnostics: Vec::new(),
+            },
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::SessionOpened {
+                protocol_version,
+                validation_manifest_digest,
+                actor,
+                ..
+            } => {
+                if *protocol_version != PROTOCOL_VERSION {
+                    bail!("unsupported protocol version");
+                }
+                validate_string(actor, MAX_ID_BYTES, false, "actor")?;
+                if let Some(digest) = validation_manifest_digest {
+                    validate_digest_field(digest, "validationManifestDigest")?;
+                }
+                Ok(())
+            }
+            Self::SessionRejected {
+                protocol_version,
+                error,
+            } => {
+                if *protocol_version != PROTOCOL_VERSION {
+                    bail!("unsupported protocol version");
+                }
+                error.validate()
+            }
+        }
+    }
+}
+
+impl OpenSession {
+    fn validate(&self) -> Result<()> {
+        if self.protocol_version != PROTOCOL_VERSION {
+            bail!("unsupported protocol version");
+        }
+        validate_string(&self.actor, MAX_ID_BYTES, false, "actor")?;
+        validate_string(&self.client_instance, MAX_ID_BYTES, false, "clientInstance")?;
+        if self.connection_generation.get() == 0 {
+            bail!("connectionGeneration must be a positive canonical integer");
+        }
+        Ok(())
+    }
+}
+
+/// Parses the first frame of a connection. Deliberately NOT a variant of
+/// `parse_request_frame`: the handshake never reaches the journalled request
+/// path, so it must not share a validator that a request context can mutate.
+pub(super) fn parse_open_session_frame(bytes: &[u8]) -> Result<OpenSession> {
+    let payload = decode_frame(bytes, MAX_HANDSHAKE_FRAME_BYTES)?;
+    let handshake: OpenSession =
+        serde_json::from_str(payload).context("invalid open_session handshake JSON")?;
+    handshake.validate()?;
+    Ok(handshake)
+}
+
+pub(super) fn serialize_session_reply(reply: &SessionReply) -> Result<Vec<u8>> {
+    reply.validate()?;
+    encode_frame(reply, MAX_HANDSHAKE_FRAME_BYTES)
+}
+
+pub(super) fn parse_session_reply_frame(bytes: &[u8]) -> Result<SessionReply> {
+    let payload = decode_frame(bytes, MAX_HANDSHAKE_FRAME_BYTES)?;
+    let reply: SessionReply =
+        serde_json::from_str(payload).context("invalid session handshake reply JSON")?;
+    reply.validate()?;
+    Ok(reply)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

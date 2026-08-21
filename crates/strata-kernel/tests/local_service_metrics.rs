@@ -4,11 +4,13 @@
 //! (rather than shared from the other `local_service*` harnesses) so this test
 //! stays feature-agnostic and self-contained.
 
+#[path = "support/session.rs"]
+mod session;
+
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -172,7 +174,7 @@ fn start(directory: &TempDir, token: &str, worker: &Path, metrics: Option<&Path>
 }
 
 fn message(request_id: &str, client: &str, key: Option<&str>, action: Value) -> Vec<u8> {
-    let mut value = json!({"protocolVersion":1,"requestId":request_id,"clientId":client,"deadlineMs":"120000","action":action});
+    let mut value = json!({"protocolVersion":2,"requestId":request_id,"clientId":client,"deadlineMs":"120000","action":action});
     if let Some(key) = key {
         value["idempotencyKey"] = json!(key);
     }
@@ -182,13 +184,11 @@ fn message(request_id: &str, client: &str, key: Option<&str>, action: Value) -> 
 }
 
 fn send(service: &Service, request_id: &str, client: &str, key: Option<&str>, action: Value) -> Value {
-    let mut stream = UnixStream::connect(&service.socket).unwrap();
+    let mut stream = session::open_work_session(&service.socket, client);
     stream
         .write_all(&message(request_id, client, key, action))
         .unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).unwrap();
+    let response = session::read_frame(&mut stream).expect("daemon closed before responding");
     serde_json::from_slice(&response[..response.len() - 1]).unwrap()
 }
 

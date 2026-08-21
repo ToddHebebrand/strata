@@ -1,9 +1,11 @@
+#[path = "support/session.rs"]
+mod session;
+
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -173,7 +175,7 @@ fn message(
     action: Value,
 ) -> Vec<u8> {
     let mut request = json!({
-        "protocolVersion": 1,
+        "protocolVersion": 2,
         "requestId": request_id,
         "clientId": client,
         "deadlineMs": deadline_ms.to_string(),
@@ -195,14 +197,11 @@ fn send_raw(
     deadline_ms: u64,
     action: Value,
 ) -> Vec<u8> {
-    let mut stream = UnixStream::connect(&service.socket).unwrap();
+    let mut stream = session::open_work_session(&service.socket, client);
     stream
         .write_all(&message(request_id, client, key, deadline_ms, action))
         .unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).unwrap();
-    response
+    session::read_frame(&mut stream).unwrap_or_default()
 }
 
 fn send(
@@ -465,7 +464,7 @@ fn expired_and_lock_wait_deadlines_never_start_a_mutation() {
     let socket = service.socket.clone();
     let change_for_thread = change.clone();
     let advance = thread::spawn(move || {
-        let mut stream = UnixStream::connect(socket).unwrap();
+        let mut stream = session::open_work_session(&socket, "client:alpha");
         stream
             .write_all(&message(
                 "deadline:advance",
@@ -475,8 +474,7 @@ fn expired_and_lock_wait_deadlines_never_start_a_mutation() {
                 json!({"type":"advance_change_set","changeSetId":change_for_thread}),
             ))
             .unwrap();
-        let mut response = Vec::new();
-        let _ = stream.read_to_end(&mut response);
+        let _ = session::read_frame(&mut stream);
     });
     let audit = directory.path().join("audit.jsonl");
     let wait_until = Instant::now() + Duration::from_secs(5);

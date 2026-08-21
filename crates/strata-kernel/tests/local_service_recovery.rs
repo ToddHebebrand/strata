@@ -1,8 +1,10 @@
+#[path = "support/session.rs"]
+mod session;
+
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -195,20 +197,20 @@ fn crash_after_send(
     key: &str,
     action: Value,
 ) {
-    let mut stream = UnixStream::connect(&service.socket).unwrap();
+    let mut stream = session::open_work_session(&service.socket, client);
     stream
         .write_all(&message(request_id, client, Some(key), action))
         .unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).unwrap();
-    assert!(response.is_empty(), "crash boundary returned a response");
+    assert!(
+        session::read_frame(&mut stream).is_none(),
+        "crash boundary returned a response"
+    );
     let status = service.child.wait().unwrap();
     assert!(!status.success(), "failpoint did not terminate the daemon");
 }
 
 fn message(request_id: &str, client: &str, key: Option<&str>, action: Value) -> Vec<u8> {
-    let mut value = json!({"protocolVersion":1,"requestId":request_id,"clientId":client,"deadlineMs":"120000","action":action});
+    let mut value = json!({"protocolVersion":2,"requestId":request_id,"clientId":client,"deadlineMs":"120000","action":action});
     if let Some(key) = key {
         value["idempotencyKey"] = json!(key);
     }
@@ -224,13 +226,11 @@ fn send(
     key: Option<&str>,
     action: Value,
 ) -> Value {
-    let mut stream = UnixStream::connect(&service.socket).unwrap();
+    let mut stream = session::open_work_session(&service.socket, client);
     stream
         .write_all(&message(request_id, client, key, action))
         .unwrap();
-    stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).unwrap();
+    let response = session::read_frame(&mut stream).expect("daemon closed before responding");
     serde_json::from_slice(&response[..response.len() - 1]).unwrap()
 }
 
@@ -241,11 +241,14 @@ fn disconnect_after_send(
     key: &str,
     action: Value,
 ) {
-    let mut stream = UnixStream::connect(&service.socket).unwrap();
+    let mut stream = session::open_work_session(&service.socket, client);
     stream
         .write_all(&message(request_id, client, Some(key), action))
         .unwrap();
+    // Vanish mid-request, exactly as a killed client would: no half-close
+    // handshake, just a destroyed socket.
     stream.shutdown(std::net::Shutdown::Both).unwrap();
+    drop(stream);
     thread::sleep(Duration::from_millis(100));
 }
 
@@ -434,7 +437,7 @@ fn restart_fences_a_claim_lost_during_bridge_execution_and_publishes_once() {
     let socket = slow.socket.clone();
     let change_for_thread = change.clone();
     let advance = thread::spawn(move || {
-        let mut stream = UnixStream::connect(socket).unwrap();
+        let mut stream = session::open_work_session(&socket, "client:alpha");
         stream
             .write_all(&message(
                 "advance:lost",
@@ -443,9 +446,7 @@ fn restart_fences_a_claim_lost_during_bridge_execution_and_publishes_once() {
                 json!({"type":"advance_change_set","changeSetId":change_for_thread}),
             ))
             .unwrap();
-        let mut response = Vec::new();
-        let _ = stream.read_to_end(&mut response);
-        response
+        session::read_frame(&mut stream).unwrap_or_default()
     });
     let deadline = Instant::now() + Duration::from_secs(15);
     let audit_path = directory.path().join("audit.jsonl");
