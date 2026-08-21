@@ -1,11 +1,14 @@
-# Item D-3a — Ownership and health (v2)
+# Item D-3a — Ownership and health (v3)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Status:** v2, post-review. The v1 review returned **DO-NOT-PROCEED**
-(archived: `docs/superpowers/specs/2026-08-21-item-d3a-plan-review-codex.md`)
-with two ownership blockers. **The first is answered by removing the problem
-rather than solving it** — see below. Send v2 for review before executing.
+**Status:** v3, post-review — **READY TO EXECUTE.** The v2 review returned
+**PROCEED-WITH-CORRECTIONS** (archived:
+`docs/superpowers/specs/2026-08-21-item-d3a-plan-review-codex-round2.md`) and
+confirmed the headline move: *"Per-incarnation naming removes the stale/live
+decision; it does not merely relocate it."* Every correction is folded in. The
+v1 review (DO-NOT-PROCEED, two ownership blockers) is archived at
+`...-item-d3a-plan-review-codex.md`.
 
 **Goal:** exactly one daemon owns a given state directory and a given endpoint
 token, a leftover socket can never be mistaken for a live one, and health can be
@@ -43,19 +46,41 @@ cheaply, on this platform.**
 **So D-3a stops deciding it.** The socket path becomes per-incarnation:
 
 ```
-/tmp/strata-lc/<sha256(token)>.lock              stable, flock'd, records the current socket
-/tmp/strata-lc/<sha256(token)>.<nonce>.sock      fresh every incarnation
+/tmp/strata-lc/<sha256(token)>.lock            authority ONLY -- flock'd, never rewritten or renamed
+/tmp/strata-lc/<sha256(token)>.record          versioned, atomically replaced, names the current socket
+/tmp/strata-lc/<sha256(token)>.<nonce>.sock    fresh every incarnation
 ```
 
-A leftover socket from a crash is simply **not the current path**, so it can
-never be confused with a live one — there is nothing to decide. Orphans are
-harmless and reclaimed opportunistically.
+**Three files, not two.** v2 said the `.lock` both held the flock and stored the
+socket name. That is unimplementable: atomically replacing a file replaces its
+inode, and the flock protects the inode. The lock is authority and nothing else;
+the record is a separate file replaced by rename.
 
-And reclamation now has real positive evidence, which v1 lacked: **only a daemon
-holding this token's endpoint lock ever creates a file named
-`<sha256(token)>.*.sock`, and we hold that lock.** The name encodes ownership;
-the lock proves exclusivity. That is a stronger claim than dev/inode ever
-supported, and it needs no platform-specific incarnation mechanism.
+The nonce is **at most 11 lowercase hex characters**, which keeps the longest
+basename inside the existing 96-byte socket-path limit
+(`MAX_SOCKET_PATH_BYTES`, `server.rs:22`). On the astronomically unlikely
+collision with the recorded predecessor, **regenerate the nonce** -- never
+unlink a candidate merely because its name matches.
+
+A leftover socket from a crash is simply **not the current path**, so it can
+never be confused with a live one — there is nothing to decide.
+
+**Reclamation is exact, not a sweep.** v2 proposed unlinking anything matching
+`<hash>.*.sock`. The reviewer showed why that is wrong in two ways: a wildcard
+sweep needs a `read_dir` traversal that "bound the sweep" cannot actually bound
+(bounding deletions does not bound the walk), and v2's bind-before-record order
+left an unrecorded orphan on every crash in that window, so debris could grow
+without limit. **Publishing the record BEFORE binding** makes every successfully
+bound socket exactly recoverable, and reduces reclamation to one `unlinkat` of a
+single named predecessor — O(1), no traversal.
+
+Reclamation rests on a **namespace invariant under the cooperative, same-UID
+threat model** — only a daemon holding this token's endpoint claim creates a
+file matching `<sha256(token)>.*.sock`, and we hold that claim. v2 called this
+"positive evidence carried by the socket"; the reviewer was right that this is
+too strong. It is an invariant of the deployment contract, not a property the
+socket itself attests. Stated at its real strength, it is still sufficient here,
+and it needs no platform-specific incarnation mechanism.
 
 **Verified before choosing this:** `socket_path(token)` is derived in exactly one
 place (`server.rs:48`), and every TypeScript consumer reads `socketPath` from the
@@ -98,7 +123,16 @@ Frozen now, in D-3a, so D-3b changes no meaning:
   work".**
 - **Tests must never mutate the shared production `/tmp/strata-lc`.** v1's tests
   would have removed and symlinked it, capable of destroying a live daemon's
-  socket or a parallel test's. The socket root is parameterized (Task 2).
+  socket or a parallel test's. The socket root is parameterized (Task 1), and
+  the injected root must flow through path validation and `health --token` too —
+  use a deliberately SHORT temporary root so the incarnation basename still fits
+  the 96-byte limit.
+- **"TOCTOU-free" is not claimable, and the plan must not claim it.** A held
+  directory fd closes the races for the lock and record children, but `bind()`
+  and `chmod()` on a socket are pathname-based and cannot use `openat`. The
+  guarantee is: safe within the declared cooperative same-UID threat model
+  (`item-d-design.md:45`), with the root's device/inode re-verified immediately
+  before each pathname operation.
 - `decisions.md` is **append-only**.
 - No drain, no `stop`, no lock-hold measurement — D-3b.
 - All test invocations need `PATH=/opt/homebrew/bin:$PATH`.
@@ -125,20 +159,39 @@ Frozen now, in D-3a, so D-3b changes no meaning:
 - Rust's `OpenOptions` sets `O_CLOEXEC`; `.mode(0o600)` applies **only on
   create**, not to an existing file; `O_NOFOLLOW` protects only the final path
   component.
+- **Two TEST surfaces hard-code the old basename**, which v2's audit missed
+  because it only looked at production code. Neither would fail on the change —
+  both would keep passing for the wrong reason, which is worse:
+  `local_service_sealing.rs:41` passes a 64-hex `.sock` path but asserts a
+  rejection that actually comes from the extra `--test-failpoint` argument, and
+  `local_service.rs:960` builds a 100-character basename rejected on length
+  before shape is ever consulted. Task 5 updates both to the incarnation form.
+- **A D-2 binary takes no endpoint lock and binds the old `<hash>.sock`**
+  (`server.rs:185`, `:197`). A live D-2 daemon and a D-3a daemon sharing a token
+  but using different databases would therefore serve simultaneously on
+  different paths. Task 8 handles this; it is an upgrade hazard, not a
+  compatibility mode — D-2 already speaks protocol version 2.
 
 ## File structure
 
-- **Create** `.../lifecycle.rs` — `CanonicalStateDir`, `OwnerLock`,
-  `EndpointClaim`, `SocketRoot`, `BoundEndpoint`, orphan sweep.
+- **Create** `.../lifecycle.rs` — `SocketRoot` (held directory fd),
+  `CanonicalStateDir`, `OwnerLock`, `EndpointClaim`, `EndpointRecord`,
+  `BoundEndpoint`.
 - **Modify** `server.rs` — directory hardening via a held fd, both locks,
-  per-incarnation bind, orphan sweep, control reserve.
+  exact-record reclamation, record-then-bind, legacy-endpoint check, control
+  reserve.
 - **Modify** `protocol.rs` — `FirstFrame` with `open_session` and `health`.
 - **Modify** `main.rs` — `start` alias, `health` CLI, per-command exit codes.
 - **Test** `crates/strata-kernel/tests/lifecycle.rs`.
 
 ---
 
-### Task 1: Canonical identity, both locks, and the fd-inheritance gate
+### Task 1: The socket root, canonical identity, both locks, and the fd-inheritance gate
+
+> **Reordered from v2.** v2's Task 1 used `SocketRoot` in its public interface
+> and its tests, but Task 2 did not implement it until later — a task that
+> cannot compile on its own. `SocketRoot` is implemented HERE, before
+> `EndpointClaim` consumes it.
 
 **Files:**
 - Create: `.../lifecycle.rs`
@@ -298,7 +351,7 @@ fn a_sigkilled_daemon_releases_ownership_despite_live_bridge_workers() {
 git commit -am "feat(d3a): canonical state identity and both ownership locks"
 ```
 
-### Task 2: A held directory fd, and a socket root tests can substitute
+### Task 2: Harden the root through the held fd, and refuse to repair a loose one
 
 **Files:**
 - Modify: `.../lifecycle.rs`
@@ -317,10 +370,17 @@ symlink_metadata` is not race-free: a substitution between the check and the
 4. `fchmod` the **fd**, never the path.
 5. `openat` relative to the held fd for every lock and socket file.
 
-POSIX names `openat` as the mechanism for avoiding pathname substitution races.
-Unix `bind()` remains pathname-based, so re-verify the path still names the held
-directory immediately before bind. Same-uid replacement stays outside the threat
-model — say so rather than implying it is covered.
+POSIX names `openat` as the mechanism for avoiding pathname substitution races,
+but it applies to the **lock and record files only** — `bind()` and the socket's
+`chmod` are pathname-based and cannot use it. v2 wrote "`openat` for every lock
+and socket file", which is false. Re-verify the root's device/inode immediately
+before each pathname operation, and state the guarantee as *safe within the
+declared cooperative same-UID threat model*, not TOCTOU-free.
+
+**Never silently repair a loose root.** If `mkdir` returns `EEXIST`, require
+correct UID and no group/other access **before** `fchmod`. Quietly tightening a
+directory another UID could already have written to would invalidate the whole
+namespace premise: names could have been planted before hardening.
 
 **Test safety.** v1's `remove_socket_directory()` and symlink substitution
 operated on the shared production `/tmp/strata-lc` and could have destroyed a
@@ -519,43 +579,61 @@ If a golden case fails, the handshake was reshaped rather than extended.
 git commit -am "feat(d3a): health rides the handshake with its full shape frozen"
 ```
 
-### Task 5: Per-incarnation socket paths — nothing left to decide
+### Task 5: Per-incarnation paths with exact-record reclamation
 
 **Files:**
-- Modify: `.../lifecycle.rs` (`BoundEndpoint`, orphan sweep)
+- Modify: `.../lifecycle.rs` (`EndpointRecord`, `BoundEndpoint`)
 - Modify: `.../server.rs` (`socket_path`, `validate_socket_path`, `bind_private_socket`)
 - Modify: `.../main.rs` (`validate-socket` accepts the new shape)
+- Modify: `crates/strata-kernel/tests/local_service_sealing.rs:41`
+- Modify: `crates/strata-kernel/tests/local_service.rs:960`
 - Test: `crates/strata-kernel/tests/lifecycle.rs`
 
-**This task replaces v1's staleness classification entirely.** See "The blocker"
-above for why.
+**This replaces staleness classification entirely.** See "The blocker" above.
 
-```
-<sha256(token)>.lock              stable, flock'd, holds the current socket name
-<sha256(token)>.<nonce>.sock      fresh per incarnation
-```
+Three files: `<hash>.lock` is authority only and is never rewritten or renamed;
+`<hash>.record` is versioned, fail-closed, atomically replaced, and names the
+exact current basename; `<hash>.<nonce>.sock` is the endpoint.
 
 `validate_socket_path` (`server.rs:155`) currently requires a 64-hex basename +
-`.sock`. It must accept `<64-hex>.<nonce>.sock`, where nonce is bounded lowercase
-hex, and keep rejecting everything else — the parent-directory and length checks
-stay exactly as they are.
+`.sock`. It must accept `<64-hex>.<nonce>.sock` where nonce is 1–11 lowercase
+hex characters, and keep every other check — parent directory, 96-byte length —
+exactly as it is.
 
-`BoundEndpoint` is a concrete RAII type (v1 listed a `SocketGuard` in its file
-structure and never implemented it): it owns the bound listener's path and, on
-clean drop, unlinks that path **only** after re-verifying it still names a socket
-in the held root.
+`BoundEndpoint` is a concrete RAII type owning the bound path; on drop it
+unlinks that path only after re-verifying it still names a socket in the held
+root. v2 listed a `SocketGuard` in its file structure and never implemented it.
 
-**Orphan sweep, with the positive evidence v1 lacked.** While holding the
-endpoint claim, unlink any `<sha256(token)>.*.sock` that is not the current path.
-The evidence is the name plus the lock: **only a daemon holding this token's
-claim ever creates that name**, and we hold it. Bound the sweep and never touch
-anything outside the pattern.
+**Startup ordering — record BEFORE bind.** This is the correction that makes
+every crash recoverable:
+
+1. Hold both locks; read the previous record without modifying it.
+2. Reclaim **only the exact recorded predecessor**, via `fstatat`/`unlinkat` on
+   the held root fd, after validating token hash, basename shape, and that it is
+   a socket. No traversal, no wildcard.
+3. Choose a fresh nonce (regenerating on collision with the recorded
+   predecessor); durably publish the new record — temp file, `sync_data`, rename
+   over `.record`, sync the directory.
+4. Bind that recorded path, chmod it, then publish readiness.
+
+Every crash point is then exactly recoverable:
+
+| Crash point | What the next start finds |
+|---|---|
+| Before record publication | No new socket exists |
+| After record, before bind | Record names an absent endpoint — nothing to reclaim |
+| After bind, before readiness | Record names the exact orphan |
+| After readiness | Record names the crashed daemon's exact orphan |
+
+v2's bind-before-record order was ownership-safe but left an **unrecorded**
+orphan on every crash in that window, so repeated failures grew debris without
+limit and needed a directory sweep to clean up. This ordering removes both.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[test]
-fn a_crash_leaves_an_orphan_that_cannot_be_confused_with_the_live_socket() {
+fn a_crash_leaves_an_orphan_the_next_start_reclaims_by_exact_name() {
     let directory = TempDir::new().unwrap();
     let crashed = start_daemon(&directory, "d3a-orphan");
     let orphan = crashed.socket_path.clone();
@@ -563,31 +641,36 @@ fn a_crash_leaves_an_orphan_that_cannot_be_confused_with_the_live_socket() {
     assert!(orphan.exists(), "precondition: a crash leaves the socket behind");
 
     let restarted = start_daemon(&directory, "d3a-orphan");
-    // A DIFFERENT path -- there was never a decision to make.
+    // A DIFFERENT path -- there was never a live/stale decision to make.
     assert_ne!(restarted.socket_path, orphan);
     assert_eq!(health_probe(&restarted.socket_path)["type"], "health_ok");
-    // ...and the orphan is swept, because only this token's lock holder could
-    // have created that name.
-    assert!(!orphan.exists(), "the orphan was not reclaimed");
+    // Reclaimed by exact record, not by matching a wildcard.
+    assert!(!orphan.exists(), "the recorded predecessor was not reclaimed");
 }
 
 #[test]
-fn the_sweep_never_touches_a_name_outside_our_token() {
-    let root = TempDir::new().unwrap();
-    let foreign = root.path().join(format!("{}.{}.sock", "b".repeat(64), "deadbeef"));
-    create_orphan_unix_socket(&foreign);
-    let service = start_daemon_with_socket_root(&TempDir::new().unwrap(), "d3a-sweep", root.path());
-    assert!(foreign.exists(), "the sweep deleted another token's socket");
+fn an_unrecorded_socket_matching_our_token_is_left_alone() {
+    // The wildcard sweep v2 proposed would have deleted this. Exact-record
+    // reclamation does not, because it is not the recorded predecessor.
+    let root = short_temp_root();
+    let service = start_daemon_with_socket_root(&TempDir::new().unwrap(), "d3a-unrecorded", &root);
+    let hash = token_hash("d3a-unrecorded");
+    let planted = root.join(format!("{hash}.{}.sock", "beef1234"));
+    create_orphan_unix_socket(&planted);
     drop(service);
+    let restarted = start_daemon_with_socket_root(&TempDir::new().unwrap(), "d3a-unrecorded", &root);
+    assert!(planted.exists(), "reclamation deleted a socket it had no record of");
+    drop(restarted);
 }
 
 #[test]
-fn a_clean_shutdown_unlinks_its_own_socket() {
-    let directory = TempDir::new().unwrap();
-    let service = start_daemon(&directory, "d3a-clean");
-    let path = service.socket_path.clone();
-    stop_cleanly(&service);
-    assert!(!path.exists(), "a clean exit left its socket behind");
+fn reclamation_never_touches_another_token() {
+    let root = short_temp_root();
+    let foreign = root.join(format!("{}.{}.sock", "b".repeat(64), "deadbeef"));
+    create_orphan_unix_socket(&foreign);
+    let service = start_daemon_with_socket_root(&TempDir::new().unwrap(), "d3a-other", &root);
+    assert!(foreign.exists(), "reclamation deleted another token's socket");
+    drop(service);
 }
 
 #[test]
@@ -599,37 +682,49 @@ fn validate_socket_accepts_the_incarnation_shape_and_still_rejects_junk() {
         "/tmp/strata-lc/../escape.sock",
         &format!("/elsewhere/{}.{}.sock", "a".repeat(64), "0123abcd"),
         &format!("/tmp/strata-lc/{}.{}.notsock", "a".repeat(64), "0123abcd"),
+        // Nonce over the 11-hex bound, which would risk the 96-byte limit.
+        &format!("/tmp/strata-lc/{}.{}.sock", "a".repeat(64), "0".repeat(12)),
+        &format!("/tmp/strata-lc/{}.{}.sock", "a".repeat(64), "NOTHEX01"),
     ] {
         assert!(!run_cli(&["validate-socket", "--socket", bad]).success(), "{bad}");
     }
 }
 ```
 
+Also test `BoundEndpoint::drop` **in process**:
+
+```rust
+#[test]
+fn bound_endpoint_unlinks_its_own_path_on_drop() {
+    // v2 proposed a process-level "clean shutdown" test, but D-3a deliberately
+    // adds no graceful exit -- that is D-3b. Test the RAII type directly.
+    let root = short_temp_root();
+    let path = { let bound = BoundEndpoint::bind(&root, &token_hash("t"), "abc123").unwrap();
+                 assert!(bound.path().exists());
+                 bound.path().to_owned() };
+    assert!(!path.exists(), "BoundEndpoint::drop left its socket behind");
+}
+```
+
 - [ ] **Step 2: Run and watch them fail**
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Implement, and update the two stale test surfaces**
 
-Ordering that matters, since bind and record publication cannot be atomic:
-
-1. Hold both locks; read the current record without modifying it.
-2. Bind the new per-incarnation path and chmod it.
-3. Write the record to a temp file, `sync_data`, rename over `.record`, sync the
-   directory.
-4. Sweep orphans matching our token that are not the current path.
-5. Publish readiness.
-
-A crash between (2) and (3) leaves an unrecorded socket — which is **harmless
-here**, because the next incarnation binds a different name and the sweep
-removes anything matching our token. That is the payoff for deleting the
-staleness problem: the crash window that v1 had to fail closed on is now
-uninteresting.
+`local_service_sealing.rs:41` and `local_service.rs:960` hard-code the old
+basename. Neither would FAIL on this change — both would keep passing for the
+wrong reason (a rejection caused by an extra argument, and a length rejection
+that never consults shape). Update both to the incarnation form so they test
+what they claim to.
 
 - [ ] **Step 4: Run and watch them pass**
+
+Run: `PATH=/opt/homebrew/bin:$PATH cargo test -p strata-kernel --test lifecycle`
+Run: `PATH=/opt/homebrew/bin:$PATH cargo test -p strata-kernel --test local_service_sealing`
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git commit -am "feat(d3a): per-incarnation socket paths remove the staleness decision"
+git commit -am "feat(d3a): per-incarnation paths with exact-record reclamation"
 ```
 
 ### Task 6: The control reserve, and the D-2 contract it changes
@@ -649,15 +744,20 @@ reachable.
 | Un-handshaken normal | 16 (unchanged) | 5s handshake (D-2) |
 | Control candidates | **2**, additional | **1s covering classification AND response flush** |
 
-Physical maximum 66. The reserve sits **above** the cap rather than carving out
-of it: the existing 64 was chosen as takeover headroom, not demonstrated as a
-resource cliff, and carving would drop established capacity to 62 for no reason.
-The cost is two accepted fds, two handler threads, and bounded first-frame
-buffers.
+**66 admitted / handler-owned connections, plus at most one transient
+inline-refusal connection.** v2 said "physical maximum 66", which is wrong: an
+over-cap connection is already accepted and held for up to the 250ms inline
+refusal (`server.rs:101`, `:436`) before being closed. The reserve sits **above**
+the cap rather than carving out of it — the existing 64 was chosen as takeover
+headroom, not demonstrated as a resource cliff, and carving would drop
+established capacity to 62 for no reason. The cost is two accepted fds, two
+handler threads, and bounded first-frame buffers.
 
-`Admission::admit` returns `Normal` or `ControlCandidate`. The 1s bound must
-cover the response write too — handlers currently carry a 5s write timeout
-(`server.rs:489`), which would otherwise dominate.
+`Admission::admit` returns `Normal` or `ControlCandidate`. One **absolute**
+`accepted_at + 1s` deadline governs read, classification, and flush together,
+and for a control candidate it **replaces** the 5s write timeout
+(`server.rs:489`) rather than adding a second timer beside it — otherwise the
+longer one dominates the flush.
 
 A control candidate that sends `open_session` is **refused with `server_busy`
 and closed**, never promoted; promoting would let a session launder past a full
@@ -707,9 +807,14 @@ fn both_reserve_slots_are_reclaimed_on_the_shorter_deadline() {
         connect_and_say_nothing(&service.socket_path),
     ];
     let started = Instant::now();
-    wait_until(|| health_probe_succeeds(&service.socket_path), Duration::from_secs(6));
-    assert!(started.elapsed() < Duration::from_secs(6),
-            "the control reserve was not reclaimed on its shorter deadline");
+    wait_until(|| health_probe_succeeds(&service.socket_path), Duration::from_secs(4));
+    // Below the 5s handshake deadline, so this cannot pass by accidentally
+    // measuring THAT timer instead of the promised 1s reserve deadline. v2's
+    // <6s bound could not tell the two apart.
+    assert!(started.elapsed() < Duration::from_secs(4),
+            "the control reserve was not reclaimed on its own shorter deadline");
+    assert!(silent.iter().all(peer_is_closed),
+            "both reserve peers must be closed before health succeeds");
     drop(silent);
 }
 ```
@@ -815,7 +920,74 @@ match command.to_str() {
 git commit -am "feat(d3a): start alias, health CLI with token resolution and real deadlines"
 ```
 
-### Task 8: Gates, chain, close
+### Task 8: The D-2 coexistence boundary
+
+**Files:**
+- Modify: `.../server.rs` (legacy-endpoint check before `ServiceSession::open`)
+- Test: `crates/strata-kernel/tests/lifecycle.rs`
+
+**A hazard the reviewer found that the plan had not considered at all.** The
+namespace invariant — "only an endpoint-claim holder serves this token" — is
+true only among D-3a-and-newer binaries. A **D-2** binary takes no endpoint lock
+and binds the old `<hash>.sock` (`server.rs:185`, `:197`). So a live D-2 daemon
+and a D-3a daemon sharing a token but pointed at different databases would serve
+**simultaneously on different paths**, each believing it was alone.
+
+This is not a v1 compatibility mode — D-2 already speaks protocol version 2. It
+is an upgrade-window hazard, and it is handled with positive evidence rather
+than a deployment note alone:
+
+**Before opening canonical state**, probe the legacy `<hash>.sock` path:
+- A valid protocol-v2 `open_session` reply is **positive evidence a live daemon
+  is serving this token** → refuse to start.
+- An ambiguous leftover (present but unresponsive, or not a socket) → **fail
+  closed** and tell the operator to remove it.
+- Absent → proceed.
+
+Also state the deployment precondition explicitly in the close-out: **stop all
+pre-D-3a daemons before upgrading.** The check is a safety net for when that is
+forgotten, not a substitute for it.
+
+- [ ] **Step 1: Write the failing test**
+
+```rust
+#[test]
+fn a_live_legacy_endpoint_blocks_startup() {
+    // Stand up something that answers open_session on the OLD path shape,
+    // exactly as a running D-2 daemon would.
+    let root = short_temp_root();
+    let legacy = root.join(format!("{}.sock", token_hash("d3a-legacy")));
+    let _fake = spawn_v2_speaking_listener(&legacy);
+    let refused = start_daemon_with_socket_root(&TempDir::new().unwrap(), "d3a-legacy", &root);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("already serving this token"));
+}
+
+#[test]
+fn an_ambiguous_legacy_leftover_fails_closed_without_deleting_it() {
+    let root = short_temp_root();
+    let legacy = root.join(format!("{}.sock", token_hash("d3a-legacy-dead")));
+    create_orphan_unix_socket(&legacy);
+    let refused =
+        start_daemon_with_socket_root(&TempDir::new().unwrap(), "d3a-legacy-dead", &root);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(legacy.exists(), "a legacy leftover was deleted on inference");
+}
+```
+
+- [ ] **Step 2: Run and watch them fail**
+
+- [ ] **Step 3: Implement the legacy probe before `ServiceSession::open`**
+
+- [ ] **Step 4: Run and watch them pass**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git commit -am "feat(d3a): refuse to start beside a live pre-D-3a daemon on the same token"
+```
+
+### Task 9: Gates, chain, close
 
 - [ ] Simultaneous two-daemon race → exactly one serves; loser mutates no
       canonical state and writes no diagnostics (Task 3).
@@ -855,36 +1027,41 @@ git commit -am "feat(d3a): start alias, health CLI with token resolution and rea
   the `validate-socket` subcommand, both updated in Task 5. A future embedder
   that guesses the path will break, which is why `health --token` exists.
 
-## Self-review (v2)
+## Self-review (v3)
 
-**Review corrections mapped:** staleness evidence → Task 5 deletes the decision
-rather than strengthening the evidence; `SocketGuard` made concrete as
-`BoundEndpoint` → Task 5; TOCTOU via held directory fd → Task 2; tests no longer
-touch production `/tmp/strata-lc` → Task 2's `SocketRoot`; reserve algorithm,
-1s-covering-flush, both-slots test, and the D-2 contract change → Task 6;
-"bounded eventual reachability" corrected to bounded tenure → Task 6 and Risks;
-wire contract restated accurately → "The contract with D-3b"; `health_ok` exact
-key set including `validationManifestDigest` → Task 4;
-`service_epoch_placeholder` removed → Task 3; bounded connect implemented rather
-than described → Task 7; open-flag guarantees narrowed (mode-on-create-only,
-link count, `O_NOFOLLOW` final-component-only) → Task 1.
+**v2 review corrections mapped:** wildcard sweep → Task 5's exact-record
+reclamation with record-before-bind and the crash-recoverability table; `.lock`
+vs `.record` separated, since replacing a flocked file replaces the protected
+inode → "The blocker"; nonce bounded to 11 hex with regenerate-on-collision →
+Task 5; "positive evidence" downgraded to a namespace invariant under the
+cooperative same-UID threat model → "The blocker"; `openat` corrected to
+lock/record only, with root dev/ino re-verified before each pathname operation,
+and "TOCTOU-free" withdrawn → Task 2 and Global constraints; no silent repair of
+a loose root → Task 2; `SocketRoot` implemented before `EndpointClaim` consumes
+it → Task 1; D-2 coexistence → new Task 8; reserve accounting corrected to "66
+admitted plus at most one transient inline-refusal" and the absolute 1s deadline
+made to REPLACE the 5s write timeout → Task 6; reserve test bound tightened
+below 5s so it cannot measure the handshake timer instead, and both peers
+asserted closed → Task 6; the two stale test surfaces → Task 5;
+process-level clean-shutdown test replaced by an in-process
+`BoundEndpoint::drop` test, since D-3a adds no graceful exit → Task 5.
 
-**Placeholder scan:** none. Test helpers used across tasks
-(`start_daemon_with_socket_root`, `kill_hard`, `saturate_admission`,
-`connect_and_say_nothing`, `spawn_accepting_but_silent_listener`,
-`create_orphan_unix_socket`, `stop_cleanly`) are written in Task 1's harness —
-stated here so it is not discovered mid-execution.
+**Placeholder scan:** none. Test helpers (`start_daemon_with_socket_root`,
+`short_temp_root`, `token_hash`, `kill_hard`, `saturate_admission`,
+`connect_and_say_nothing`, `peer_is_closed`,
+`spawn_accepting_but_silent_listener`, `spawn_v2_speaking_listener`,
+`create_orphan_unix_socket`) are written in Task 1's harness — stated so it is
+not discovered mid-execution.
 
-**Type consistency:** `CanonicalStateDir` → `OwnerLock::acquire` (Task 1) used in
-Task 3; `SocketRoot` (Task 2) is taken by `EndpointClaim::acquire` (Task 1) and
-`BoundEndpoint` (Task 5); `FirstFrame::Health` (Task 4) consumed by the CLI
-(Task 7); `health_ok`'s `draining`/`activeRequests` introduced in Task 4 with
-final semantics, made to vary in D-3b.
+**Type consistency:** `SocketRoot` (Task 1) is consumed by `EndpointClaim`
+(Task 1), `EndpointRecord` and `BoundEndpoint` (Task 5), and the legacy probe
+(Task 8); `CanonicalStateDir` → `OwnerLock::acquire` (Task 1) used in Task 3;
+`FirstFrame::Health` (Task 4) consumed by the CLI (Task 7); `health_ok`'s
+`draining`/`activeRequests` introduced in Task 4 with final semantics and made
+to vary in D-3b.
 
-**Open question for the reviewer:** Task 5's sweep unlinks any
-`<our-token-hash>.*.sock` that is not the current path, justified by "only a
-holder of this token's claim creates that name". That is sound against
-cooperating daemons. Against a same-uid process that deliberately creates such a
-name it is not — but same-uid hostility is already outside the threat model for
-the directory. Is it consistent to rely on that exclusion here too, or does the
-sweep deserve a stricter rule than the directory hardening does?
+**What this plan does NOT claim**, having been caught overclaiming three times
+across two rounds: it is not TOCTOU-free (only safe within the declared threat
+model); the socket carries no intrinsic ownership evidence (the invariant is a
+property of the deployment contract); and it does change a D-2 test contract
+(`local_service.rs:2668`), deliberately and with a comment saying why.
