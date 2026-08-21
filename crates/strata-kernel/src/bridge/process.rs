@@ -248,6 +248,11 @@ pub(crate) struct NodeBridgeClient {
     /// from the test-only pre-spawn `run_count`: this increments once per
     /// `Command::spawn` that succeeds, regardless of `collect_metrics`.
     worker_starts: AtomicU64,
+    /// Count of requests the persistent route declined or failed EARLY ENOUGH
+    /// to be re-served one-shot. Not a count of one-shot runs: a daemon with no
+    /// persistent bridge at all serves everything one-shot and never falls
+    /// back. Purely observational.
+    one_shot_fallbacks: AtomicU64,
     /// Buffer of terminal per-run records, drained by `take_worker_run_metrics`.
     /// Only appended to when `config.collect_metrics` is true.
     run_metrics: Mutex<Vec<WorkerRunMetrics>>,
@@ -260,6 +265,7 @@ impl NodeBridgeClient {
         Self {
             config,
             worker_starts: AtomicU64::new(0),
+            one_shot_fallbacks: AtomicU64::new(0),
             run_metrics: Mutex::new(Vec::new()),
             #[cfg(test)]
             run_count: Arc::new(AtomicUsize::new(0)),
@@ -282,6 +288,18 @@ impl NodeBridgeClient {
     /// Total worker children successfully spawned over this client's lifetime.
     pub(crate) fn worker_starts_total(&self) -> u64 {
         self.worker_starts.load(Ordering::SeqCst)
+    }
+
+    /// Records that the persistent route handed this request back to be served
+    /// one-shot. Called by the provider/executor fallback arms.
+    pub(crate) fn record_one_shot_fallback(&self) {
+        self.one_shot_fallbacks.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Total persistent-route requests re-served one-shot over this client's
+    /// lifetime.
+    pub(crate) fn one_shot_fallbacks_total(&self) -> u64 {
+        self.one_shot_fallbacks.load(Ordering::SeqCst)
     }
 
     /// Appends one externally produced run record to the shared buffer. Used
@@ -365,6 +383,9 @@ impl NodeBridgeClient {
                 snapshot_build_ns: request_build.map_or(0, |build| build.snapshot_build_ns),
                 request_serialize_ns,
                 response_bytes: spawned.response_bytes,
+                // A one-shot run spawns its own child; there is no shared
+                // worker to queue for.
+                queue_wait_ns: None,
                 worker: spawned
                     .result
                     .as_ref()

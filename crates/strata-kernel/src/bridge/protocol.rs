@@ -3,6 +3,7 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::collections::BTreeSet;
 use std::fmt;
 use std::time::Duration;
@@ -1231,6 +1232,28 @@ impl std::error::Error for CandidateRejected {}
 /// `vitestTimedOut`: the worker could not FINISH the attempt, not that it
 /// evaluated the candidate and rejected it). Only the semantic set
 /// downcasts to [`CandidateRejected`].
+/// Process-lifetime count of candidate validations killed for exceeding their
+/// budget. Process-scoped rather than per-kernel because the classification
+/// funnel below is a free function shared by both transports, and the daemon
+/// this counter reports through IS the process; a test binary that ran several
+/// kernels in-process would see their sum, which is why the assertions that
+/// depend on it live in daemon integration tests.
+static VALIDATION_TIMEOUTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Total candidate validations killed for exceeding their tsc/vitest budget.
+pub(crate) fn validation_timeouts_total() -> u64 {
+    VALIDATION_TIMEOUTS_TOTAL.load(AtomicOrdering::SeqCst)
+}
+
+/// A validation subprocess that blew its budget and had its process group
+/// killed. Operational, never semantic — the candidate was never evaluated.
+fn is_validation_timeout(stage: ErrorStage, code: &str) -> bool {
+    matches!(
+        (stage, code),
+        (ErrorStage::Validate, "tscTimedOut") | (ErrorStage::Validate, "vitestTimedOut")
+    )
+}
+
 fn is_semantic_rejection(stage: ErrorStage, code: &str) -> bool {
     matches!(
         (stage, code),
@@ -1250,6 +1273,9 @@ pub(crate) fn candidate_failure_to_error(
     message: String,
     diagnostics: Vec<BridgeDiagnostic>,
 ) -> anyhow::Error {
+    if is_validation_timeout(stage, &code) {
+        VALIDATION_TIMEOUTS_TOTAL.fetch_add(1, AtomicOrdering::SeqCst);
+    }
     if is_semantic_rejection(stage, &code) {
         anyhow::Error::new(CandidateRejected {
             stage: format!("{stage:?}").to_lowercase(),

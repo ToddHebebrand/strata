@@ -11,12 +11,17 @@ const MAX_REASONING_CHARS = 4_096;
 const MAX_TEXT_CHARS = 16_384;
 const MAX_NODE_IDS = 256;
 const MAX_EVENT_LIMIT = 256;
+const MAX_FIXTURE_CHUNK_BYTES = 8_192;
 
 const stableId = z.string().min(1).max(MAX_ID_CHARS).describe("Stable node or change-set ID.");
 const canonicalSequence = z
   .string()
   .regex(/^(0|[1-9][0-9]*)$/)
   .describe("Canonical unsigned event sequence returned by the service.");
+const fixtureId = z
+  .string()
+  .regex(/^[0-9a-f]{64}$/)
+  .describe("Stable validation-fixture ID returned by list_validation_fixtures.");
 
 const renameIntent = z
   .object({
@@ -87,7 +92,15 @@ export const COORDINATION_TOOL_INPUT_SCHEMAS = {
     .strict(),
   ack_events: z.object({ through_sequence: canonicalSequence }).strict(),
   cancel_change_set: z.object({ change_set_id: stableId }).strict(),
-  read_operation: z.object({ operation_id: stableId }).strict()
+  read_operation: z.object({ operation_id: stableId }).strict(),
+  list_validation_fixtures: z.object({}).strict(),
+  read_validation_fixture: z
+    .object({
+      fixture_id: fixtureId,
+      offset: canonicalSequence,
+      length: z.number().int().min(1).max(MAX_FIXTURE_CHUNK_BYTES)
+    })
+    .strict()
 } as const;
 
 export interface CoordinationClientApi {
@@ -118,6 +131,12 @@ export interface CoordinationClientApi {
   ackEvents(throughSequence: string): Promise<CoordinationResult>;
   cancelChangeSet(changeSetId: string): Promise<CoordinationResult>;
   readOperation(operationId: string): Promise<CoordinationResult>;
+  listValidationFixtures(): Promise<CoordinationResult>;
+  readValidationFixture(
+    fixtureId: string,
+    offset: string,
+    length: number
+  ): Promise<CoordinationResult>;
 }
 
 function textResult(value: unknown) {
@@ -280,6 +299,19 @@ export function createCoordinationTools(
       "Cancel an obsolete change set and release its scheduled work. Use cancel_change_set before beginning replacement work after a fresh decision; terminal published work remains terminal.",
       COORDINATION_TOOL_INPUT_SCHEMAS.cancel_change_set,
       async ({ change_set_id }) => textResult(await client.cancelChangeSet(change_set_id))
+    ),
+    strictTool(
+      "list_validation_fixtures",
+      "List the registered behavioral fixtures that define this codebase's validation contract: stable fixture IDs, display paths, sizes, and the validation manifest digest they are pinned to. Empty under tsc-only validation. These are the tests your change must keep green; read them with read_validation_fixture before choosing a change that could alter behavior.",
+      COORDINATION_TOOL_INPUT_SCHEMAS.list_validation_fixtures,
+      async () => textResult(await client.listValidationFixtures())
+    ),
+    strictTool(
+      "read_validation_fixture",
+      "Read one registered validation fixture in bounded chunks by its fixture ID: base64 content from a byte offset, at most 8192 bytes per call, with eof marking the end. This is not a general file reader — only manifest-registered fixtures are readable, and content is verified against the manifest digest on every read.",
+      COORDINATION_TOOL_INPUT_SCHEMAS.read_validation_fixture,
+      async ({ fixture_id, offset, length }) =>
+        textResult(await client.readValidationFixture(fixture_id, offset, length))
     )
   ];
 }
@@ -297,7 +329,9 @@ export const COORDINATION_TOOL_NAMES = [
   "read_events",
   "read_operation",
   "ack_events",
-  "cancel_change_set"
+  "cancel_change_set",
+  "list_validation_fixtures",
+  "read_validation_fixture"
 ] as const;
 
 export const COORDINATION_SERVER_NAME = "coordination" as const;

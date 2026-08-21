@@ -73,6 +73,21 @@ function fakeClient(overrides: Partial<CoordinationClientApi> = {}): Coordinatio
       ],
       publicationDigest: "a".repeat(64)
     }),
+    listValidationFixtures: async () => ({
+      type: "validation_fixtures",
+      validationMode: "behavioral",
+      validationManifestDigest: "b".repeat(64),
+      fixtures: [
+        { fixtureId: "c".repeat(64), path: "tests/greet.test.ts", bytes: "120" }
+      ]
+    }),
+    readValidationFixture: async () => ({
+      type: "validation_fixture_chunk",
+      fixtureId: "c".repeat(64),
+      offset: "0",
+      contentBase64: "Zm9vYmFy",
+      eof: true
+    }),
     ...overrides
   };
 }
@@ -86,7 +101,7 @@ function textPayload(result: { content: Array<{ type: string; text?: string }> }
 }
 
 describe("coordination-only MCP surface", () => {
-  it("exports exactly the thirteen design operations and qualified allowlist", () => {
+  it("exports exactly the fifteen design operations and qualified allowlist", () => {
     expect(COORDINATION_TOOL_NAMES).toEqual([
       "list_modules",
       "list_module_declarations",
@@ -100,7 +115,9 @@ describe("coordination-only MCP surface", () => {
       "read_events",
       "read_operation",
       "ack_events",
-      "cancel_change_set"
+      "cancel_change_set",
+      "list_validation_fixtures",
+      "read_validation_fixture"
     ]);
     expect(createCoordinationTools(fakeClient()).map((entry) => entry.name)).toEqual(
       COORDINATION_TOOL_NAMES
@@ -326,7 +343,13 @@ describe("coordination-only MCP surface", () => {
       read_events: { after_sequence: "0", limit: 10 },
       read_operation: { operation_id: "operation:1" },
       ack_events: { through_sequence: "0" },
-      cancel_change_set: { change_set_id: "change:1" }
+      cancel_change_set: { change_set_id: "change:1" },
+      list_validation_fixtures: {},
+      read_validation_fixture: {
+        fixture_id: "c".repeat(64),
+        offset: "0",
+        length: 8_192
+      }
     };
 
     for (const [name, registered] of Object.entries(
@@ -474,6 +497,70 @@ describe("coordination-only MCP surface", () => {
     expect(calls).toEqual([
       ["node:1", undefined, 10],
       ["node:1", { afterReferenceKey: "node:2" }, 5]
+    ]);
+  });
+
+  it("bounds read_validation_fixture to a 64-hex fixture ID, canonical offset, and 1..8192 length", () => {
+    const fixture = "c".repeat(64);
+    expect(
+      COORDINATION_TOOL_INPUT_SCHEMAS.read_validation_fixture.parse({
+        fixture_id: fixture,
+        offset: "0",
+        length: 8_192
+      })
+    ).toEqual({ fixture_id: fixture, offset: "0", length: 8_192 });
+    for (const invalid of [
+      { fixture_id: fixture, offset: "0", length: 0 },
+      { fixture_id: fixture, offset: "0", length: 8_193 },
+      { fixture_id: fixture, offset: "007", length: 64 },
+      { fixture_id: "C".repeat(64), offset: "0", length: 64 },
+      { fixture_id: "c".repeat(63), offset: "0", length: 64 },
+      { fixture_id: fixture, offset: "0", length: 64, path: "tests/greet.test.ts" }
+    ]) {
+      expect(
+        COORDINATION_TOOL_INPUT_SCHEMAS.read_validation_fixture.safeParse(invalid).success
+      ).toBe(false);
+    }
+    expect(COORDINATION_TOOL_INPUT_SCHEMAS.list_validation_fixtures.parse({})).toEqual({});
+  });
+
+  it("forwards validation-fixture args to the client in wire order", async () => {
+    const calls: unknown[] = [];
+    const tools = createCoordinationTools(
+      fakeClient({
+        listValidationFixtures: async (...args) => {
+          calls.push(["list", args]);
+          return {
+            type: "validation_fixtures",
+            validationMode: "behavioral",
+            validationManifestDigest: null,
+            fixtures: []
+          };
+        },
+        readValidationFixture: async (...args) => {
+          calls.push(["read", args]);
+          return {
+            type: "validation_fixture_chunk",
+            fixtureId: "c".repeat(64),
+            offset: "0",
+            contentBase64: "",
+            eof: true
+          };
+        }
+      })
+    );
+    const list = tools.find((entry) => entry.name === "list_validation_fixtures")!;
+    const read = tools.find((entry) => entry.name === "read_validation_fixture")!;
+
+    await list.handler({}, {});
+    await read.handler(
+      { fixture_id: "c".repeat(64), offset: "128", length: 64 },
+      {}
+    );
+
+    expect(calls).toEqual([
+      ["list", []],
+      ["read", ["c".repeat(64), "128", 64]]
     ]);
   });
 

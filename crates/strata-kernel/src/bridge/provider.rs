@@ -62,6 +62,7 @@ impl SemanticProvider for NodeSemanticProvider {
                 Err(error) => {
                     // Same operational convention as every persistent-path
                     // fallback: bounded stderr line, request served one-shot.
+                    self.client.record_one_shot_fallback();
                     eprintln!(
                         "persistent mirror analyze failed; serving this request one-shot: \
                          {error:#}"

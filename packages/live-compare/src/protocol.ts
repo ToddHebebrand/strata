@@ -18,6 +18,12 @@ const MAX_MODULE_PAGE_ITEMS = 64;
 const MAX_MODULE_DECLARATION_PAGE_ITEMS = 64;
 const MAX_REFERENCE_PAGE_ITEMS = 256;
 const MAX_MODULE_PATH_BYTES = 512;
+/** Maximum bytes one `read_validation_fixture` call may request, matching the Rust wire. */
+export const MAX_FIXTURE_CHUNK_BYTES = 8_192;
+/** Maximum registered fixtures one `validation_fixtures` result may carry. */
+export const MAX_VALIDATION_FIXTURES = 64;
+/** Padded base64 of MAX_FIXTURE_CHUNK_BYTES bytes: ceil(8192 / 3) * 4. */
+const MAX_FIXTURE_CHUNK_BASE64_CHARS = 10_924;
 const U64_MAX = 18_446_744_073_709_551_615n;
 
 const utf8 = new TextEncoder();
@@ -193,7 +199,18 @@ export const requestActionSchema = z.discriminatedUnion("type", [
     .strict(),
   z.object({ type: z.literal("ack_events"), throughSequence: canonicalU64Schema }).strict(),
   z.object({ type: z.literal("cancel_change_set"), changeSetId: opaqueIdSchema }).strict(),
-  z.object({ type: z.literal("read_operation"), operationId: opaqueIdSchema }).strict()
+  z.object({ type: z.literal("read_operation"), operationId: opaqueIdSchema }).strict(),
+  // Read-only behavioral-fixture discovery (B-2 Task 10). Never mutating: no
+  // idempotency key is carried, and the daemon rejects one that is.
+  z.object({ type: z.literal("list_validation_fixtures") }).strict(),
+  z
+    .object({
+      type: z.literal("read_validation_fixture"),
+      fixtureId: digestSchema,
+      offset: canonicalU64Schema,
+      length: z.number().int().min(1).max(MAX_FIXTURE_CHUNK_BYTES)
+    })
+    .strict()
 ]);
 
 const MUTATING_ACTIONS = new Set([
@@ -231,6 +248,23 @@ const diagnosticSchema = z
     message: textSchema,
     nodeId: opaqueIdSchema.nullable(),
     modulePath: modulePathSchema.optional()
+  })
+  .strict();
+
+/**
+ * Standard padded base64. MAY be empty: a read at or past EOF returns the
+ * terminal empty chunk rather than an error.
+ */
+const fixtureContentBase64Schema = z
+  .string()
+  .max(MAX_FIXTURE_CHUNK_BASE64_CHARS)
+  .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/);
+
+const validationFixtureSummarySchema = z
+  .object({
+    fixtureId: digestSchema,
+    path: modulePathSchema,
+    bytes: canonicalU64Schema
   })
   .strict();
 
@@ -444,6 +478,27 @@ export const responseResultSchema = z.discriminatedUnion("type", [
       renames: z.array(operationRenameTransitionSchema).max(MAX_ARRAY_ITEMS),
       intents: z.array(operationIntentSummarySchema).max(MAX_OPERATION_INTENTS),
       publicationDigest: digestSchema
+    })
+    .strict(),
+  // Behavioral fixture manifest (B-2 Task 10). `validationManifestDigest` is
+  // REQUIRED but NULLABLE, exactly as on `ready`: `null` means "no operator
+  // manifest", a different claim from "this field was not sent". Under
+  // tsc-only validation the fixture list is empty.
+  z
+    .object({
+      type: z.literal("validation_fixtures"),
+      validationMode: z.enum(["tscOnly", "behavioral"]),
+      validationManifestDigest: digestSchema.nullable(),
+      fixtures: z.array(validationFixtureSummarySchema).max(MAX_VALIDATION_FIXTURES)
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("validation_fixture_chunk"),
+      fixtureId: digestSchema,
+      offset: canonicalU64Schema,
+      contentBase64: fixtureContentBase64Schema,
+      eof: z.boolean()
     })
     .strict()
 ]);

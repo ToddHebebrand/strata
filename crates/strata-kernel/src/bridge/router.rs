@@ -150,6 +150,10 @@ impl PersistentBridgeRouter {
         self.host.spawns_total()
     }
 
+    pub(crate) fn rehydrations_total(&self) -> u64 {
+        self.host.rehydrations_total()
+    }
+
     fn planner(&self) -> PublishedSyncPlanner {
         PublishedSyncPlanner {
             sync: Arc::clone(&self.sync),
@@ -254,17 +258,20 @@ impl PersistentBridgeRouter {
                 .request_at_with_size(&target, frame, self.deadline, &self.planner());
         let bridge_wall_ns = elapsed_ns(wall_start);
 
-        let (outcome, response_bytes, result) = match exchanged {
-            Ok((value, response_bytes)) => {
-                let metrics = value
+        let (outcome, response_bytes, queue_wait_ns, result) = match exchanged {
+            Ok(exchange) => {
+                let metrics = exchange
+                    .value
                     .get("metrics")
                     .and_then(|metrics| serde_json::from_value(metrics.clone()).ok());
-                match parse_mirror_analyze_facts(value, &binding) {
-                    Ok(facts) => ("ok", response_bytes, Ok((facts, metrics))),
-                    Err(error) => ("parseFailed", response_bytes, Err(error)),
+                let response_bytes = exchange.response_bytes;
+                let queue_wait_ns = Some(exchange.queue_wait_ns);
+                match parse_mirror_analyze_facts(exchange.value, &binding) {
+                    Ok(facts) => ("ok", response_bytes, queue_wait_ns, Ok((facts, metrics))),
+                    Err(error) => ("parseFailed", response_bytes, queue_wait_ns, Err(error)),
                 }
             }
-            Err(error) => ("persistentError", 0, Err(error)),
+            Err(error) => ("persistentError", 0, None, Err(error)),
         };
 
         if self.collect_metrics {
@@ -280,6 +287,7 @@ impl PersistentBridgeRouter {
                 snapshot_build_ns: 0,
                 request_serialize_ns,
                 response_bytes,
+                queue_wait_ns,
                 worker: result.as_ref().ok().and_then(|(_, metrics)| metrics.clone()),
             });
         }
@@ -379,25 +387,29 @@ impl PersistentBridgeRouter {
         );
         let bridge_wall_ns = elapsed_ns(wall_start);
 
-        let (outcome, response_bytes, result) = match exchanged {
-            Ok((value, response_bytes)) => {
-                let metrics = value
+        let (outcome, response_bytes, queue_wait_ns, result) = match exchanged {
+            Ok(exchange) => {
+                let metrics = exchange
+                    .value
                     .get("metrics")
                     .and_then(|metrics| serde_json::from_value(metrics.clone()).ok());
+                let response_bytes = exchange.response_bytes;
+                let queue_wait_ns = Some(exchange.queue_wait_ns);
                 match parse_mirror_candidate_delta(
-                    value,
+                    exchange.value,
                     &expected_binding,
                     self.max_diagnostics_bytes,
                 ) {
                     // A parsed CandidateError is a semantic outcome, recorded
                     // "ok" exactly as the one-shot transport records it (its
                     // parse succeeds there too; the failure surfaces after).
-                    Ok(parsed) => ("ok", response_bytes, Ok((parsed, metrics))),
+                    Ok(parsed) => ("ok", response_bytes, queue_wait_ns, Ok((parsed, metrics))),
                     // The worker DID run this candidate; we just could not read
                     // its answer. Exchange phase — never replayed one-shot.
                     Err(error) => (
                         "parseFailed",
                         response_bytes,
+                        queue_wait_ns,
                         Err(anyhow::Error::new(TransportFailure::new(
                             TransportPhase::Exchange,
                             error,
@@ -405,7 +417,7 @@ impl PersistentBridgeRouter {
                     ),
                 }
             }
-            Err(error) => ("persistentError", 0, Err(error)),
+            Err(error) => ("persistentError", 0, None, Err(error)),
         };
 
         if self.collect_metrics {
@@ -421,6 +433,7 @@ impl PersistentBridgeRouter {
                 snapshot_build_ns: 0,
                 request_serialize_ns,
                 response_bytes,
+                queue_wait_ns,
                 worker: result.as_ref().ok().and_then(|(_, metrics)| metrics.clone()),
             });
         }

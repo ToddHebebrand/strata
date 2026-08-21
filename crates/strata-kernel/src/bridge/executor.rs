@@ -169,6 +169,7 @@ impl CandidateExecutor for NodeCandidateExecutor {
                 Err(error) if candidate_transport_allows_fallback(&error) => {
                     // Same operational convention as every persistent-path
                     // fallback: bounded stderr line, request served one-shot.
+                    self.client.record_one_shot_fallback();
                     eprintln!(
                         "persistent mirror candidate failed before the worker was touched; \
                          serving this request one-shot: {error:#}"

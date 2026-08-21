@@ -661,6 +661,31 @@ impl Kernel {
         one_shot.saturating_add(persistent)
     }
 
+    /// Total persistent-route requests handed back to be served one-shot, or 0
+    /// when no bridge is wired. A daemon with no persistent bridge serves
+    /// everything one-shot and still reports 0 here — this counts FALLBACKS,
+    /// not one-shot runs.
+    pub fn one_shot_fallbacks_total(&self) -> u64 {
+        self.node_bridge_client
+            .as_ref()
+            .map_or(0, |client| client.one_shot_fallbacks_total())
+    }
+
+    /// Total full worker re-hydrations the persistent host has driven, or 0
+    /// when no persistent bridge is wired.
+    pub fn rehydrations_total(&self) -> u64 {
+        self.persistent_router
+            .as_ref()
+            .map_or(0, |router| router.rehydrations_total())
+    }
+
+    /// Total candidate validations killed for exceeding their tsc/vitest
+    /// budget. Process-scoped (see `bridge::protocol`), which is the daemon's
+    /// lifetime in production.
+    pub fn validation_timeouts_total(&self) -> u64 {
+        crate::bridge::protocol::validation_timeouts_total()
+    }
+
     /// Lists modules (nodes of kind `Module`) id-ordered, one page at a time.
     /// `declaration_count` is the number of discovery-kind top-level children
     /// (the same kind vocabulary `find_declarations`/`list_module_declarations`

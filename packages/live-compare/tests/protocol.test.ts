@@ -329,6 +329,140 @@ describe("local service protocol v1", () => {
     ).toThrow();
   });
 
+  it("bounds read_validation_fixture length to 1..=8192 with a 64-hex fixture ID", () => {
+    const fixtureId = "c".repeat(64);
+    expect(
+      requestActionSchema.parse({
+        type: "read_validation_fixture",
+        fixtureId,
+        offset: "0",
+        length: 8192
+      })
+    ).toEqual({ type: "read_validation_fixture", fixtureId, offset: "0", length: 8192 });
+    expect(requestActionSchema.parse({ type: "list_validation_fixtures" })).toEqual({
+      type: "list_validation_fixtures"
+    });
+    for (const invalid of [
+      { type: "read_validation_fixture", fixtureId, offset: "0", length: 0 },
+      { type: "read_validation_fixture", fixtureId, offset: "0", length: 8193 },
+      { type: "read_validation_fixture", fixtureId, offset: "00", length: 64 },
+      { type: "read_validation_fixture", fixtureId: "C".repeat(64), offset: "0", length: 64 },
+      { type: "list_validation_fixtures", fixtureId }
+    ]) {
+      expect(requestActionSchema.safeParse(invalid).success, JSON.stringify(invalid)).toBe(
+        false
+      );
+    }
+  });
+
+  it("rejects a read_validation_fixture request carrying an idempotency key", () => {
+    const request = {
+      protocolVersion: 1,
+      requestId: "request:fixtures",
+      clientId: "client:alpha",
+      deadlineMs: "30000",
+      action: {
+        type: "read_validation_fixture",
+        fixtureId: "c".repeat(64),
+        offset: "0",
+        length: 64
+      }
+    };
+    expect(() => parseRequestFrame(frame(request))).not.toThrow();
+    expect(() =>
+      parseRequestFrame(frame({ ...request, idempotencyKey: "key:1" }))
+    ).toThrow(/read-only actions must not carry an idempotency key/);
+  });
+
+  it("bounds the validation_fixtures result to 64 registered fixtures with a nullable manifest digest", () => {
+    const fixtureId = "c".repeat(64);
+    const summary = { fixtureId, path: "tests/greet.test.ts", bytes: "120" };
+    expect(
+      responseResultSchema.parse({
+        type: "validation_fixtures",
+        validationMode: "behavioral",
+        validationManifestDigest: "b".repeat(64),
+        fixtures: [summary]
+      })
+    ).toEqual({
+      type: "validation_fixtures",
+      validationMode: "behavioral",
+      validationManifestDigest: "b".repeat(64),
+      fixtures: [summary]
+    });
+    expect(
+      responseResultSchema.safeParse({
+        type: "validation_fixtures",
+        validationMode: "tscOnly",
+        validationManifestDigest: null,
+        fixtures: []
+      }).success
+    ).toBe(true);
+    // Required-but-nullable, exactly like `ready`: an omitted key is not `null`.
+    expect(
+      responseResultSchema.safeParse({
+        type: "validation_fixtures",
+        validationMode: "tscOnly",
+        fixtures: []
+      }).success
+    ).toBe(false);
+    expect(
+      responseResultSchema.safeParse({
+        type: "validation_fixtures",
+        validationMode: "behavioral",
+        validationManifestDigest: null,
+        fixtures: Array.from({ length: 64 }, () => summary)
+      }).success
+    ).toBe(true);
+    expect(
+      responseResultSchema.safeParse({
+        type: "validation_fixtures",
+        validationMode: "behavioral",
+        validationManifestDigest: null,
+        fixtures: Array.from({ length: 65 }, () => summary)
+      }).success
+    ).toBe(false);
+    for (const badSummary of [
+      { fixtureId, path: "/etc/passwd", bytes: "120" },
+      { fixtureId, path: "tests/greet.test.ts", bytes: "0120" },
+      { fixtureId: "c".repeat(63), path: "tests/greet.test.ts", bytes: "120" }
+    ]) {
+      expect(
+        responseResultSchema.safeParse({
+          type: "validation_fixtures",
+          validationMode: "behavioral",
+          validationManifestDigest: null,
+          fixtures: [badSummary]
+        }).success,
+        JSON.stringify(badSummary)
+      ).toBe(false);
+    }
+  });
+
+  it("accepts an empty terminal validation_fixture_chunk and rejects malformed base64", () => {
+    const fixtureId = "c".repeat(64);
+    const base = { type: "validation_fixture_chunk", fixtureId, offset: "0", eof: true };
+    for (const contentBase64 of ["Zm9vYmFy", "", "Zm8=", "Zg==", "a".repeat(10_924)]) {
+      expect(
+        responseResultSchema.safeParse({ ...base, contentBase64 }).success,
+        JSON.stringify(contentBase64.slice(0, 16))
+      ).toBe(true);
+    }
+    for (const contentBase64 of [
+      "Zm9vYmF",
+      "Zm9v!mFy",
+      "Zg===",
+      "=Zm9v",
+      "Zm8=Zm8=",
+      "a".repeat(10_928)
+    ]) {
+      expect(
+        responseResultSchema.safeParse({ ...base, contentBase64 }).success,
+        JSON.stringify(contentBase64.slice(0, 16))
+      ).toBe(false);
+    }
+  });
+
   it("validates change-set and client IDs before retaining ownership", () => {
     const context = new LocalServiceProtocolContext(1, 1);
     const oversized = "x".repeat(513);

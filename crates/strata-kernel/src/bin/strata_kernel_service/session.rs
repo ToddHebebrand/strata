@@ -12,7 +12,7 @@ use strata_kernel::{
     NodeBridgeConfig, PublicationReport, PublishClaimOutcome, TicketState as KernelTicketState,
 };
 
-use super::metrics::{MetricsRecord, MetricsSink, peak_rss_bytes};
+use super::metrics::{BehavioralDisclosure, MetricsRecord, MetricsSink, peak_rss_bytes};
 
 use super::audit::{
     AuditEvent, FollowUp, PendingRequest, RequestJournal, RequestLedgerEntry, ServiceAudit,
@@ -20,8 +20,8 @@ use super::audit::{
 };
 use super::paths::project_module_path;
 use super::protocol::{
-    CancelledState, ChangeSetState, DeclarationSummary, Diagnostic, InspectedNode, Intent,
-    LocalServiceProtocolContext, LocalServiceRequest, LocalServiceResponse,
+    CancelledState, ChangeSetState, DeclarationSummary, Diagnostic, FixtureSummary, InspectedNode,
+    Intent, LocalServiceProtocolContext, LocalServiceRequest, LocalServiceResponse,
     ModuleDeclarationSummary, ModuleSummary, NodeRelationship, OperationIntentSummary,
     OperationRenameTransition, ReferenceSummary, RenamedSymbol, RequestAction, ResponseResult,
     ServiceEvent, ServiceEventKind, TicketState, ValidationMode, WireU64, parse_request_frame,
@@ -66,10 +66,24 @@ pub(super) enum ServiceFailpoint {
 pub(super) struct ValidationSettings {
     pub mode: super::protocol::ValidationMode,
     pub manifest_digest: Option<String>,
-    /// (corpus-relative path, sha256) per fixture; empty in `tscOnly`.
-    pub fixtures: Vec<(String, String)>,
+    /// Registered fixtures; empty in `tscOnly`.
+    pub fixtures: Vec<RegisteredFixture>,
     pub tsc_timeout_ms: u64,
     pub vitest_timeout_ms: u64,
+}
+
+/// One manifest-registered fixture, carrying the canonical absolute path the
+/// loader verified at startup (Task 5 / review Major 9). The reader serves
+/// ONLY from this identity — it never joins a client-supplied string onto the
+/// corpus root — and re-verifies containment and content digest on every read,
+/// so the startup snapshot is a starting point rather than a standing trust.
+#[derive(Clone)]
+pub(super) struct RegisteredFixture {
+    /// Corpus-relative POSIX path, the only form ever put on the wire.
+    pub path: String,
+    /// sha256 of the registered content; doubles as the fixture's wire id.
+    pub sha256: String,
+    pub canonical_path: PathBuf,
 }
 
 impl ValidationSettings {
@@ -94,11 +108,18 @@ impl ValidationSettings {
                 }
             },
             manifest_digest: Some(loaded.digest.clone()),
+            // `canonical_fixture_paths` is index-aligned with
+            // `manifest.fixtures` by construction in the loader.
             fixtures: loaded
                 .manifest
                 .fixtures
                 .iter()
-                .map(|fixture| (fixture.path.clone(), fixture.sha256.clone()))
+                .zip(loaded.canonical_fixture_paths.iter())
+                .map(|(fixture, canonical_path)| RegisteredFixture {
+                    path: fixture.path.clone(),
+                    sha256: fixture.sha256.clone(),
+                    canonical_path: canonical_path.clone(),
+                })
                 .collect(),
             tsc_timeout_ms: loaded.manifest.tsc_timeout_ms,
             vitest_timeout_ms: loaded.manifest.vitest_timeout_ms,
@@ -312,6 +333,44 @@ impl ServiceSession {
         self.validation.manifest_digest.is_some()
     }
 
+    /// Reads a registered fixture and re-establishes, on THIS read, both
+    /// properties the loader established at startup: the canonical path still
+    /// resolves inside the canonical corpus root, and the bytes still hash to
+    /// the registered id. Startup verification is not carried forward as
+    /// standing trust — a fixture edited or re-pointed after the daemon bound
+    /// fails the read rather than serving drifted bytes under a pinned digest.
+    ///
+    /// Errors name the fixture's corpus-relative path and id, never the
+    /// absolute path on disk (the B-1 fail-closed projection discipline).
+    fn verified_fixture_bytes(&self, fixture: &RegisteredFixture) -> Result<Vec<u8>> {
+        let canonical = std::fs::canonicalize(&fixture.canonical_path).with_context(|| {
+            format!(
+                "registered fixture {} is no longer readable at its verified location",
+                fixture.path
+            )
+        })?;
+        if !canonical.starts_with(&self.canonical_corpus_root) {
+            bail!(
+                "registered fixture {} now resolves outside the corpus root",
+                fixture.path
+            );
+        }
+        let content = std::fs::read(&canonical).with_context(|| {
+            format!("registered fixture {} could not be read", fixture.path)
+        })?;
+        let actual = format!("{:x}", Sha256::digest(&content));
+        if actual != fixture.sha256 {
+            bail!(
+                "registered fixture {} no longer matches its manifest digest \
+                 (registered {}, found {actual}); the daemon serves manifest-pinned \
+                 content only",
+                fixture.path,
+                fixture.sha256
+            );
+        }
+        Ok(content)
+    }
+
     /// Runs the seed-green baseline against the CURRENT graph (B-2 Task 7).
     /// Called by `server::serve` after `open` and before `finalize_startup`.
     pub fn validate_baseline(&self) -> Result<strata_kernel::BaselineVerdict> {
@@ -440,15 +499,45 @@ impl ServiceSession {
         let Ok(mut sink) = sink.lock() else {
             return;
         };
+        // Behavioral-mode advances disclose what validation cost. The runs
+        // drained here are the source for the two per-request durations, so
+        // they are summarized BEFORE being emitted and consumed.
+        let disclose = self.validation.mode == ValidationMode::Behavioral
+            && matches!(action, RequestAction::AdvanceChangeSet { .. });
+        let mut validation_wall_ms: Option<u64> = None;
+        let mut queue_wait_ms: Option<u64> = None;
         for run in self.kernel.take_worker_run_metrics() {
+            if disclose {
+                // Several runs can land on one advance (an analyze trip plus
+                // the candidate trip); the candidate's validate stage is the
+                // cost being disclosed, so take the largest rather than the
+                // last, and sum the waits that actually queued.
+                if let Some(validate_ns) = run.worker.as_ref().and_then(|worker| worker.validate_ns)
+                {
+                    let ms = validate_ns / 1_000_000;
+                    validation_wall_ms = Some(validation_wall_ms.map_or(ms, |seen| seen.max(ms)));
+                }
+                if let Some(wait_ns) = run.queue_wait_ns {
+                    let ms = wait_ns / 1_000_000;
+                    queue_wait_ms = Some(queue_wait_ms.map_or(ms, |seen| seen + ms));
+                }
+            }
             sink.emit(&MetricsRecord::worker_run(run));
         }
+        let disclosure = disclose.then(|| BehavioralDisclosure {
+            validation_wall_ms,
+            queue_wait_ms,
+            one_shot_fallbacks_total: self.kernel.one_shot_fallbacks_total(),
+            rehydrations_total: self.kernel.rehydrations_total(),
+            validation_timeouts_total: self.kernel.validation_timeouts_total(),
+        });
         sink.emit(&MetricsRecord::request(
             action.name(),
             started.elapsed().as_nanos(),
             peak_rss_bytes(),
             self.kernel.worker_starts_total(),
             publication,
+            disclosure,
         ));
     }
 
@@ -820,7 +909,9 @@ impl ServiceSession {
             | RequestAction::ListModuleDeclarations { .. }
             | RequestAction::GetReferences { .. }
             | RequestAction::ReadEvents { .. }
-            | RequestAction::ReadOperation { .. } => {
+            | RequestAction::ReadOperation { .. }
+            | RequestAction::ListValidationFixtures { .. }
+            | RequestAction::ReadValidationFixture { .. } => {
                 bail!("read-only action cannot be in the mutation journal")
             }
         };
@@ -1192,6 +1283,54 @@ impl ServiceSession {
                         })
                         .collect(),
                     publication_digest: digest,
+                })
+            }
+            RequestAction::ListValidationFixtures {} => {
+                let mut fixtures = Vec::with_capacity(self.validation.fixtures.len());
+                for fixture in &self.validation.fixtures {
+                    let bytes = self.verified_fixture_bytes(fixture)?.len() as u64;
+                    fixtures.push(FixtureSummary {
+                        fixture_id: fixture.sha256.clone(),
+                        path: fixture.path.clone(),
+                        bytes: WireU64::new(bytes),
+                    });
+                }
+                Ok(ResponseResult::ValidationFixtures {
+                    validation_mode: self.validation.mode,
+                    validation_manifest_digest: self.validation.manifest_digest.clone(),
+                    fixtures,
+                })
+            }
+            RequestAction::ReadValidationFixture {
+                fixture_id,
+                offset,
+                length,
+            } => {
+                if self.validation.fixtures.is_empty() {
+                    bail!(
+                        "this daemon has no registered validation fixtures; \
+                         list_validation_fixtures returns the readable set"
+                    );
+                }
+                let fixture = self
+                    .validation
+                    .fixtures
+                    .iter()
+                    .find(|fixture| fixture.sha256 == *fixture_id)
+                    .with_context(|| {
+                        format!("fixture {fixture_id} is not registered by this daemon's manifest")
+                    })?;
+                let content = self.verified_fixture_bytes(fixture)?;
+                // A read at or past EOF is the terminal empty chunk rather than
+                // an error, so a client can page to the end without having to
+                // know the size up front.
+                let start = usize::try_from(offset.get()).unwrap_or(usize::MAX).min(content.len());
+                let end = start.saturating_add(*length as usize).min(content.len());
+                Ok(ResponseResult::ValidationFixtureChunk {
+                    fixture_id: fixture.sha256.clone(),
+                    offset: *offset,
+                    content_base64: base64_encode(&content[start..end]),
+                    eof: end >= content.len(),
                 })
             }
             _ => bail!("mutating action cannot use the read path"),
@@ -1729,4 +1868,62 @@ fn bounded_affected_ids(ids: Vec<String>) -> Vec<String> {
 
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> anyhow::Error {
     anyhow::anyhow!("service state lock is poisoned")
+}
+
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Standard padded base64 (RFC 4648). Hand-rolled because the kernel crate
+/// carries no base64 dependency and this is the only place that needs one —
+/// fixture bytes are arbitrary binary as far as the wire is concerned, so they
+/// cannot ride a JSON string unencoded.
+fn base64_encode(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        encoded.push(BASE64_ALPHABET[(triple >> 18) as usize & 0x3f] as char);
+        encoded.push(BASE64_ALPHABET[(triple >> 12) as usize & 0x3f] as char);
+        encoded.push(if chunk.len() > 1 {
+            BASE64_ALPHABET[(triple >> 6) as usize & 0x3f] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            BASE64_ALPHABET[triple as usize & 0x3f] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64_encode;
+
+    #[test]
+    fn base64_encode_matches_rfc4648_vectors() {
+        // RFC 4648 §10, which exercises every padding residue.
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn base64_encode_covers_every_alphabet_symbol_including_62_and_63() {
+        // 0xfb 0xff round-trips through the two symbols an unpadded-alphabet
+        // implementation would get wrong ('+' and '/').
+        assert_eq!(base64_encode(&[0xfb, 0xff, 0xbf]), "+/+/");
+        let all_bytes: Vec<u8> = (0u8..=255).collect();
+        let encoded = base64_encode(&all_bytes);
+        assert_eq!(encoded.len(), 344);
+        assert!(encoded.contains('+') && encoded.contains('/'));
+    }
 }

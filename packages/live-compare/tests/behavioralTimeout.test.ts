@@ -388,6 +388,37 @@ describe("behavioral timeout / savepoint recovery gate — kernel path (spec B-2
       for (const record of allRequestRecords) {
         expect(record.workerStartsTotal).toBe(baselineWorkerStarts);
       }
+
+      // Assertion 4b (B-2 Task 10): the same health claim, stated positively by
+      // the cost-disclosure counters rather than inferred from a spawn count.
+      // Only behavioral advances disclose, so the advances are the records that
+      // carry these keys at all.
+      const advanceRecords = allRequestRecords.filter(
+        (record) => record.action === "advance_change_set"
+      );
+      expect(advanceRecords.length).toBeGreaterThanOrEqual(3);
+      for (const record of advanceRecords) {
+        // Nothing fell back and nothing re-hydrated: the two failure modes
+        // assertion 4 rules out are each named here, as zero rather than as an
+        // absent increment.
+        expect(record.oneShotFallbacksTotal).toBe(0);
+        expect(record.rehydrationsTotal).toBe(0);
+        expect(typeof record.validationTimeoutsTotal).toBe("number");
+      }
+      // The counter is monotonic across the scenario and ends having counted
+      // BOTH killed validations — the discriminating half: a gate that killed
+      // one subprocess and reported the other some other way would fail here.
+      const timeoutCounts = advanceRecords.map((record) => record.validationTimeoutsTotal);
+      for (let index = 1; index < timeoutCounts.length; index += 1) {
+        expect(timeoutCounts[index]).toBeGreaterThanOrEqual(timeoutCounts[index - 1]!);
+      }
+      expect(timeoutCounts.at(-1)! - timeoutCounts[0]! + 1).toBeGreaterThanOrEqual(2);
+      // The clean publish disclosed a real validation wall; a disclosure that
+      // silently omitted the measurement would leave this undefined.
+      const publishRecord = advanceRecords.at(-1)!;
+      expect(typeof publishRecord.validationWallMs).toBe("number");
+      expect(publishRecord.validationWallMs).toBeGreaterThan(0);
+      expect(typeof publishRecord.queueWaitMs).toBe("number");
     },
     240_000
   );

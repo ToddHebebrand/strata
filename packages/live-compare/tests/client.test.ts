@@ -605,4 +605,89 @@ describe("unprivileged coordination Unix-socket client", () => {
       expect(service.requests).toHaveLength(1);
     });
   });
+
+  describe("validation-fixture reads", () => {
+    const FIXTURE_ID = "b".repeat(64);
+
+    it("EXACT-serializes listValidationFixtures as a read-only action with no idempotencyKey", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "validation_fixtures",
+            validationMode: "behavioral",
+            validationManifestDigest: FIXTURE_ID,
+            fixtures: [
+              { fixtureId: FIXTURE_ID, path: "tests/greet.test.ts", bytes: "120" }
+            ]
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await expect(client.listValidationFixtures(1_000)).resolves.toMatchObject({
+        type: "validation_fixtures",
+        validationMode: "behavioral"
+      });
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({ type: "list_validation_fixtures" });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("EXACT-serializes readValidationFixture with the canonical-u64 offset string and no idempotencyKey", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "validation_fixture_chunk",
+            fixtureId: FIXTURE_ID,
+            offset: "0",
+            contentBase64: "Zm9vYmFy",
+            eof: true
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await expect(
+        client.readValidationFixture(FIXTURE_ID, "0", 64, 1_000)
+      ).resolves.toEqual({
+        type: "validation_fixture_chunk",
+        fixtureId: FIXTURE_ID,
+        offset: "0",
+        contentBase64: "Zm9vYmFy",
+        eof: true
+      });
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({
+        type: "read_validation_fixture",
+        fixtureId: FIXTURE_ID,
+        offset: "0",
+        length: 64
+      });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("does not retry either validation-fixture read after an ambiguous disconnect", async () => {
+      const service = await unixServer((socket) => socket.destroy());
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await expect(client.listValidationFixtures(250)).rejects.toThrow(
+        CoordinationClientError
+      );
+      expect(service.requests).toHaveLength(1);
+
+      await expect(
+        client.readValidationFixture(FIXTURE_ID, "0", 64, 250)
+      ).rejects.toThrow(CoordinationClientError);
+      expect(service.requests).toHaveLength(2);
+    });
+  });
 });

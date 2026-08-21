@@ -2095,3 +2095,277 @@ fn healthy_recovering_daemon_keeps_its_recovery_then_start_audit_order() {
         "buffering must not introduce or reorder events: {contents}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// B-2 Task 10 — registered-fixture reader.
+//
+// The reader's whole claim is "manifest-pinned content only". These tests
+// exercise that claim from the outside: what a behavioral daemon lists, that a
+// chunked walk reassembles the exact registered bytes, that a tsc-only daemon
+// offers nothing to read, and that content edited AFTER startup fails the read
+// rather than being served under its registered digest.
+
+/// Unwraps a response to whichever of `result`/`error` it carried, so a test
+/// can assert on either without re-deriving the envelope shape.
+fn fixture_reader_payload(response: Value) -> Value {
+    if response["ok"] == json!(true) {
+        response["result"].clone()
+    } else {
+        response["error"].clone()
+    }
+}
+
+fn read_fixture_chunk(
+    service: &RunningService,
+    request_id: &str,
+    fixture_id: &str,
+    offset: u64,
+    length: u32,
+) -> Value {
+    fixture_reader_payload(request(
+        service,
+        request_id,
+        "client:fixture-reader",
+        None,
+        json!({
+            "type": "read_validation_fixture",
+            "fixtureId": fixture_id,
+            "offset": offset.to_string(),
+            "length": length,
+        }),
+    ))
+}
+
+fn list_fixtures(service: &RunningService, request_id: &str) -> Value {
+    fixture_reader_payload(request(
+        service,
+        request_id,
+        "client:fixture-reader",
+        None,
+        json!({ "type": "list_validation_fixtures" }),
+    ))
+}
+
+/// Minimal standard-base64 decoder, independent of the daemon's encoder so the
+/// test does not confirm an encoder bug by reusing it.
+fn decode_base64(value: &str) -> Vec<u8> {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = Vec::new();
+    let mut accumulator: u32 = 0;
+    let mut bits = 0u32;
+    for byte in value.bytes().filter(|byte| *byte != b'=') {
+        let index = ALPHABET
+            .iter()
+            .position(|candidate| *candidate == byte)
+            .unwrap_or_else(|| panic!("{value} is not base64")) as u32;
+        accumulator = (accumulator << 6) | index;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((accumulator >> bits) as u8);
+        }
+    }
+    out
+}
+
+#[test]
+fn fixture_reader_lists_and_reassembles_the_registered_fixture() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let fixture = write_corpus_fixture(&corpus, "baseline-pin.test.ts", GREEN_FIXTURE);
+    let registered_sha = fixture["sha256"].as_str().unwrap().to_owned();
+    let manifest = write_validation_manifest(&directory, "behavioral", vec![fixture]);
+    let snapshot = private_corpus_snapshot(&directory, &corpus, false);
+    let audit = directory.path().join("audit.jsonl");
+
+    let service = await_readiness(spawn_gated_service(
+        &directory,
+        "fixture-reader-token",
+        &corpus,
+        &snapshot,
+        &audit,
+        Some(&manifest),
+    ))
+    .unwrap_or_else(|(code, stderr)| panic!("green daemon refused to serve ({code}): {stderr}"));
+
+    let listing = list_fixtures(&service, "request:list-fixtures");
+    assert_eq!(listing["type"], "validation_fixtures", "{listing}");
+    assert_eq!(listing["validationMode"], "behavioral", "{listing}");
+    assert_eq!(
+        listing["validationManifestDigest"], service.readiness["validationManifestDigest"],
+        "the listing must be pinned to the daemon's own manifest: {listing}"
+    );
+    let fixtures = listing["fixtures"].as_array().unwrap();
+    assert_eq!(fixtures.len(), 1, "{listing}");
+    assert_eq!(fixtures[0]["fixtureId"], json!(registered_sha), "{listing}");
+    assert_eq!(fixtures[0]["path"], "tests/baseline-pin.test.ts", "{listing}");
+    assert_eq!(
+        fixtures[0]["bytes"],
+        json!(GREEN_FIXTURE.len().to_string()),
+        "{listing}"
+    );
+
+    // A chunked walk at a length that does not divide the file must reassemble
+    // the registered bytes exactly, and terminate on `eof` rather than on a
+    // guess about the size.
+    let mut assembled: Vec<u8> = Vec::new();
+    let mut offset = 0u64;
+    for step in 0..64 {
+        let chunk = read_fixture_chunk(
+            &service,
+            &format!("request:chunk:{step}"),
+            &registered_sha,
+            offset,
+            7,
+        );
+        assert_eq!(chunk["type"], "validation_fixture_chunk", "{chunk}");
+        assert_eq!(chunk["fixtureId"], json!(registered_sha), "{chunk}");
+        assert_eq!(chunk["offset"], json!(offset.to_string()), "{chunk}");
+        let bytes = decode_base64(chunk["contentBase64"].as_str().unwrap());
+        assembled.extend_from_slice(&bytes);
+        offset += bytes.len() as u64;
+        if chunk["eof"].as_bool().unwrap() {
+            break;
+        }
+    }
+    assert_eq!(
+        String::from_utf8(assembled).unwrap(),
+        GREEN_FIXTURE,
+        "the chunked walk must reassemble the registered fixture byte for byte"
+    );
+
+    // A read at EOF is the terminal empty chunk, not an error.
+    let past_eof = read_fixture_chunk(
+        &service,
+        "request:chunk:past-eof",
+        &registered_sha,
+        GREEN_FIXTURE.len() as u64 + 4_096,
+        64,
+    );
+    assert_eq!(past_eof["contentBase64"], "", "{past_eof}");
+    assert_eq!(past_eof["eof"], json!(true), "{past_eof}");
+}
+
+/// A tsc-only daemon registers no fixtures: the listing states its emptiness
+/// (and its mode) rather than failing, and there is nothing to read.
+#[test]
+fn fixture_reader_offers_nothing_under_tsc_only() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let manifest = write_validation_manifest(&directory, "tscOnly", Vec::new());
+    let snapshot = private_corpus_snapshot(&directory, &corpus, false);
+    let audit = directory.path().join("audit.jsonl");
+
+    let service = await_readiness(spawn_gated_service(
+        &directory,
+        "fixture-reader-tsc-only-token",
+        &corpus,
+        &snapshot,
+        &audit,
+        Some(&manifest),
+    ))
+    .unwrap_or_else(|(code, stderr)| panic!("tsc-only daemon refused to serve ({code}): {stderr}"));
+
+    let listing = list_fixtures(&service, "request:list-fixtures:tsc-only");
+    assert_eq!(listing["type"], "validation_fixtures", "{listing}");
+    assert_eq!(listing["validationMode"], "tscOnly", "{listing}");
+    assert_eq!(listing["fixtures"], json!([]), "{listing}");
+
+    let response = read_fixture_chunk(
+        &service,
+        "request:chunk:tsc-only",
+        &"a".repeat(64),
+        0,
+        64,
+    );
+    assert_eq!(response["code"], "request_failed", "{response}");
+    assert_eq!(response["retryable"], json!(false), "{response}");
+}
+
+/// The digest pin: a fixture edited after the daemon bound is refused, and the
+/// refusal names the fixture's corpus-relative path rather than its absolute
+/// location on disk (the B-1 fail-closed projection discipline).
+#[test]
+fn fixture_reader_refuses_content_that_drifted_after_startup() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let fixture = write_corpus_fixture(&corpus, "baseline-pin.test.ts", GREEN_FIXTURE);
+    let registered_sha = fixture["sha256"].as_str().unwrap().to_owned();
+    let manifest = write_validation_manifest(&directory, "behavioral", vec![fixture]);
+    let snapshot = private_corpus_snapshot(&directory, &corpus, false);
+    let audit = directory.path().join("audit.jsonl");
+
+    let service = await_readiness(spawn_gated_service(
+        &directory,
+        "fixture-reader-drift-token",
+        &corpus,
+        &snapshot,
+        &audit,
+        Some(&manifest),
+    ))
+    .unwrap_or_else(|(code, stderr)| panic!("green daemon refused to serve ({code}): {stderr}"));
+
+    // Readable before the edit.
+    let before = read_fixture_chunk(&service, "request:chunk:before", &registered_sha, 0, 64);
+    assert_eq!(before["type"], "validation_fixture_chunk", "{before}");
+
+    fs::write(
+        corpus.join("tests/baseline-pin.test.ts"),
+        format!("{GREEN_FIXTURE}// edited after the daemon bound\n"),
+    )
+    .unwrap();
+
+    let after = read_fixture_chunk(&service, "request:chunk:after", &registered_sha, 0, 64);
+    assert_eq!(after["code"], "request_failed", "{after}");
+    let message = after["message"].as_str().unwrap();
+    assert!(
+        message.contains("tests/baseline-pin.test.ts"),
+        "the refusal must name the fixture: {message}"
+    );
+    assert!(
+        !message.contains(corpus.to_str().unwrap()),
+        "the refusal must not leak the absolute corpus path: {message}"
+    );
+
+    // The listing is served from the same verified identity, so it fails too —
+    // a drifted fixture is not silently listed at its stale size.
+    let listing = list_fixtures(&service, "request:list-fixtures:drift");
+    assert_eq!(listing["code"], "request_failed", "{listing}");
+}
+
+/// An unregistered id is refused even when it is a well-formed digest.
+#[test]
+fn fixture_reader_refuses_an_unregistered_fixture_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let corpus = private_medium_corpus(&directory);
+    let fixture = write_corpus_fixture(&corpus, "baseline-pin.test.ts", GREEN_FIXTURE);
+    let manifest = write_validation_manifest(&directory, "behavioral", vec![fixture]);
+    let snapshot = private_corpus_snapshot(&directory, &corpus, false);
+    let audit = directory.path().join("audit.jsonl");
+
+    let service = await_readiness(spawn_gated_service(
+        &directory,
+        "fixture-reader-unknown-token",
+        &corpus,
+        &snapshot,
+        &audit,
+        Some(&manifest),
+    ))
+    .unwrap_or_else(|(code, stderr)| panic!("green daemon refused to serve ({code}): {stderr}"));
+
+    let response = read_fixture_chunk(
+        &service,
+        "request:chunk:unknown",
+        &"c".repeat(64),
+        0,
+        64,
+    );
+    assert_eq!(response["code"], "request_failed", "{response}");
+
+    // A malformed id never reaches the lookup at all: the wire validator
+    // refuses it as a malformed request, which is a different (earlier) verdict
+    // than "well-formed but not registered" above.
+    let malformed = read_fixture_chunk(&service, "request:chunk:malformed", "not-a-digest", 0, 64);
+    assert_eq!(malformed["code"], "invalid_request", "{malformed}");
+}

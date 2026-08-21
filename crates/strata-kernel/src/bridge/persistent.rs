@@ -242,6 +242,19 @@ pub struct PersistentWorkerHost {
     /// the one-shot client's counter, so "exactly one child served the whole
     /// session" is directly assertable from metrics.
     spawns_total: AtomicU64,
+    /// Monotonic host-lifetime count of FULL re-hydrations: a worker that
+    /// refused a delta sync and had to be brought to the target identity from
+    /// scratch. Distinct from `spawns_total` (a respawn is a new child; a
+    /// rehydration re-seeds a live one). Purely observational.
+    rehydrations_total: AtomicU64,
+}
+
+/// One completed semantic exchange with the persistent worker, plus the
+/// per-trip observability the router turns into a `workerRun` record.
+pub struct HostExchange {
+    pub value: Value,
+    pub response_bytes: u64,
+    pub queue_wait_ns: u64,
 }
 
 struct HostState {
@@ -263,6 +276,7 @@ impl PersistentWorkerHost {
                 next_request_id: 0,
             }),
             spawns_total: AtomicU64::new(1),
+            rehydrations_total: AtomicU64::new(0),
         })
     }
 
@@ -270,6 +284,11 @@ impl PersistentWorkerHost {
     /// plus lazy respawns). Purely observational.
     pub fn spawns_total(&self) -> u64 {
         self.spawns_total.load(Ordering::SeqCst)
+    }
+
+    /// Total full re-hydrations this host has driven. Purely observational.
+    pub fn rehydrations_total(&self) -> u64 {
+        self.rehydrations_total.load(Ordering::SeqCst)
     }
 
     /// The service epoch this host was spawned under. Task 6's coordinator
@@ -289,20 +308,25 @@ impl PersistentWorkerHost {
         planner: &dyn SyncPlanner,
     ) -> Result<Value> {
         self.request_at_with_size(identity, frame, deadline, planner)
-            .map(|(value, _response_bytes)| value)
+            .map(|exchange| exchange.value)
     }
 
-    /// [`Self::request_at`] plus the raw response frame length, for callers
-    /// that record per-trip observability (the router's `workerRun` records).
+    /// [`Self::request_at`] plus the per-trip observability a caller needs to
+    /// build a `workerRun` record (the router).
     pub fn request_at_with_size(
         &self,
         identity: &GraphIdentity,
         frame: Value,
         deadline: Duration,
         planner: &dyn SyncPlanner,
-    ) -> Result<(Value, u64)> {
+    ) -> Result<HostExchange> {
         let started = Instant::now();
         let mut state = lock_state(&self.state);
+        // The state mutex IS the single-flight queue (B3), so the time spent
+        // acquiring it is exactly this request's head-of-line wait. Measured
+        // before anything else so a slow deadline computation or an oversized
+        // frame cannot inflate it.
+        let queue_wait_ns = started.elapsed().as_nanos() as u64;
         let deadline_at = started.checked_add(deadline).ok_or_else(|| {
             phased(
                 TransportPhase::Queued,
@@ -380,7 +404,11 @@ impl PersistentWorkerHost {
                 ),
             ));
         }
-        Ok((value, bytes.len() as u64))
+        Ok(HostExchange {
+            value,
+            response_bytes: bytes.len() as u64,
+            queue_wait_ns,
+        })
     }
 
     /// Sync-only entry for eager hydration at service start (and lazy
@@ -568,6 +596,11 @@ impl PersistentWorkerHost {
                              retry ({reason}); the request must be served one-shot"
                         );
                     }
+                    // The next loop turn plans with `attested: None` — a full
+                    // re-hydration rather than a delta. Counted here, at the
+                    // decision, so the counter means "a delta sync was refused
+                    // and we fell back to seeding from scratch".
+                    self.rehydrations_total.fetch_add(1, Ordering::SeqCst);
                     hydrate_retry = true;
                 }
                 _ => {
