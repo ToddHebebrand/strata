@@ -12,7 +12,8 @@
 // otherwise. Exits 0 on stdin EOF (the host's clean-shutdown contract).
 //
 // Behavior is selected via argv (the host passes config arguments through):
-//   --mode=echo|extra-frame|wrong-id|silent|slow|stderr-flood|crash-once|
+//   --mode=echo|extra-frame|wrong-id|silent|silent-after-sync|slow|
+//          stderr-flood|crash-once|
 //          oversize-response|malformed|refuse|refuse-sync-attest-hydrate|
 //          refuse-ahead|crash-on-sync-once|refuse-semantic|poison-code
 //   --log=<path>          append one line per received frame: "<kind>:<tag>"
@@ -108,7 +109,15 @@ function handleFrame(frame) {
       writeFrame({ requestId: `${frame.requestId}-mismatch`, ok: true });
       break;
     case 'silent':
-      // Never respond; stay alive so only the deadline can fire.
+      // Never respond; stay alive so only the deadline can fire. NOTE: the
+      // first frame of a request is its SYNC frame, so this mode's deadline
+      // fires in the SYNC phase.
+      break;
+    case 'silent-after-sync':
+      // Attests sync/hydrate normally, then never answers the SEMANTIC frame:
+      // the only way to force a deadline with a request genuinely in flight
+      // (transport-phase gate, B-2 Task 6).
+      if (isSyncKind(frame)) echoResponse(frame);
       break;
     case 'slow':
       setTimeout(() => echoResponse(frame), options.delayMs);

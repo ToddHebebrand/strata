@@ -6,6 +6,10 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail, ensure};
 
+use crate::bridge::protocol::{
+    BaselineVerdict, BridgeBinding, BridgeKind, BridgeRequest, Hash64, PROTOCOL_VERSION,
+    ValidateBaselineRequest, WireSnapshot, WireU64,
+};
 use crate::bridge::{
     CandidateExecutor, NodeBridgeClient, NodeBridgeConfig, NodeCandidateExecutor,
     NodeSemanticProvider, PersistentBridgeRouter, SyncShared, WorkerRunMetrics,
@@ -366,6 +370,44 @@ impl Kernel {
         }
     }
 
+    /// Seed-green startup gate (B-2 Task 7): judges the CURRENT published
+    /// graph against the session's own validation profile, one-shot.
+    ///
+    /// Deliberately one-shot and mirror-free. The baseline runs before the
+    /// socket binds, before any client exists and (under
+    /// `--persistent-bridge`) before the mirror has been hydrated, so routing
+    /// it through the persistent worker would either force an early hydrate or
+    /// refuse on an unattested identity. Spawning one throwaway worker for the
+    /// single startup trip is both simpler and strictly more isolated.
+    ///
+    /// Every failure mode is the caller's cue to REFUSE to serve: a red
+    /// verdict (`Ok(BaselineVerdict { green: false, .. })`) because the corpus
+    /// is not green, and an `Err` because the daemon could not establish that
+    /// it is.
+    pub fn validate_baseline(&self) -> Result<BaselineVerdict> {
+        let client = self
+            .node_bridge_client
+            .as_ref()
+            .context("baseline validation requires a wired Node bridge")?;
+        let graph = self.snapshot();
+        let request = BridgeRequest::ValidateBaseline(ValidateBaselineRequest {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: format!("baseline:{}:{}", self.service_epoch, graph.generation()),
+            kind: BridgeKind::ValidateBaseline,
+            binding: BridgeBinding {
+                service_epoch: WireU64::new(self.service_epoch),
+                graph_generation: WireU64::new(graph.generation()),
+                graph_digest: Hash64::parse(graph.digest())?,
+            },
+            snapshot: WireSnapshot::from_graph_snapshot(&graph.snapshot())?,
+            validation_profile: client.validation_profile(),
+        });
+        client
+            .run(&request)
+            .context("run the seed-green baseline")?
+            .into_baseline_result()
+    }
+
     /// Test observability for the published-sync state: `(published
     /// generation, published sync digest, retained delta-log generations)`,
     /// or `None` when sync tracking is off.
@@ -617,6 +659,31 @@ impl Kernel {
             .as_ref()
             .map_or(0, |router| router.spawns_total());
         one_shot.saturating_add(persistent)
+    }
+
+    /// Total persistent-route requests handed back to be served one-shot, or 0
+    /// when no bridge is wired. A daemon with no persistent bridge serves
+    /// everything one-shot and still reports 0 here — this counts FALLBACKS,
+    /// not one-shot runs.
+    pub fn one_shot_fallbacks_total(&self) -> u64 {
+        self.node_bridge_client
+            .as_ref()
+            .map_or(0, |client| client.one_shot_fallbacks_total())
+    }
+
+    /// Total full worker re-hydrations the persistent host has driven, or 0
+    /// when no persistent bridge is wired.
+    pub fn rehydrations_total(&self) -> u64 {
+        self.persistent_router
+            .as_ref()
+            .map_or(0, |router| router.rehydrations_total())
+    }
+
+    /// Total candidate validations killed for exceeding their tsc/vitest
+    /// budget. Process-scoped (see `bridge::protocol`), which is the daemon's
+    /// lifetime in production.
+    pub fn validation_timeouts_total(&self) -> u64 {
+        crate::bridge::protocol::validation_timeouts_total()
     }
 
     /// Lists modules (nodes of kind `Module`) id-ordered, one page at a time.

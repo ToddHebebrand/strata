@@ -62,6 +62,7 @@ impl SemanticProvider for NodeSemanticProvider {
                 Err(error) => {
                     // Same operational convention as every persistent-path
                     // fallback: bounded stderr line, request served one-shot.
+                    self.client.record_one_shot_fallback();
                     eprintln!(
                         "persistent mirror analyze failed; serving this request one-shot: \
                          {error:#}"
@@ -80,7 +81,8 @@ impl SemanticProvider for NodeSemanticProvider {
                 BridgeRequest::AnalyzeIntent(inner) => serde_json::to_vec(&inner.snapshot)
                     .context("serialize analyze snapshot for run metrics")?
                     .len() as u64,
-                BridgeRequest::BuildValidateCandidate(_) => 0,
+                BridgeRequest::BuildValidateCandidate(_)
+                | BridgeRequest::ValidateBaseline(_) => 0,
             };
             observer::set_request_build(snapshot_bytes, snapshot_build_ns);
         }

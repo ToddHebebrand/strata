@@ -12,7 +12,11 @@ import {
   type Db,
   type TxHandle
 } from "@strata-code/store";
-import { commit, commitWithBehavioralGate, type Diagnostic } from "@strata-code/verify";
+import {
+  commit,
+  commitWithBehavioralGateBounded,
+  type Diagnostic
+} from "@strata-code/verify";
 import { StageRecorder } from "./metrics";
 import { mirrorFingerprint } from "./mirror-fingerprint";
 import {
@@ -28,6 +32,22 @@ import type { MirrorCandidateRequest } from "./sync";
 const MAX_MESSAGE_CODE_UNITS = 1_000;
 const MAX_DIAGNOSTIC_CODE_UNITS = 64 * 1_024;
 const MAX_DIAGNOSTICS = 256;
+
+// Mirrors @strata-code/store rename.ts's (unexported) DECLARATION_KINDS --
+// the set of statement kinds rename_symbol accepts as a rename target. Kept
+// as a local, manually-synced copy: this is a classification pre-check only
+// (worker `intentRejected` vs `mutationFailed`, no store behavior change),
+// so it deliberately does not touch the store package's public surface.
+const RENAME_TARGET_KINDS = new Set([
+  "InterfaceDeclaration",
+  "TypeAliasDeclaration",
+  "ClassDeclaration",
+  "FunctionDeclaration",
+  "FirstStatement"
+]);
+
+// Mirrors add_parameter's own target-kind check in @strata-code/store.
+const ADD_PARAMETER_TARGET_KINDS = new Set(["FunctionDeclaration"]);
 
 export type CandidateSuccess = {
   delta: KernelGraphDeltaV1;
@@ -47,10 +67,10 @@ class CandidateFailure extends Error {
   }
 }
 
-export function buildValidateCandidate(
+export async function buildValidateCandidate(
   request: BuildValidateCandidateRequest,
   recorder?: StageRecorder
-): BuildValidateCandidateResult {
+): Promise<BuildValidateCandidateResult> {
   const profileError = validateProfile(request.validationProfile, request.snapshot);
   if (profileError !== undefined) return profileError;
 
@@ -64,7 +84,7 @@ export function buildValidateCandidate(
   }
 
   try {
-    return buildValidateCandidateInScratch(request, db, recorder);
+    return await buildValidateCandidateInScratch(request, db, recorder);
   } finally {
     db.close();
   }
@@ -74,16 +94,20 @@ export function buildValidateCandidate(
  * Package-internal seam for proving rollback against the exact hydrated graph.
  * The package barrel intentionally does not export it.
  */
-export function buildValidateCandidateInScratch(
+export async function buildValidateCandidateInScratch(
   request: BuildValidateCandidateRequest,
   db: Db,
   recorder?: StageRecorder
-): BuildValidateCandidateResult {
+): Promise<BuildValidateCandidateResult> {
   let tx: TxHandle | undefined;
   const touchedStatementIds = new Set<string>();
   let stage: BridgeErrorPayload["stage"] = "mutate";
   const bracket = <T>(bracketStage: "mutate" | "validate" | "export", fn: () => T): T =>
     recorder ? recorder.time(bracketStage, fn) : fn();
+  const bracketAsync = <T>(
+    bracketStage: "mutate" | "validate" | "export",
+    fn: () => Promise<T>
+  ): Promise<T> => (recorder ? recorder.timeAsync(bracketStage, fn) : fn());
 
   try {
     const activeTx = begin(db, request.changeSet.actor, request.changeSet.reasoning);
@@ -91,6 +115,11 @@ export function buildValidateCandidateInScratch(
     bracket("mutate", () => {
       for (const intent of request.changeSet.orderedIntents) {
         if (intent.parameters.type === "renameSymbol") {
+          rejectUnknownIntentTarget(
+            db,
+            intent.parameters.declarationId,
+            RENAME_TARGET_KINDS
+          );
           collectRenameTouchedStatements(
             db,
             intent.parameters.declarationId,
@@ -103,6 +132,11 @@ export function buildValidateCandidateInScratch(
             intent.parameters.newName
           );
         } else {
+          rejectUnknownIntentTarget(
+            db,
+            intent.parameters.functionId,
+            ADD_PARAMETER_TARGET_KINDS
+          );
           const manifest = add_parameter(
             db,
             activeTx,
@@ -121,18 +155,36 @@ export function buildValidateCandidateInScratch(
     });
 
     stage = "validate";
-    const commitResult = bracket("validate", () =>
-      request.validationProfile.mode === "tscOnly"
-        ? commit(db, activeTx, request.validationProfile.corpusRoot)
-        : commitWithBehavioralGate(db, activeTx, {
-            srcRoot: request.validationProfile.sourceRoot,
-            corpusRoot: request.validationProfile.corpusRoot,
-            behavioralFixtures: request.validationProfile.behavioralFixtures,
-            strictSrcOnlyTscScope:
-              request.validationProfile.strictSrcOnlyTscScope
+    const profile = request.validationProfile;
+    const commitResult = await bracketAsync("validate", async () =>
+      profile.mode === "tscOnly"
+        ? commit(db, activeTx, profile.corpusRoot)
+        : // Behavioral validation spawns a real tsc and a real vitest, each
+          // under its own budget and its own process group (Task 6). A budget
+          // exhausted here is OPERATIONAL, not a rejection of the candidate.
+          await commitWithBehavioralGateBounded(db, activeTx, {
+            srcRoot: profile.sourceRoot,
+            corpusRoot: profile.corpusRoot,
+            behavioralFixtures: profile.behavioralFixtures,
+            strictSrcOnlyTscScope: profile.strictSrcOnlyTscScope,
+            tscTimeoutMs: profile.tscTimeoutMs,
+            vitestTimeoutMs: profile.vitestTimeoutMs
           })
     );
     if (!commitResult.ok) {
+      if ("timedOut" in commitResult) {
+        // OPERATIONAL: the worker could not FINISH judging the candidate, so
+        // downstream must re-queue rather than mark the change set rejected.
+        // Deliberately outside the semantic {typescriptFailed,
+        // behavioralFailed, intentRejected} set the Rust side downcasts.
+        throw new CandidateFailure(
+          "validate",
+          commitResult.timedOut === "tsc" ? "tscTimedOut" : "vitestTimedOut",
+          [],
+          `candidate ${commitResult.timedOut} validation exceeded its budget ` +
+            `and its process group was killed`
+        );
+      }
       if ("diagnostics" in commitResult) {
         throw new CandidateFailure(
           "validate",
@@ -198,7 +250,7 @@ export type CandidatePipeline = (
   request: BuildValidateCandidateRequest,
   db: Db,
   recorder?: StageRecorder
-) => BuildValidateCandidateResult;
+) => Promise<BuildValidateCandidateResult>;
 
 export type MirrorCandidateOutcome =
   | { kind: "served"; result: BuildValidateCandidateResult }
@@ -234,12 +286,12 @@ export type MirrorCandidateOutcome =
  * `pipeline` is a test seam (poison-state gate: a pipeline that COMMITs
  * behind the wrapper's back must be detected); production callers omit it.
  */
-export function buildValidateCandidateOnMirror(
+export async function buildValidateCandidateOnMirror(
   request: MirrorCandidateRequest,
   db: Db,
   recorder?: StageRecorder,
   pipeline?: CandidatePipeline
-): MirrorCandidateOutcome {
+): Promise<MirrorCandidateOutcome> {
   const generation = request.identity.generation;
   const run: CandidatePipeline = pipeline ?? buildValidateCandidateInScratch;
 
@@ -270,7 +322,12 @@ export function buildValidateCandidateOnMirror(
       validationProfile: request.validationProfile
     };
     const profileError = validateProfile(request.validationProfile, snapshot);
-    result = profileError ?? run(fullRequest, db, recorder);
+    // The savepoint brackets the AWAITED pipeline. Safe by construction: the
+    // mirror is a single better-sqlite3 connection served by a strictly serial
+    // frame loop, so no other statement can interleave between this SAVEPOINT
+    // and its ROLLBACK while the awaited tsc/vitest run out of process — and
+    // the pre/post fingerprints below assert exactly that.
+    result = profileError ?? (await run(fullRequest, db, recorder));
   } catch (error) {
     // The pipeline normally reports failures as payloads; anything that
     // still throws (snapshot export, a seam, a store invariant) becomes an
@@ -323,7 +380,7 @@ export function corruptingMirrorPipelineForTests(
   request: BuildValidateCandidateRequest,
   db: Db,
   recorder?: StageRecorder
-): BuildValidateCandidateResult {
+): Promise<BuildValidateCandidateResult> {
   db.exec("RELEASE candidate");
   db.prepare(
     `UPDATE nodes SET payload = payload || ' /* corrupted-behind-savepoint */'
@@ -383,6 +440,35 @@ export function validateCandidateIdentity(
   return undefined;
 }
 
+/**
+ * Pre-check a mutation intent's target against the hydrated store BEFORE
+ * invoking rename_symbol/add_parameter. This is a classification pre-check
+ * only -- rename_symbol and add_parameter still perform their own (now
+ * redundant) existence/kind checks; store behavior is unchanged.
+ *
+ * A missing or wrong-kind target is a KNOWN application rejection: the
+ * intent asked for something the graph cannot satisfy, not an unexpected
+ * worker fault. Thrown as `intentRejected` (SEMANTIC downstream) so it is
+ * distinguished from residual, unanticipated mutate-stage exceptions, which
+ * keep mapping to `mutationFailed` (OPERATIONAL downstream, see the catch
+ * block below).
+ */
+function rejectUnknownIntentTarget(
+  db: Db,
+  targetId: string,
+  allowedKinds: ReadonlySet<string>
+): void {
+  const target = findNodeById(db, targetId);
+  if (target === undefined || !allowedKinds.has(target.kind)) {
+    throw new CandidateFailure(
+      "mutate",
+      "intentRejected",
+      [],
+      `intent target ${targetId} does not exist or is not applicable`
+    );
+  }
+}
+
 function collectRenameTouchedStatements(
   db: Db,
   declarationId: string,
@@ -399,7 +485,14 @@ function collectRenameTouchedStatements(
   }
 }
 
-function validateProfile(
+/**
+ * Shared profile gate for BOTH semantic wire kinds (candidate and the Task-7
+ * `validateBaseline`): roots exist and nest, every module stays inside the
+ * source root, and a behavioral profile names only trusted in-corpus test
+ * files. Exported so `baseline.ts` enforces the identical contract without
+ * either kind borrowing the other's request shape.
+ */
+export function validateProfile(
   profile: ValidationProfile,
   snapshot: KernelSnapshotV1
 ): BridgeErrorPayload | undefined {
@@ -516,7 +609,8 @@ function sameNode(
   );
 }
 
-function normalizeDiagnostics(
+/** Shared diagnostic bounding (see {@link validateProfile}). */
+export function normalizeDiagnostics(
   diagnostics: readonly (Diagnostic | BridgeDiagnostic)[]
 ): BridgeDiagnostic[] {
   const normalized: BridgeDiagnostic[] = [];
@@ -543,7 +637,8 @@ function normalizeDiagnostics(
   return normalized;
 }
 
-function errorPayload(
+/** Shared bounded error-payload builder (see {@link validateProfile}). */
+export function errorPayload(
   stage: BridgeErrorPayload["stage"],
   code: string,
   error: unknown,

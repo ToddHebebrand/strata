@@ -95,6 +95,9 @@ const workerRunRecordSchema = z
     snapshotBuildNs: nonNegInt,
     requestSerializeNs: nonNegInt,
     responseBytes: nonNegInt,
+    // Persistent-host head-of-line wait (B-2 Task 10). Omitted entirely on
+    // one-shot runs, which have no queue to wait in.
+    queueWaitNs: nonNegInt.optional(),
     worker: workerSelfMetricsSchema.nullable(),
     seq: nonNegInt
   })
@@ -126,6 +129,14 @@ const requestRecordSchema = z
     // the per-leg cross-check in `buildGate2Profile`.
     workerStartsTotal: nonNegInt,
     publication: publicationRecordSchema.nullable(),
+    // B-2 Task 10 cost disclosure, present only on behavioral-mode advances.
+    // A tsc-only daemon — every gate-2/gate-3 profile run — emits none of
+    // these keys, so the recorded profiles parse unchanged.
+    validationWallMs: nonNegInt.optional(),
+    queueWaitMs: nonNegInt.optional(),
+    oneShotFallbacksTotal: nonNegInt.optional(),
+    rehydrationsTotal: nonNegInt.optional(),
+    validationTimeoutsTotal: nonNegInt.optional(),
     seq: nonNegInt
   })
   .strict();

@@ -273,6 +273,21 @@ pub(super) struct AuditEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     pub graph_generation: String,
+    /// B-2 Task 7 session identity, carried on the START events
+    /// (`service_started` / `service_recovered`) so an audit log states which
+    /// validation regime the daemon was serving under.
+    ///
+    /// `#[serde(default)]` is load-bearing, not decoration: `AuditEvent` is
+    /// `deny_unknown_fields` and `ServiceAudit::open` re-hashes and re-verifies
+    /// EVERY historical line on startup. Without the default, the first B-2
+    /// daemon to reopen a pre-B-2 audit log would fail to parse it and refuse
+    /// to start. Skipped when absent so every non-start event's bytes — and
+    /// therefore the whole hash chain for a no-manifest session — stay exactly
+    /// what they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation_manifest_digest: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -316,6 +331,79 @@ impl ServiceAudit {
         self.file.sync_data().context("fsync service audit")?;
         self.previous_hash = entry_hash;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal event: everything but `kind`/`graphGeneration` absent,
+    /// including the two B-2 identity fields.
+    fn event(kind: &str, graph_generation: &str) -> AuditEvent {
+        AuditEvent {
+            kind: kind.to_owned(),
+            tick: None,
+            request_hash: None,
+            client_hash: None,
+            action: None,
+            change_set_id: None,
+            state: None,
+            graph_generation: graph_generation.to_owned(),
+            validation_mode: None,
+            validation_manifest_digest: None,
+        }
+    }
+
+    /// A REAL pre-B-2 `service_started` line, captured verbatim from a daemon
+    /// started before the two validation-identity fields existed. Fed byte-for
+    /// -byte so this test fails the moment the strict deserializer above stops
+    /// tolerating a historical audit log.
+    const PRE_B2_AUDIT_LINE: &str = concat!(
+        r#"{"previousHash":"0000000000000000000000000000000000000000000000000000000000000000","#,
+        r#""entryHash":"0f7ae6b844481f495cbad1ea3fb5352e8e80bb33103149f772053ea9d4478d22","#,
+        r#""event":{"kind":"service_started","graphGeneration":"0"}}"#,
+        "\n"
+    );
+
+    /// B-2 Task 7: adding `validationMode`/`validationManifestDigest` must not
+    /// strand a single existing audit log. `ServiceAudit::open` re-parses AND
+    /// re-hashes every historical line, so a non-defaulted new field would be
+    /// a startup-breaking change for every upgraded daemon.
+    #[test]
+    fn a_pre_b2_audit_log_still_reopens_and_extends_its_hash_chain() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("audit.jsonl");
+        std::fs::write(&path, PRE_B2_AUDIT_LINE).unwrap();
+
+        let mut audit = ServiceAudit::open(&path).expect("a pre-B-2 audit log must reopen");
+        audit
+            .append(AuditEvent {
+                validation_mode: Some("behavioral".to_owned()),
+                validation_manifest_digest: Some("a".repeat(64)),
+                ..event("service_recovered", "0")
+            })
+            .unwrap();
+        drop(audit);
+
+        // The historical line is untouched, the new line chains onto it, and
+        // the whole file re-verifies on the next open.
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.starts_with(PRE_B2_AUDIT_LINE), "{contents}");
+        assert!(contents.contains(r#""validationMode":"behavioral""#), "{contents}");
+        ServiceAudit::open(&path).expect("the extended chain must re-verify");
+    }
+
+    /// The identity fields are ABSENT — not null — on every event that does
+    /// not carry them, so a no-manifest session's audit bytes are exactly the
+    /// pre-B-2 bytes.
+    #[test]
+    fn events_without_validation_identity_serialize_no_new_keys() {
+        let encoded = serde_json::to_string(&event("request_completed", "3")).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"kind":"request_completed","graphGeneration":"3"}"#
+        );
     }
 }
 

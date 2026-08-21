@@ -7,12 +7,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use strata_kernel::{
-    BeginChangeSet, ChangeSetState as KernelChangeSetState, ClaimOutcome, CoordinationError,
-    CoordinationEventKind, GraphSnapshot, IntentParameters, Kernel, NodeBridgeConfig,
-    PublicationReport, PublishClaimOutcome, TicketState as KernelTicketState,
+    BeginChangeSet, CandidateRejected, ChangeSetState as KernelChangeSetState, ClaimOutcome,
+    CoordinationError, CoordinationEventKind, GraphSnapshot, IntentParameters, Kernel,
+    NodeBridgeConfig, PublicationReport, PublishClaimOutcome, TicketState as KernelTicketState,
 };
 
-use super::metrics::{MetricsRecord, MetricsSink, peak_rss_bytes};
+use super::metrics::{BehavioralDisclosure, MetricsRecord, MetricsSink, peak_rss_bytes};
 
 use super::audit::{
     AuditEvent, FollowUp, PendingRequest, RequestJournal, RequestLedgerEntry, ServiceAudit,
@@ -20,14 +20,20 @@ use super::audit::{
 };
 use super::paths::project_module_path;
 use super::protocol::{
-    CancelledState, ChangeSetState, DeclarationSummary, Diagnostic, InspectedNode, Intent,
-    LocalServiceProtocolContext, LocalServiceRequest, LocalServiceResponse,
+    CancelledState, ChangeSetState, DeclarationSummary, Diagnostic, FixtureSummary, InspectedNode,
+    Intent, LocalServiceProtocolContext, LocalServiceRequest, LocalServiceResponse,
     ModuleDeclarationSummary, ModuleSummary, NodeRelationship, OperationIntentSummary,
     OperationRenameTransition, ReferenceSummary, RenamedSymbol, RequestAction, ResponseResult,
-    ServiceEvent, ServiceEventKind, TicketState, WireU64, parse_request_frame,
+    ServiceEvent, ServiceEventKind, TicketState, ValidationMode, WireU64, parse_request_frame,
 };
 
 const MAX_INTENTS: usize = 256;
+/// Wire cap on the diagnostics a single rejection may carry. Mirrors the
+/// protocol module's own `MAX_DIAGNOSTICS` (64), which every outbound frame
+/// is validated against — truncating here keeps a pathologically diagnostic-
+/// heavy candidate from failing frame validation instead of reporting its
+/// verdict.
+const MAX_WIRE_DIAGNOSTICS: usize = 64;
 const MAX_RELATIONSHIPS: usize = 256;
 const MIN_LOCAL_MUTATION_MS: u64 = 10;
 const MIN_BRIDGE_ANALYSIS_MS: u64 = 30_100;
@@ -43,6 +49,84 @@ pub(super) enum ServiceFailpoint {
     AfterCompleted,
 }
 
+/// The daemon's active validation configuration, resolved once in `main.rs`
+/// from `--validation-manifest` (or its absence) and carried unchanged from
+/// then on. Consumed by Task 6 (deadline nesting into the bridge) and Task 9
+/// (savepoint/timeout gating), and by Task 7's seed-green startup gate and
+/// the identity it publishes.
+///
+/// Without `--validation-manifest`, this is exactly `tsc_only()`: mode
+/// `"tscOnly"`, no digest, no fixtures, the pre-B-2 default timeouts. That
+/// no-flag path must never change `NodeBridgeConfig::tsc_only`'s
+/// construction — the byte-identical guarantee every pre-existing suite
+/// depends on.
+// `fixtures` is consumed in `main.rs` when it builds the behavioral bridge
+// config, not through this struct's own reader.
+#[allow(dead_code)]
+pub(super) struct ValidationSettings {
+    pub mode: super::protocol::ValidationMode,
+    pub manifest_digest: Option<String>,
+    /// Registered fixtures; empty in `tscOnly`.
+    pub fixtures: Vec<RegisteredFixture>,
+    pub tsc_timeout_ms: u64,
+    pub vitest_timeout_ms: u64,
+}
+
+/// One manifest-registered fixture, carrying the canonical absolute path the
+/// loader verified at startup (Task 5 / review Major 9). The reader serves
+/// ONLY from this identity — it never joins a client-supplied string onto the
+/// corpus root — and re-verifies containment and content digest on every read,
+/// so the startup snapshot is a starting point rather than a standing trust.
+#[derive(Clone)]
+pub(super) struct RegisteredFixture {
+    /// Corpus-relative POSIX path, the only form ever put on the wire.
+    pub path: String,
+    /// sha256 of the registered content; doubles as the fixture's wire id.
+    pub sha256: String,
+    pub canonical_path: PathBuf,
+}
+
+impl ValidationSettings {
+    pub(super) fn tsc_only() -> Self {
+        Self {
+            mode: super::protocol::ValidationMode::TscOnly,
+            manifest_digest: None,
+            fixtures: Vec::new(),
+            tsc_timeout_ms: super::manifest::DEFAULT_TSC_TIMEOUT_MS,
+            vitest_timeout_ms: super::manifest::DEFAULT_VITEST_TIMEOUT_MS,
+        }
+    }
+
+    pub(super) fn from_loaded_manifest(loaded: &super::manifest::LoadedManifest) -> Self {
+        Self {
+            mode: match loaded.manifest.mode {
+                super::manifest::ManifestMode::TscOnly => {
+                    super::protocol::ValidationMode::TscOnly
+                }
+                super::manifest::ManifestMode::Behavioral => {
+                    super::protocol::ValidationMode::Behavioral
+                }
+            },
+            manifest_digest: Some(loaded.digest.clone()),
+            // `canonical_fixture_paths` is index-aligned with
+            // `manifest.fixtures` by construction in the loader.
+            fixtures: loaded
+                .manifest
+                .fixtures
+                .iter()
+                .zip(loaded.canonical_fixture_paths.iter())
+                .map(|(fixture, canonical_path)| RegisteredFixture {
+                    path: fixture.path.clone(),
+                    sha256: fixture.sha256.clone(),
+                    canonical_path: canonical_path.clone(),
+                })
+                .collect(),
+            tsc_timeout_ms: loaded.manifest.tsc_timeout_ms,
+            vitest_timeout_ms: loaded.manifest.vitest_timeout_ms,
+        }
+    }
+}
+
 pub(super) struct ServiceConfig {
     pub db_path: PathBuf,
     pub snapshot_path: PathBuf,
@@ -53,6 +137,10 @@ pub(super) struct ServiceConfig {
     /// projection (`paths::project_module_path`) is lexical against that
     /// canonical form.
     pub corpus_root: PathBuf,
+    /// Resolved once in `main.rs` from `--validation-manifest` (or its
+    /// absence). Stored on `ServiceSession` unchanged and consumed by the
+    /// startup gate and the session-identity surfaces.
+    pub validation: ValidationSettings,
     pub failpoint: ServiceFailpoint,
     /// When set, per-request/recovery observability records are written to this
     /// JSONL sink. `None` (the default, no `--metrics`) is byte-identical
@@ -77,10 +165,32 @@ pub(super) struct ServiceSession {
     /// Canonicalized once at `open`; consumed by `paths::project_module_path`
     /// in the `list_modules` read handler.
     canonical_corpus_root: PathBuf,
+    /// Resolved once at `open` from `config.validation`. Read by the startup
+    /// gate (seed-green + `finalize_startup`) and by every surface that
+    /// reports session identity: the readiness line, the start audit event,
+    /// and the `hello` response.
+    validation: ValidationSettings,
     failpoint: ServiceFailpoint,
     /// Present only under `--metrics`. Behind a `Mutex` because connections are
     /// served on independent threads and each may emit records.
     metrics: Option<Mutex<MetricsSink>>,
+    /// Startup holding pens (B-2 Task 7). `Some` from construction until
+    /// `finalize_startup`, which flushes them in order and then latches them to
+    /// `None` so every later append/emit writes straight through.
+    ///
+    /// Recovery (`resolve_pending_before_bind`) runs INSIDE `open`, before the
+    /// seed-green gate — it has to, because the gate must judge the
+    /// post-recovery graph. But recovery is observable: it appends
+    /// `request_recovered` (and, through `execute_pending`, any advance-path
+    /// audit event) and emits the recovery metrics record. Writing those
+    /// straight to disk would leave a refusing daemon's fingerprints in an
+    /// audit log for a session that never served. Buffering makes "a refusing
+    /// daemon leaves nothing behind" true for the whole startup path, and —
+    /// because nothing runs between `open` and `finalize_startup` on the
+    /// no-manifest path — leaves that path's audit content AND ordering
+    /// byte-identical.
+    startup_audit: Mutex<Option<Vec<AuditEvent>>>,
+    startup_metrics: Mutex<Option<Vec<MetricsRecord>>>,
     #[cfg(feature = "redb-spike-api")]
     publish_failpoint: strata_kernel::PublishFailpoint,
     recovered: bool,
@@ -135,22 +245,54 @@ impl ServiceSession {
             delivered_events: Mutex::new(BTreeMap::new()),
             protocol: Mutex::new(LocalServiceProtocolContext::default()),
             canonical_corpus_root,
+            validation: config.validation,
             failpoint: config.failpoint,
             metrics,
+            startup_audit: Mutex::new(Some(Vec::new())),
+            startup_metrics: Mutex::new(Some(Vec::new())),
             #[cfg(feature = "redb-spike-api")]
             publish_failpoint: config.publish_failpoint,
             recovered: existed,
         });
         // One recovery record per daemon start, before the socket is reachable.
-        // `existed` is exactly the `recovered` flag surfaced on the wire.
-        if let Some(sink) = session.metrics.as_ref() {
-            if let Ok(mut sink) = sink.lock() {
-                sink.emit(&MetricsRecord::recovery(existed, &recovery));
+        // `existed` is exactly the `recovered` flag surfaced on the wire. Held
+        // in the startup buffer until the gate admits the session.
+        session.emit_metric(MetricsRecord::recovery(existed, &recovery));
+        session.resolve_pending_before_bind()?;
+        Ok((session, recovery.service_epoch))
+    }
+
+    /// Appends the ONE start event (`service_started` / `service_recovered`)
+    /// that says this daemon is going to serve, carrying the session's
+    /// validation identity.
+    ///
+    /// Split out of [`Self::open`] by B-2 Task 7 so the seed-green gate can
+    /// run BETWEEN them: a daemon whose corpus is not green must audit
+    /// NOTHING — a start event in the log would assert a session that never
+    /// existed. Without a manifest there is no baseline to run and
+    /// `server::serve` calls this immediately after `open`, so the audit
+    /// stream's content and its order relative to hydration and the socket
+    /// bind are exactly what they were before this split.
+    pub fn finalize_startup(&self) -> Result<()> {
+        // Flush the recovery-time side effects the gate was holding, in the
+        // order they happened and strictly BEFORE the start event — exactly
+        // where they landed before the gate existed.
+        if let Some(records) = self.startup_metrics.lock().map_err(lock_error)?.take()
+            && let Some(sink) = self.metrics.as_ref()
+            && let Ok(mut sink) = sink.lock()
+        {
+            for record in &records {
+                sink.emit(record);
             }
         }
-        session.resolve_pending_before_bind()?;
-        session.append_audit(AuditEvent {
-            kind: if existed {
+        if let Some(events) = self.startup_audit.lock().map_err(lock_error)?.take() {
+            let mut audit = self.audit.lock().map_err(lock_error)?;
+            for event in events {
+                audit.append(event)?;
+            }
+        }
+        self.append_audit(AuditEvent {
+            kind: if self.recovered {
                 "service_recovered".into()
             } else {
                 "service_started".into()
@@ -161,13 +303,78 @@ impl ServiceSession {
             action: None,
             change_set_id: None,
             state: None,
-            graph_generation: session.kernel.snapshot().generation().to_string(),
-        })?;
-        Ok((session, recovery.service_epoch))
+            graph_generation: self.kernel.snapshot().generation().to_string(),
+            validation_mode: Some(self.validation.mode.as_label().to_owned()),
+            validation_manifest_digest: self.validation.manifest_digest.clone(),
+        })
     }
 
     pub fn recovered(&self) -> bool {
         self.recovered
+    }
+
+    /// `"tscOnly"` or `"behavioral"` — the session's validation regime, as
+    /// reported on the readiness line, the start audit event, and `hello`.
+    pub fn validation_mode(&self) -> ValidationMode {
+        self.validation.mode
+    }
+
+    /// The sha256 of the operator's validation manifest, or `None` when the
+    /// daemon runs the no-manifest default.
+    pub fn validation_manifest_digest(&self) -> Option<&str> {
+        self.validation.manifest_digest.as_deref()
+    }
+
+    /// True when an operator supplied `--validation-manifest`, in EITHER mode.
+    /// A `tscOnly` manifest is still an operator statement about how this
+    /// corpus must validate, so it gets the same seed-green gate a behavioral
+    /// one does — only the no-manifest default skips the baseline.
+    pub fn requires_seed_green_baseline(&self) -> bool {
+        self.validation.manifest_digest.is_some()
+    }
+
+    /// Reads a registered fixture and re-establishes, on THIS read, both
+    /// properties the loader established at startup: the canonical path still
+    /// resolves inside the canonical corpus root, and the bytes still hash to
+    /// the registered id. Startup verification is not carried forward as
+    /// standing trust — a fixture edited or re-pointed after the daemon bound
+    /// fails the read rather than serving drifted bytes under a pinned digest.
+    ///
+    /// Errors name the fixture's corpus-relative path and id, never the
+    /// absolute path on disk (the B-1 fail-closed projection discipline).
+    fn verified_fixture_bytes(&self, fixture: &RegisteredFixture) -> Result<Vec<u8>> {
+        let canonical = std::fs::canonicalize(&fixture.canonical_path).with_context(|| {
+            format!(
+                "registered fixture {} is no longer readable at its verified location",
+                fixture.path
+            )
+        })?;
+        if !canonical.starts_with(&self.canonical_corpus_root) {
+            bail!(
+                "registered fixture {} now resolves outside the corpus root",
+                fixture.path
+            );
+        }
+        let content = std::fs::read(&canonical).with_context(|| {
+            format!("registered fixture {} could not be read", fixture.path)
+        })?;
+        let actual = format!("{:x}", Sha256::digest(&content));
+        if actual != fixture.sha256 {
+            bail!(
+                "registered fixture {} no longer matches its manifest digest \
+                 (registered {}, found {actual}); the daemon serves manifest-pinned \
+                 content only",
+                fixture.path,
+                fixture.sha256
+            );
+        }
+        Ok(content)
+    }
+
+    /// Runs the seed-green baseline against the CURRENT graph (B-2 Task 7).
+    /// Called by `server::serve` after `open` and before `finalize_startup`.
+    pub fn validate_baseline(&self) -> Result<strata_kernel::BaselineVerdict> {
+        self.kernel.validate_baseline()
     }
 
     /// Eager persistent-mirror hydration (Task 6): run after seed/recovery,
@@ -292,15 +499,45 @@ impl ServiceSession {
         let Ok(mut sink) = sink.lock() else {
             return;
         };
+        // Behavioral-mode advances disclose what validation cost. The runs
+        // drained here are the source for the two per-request durations, so
+        // they are summarized BEFORE being emitted and consumed.
+        let disclose = self.validation.mode == ValidationMode::Behavioral
+            && matches!(action, RequestAction::AdvanceChangeSet { .. });
+        let mut validation_wall_ms: Option<u64> = None;
+        let mut queue_wait_ms: Option<u64> = None;
         for run in self.kernel.take_worker_run_metrics() {
+            if disclose {
+                // Several runs can land on one advance (an analyze trip plus
+                // the candidate trip); the candidate's validate stage is the
+                // cost being disclosed, so take the largest rather than the
+                // last, and sum the waits that actually queued.
+                if let Some(validate_ns) = run.worker.as_ref().and_then(|worker| worker.validate_ns)
+                {
+                    let ms = validate_ns / 1_000_000;
+                    validation_wall_ms = Some(validation_wall_ms.map_or(ms, |seen| seen.max(ms)));
+                }
+                if let Some(wait_ns) = run.queue_wait_ns {
+                    let ms = wait_ns / 1_000_000;
+                    queue_wait_ms = Some(queue_wait_ms.map_or(ms, |seen| seen + ms));
+                }
+            }
             sink.emit(&MetricsRecord::worker_run(run));
         }
+        let disclosure = disclose.then(|| BehavioralDisclosure {
+            validation_wall_ms,
+            queue_wait_ms,
+            one_shot_fallbacks_total: self.kernel.one_shot_fallbacks_total(),
+            rehydrations_total: self.kernel.rehydrations_total(),
+            validation_timeouts_total: self.kernel.validation_timeouts_total(),
+        });
         sink.emit(&MetricsRecord::request(
             action.name(),
             started.elapsed().as_nanos(),
             peak_rss_bytes(),
             self.kernel.worker_starts_total(),
             publication,
+            disclosure,
         ));
     }
 
@@ -534,7 +771,7 @@ impl ServiceSession {
                     .context("reconciled add intent has no change set")?;
                 ExecutedEffect::response(LocalServiceResponse::success(
                     "recovered",
-                    self.change_set_result(change_set_id, None, None)?,
+                    self.change_set_result(change_set_id, None, Vec::new())?,
                 ))
             } else {
                 self.execute_pending(&request, "recovered")
@@ -572,6 +809,8 @@ impl ServiceSession {
                 change_set_id: request.action.change_set_id().map(str::to_owned),
                 state: None,
                 graph_generation: self.kernel.snapshot().generation().to_string(),
+                validation_mode: None,
+                validation_manifest_digest: None,
             })?;
         }
         Ok(())
@@ -629,18 +868,18 @@ impl ServiceSession {
                     },
                     pending.tick,
                 )?;
-                self.change_set_result(&change_set_id, None, None)?
+                self.change_set_result(&change_set_id, None, Vec::new())?
             }
             RequestAction::AddIntent {
                 change_set_id,
                 intent,
             } => {
                 self.kernel.add_intent(change_set_id, wire_intent(intent))?;
-                self.change_set_result(change_set_id, None, None)?
+                self.change_set_result(change_set_id, None, Vec::new())?
             }
             RequestAction::SubmitChangeSet { change_set_id } => {
                 self.kernel.submit_change_set(change_set_id, pending.tick)?;
-                self.change_set_result(change_set_id, None, None)?
+                self.change_set_result(change_set_id, None, Vec::new())?
             }
             RequestAction::AdvanceChangeSet { change_set_id } => {
                 return self.advance(change_set_id, pending.tick, request_id);
@@ -660,7 +899,7 @@ impl ServiceSession {
                         state: CancelledState::Cancelled,
                     }
                 } else {
-                    self.change_set_result(change_set_id, None, None)?
+                    self.change_set_result(change_set_id, None, Vec::new())?
                 }
             }
             RequestAction::Hello { .. }
@@ -670,7 +909,9 @@ impl ServiceSession {
             | RequestAction::ListModuleDeclarations { .. }
             | RequestAction::GetReferences { .. }
             | RequestAction::ReadEvents { .. }
-            | RequestAction::ReadOperation { .. } => {
+            | RequestAction::ReadOperation { .. }
+            | RequestAction::ListValidationFixtures { .. }
+            | RequestAction::ReadValidationFixture { .. } => {
                 bail!("read-only action cannot be in the mutation journal")
             }
         };
@@ -703,7 +944,7 @@ impl ServiceSession {
         if change_set.state != KernelChangeSetState::Ready {
             return Ok(ExecutedEffect::response(LocalServiceResponse::success(
                 request_id,
-                self.change_set_result(change_set_id, None, None)?,
+                self.change_set_result(change_set_id, None, Vec::new())?,
             )));
         }
         let offer = self
@@ -724,6 +965,8 @@ impl ServiceSession {
                     change_set_id: Some(change_set_id.into()),
                     state: Some("claimed".into()),
                     graph_generation: self.kernel.snapshot().generation().to_string(),
+                    validation_mode: None,
+                    validation_manifest_digest: None,
                 })?;
                 // Publication is the sole durable-graph mutation of an advance.
                 // With a redb-spike-api publish failpoint armed, route it through
@@ -746,7 +989,11 @@ impl ServiceSession {
                     Ok(PublishClaimOutcome::Published(report)) => {
                         let response = LocalServiceResponse::success(
                             request_id,
-                            self.change_set_result(change_set_id, Some(report.digest.clone()), None)?,
+                            self.change_set_result(
+                                change_set_id,
+                                Some(report.digest.clone()),
+                                Vec::new(),
+                            )?,
                         );
                         // The report rides the effect to the emission point; no
                         // response bytes change (digest is the only wire field).
@@ -756,7 +1003,7 @@ impl ServiceSession {
                     | Ok(PublishClaimOutcome::NeedsDecision { .. }) => {
                         Ok(ExecutedEffect::response(LocalServiceResponse::success(
                             request_id,
-                            self.change_set_result(change_set_id, None, None)?,
+                            self.change_set_result(change_set_id, None, Vec::new())?,
                         )))
                     }
                     Err(error)
@@ -769,8 +1016,8 @@ impl ServiceSession {
                         // validation failure. The claim is intact and the change set
                         // is still executing; the older validating client was merely
                         // out-raced on the whole-scheduler-equality check. Report the
-                        // current non-terminal (`claimed`) state and do NOT fabricate a
-                        // `candidate_validation_failed` diagnostic or cancel the claim
+                        // current non-terminal (`claimed`) state and do NOT report a
+                        // `validation_failed` verdict, requeue, or cancel the claim
                         // (which is exactly what let younger overlapping work win).
                         // This response does NOT itself complete the operation: the
                         // change set stays claimed, so a subsequent advance early-returns
@@ -778,7 +1025,7 @@ impl ServiceSession {
                         // Completion happens later via claim-lease expiry re-offering the
                         // work, then a further advance re-claiming and republishing.
                         // This arm's taxonomy — exhaustion => non-terminal state, an
-                        // uncancelled/intact claim, and no fabricated diagnostic — is not
+                        // uncancelled/intact claim, and no verdict on the wire — is not
                         // deterministically forceable through a spawned daemon (advance
                         // publishes via `execute_claimed`, which needs the real
                         // node-bridge executor, and forcing exhaustion needs the
@@ -789,10 +1036,20 @@ impl ServiceSession {
                         // in tests/coordination_optimistic.rs.
                         Ok(ExecutedEffect::response(LocalServiceResponse::success(
                             request_id,
-                            self.change_set_result(change_set_id, None, None)?,
+                            self.change_set_result(change_set_id, None, Vec::new())?,
                         )))
                     }
-                    Err(_error) => {
+                    // SEMANTIC: the worker evaluated the candidate and the
+                    // candidate itself is wrong (tsc red, behavioral red, or an
+                    // intent that could not apply). That is a verdict, so it is
+                    // a SUCCESS response carrying `validation_failed` and the
+                    // worker's own diagnostics — never the pre-B-2 fabricated
+                    // `candidate_validation_failed` placeholder, which told an
+                    // agent nothing it could act on.
+                    Err(error) if error.downcast_ref::<CandidateRejected>().is_some() => {
+                        let rejected = error
+                            .downcast_ref::<CandidateRejected>()
+                            .expect("the guard just matched a CandidateRejected");
                         self.append_audit(AuditEvent {
                             kind: "validation_failed".into(),
                             tick: Some(tick.to_string()),
@@ -802,17 +1059,15 @@ impl ServiceSession {
                             change_set_id: Some(change_set_id.into()),
                             state: Some("validation_failed".into()),
                             graph_generation: self.kernel.snapshot().generation().to_string(),
+                            validation_mode: None,
+                            validation_manifest_digest: None,
                         })?;
                         let response = LocalServiceResponse::success(
                             request_id,
                             self.change_set_result(
                                 change_set_id,
                                 None,
-                                Some(Diagnostic {
-                                    code: "candidate_validation_failed".into(),
-                                    message: "candidate validation failed".into(),
-                                    node_id: None,
-                                }),
+                                self.rejection_diagnostics(rejected),
                             )?
                             .with_state(ChangeSetState::ValidationFailed),
                         );
@@ -825,12 +1080,55 @@ impl ServiceSession {
                             publication: None,
                         })
                     }
+                    // OPERATIONAL (the fail-closed default: every unknown or
+                    // future failure lands here). The worker never reached a
+                    // verdict — timeout, crash, transport, invariant — so the
+                    // candidate is NOT known-bad and the change set must not be
+                    // cancelled or labelled `validation_failed`. Release the
+                    // claim and requeue as one atomic lifecycle transition
+                    // FIRST, so `retryable: true` is honest: a later advance
+                    // genuinely re-drives this change set rather than waiting
+                    // out a claim lease. If the requeue itself fails, the `?`
+                    // falls through to the generic `request_failed` surface —
+                    // no response may claim a requeue that did not happen.
+                    Err(_error) => {
+                        self.kernel.release_claim_for_retry(change_set_id, tick)?;
+                        // Audit the state the requeue actually landed on rather
+                        // than a hard-coded label: the readiness pass inside the
+                        // same transition usually re-offers immediately (`ready`),
+                        // but a contended scope leaves it `queued`.
+                        let requeued_state = self
+                            .kernel
+                            .change_set(change_set_id)?
+                            .map(|record| {
+                                format!("{:?}", kernel_state(&record.state)).to_lowercase()
+                            });
+                        self.append_audit(AuditEvent {
+                            kind: "candidate_execution_failed".into(),
+                            tick: Some(tick.to_string()),
+                            request_hash: Some(client_hash(request_id)),
+                            client_hash: None,
+                            action: Some("advance_change_set".into()),
+                            change_set_id: Some(change_set_id.into()),
+                            state: requeued_state,
+                            graph_generation: self.kernel.snapshot().generation().to_string(),
+                            validation_mode: None,
+                            validation_manifest_digest: None,
+                        })?;
+                        Ok(ExecutedEffect::response(LocalServiceResponse::error(
+                            request_id,
+                            "candidate_execution_failed",
+                            "candidate execution failed before a validation verdict; the change set has been requeued",
+                            true,
+                            Vec::new(),
+                        )))
+                    }
                 }
             }
             ClaimOutcome::Requeued { .. } | ClaimOutcome::NeedsDecision { .. } => {
                 Ok(ExecutedEffect::response(LocalServiceResponse::success(
                     request_id,
-                    self.change_set_result(change_set_id, None, None)?,
+                    self.change_set_result(change_set_id, None, Vec::new())?,
                 )))
             }
         }
@@ -838,7 +1136,10 @@ impl ServiceSession {
 
     fn execute_read(&self, client_id: &str, action: &RequestAction) -> Result<ResponseResult> {
         match action {
-            RequestAction::Hello { .. } => Ok(ResponseResult::Ready {}),
+            RequestAction::Hello { .. } => Ok(ResponseResult::Ready {
+                validation_mode: self.validation.mode,
+                validation_manifest_digest: self.validation.manifest_digest.clone(),
+            }),
             RequestAction::InspectNodes { node_ids } => self.inspect_nodes(node_ids),
             RequestAction::FindDeclarations {
                 name,
@@ -984,6 +1285,54 @@ impl ServiceSession {
                     publication_digest: digest,
                 })
             }
+            RequestAction::ListValidationFixtures {} => {
+                let mut fixtures = Vec::with_capacity(self.validation.fixtures.len());
+                for fixture in &self.validation.fixtures {
+                    let bytes = self.verified_fixture_bytes(fixture)?.len() as u64;
+                    fixtures.push(FixtureSummary {
+                        fixture_id: fixture.sha256.clone(),
+                        path: fixture.path.clone(),
+                        bytes: WireU64::new(bytes),
+                    });
+                }
+                Ok(ResponseResult::ValidationFixtures {
+                    validation_mode: self.validation.mode,
+                    validation_manifest_digest: self.validation.manifest_digest.clone(),
+                    fixtures,
+                })
+            }
+            RequestAction::ReadValidationFixture {
+                fixture_id,
+                offset,
+                length,
+            } => {
+                if self.validation.fixtures.is_empty() {
+                    bail!(
+                        "this daemon has no registered validation fixtures; \
+                         list_validation_fixtures returns the readable set"
+                    );
+                }
+                let fixture = self
+                    .validation
+                    .fixtures
+                    .iter()
+                    .find(|fixture| fixture.sha256 == *fixture_id)
+                    .with_context(|| {
+                        format!("fixture {fixture_id} is not registered by this daemon's manifest")
+                    })?;
+                let content = self.verified_fixture_bytes(fixture)?;
+                // A read at or past EOF is the terminal empty chunk rather than
+                // an error, so a client can page to the end without having to
+                // know the size up front.
+                let start = usize::try_from(offset.get()).unwrap_or(usize::MAX).min(content.len());
+                let end = start.saturating_add(*length as usize).min(content.len());
+                Ok(ResponseResult::ValidationFixtureChunk {
+                    fixture_id: fixture.sha256.clone(),
+                    offset: *offset,
+                    content_base64: base64_encode(&content[start..end]),
+                    eof: end >= content.len(),
+                })
+            }
             _ => bail!("mutating action cannot use the read path"),
         }
     }
@@ -1073,11 +1422,48 @@ impl ServiceSession {
         })
     }
 
+    /// Projects a worker rejection onto the client wire.
+    ///
+    /// The code is namespaced `"{rejection code}:{worker diagnostic code}"`
+    /// so a client can tell a tsc error apart from a behavioral failure apart
+    /// from a refused intent without parsing prose. Raw payload paths never
+    /// reach the wire: each `module_path` is projected corpus-relative, and a
+    /// projection failure degrades the path to absent rather than dropping
+    /// the diagnostic — a display-path problem must not hide the finding.
+    fn rejection_diagnostics(&self, rejected: &CandidateRejected) -> Vec<Diagnostic> {
+        let diagnostics = rejected
+            .diagnostics
+            .iter()
+            .take(MAX_WIRE_DIAGNOSTICS)
+            .map(|diagnostic| Diagnostic {
+                code: format!("{}:{}", rejected.code, diagnostic.code),
+                message: bounded_message(&diagnostic.message),
+                node_id: diagnostic.node_id.clone(),
+                module_path: diagnostic.module_path.as_deref().and_then(|payload| {
+                    project_module_path(&self.canonical_corpus_root, payload).ok()
+                }),
+            })
+            .collect::<Vec<_>>();
+        if diagnostics.is_empty() {
+            // A rejection with no worker diagnostics is possible (a
+            // `mutationFailed`-class refusal, or a behavioral failure whose
+            // output did not survive normalization). `validation_failed` must
+            // never be diagnostic-free, so the rejection itself becomes one.
+            return vec![Diagnostic {
+                code: rejected.code.clone(),
+                message: bounded_message(&rejected.message),
+                node_id: None,
+                module_path: None,
+            }];
+        }
+        diagnostics
+    }
+
     fn change_set_result(
         &self,
         change_set_id: &str,
         publication_digest: Option<String>,
-        diagnostic: Option<Diagnostic>,
+        diagnostics: Vec<Diagnostic>,
     ) -> Result<ResponseResult> {
         let change_set = self
             .kernel
@@ -1123,7 +1509,7 @@ impl ServiceSession {
                     .map(|record| record.affected_node_ids)
                     .unwrap_or_default(),
             ),
-            diagnostics: diagnostic.into_iter().collect(),
+            diagnostics,
             publication_digest,
             renamed_symbols,
         })
@@ -1185,11 +1571,35 @@ impl ServiceSession {
                 .or_else(|| request.action.change_set_id().map(str::to_owned)),
             state: response_state(response),
             graph_generation: self.kernel.snapshot().generation().to_string(),
+            validation_mode: None,
+            validation_manifest_digest: None,
         })
     }
 
     fn append_audit(&self, event: AuditEvent) -> Result<()> {
+        if let Some(buffer) = self.startup_audit.lock().map_err(lock_error)?.as_mut() {
+            buffer.push(event);
+            return Ok(());
+        }
         self.audit.lock().map_err(lock_error)?.append(event)
+    }
+
+    /// Single emit path for every observability record, so the startup buffer
+    /// catches recovery-time records without each call site knowing about it.
+    /// Best-effort throughout: observability must never fail a request.
+    fn emit_metric(&self, record: MetricsRecord) {
+        let Some(sink) = self.metrics.as_ref() else {
+            return;
+        };
+        if let Ok(mut guard) = self.startup_metrics.lock()
+            && let Some(buffer) = guard.as_mut()
+        {
+            buffer.push(record);
+            return;
+        }
+        if let Ok(mut sink) = sink.lock() {
+            sink.emit(&record);
+        }
     }
 
     fn apply_follow_up(&self, follow_up: Option<&FollowUp>) -> Result<()> {
@@ -1458,4 +1868,62 @@ fn bounded_affected_ids(ids: Vec<String>) -> Vec<String> {
 
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> anyhow::Error {
     anyhow::anyhow!("service state lock is poisoned")
+}
+
+const BASE64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Standard padded base64 (RFC 4648). Hand-rolled because the kernel crate
+/// carries no base64 dependency and this is the only place that needs one —
+/// fixture bytes are arbitrary binary as far as the wire is concerned, so they
+/// cannot ride a JSON string unencoded.
+fn base64_encode(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        encoded.push(BASE64_ALPHABET[(triple >> 18) as usize & 0x3f] as char);
+        encoded.push(BASE64_ALPHABET[(triple >> 12) as usize & 0x3f] as char);
+        encoded.push(if chunk.len() > 1 {
+            BASE64_ALPHABET[(triple >> 6) as usize & 0x3f] as char
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            BASE64_ALPHABET[triple as usize & 0x3f] as char
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64_encode;
+
+    #[test]
+    fn base64_encode_matches_rfc4648_vectors() {
+        // RFC 4648 §10, which exercises every padding residue.
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn base64_encode_covers_every_alphabet_symbol_including_62_and_63() {
+        // 0xfb 0xff round-trips through the two symbols an unpadded-alphabet
+        // implementation would get wrong ('+' and '/').
+        assert_eq!(base64_encode(&[0xfb, 0xff, 0xbf]), "+/+/");
+        let all_bytes: Vec<u8> = (0u8..=255).collect();
+        let encoded = base64_encode(&all_bytes);
+        assert_eq!(encoded.len(), 344);
+        assert!(encoded.contains('+') && encoded.contains('/'));
+    }
 }

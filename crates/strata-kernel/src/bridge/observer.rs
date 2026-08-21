@@ -25,6 +25,11 @@ pub struct WorkerRunMetrics {
     pub snapshot_build_ns: u64,
     pub request_serialize_ns: u64,
     pub response_bytes: u64,
+    /// Time this run spent waiting for the persistent host's single-flight lock
+    /// before the worker was touched — head-of-line queue wait under N=1.
+    /// `None` for one-shot runs, which have no queue to wait in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_wait_ns: Option<u64>,
     pub worker: Option<WorkerSelfMetrics>,
 }
 

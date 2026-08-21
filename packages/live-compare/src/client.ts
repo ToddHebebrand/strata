@@ -67,7 +67,9 @@ function isMutating(action: LocalServiceRequest["action"]): boolean {
     "list_module_declarations",
     "get_references",
     "read_events",
-    "read_operation"
+    "read_operation",
+    "list_validation_fixtures",
+    "read_validation_fixture"
   ].includes(action.type);
 }
 
@@ -336,6 +338,24 @@ export class CoordinationClient {
         ...(options?.afterReferenceKey ? { afterReferenceKey: options.afterReferenceKey } : {}),
         limit
       },
+      deadlineMs
+    );
+  }
+
+  listValidationFixtures(
+    deadlineMs = DEFAULT_REQUEST_DEADLINE_MS
+  ): Promise<CoordinationResult> {
+    return this.request({ type: "list_validation_fixtures" }, deadlineMs);
+  }
+
+  readValidationFixture(
+    fixtureId: string,
+    offset: string,
+    length: number,
+    deadlineMs = DEFAULT_REQUEST_DEADLINE_MS
+  ): Promise<CoordinationResult> {
+    return this.request(
+      { type: "read_validation_fixture", fixtureId, offset, length },
       deadlineMs
     );
   }

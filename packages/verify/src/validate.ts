@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { renderWithSourceMap, type SourceMapEntry } from "@strata-code/render";
-import { runCorpusAcceptance } from "./corpusRun";
+import { runCorpusAcceptance, runCorpusAcceptanceBounded } from "./corpusRun";
 import {
   commitWithoutValidate,
   emitIdentifiersForInserted,
@@ -347,6 +347,95 @@ export function commitWithBehavioralGate(
 
   // Single transaction so a throw mid-materialization rolls back payloads,
   // node/identifier changes, edges, and the op-log together (no partial state).
+  const finalizeGated = db.transaction(() => {
+    materializeStatementPayloads(db, tx);
+
+    if (!isNoop(plan)) {
+      const staleIdentifierIds = collectReDerivedIdentifierIds(db, plan);
+      emitIdentifiersForInserted(db, tx, plan);
+      reDeriveChangedStatements(db, tx, plan);
+      refreshReferenceEdges(db, plan, renderedByPath, options);
+      stripStaleMutations(db, tx, staleIdentifierIds);
+    }
+
+    commitWithoutValidate(db, tx);
+  });
+  finalizeGated();
+  return { ok: true };
+}
+
+/** Per-step budgets the bounded gate hands to the spawned tsc/vitest. */
+export interface BoundedAcceptanceContext extends AcceptanceContext {
+  tscTimeoutMs: number;
+  vitestTimeoutMs: number;
+}
+
+/**
+ * A superset of {@link GatedCommitResult} with the OPERATIONAL outcome the
+ * bounded gate can produce: a step that never finished. Deliberately a
+ * separate type rather than a new member of `GatedCommitResult` — the sync
+ * product path can never return it, and widening its union would silently
+ * reclassify a timeout as a behavioral rejection in every existing caller.
+ */
+export type BoundedGatedCommitResult =
+  | GatedCommitResult
+  | { ok: false; timedOut: "tsc" | "vitest"; output: string };
+
+/**
+ * Process-group-bounded sibling of {@link commitWithBehavioralGate} (B-2
+ * behavioral gate, Task 6), used by the coordination worker where an unbounded
+ * tsc/vitest would hold a claim past every deadline in the system.
+ *
+ * Identical semantics to the sync gate except that each spawned step runs
+ * under its own budget and, on exhaustion, its whole process group is SIGKILLed
+ * BEFORE this resolves. A timeout is reported as `timedOut`, never as
+ * `testFailures`: "we could not finish judging the candidate" is an
+ * operational failure that must be re-queued, not a rejection of the change.
+ */
+export async function commitWithBehavioralGateBounded(
+  db: Db,
+  tx: TxHandle,
+  acceptance: BoundedAcceptanceContext
+): Promise<BoundedGatedCommitResult> {
+  // Mirrors commitWithBehavioralGate exactly up to the acceptance call; see
+  // that function for why there is no in-process validate() here.
+  const plan = planMaterialization(db, getOverlay(tx));
+
+  const { renderedFiles } = renderPendingModules(db, tx);
+  const renderedByPath = boundedRenderInputs(renderedFiles, plan.dirtyModulePaths);
+  const options = loadCompilerOptions(
+    [...renderedFiles.keys()].map((rawKey) => physicalFileName(rawKey, acceptance.corpusRoot))
+  );
+
+  const renderedSrc = new Map<string, string>();
+  for (const [rawKey, text] of renderedFiles) {
+    const rel = path
+      .relative(acceptance.srcRoot, physicalFileName(rawKey, acceptance.corpusRoot))
+      .replaceAll("\\", "/");
+    renderedSrc.set(rel, text);
+  }
+
+  const result = await runCorpusAcceptanceBounded(
+    renderedSrc,
+    acceptance.corpusRoot,
+    acceptance.behavioralFixtures,
+    {
+      strictSrcOnlyTscScope: acceptance.strictSrcOnlyTscScope !== false,
+      tscTimeoutMs: acceptance.tscTimeoutMs,
+      vitestTimeoutMs: acceptance.vitestTimeoutMs
+    }
+  );
+  if (result.tscTimedOut || result.vitestTimedOut) {
+    return {
+      ok: false,
+      timedOut: result.tscTimedOut ? "tsc" : "vitest",
+      output: result.failureOutput
+    };
+  }
+  if (!result.tscClean || !result.vitestPassed) {
+    return { ok: false, testFailures: result.failureOutput };
+  }
+
   const finalizeGated = db.transaction(() => {
     materializeStatementPayloads(db, tx);
 

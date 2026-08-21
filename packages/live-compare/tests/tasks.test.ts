@@ -233,12 +233,12 @@ describe("Phase-6 task qualification", () => {
     }
   });
 
-  it("exports the exact complex X2 default from the same qualified physical-path snapshot", () => {
+  it("exports the exact complex X2 default from the same qualified physical-path snapshot", async () => {
     const manifest = createQualifiedTaskManifest(corpusRoot);
     const snapshot = { ...createQualifiedKernelSnapshot(corpusRoot), generation: "0" as any };
     const intent = manifest.packets.X.assignments[1]!.intents[0] as any;
     const changeSetId = "change:x2-complex-default";
-    const result = buildValidateCandidate({
+    const result = await buildValidateCandidate({
       protocolVersion: 1,
       requestId: "request:x2-complex-default",
       kind: "buildValidateCandidate",

@@ -1,13 +1,28 @@
 use crate::{GraphChange, GraphDelta, GraphSnapshot, NodeRecord, ReferenceRecord, SCHEMA_VERSION};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use serde::de::{self, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::cmp::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::collections::BTreeSet;
 use std::fmt;
+use std::time::Duration;
 
 pub(crate) const PROTOCOL_VERSION: u32 = 1;
 const MAX_ARRAY_ITEMS: usize = 1_000_000;
+
+/// Fixed overhead the daemon adds on top of a candidate's own tsc+vitest
+/// budget: process-group teardown and result plumbing. THE single source of
+/// truth for this arithmetic — the service's validation-manifest loader
+/// re-exports this constant rather than defining its own.
+pub const CANDIDATE_OVERHEAD_MS: u64 = 30_000;
+/// Allowance for a candidate request to sit queued behind other work before a
+/// worker even starts running it. The persistent transport's total deadline
+/// for a candidate frame is `QUEUE_ALLOWANCE_MS + candidate_deadline`.
+pub const QUEUE_ALLOWANCE_MS: u64 = 30_000;
+/// Bounds on any PRESENT per-step validation timeout, both languages.
+const MIN_VALIDATION_TIMEOUT_MS: u64 = 1_000;
+const MAX_VALIDATION_TIMEOUT_MS: u64 = 180_000;
 const MAX_SAFE_JSON_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -182,6 +197,12 @@ literal_bool!(False, false);
 pub(crate) enum BridgeKind {
     AnalyzeIntent,
     BuildValidateCandidate,
+    /// Seed-green startup gate (B-2 Task 7): judge the corpus AS PUBLISHED,
+    /// with no change set and no mutation. A DISTINCT kind on purpose —
+    /// modelling it as a candidate with zero intents would have to weaken
+    /// [`ChangeSet::validate`]'s non-empty `orderedIntents` invariant for
+    /// every real candidate.
+    ValidateBaseline,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -453,12 +474,24 @@ pub(crate) enum ValidationProfile {
         corpus_root: String,
         behavioral_fixtures: Vec<String>,
         strict_src_only_tsc_scope: bool,
+        /// OPTIONAL, and ABSENT (not null) unless an operator manifest set
+        /// it. This asymmetry with `Behavioral` is the whole point: without
+        /// `--validation-manifest` the profile serializes the historic five
+        /// keys and the default wire stays byte-identical to pre-B-2.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tsc_timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vitest_timeout_ms: Option<u64>,
     },
     Behavioral {
         source_root: String,
         corpus_root: String,
         behavioral_fixtures: Vec<String>,
         strict_src_only_tsc_scope: bool,
+        /// REQUIRED: a behavioral run spawns a real tsc and a real vitest, and
+        /// an unbounded one holds a claim past every deadline in the system.
+        tsc_timeout_ms: u64,
+        vitest_timeout_ms: u64,
     },
 }
 
@@ -473,7 +506,85 @@ impl ValidationProfile {
             corpus_root: corpus_root.into(),
             behavioral_fixtures: Vec::new(),
             strict_src_only_tsc_scope,
+            tsc_timeout_ms: None,
+            vitest_timeout_ms: None,
         }
+    }
+
+    /// A `tscOnly` profile whose per-step budgets an operator manifest DID
+    /// set (B-2 Task 7). Distinct from [`Self::tsc_only`], whose timeouts stay
+    /// absent so the no-manifest wire is byte-identical to pre-B-2.
+    pub(crate) fn tsc_only_bounded(
+        source_root: impl Into<String>,
+        corpus_root: impl Into<String>,
+        strict_src_only_tsc_scope: bool,
+        tsc_timeout_ms: u64,
+        vitest_timeout_ms: u64,
+    ) -> Result<Self> {
+        let profile = Self::TscOnly {
+            source_root: source_root.into(),
+            corpus_root: corpus_root.into(),
+            behavioral_fixtures: Vec::new(),
+            strict_src_only_tsc_scope,
+            tsc_timeout_ms: Some(tsc_timeout_ms),
+            vitest_timeout_ms: Some(vitest_timeout_ms),
+        };
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    /// The review-verified gap this closes: Rust never required a
+    /// behavioral profile to actually carry fixtures, so a caller could
+    /// construct (or deserialize) a `Behavioral` variant that validates
+    /// nothing beyond tsc. Both this constructor AND `validate()` enforce
+    /// non-empty fixtures, so the invariant holds for hand-built values too
+    /// (see `behavioral_profile_is_unconstructible_with_zero_fixtures`).
+    pub(crate) fn behavioral(
+        source_root: impl Into<String>,
+        corpus_root: impl Into<String>,
+        behavioral_fixtures: Vec<String>,
+        strict_src_only_tsc_scope: bool,
+        tsc_timeout_ms: u64,
+        vitest_timeout_ms: u64,
+    ) -> Result<Self> {
+        ensure!(
+            !behavioral_fixtures.is_empty(),
+            "behavioral validation profile requires at least one fixture"
+        );
+        let profile = Self::Behavioral {
+            source_root: source_root.into(),
+            corpus_root: corpus_root.into(),
+            behavioral_fixtures,
+            strict_src_only_tsc_scope,
+            tsc_timeout_ms,
+            vitest_timeout_ms,
+        };
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    /// The per-candidate budget this profile implies: the two spawned steps
+    /// plus [`CANDIDATE_OVERHEAD_MS`] for teardown and result plumbing.
+    /// `None` when no operator manifest set the budgets — the caller then
+    /// keeps its existing (pre-B-2) deadline unchanged.
+    pub(crate) fn candidate_deadline(&self) -> Option<Duration> {
+        let (tsc, vitest) = match self {
+            Self::TscOnly {
+                tsc_timeout_ms: Some(tsc),
+                vitest_timeout_ms: Some(vitest),
+                ..
+            } => (*tsc, *vitest),
+            Self::TscOnly { .. } => return None,
+            Self::Behavioral {
+                tsc_timeout_ms,
+                vitest_timeout_ms,
+                ..
+            } => (*tsc_timeout_ms, *vitest_timeout_ms),
+        };
+        Some(Duration::from_millis(
+            tsc.saturating_add(vitest)
+                .saturating_add(CANDIDATE_OVERHEAD_MS),
+        ))
     }
 
     fn validate(&self) -> Result<()> {
@@ -482,6 +593,8 @@ impl ValidationProfile {
                 source_root,
                 corpus_root,
                 behavioral_fixtures,
+                tsc_timeout_ms,
+                vitest_timeout_ms,
                 ..
             } => {
                 non_empty(source_root, "validationProfile.sourceRoot")?;
@@ -490,15 +603,28 @@ impl ValidationProfile {
                     behavioral_fixtures.is_empty(),
                     "tscOnly validation profile cannot contain behavioral fixtures"
                 );
+                // Only PRESENT values are bounded: absence is the default wire.
+                if let Some(value) = tsc_timeout_ms {
+                    bounded_timeout("validationProfile.tscTimeoutMs", *value)?;
+                }
+                if let Some(value) = vitest_timeout_ms {
+                    bounded_timeout("validationProfile.vitestTimeoutMs", *value)?;
+                }
             }
             Self::Behavioral {
                 source_root,
                 corpus_root,
                 behavioral_fixtures,
+                tsc_timeout_ms,
+                vitest_timeout_ms,
                 ..
             } => {
                 non_empty(source_root, "validationProfile.sourceRoot")?;
                 non_empty(corpus_root, "validationProfile.corpusRoot")?;
+                ensure!(
+                    !behavioral_fixtures.is_empty(),
+                    "behavioral validation profile requires at least one fixture"
+                );
                 bounded_len(
                     "validationProfile.behavioralFixtures",
                     behavioral_fixtures.len(),
@@ -509,10 +635,21 @@ impl ValidationProfile {
                         &format!("validationProfile.behavioralFixtures[{index}]"),
                     )?;
                 }
+                bounded_timeout("validationProfile.tscTimeoutMs", *tsc_timeout_ms)?;
+                bounded_timeout("validationProfile.vitestTimeoutMs", *vitest_timeout_ms)?;
             }
         }
         Ok(())
     }
+}
+
+fn bounded_timeout(context: &str, value: u64) -> Result<()> {
+    ensure!(
+        (MIN_VALIDATION_TIMEOUT_MS..=MAX_VALIDATION_TIMEOUT_MS).contains(&value),
+        "{context} must be between {MIN_VALIDATION_TIMEOUT_MS} and \
+         {MAX_VALIDATION_TIMEOUT_MS} ms, got {value}"
+    );
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -579,11 +716,25 @@ pub(crate) struct BuildValidateCandidateRequest {
     pub(crate) validation_profile: ValidationProfile,
 }
 
+/// Seed-green startup frame: binding + snapshot + the session's validation
+/// profile, and nothing else. No attempt, no scope fingerprint, no change set.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ValidateBaselineRequest {
+    pub(crate) protocol_version: u32,
+    pub(crate) request_id: String,
+    pub(crate) kind: BridgeKind,
+    pub(crate) binding: BridgeBinding,
+    pub(crate) snapshot: WireSnapshot,
+    pub(crate) validation_profile: ValidationProfile,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum BridgeRequest {
     AnalyzeIntent(AnalyzeIntentRequest),
     BuildValidateCandidate(BuildValidateCandidateRequest),
+    ValidateBaseline(ValidateBaselineRequest),
 }
 
 impl BridgeRequest {
@@ -617,6 +768,17 @@ impl BridgeRequest {
                 request.change_set.validate(request.snapshot.generation)?;
                 request.validation_profile.validate()?;
             }
+            Self::ValidateBaseline(request) => {
+                validate_request_header(
+                    request.protocol_version,
+                    &request.request_id,
+                    request.kind,
+                    BridgeKind::ValidateBaseline,
+                    &request.binding,
+                    &request.snapshot,
+                )?;
+                request.validation_profile.validate()?;
+            }
         }
         Ok(())
     }
@@ -628,32 +790,43 @@ impl BridgeRequest {
         match self {
             Self::AnalyzeIntent(request) => &request.request_id,
             Self::BuildValidateCandidate(request) => &request.request_id,
+            Self::ValidateBaseline(request) => &request.request_id,
         }
     }
 
-    fn kind(&self) -> BridgeKind {
+    /// The request kind. `pub(crate)` because the one-shot transport selects
+    /// its deadline per kind (B-2 Task 6): candidate frames are bounded by the
+    /// nested validation budget, analyze frames by the separate transport
+    /// deadline.
+    pub(crate) fn kind(&self) -> BridgeKind {
         match self {
             Self::AnalyzeIntent(_) => BridgeKind::AnalyzeIntent,
             Self::BuildValidateCandidate(_) => BridgeKind::BuildValidateCandidate,
+            Self::ValidateBaseline(_) => BridgeKind::ValidateBaseline,
         }
     }
 
-    /// Observability label for the request kind: `"analyzeIntent"` or
-    /// `"buildValidateCandidate"`. Purely for run records; never used by
-    /// binding or protocol validation.
+    /// Observability label for the request kind: `"analyzeIntent"`,
+    /// `"buildValidateCandidate"` or `"validateBaseline"`. Purely for run
+    /// records; never used by binding or protocol validation.
     pub(crate) fn observed_kind(&self) -> &'static str {
         match self {
             Self::AnalyzeIntent(_) => "analyzeIntent",
             Self::BuildValidateCandidate(_) => "buildValidateCandidate",
+            Self::ValidateBaseline(_) => "validateBaseline",
         }
     }
 
     /// The change set the request belongs to: the intent's change set for an
-    /// analyze request, the candidate's change set for a build request.
+    /// analyze request, the candidate's change set for a build request. A
+    /// baseline belongs to no change set — it judges the published corpus
+    /// before any client exists — and reports the reserved label below so run
+    /// records stay a total function of the request.
     pub(crate) fn change_set_id(&self) -> &str {
         match self {
             Self::AnalyzeIntent(request) => &request.intent.change_set_id,
             Self::BuildValidateCandidate(request) => &request.change_set.change_set_id,
+            Self::ValidateBaseline(_) => BASELINE_CHANGE_SET_LABEL,
         }
     }
 
@@ -661,6 +834,44 @@ impl BridgeRequest {
         match self {
             Self::AnalyzeIntent(request) => &request.binding,
             Self::BuildValidateCandidate(request) => &request.binding,
+            Self::ValidateBaseline(request) => &request.binding,
+        }
+    }
+}
+
+/// Observability-only stand-in for the change set a baseline does not have.
+const BASELINE_CHANGE_SET_LABEL: &str = "startup:baseline";
+
+/// A `kind` field pinned to exactly [`BridgeKind::ValidateBaseline`].
+///
+/// [`BridgeResponse`] is an UNTAGGED union, so a baseline error response and
+/// an analyze error response are byte-identical in shape (both carry a plain
+/// [`BridgeBinding`] and an error payload). Without this literal the untagged
+/// matcher would resolve a baseline error to `AnalyzeError` and the seed-green
+/// gate would report "not a validateBaseline response" instead of the worker's
+/// real failure. The literal makes the two shapes structurally disjoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BaselineKind;
+
+impl Serialize for BaselineKind {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        BridgeKind::ValidateBaseline.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BaselineKind {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match BridgeKind::deserialize(deserializer)? {
+            BridgeKind::ValidateBaseline => Ok(Self),
+            other => Err(de::Error::custom(format!(
+                "expected validateBaseline, got {other:?}"
+            ))),
         }
     }
 }
@@ -978,6 +1189,113 @@ impl BridgeErrorPayload {
     }
 }
 
+/// A SEMANTIC candidate rejection: the worker evaluated the candidate and
+/// the candidate itself is wrong (type-check red, behavioral red, or the
+/// mutation could not apply). Distinct from every operational failure
+/// (timeout, crash, transport, invariant), which stays an untyped anyhow
+/// error. Only this error may produce a `validation_failed` change-set
+/// state downstream.
+#[derive(Clone, Debug)]
+pub struct CandidateRejected {
+    pub stage: String, // "validate" | "mutate" (ErrorStage, lowercased)
+    pub code: String,  // "typescriptFailed" | "behavioralFailed" | "intentRejected"
+    pub message: String,
+    pub diagnostics: Vec<RejectionDiagnostic>,
+}
+
+/// The worker diagnostic surface preserved for the client: raw payload
+/// paths stay raw HERE (the service projects them before the wire).
+#[derive(Clone, Debug)]
+pub struct RejectionDiagnostic {
+    pub node_id: Option<String>,
+    pub module_path: Option<String>,
+    pub message: String,
+    pub code: i64,
+}
+
+impl fmt::Display for CandidateRejected {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "candidate rejected at {}/{}: {}",
+            self.stage, self.code, self.message
+        )
+    }
+}
+
+impl std::error::Error for CandidateRejected {}
+
+/// Distinguishes a SEMANTIC candidate rejection (the worker evaluated the
+/// candidate and it is wrong) from every OPERATIONAL failure (timeout,
+/// crash, transport, invariant — including a bare `mutationFailed`, which
+/// is the mutate-stage counterpart of `candidateFinalizeFailed`/
+/// `vitestTimedOut`: the worker could not FINISH the attempt, not that it
+/// evaluated the candidate and rejected it). Only the semantic set
+/// downcasts to [`CandidateRejected`].
+/// Process-lifetime count of candidate validations killed for exceeding their
+/// budget. Process-scoped rather than per-kernel because the classification
+/// funnel below is a free function shared by both transports, and the daemon
+/// this counter reports through IS the process; a test binary that ran several
+/// kernels in-process would see their sum, which is why the assertions that
+/// depend on it live in daemon integration tests.
+static VALIDATION_TIMEOUTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+/// Total candidate validations killed for exceeding their tsc/vitest budget.
+pub(crate) fn validation_timeouts_total() -> u64 {
+    VALIDATION_TIMEOUTS_TOTAL.load(AtomicOrdering::SeqCst)
+}
+
+/// A validation subprocess that blew its budget and had its process group
+/// killed. Operational, never semantic — the candidate was never evaluated.
+fn is_validation_timeout(stage: ErrorStage, code: &str) -> bool {
+    matches!(
+        (stage, code),
+        (ErrorStage::Validate, "tscTimedOut") | (ErrorStage::Validate, "vitestTimedOut")
+    )
+}
+
+fn is_semantic_rejection(stage: ErrorStage, code: &str) -> bool {
+    matches!(
+        (stage, code),
+        (ErrorStage::Validate, "typescriptFailed")
+            | (ErrorStage::Validate, "behavioralFailed")
+            | (ErrorStage::Mutate, "intentRejected")
+    )
+}
+
+/// Builds the identical typed error for a candidate failure regardless of
+/// which transport observed it (one-shot [`BridgeResponse::into_candidate_result`]
+/// or the persistent mirror route), so callers downstream (Task 3's session
+/// downcast, Task 5's no-replay classification) see one shape.
+pub(crate) fn candidate_failure_to_error(
+    stage: ErrorStage,
+    code: String,
+    message: String,
+    diagnostics: Vec<BridgeDiagnostic>,
+) -> anyhow::Error {
+    if is_validation_timeout(stage, &code) {
+        VALIDATION_TIMEOUTS_TOTAL.fetch_add(1, AtomicOrdering::SeqCst);
+    }
+    if is_semantic_rejection(stage, &code) {
+        anyhow::Error::new(CandidateRejected {
+            stage: format!("{stage:?}").to_lowercase(),
+            code,
+            message,
+            diagnostics: diagnostics
+                .into_iter()
+                .map(|diagnostic| RejectionDiagnostic {
+                    node_id: diagnostic.node_id,
+                    module_path: diagnostic.module_path,
+                    message: diagnostic.message,
+                    code: diagnostic.code,
+                })
+                .collect(),
+        })
+    } else {
+        anyhow!("Node bridge candidate failed at {stage:?}/{code}: {message}")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AnalyzeResult {
@@ -989,6 +1307,34 @@ pub(crate) struct AnalyzeResult {
 pub(crate) struct CandidateResult {
     pub(crate) delta: WireGraphDelta,
     pub(crate) diagnostics: Vec<BridgeDiagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct BaselineResult {
+    pub(crate) green: bool,
+    pub(crate) diagnostics: Vec<BridgeDiagnostic>,
+}
+
+/// The seed-green verdict a daemon refuses to start on (B-2 Task 7). A verdict
+/// means the worker FINISHED judging; every failure to finish stays an
+/// ordinary `Err` from [`Kernel::validate_baseline`], which the startup gate
+/// treats as fail-closed all the same.
+///
+/// [`Kernel::validate_baseline`]: crate::Kernel::validate_baseline
+#[derive(Clone, Debug)]
+pub struct BaselineVerdict {
+    pub green: bool,
+    pub diagnostics: Vec<BaselineDiagnostic>,
+}
+
+/// One bounded line of a red baseline's captured tsc/vitest output.
+#[derive(Clone, Debug)]
+pub struct BaselineDiagnostic {
+    pub node_id: Option<String>,
+    pub module_path: Option<String>,
+    pub message: String,
+    pub code: i64,
 }
 
 /// Per-stage timings and peak memory a worker self-reports for a bridge call.
@@ -1034,6 +1380,32 @@ pub(crate) struct CandidateSuccessResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct BaselineSuccessResponse {
+    protocol_version: u32,
+    request_id: String,
+    kind: BaselineKind,
+    binding: BridgeBinding,
+    ok: True,
+    result: BaselineResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) metrics: Option<WorkerSelfMetrics>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct BaselineErrorResponse {
+    protocol_version: u32,
+    request_id: String,
+    kind: BaselineKind,
+    binding: BridgeBinding,
+    ok: False,
+    error: BridgeErrorPayload,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) metrics: Option<WorkerSelfMetrics>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AnalyzeErrorResponse {
     protocol_version: u32,
     request_id: String,
@@ -1058,9 +1430,14 @@ pub(crate) struct CandidateErrorResponse {
     pub(crate) metrics: Option<WorkerSelfMetrics>,
 }
 
+/// UNTAGGED: the baseline variants come FIRST so their literal
+/// [`BaselineKind`] gets first refusal on a frame whose shape an analyze
+/// response would otherwise absorb (see [`BaselineKind`]).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub(crate) enum BridgeResponse {
+    BaselineSuccess(BaselineSuccessResponse),
+    BaselineError(BaselineErrorResponse),
     AnalyzeSuccess(AnalyzeSuccessResponse),
     CandidateSuccess(CandidateSuccessResponse),
     AnalyzeError(AnalyzeErrorResponse),
@@ -1084,13 +1461,46 @@ impl BridgeResponse {
     pub(crate) fn into_candidate_result(self) -> Result<WireGraphDelta> {
         match self {
             Self::CandidateSuccess(response) => Ok(response.result.delta),
-            Self::CandidateError(response) => bail!(
-                "Node bridge candidate failed at {:?}/{}: {}",
+            Self::CandidateError(response) => {
+                let error = response.error;
+                Err(candidate_failure_to_error(
+                    error.stage,
+                    error.code,
+                    error.message,
+                    error.diagnostics,
+                ))
+            }
+            _ => bail!("Node bridge response is not a buildValidateCandidate response"),
+        }
+    }
+
+    /// The seed-green verdict, or the operational failure that stopped the
+    /// worker from producing one. A RED verdict is `Ok(BaselineVerdict { green:
+    /// false, .. })`: the worker finished judging. Only "could not finish" is
+    /// `Err` — and the startup gate refuses to serve on either.
+    pub(crate) fn into_baseline_result(self) -> Result<BaselineVerdict> {
+        match self {
+            Self::BaselineSuccess(response) => Ok(BaselineVerdict {
+                green: response.result.green,
+                diagnostics: response
+                    .result
+                    .diagnostics
+                    .into_iter()
+                    .map(|diagnostic| BaselineDiagnostic {
+                        node_id: diagnostic.node_id,
+                        module_path: diagnostic.module_path,
+                        message: diagnostic.message,
+                        code: diagnostic.code,
+                    })
+                    .collect(),
+            }),
+            Self::BaselineError(response) => bail!(
+                "Node bridge baseline validation failed at {:?}/{}: {}",
                 response.error.stage,
                 response.error.code,
                 response.error.message
             ),
-            _ => bail!("Node bridge response is not a buildValidateCandidate response"),
+            _ => bail!("Node bridge response is not a validateBaseline response"),
         }
     }
 
@@ -1098,8 +1508,10 @@ impl BridgeResponse {
         match self {
             Self::AnalyzeSuccess(response) => response.metrics.as_ref(),
             Self::CandidateSuccess(response) => response.metrics.as_ref(),
+            Self::BaselineSuccess(response) => response.metrics.as_ref(),
             Self::AnalyzeError(response) => response.metrics.as_ref(),
             Self::CandidateError(response) => response.metrics.as_ref(),
+            Self::BaselineError(response) => response.metrics.as_ref(),
         }
     }
 
@@ -1129,6 +1541,18 @@ impl BridgeResponse {
                 response.kind,
                 ResponseBinding::Candidate(&response.binding),
             ),
+            Self::BaselineSuccess(response) => (
+                response.protocol_version,
+                response.request_id.as_str(),
+                BridgeKind::ValidateBaseline,
+                ResponseBinding::Baseline(&response.binding),
+            ),
+            Self::BaselineError(response) => (
+                response.protocol_version,
+                response.request_id.as_str(),
+                BridgeKind::ValidateBaseline,
+                ResponseBinding::Baseline(&response.binding),
+            ),
         };
         ensure!(
             protocol_version == PROTOCOL_VERSION,
@@ -1157,6 +1581,9 @@ impl BridgeResponse {
                     "candidate response binding mismatch"
                 );
             }
+            (BridgeRequest::ValidateBaseline(expected), ResponseBinding::Baseline(actual)) => {
+                ensure!(actual == &expected.binding, "response binding mismatch");
+            }
             _ => bail!("response schema does not match request kind"),
         }
         Ok(())
@@ -1177,8 +1604,31 @@ impl BridgeResponse {
                 );
                 Ok(())
             }
+            Self::BaselineSuccess(response) => {
+                // A GREEN baseline is contradictory if it also carries
+                // diagnostics: the daemon only prints them when refusing.
+                ensure!(
+                    !response.result.green || response.result.diagnostics.is_empty(),
+                    "green baseline response contains diagnostics"
+                );
+                bounded_len(
+                    "result.diagnostics",
+                    response.result.diagnostics.len(),
+                )?;
+                for (index, diagnostic) in response.result.diagnostics.iter().enumerate() {
+                    diagnostic.validate(&format!("result.diagnostics[{index}]"))?;
+                }
+                let bytes = serde_json::to_vec(&response.result.diagnostics)
+                    .context("serialize baseline diagnostics for bound check")?;
+                ensure!(
+                    bytes.len() <= max_diagnostic_bytes,
+                    "baseline diagnostics exceed configured byte limit"
+                );
+                Ok(())
+            }
             Self::AnalyzeError(response) => response.error.validate(max_diagnostic_bytes),
             Self::CandidateError(response) => response.error.validate(max_diagnostic_bytes),
+            Self::BaselineError(response) => response.error.validate(max_diagnostic_bytes),
         }
     }
 }
@@ -1186,6 +1636,7 @@ impl BridgeResponse {
 enum ResponseBinding<'a> {
     Analyze(&'a BridgeBinding),
     Candidate(&'a CandidateBinding),
+    Baseline(&'a BridgeBinding),
 }
 
 pub(crate) fn parse_bridge_request(bytes: &[u8]) -> Result<BridgeRequest> {
@@ -1275,6 +1726,7 @@ pub(crate) enum MirrorCandidateResponse {
         stage: ErrorStage,
         code: String,
         message: String,
+        diagnostics: Vec<BridgeDiagnostic>,
     },
 }
 
@@ -1333,6 +1785,7 @@ pub(crate) fn parse_mirror_candidate_delta(
                 stage: inner.error.stage,
                 code: inner.error.code,
                 message: inner.error.message,
+                diagnostics: inner.error.diagnostics,
             })
         }
         _ => bail!("mirror candidate response is not a buildValidateCandidate response"),
@@ -1388,4 +1841,350 @@ fn compare_references(left: &WireReference, right: &WireReference) -> Ordering {
     compare_code_units(&left.from_node_id, &right.from_node_id)
         .then_with(|| compare_code_units(&left.to_node_id, &right.to_node_id))
         .then_with(|| compare_code_units(&left.kind, &right.kind))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diagnostic_json(node_id: Option<&str>, module_path: Option<&str>, code: i64) -> serde_json::Value {
+        serde_json::json!({
+            "nodeId": node_id,
+            "modulePath": module_path,
+            "message": "diagnostic message",
+            "code": code,
+        })
+    }
+
+    fn sample_candidate_binding() -> CandidateBinding {
+        CandidateBinding {
+            service_epoch: WireU64::new(1),
+            graph_generation: WireU64::new(0),
+            graph_digest: Hash64::parse("a".repeat(64)).unwrap(),
+            attempt_id: "attempt:test".into(),
+            scope_fingerprint: Hash64::parse("b".repeat(64)).unwrap(),
+        }
+    }
+
+    fn candidate_binding_json(binding: &CandidateBinding) -> serde_json::Value {
+        serde_json::json!({
+            "serviceEpoch": binding.service_epoch.get().to_string(),
+            "graphGeneration": binding.graph_generation.get().to_string(),
+            "graphDigest": binding.graph_digest.as_str(),
+            "attemptId": binding.attempt_id,
+            "scopeFingerprint": binding.scope_fingerprint.as_str(),
+        })
+    }
+
+    fn candidate_error_response_json(
+        binding: &CandidateBinding,
+        stage: &str,
+        code: &str,
+        diagnostics: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "requestId": "candidate:test",
+            "kind": "buildValidateCandidate",
+            "binding": candidate_binding_json(binding),
+            "ok": false,
+            "error": {
+                "stage": stage,
+                "code": code,
+                "message": "candidate rejected",
+                "diagnostics": diagnostics,
+            },
+        })
+    }
+
+    fn candidate_error_response(
+        stage: &str,
+        code: &str,
+        diagnostics: Vec<serde_json::Value>,
+    ) -> BridgeResponse {
+        let binding = sample_candidate_binding();
+        let value = candidate_error_response_json(&binding, stage, code, diagnostics);
+        serde_json::from_value(value).expect("valid candidate error response frame")
+    }
+
+    #[test]
+    fn typescript_failure_downcasts_to_candidate_rejected_with_diagnostics() {
+        let diagnostics = vec![
+            diagnostic_json(Some("node-1"), Some("src/a.ts"), 2322),
+            diagnostic_json(None, None, 9999),
+        ];
+        let response = candidate_error_response("validate", "typescriptFailed", diagnostics);
+        let error = response.into_candidate_result().unwrap_err();
+        let rejected = error
+            .downcast_ref::<CandidateRejected>()
+            .expect("expected CandidateRejected");
+        assert_eq!(rejected.stage, "validate");
+        assert_eq!(rejected.code, "typescriptFailed");
+        assert_eq!(rejected.diagnostics.len(), 2);
+        assert_eq!(rejected.diagnostics[0].node_id.as_deref(), Some("node-1"));
+        assert_eq!(
+            rejected.diagnostics[0].module_path.as_deref(),
+            Some("src/a.ts")
+        );
+        assert_eq!(rejected.diagnostics[0].code, 2322);
+        assert_eq!(rejected.diagnostics[1].node_id, None);
+        assert_eq!(rejected.diagnostics[1].module_path, None);
+        assert_eq!(rejected.diagnostics[1].code, 9999);
+    }
+
+    #[test]
+    fn behavioral_failure_downcasts_with_message() {
+        let response = candidate_error_response("validate", "behavioralFailed", vec![]);
+        let error = response.into_candidate_result().unwrap_err();
+        let rejected = error
+            .downcast_ref::<CandidateRejected>()
+            .expect("expected CandidateRejected");
+        assert_eq!(rejected.code, "behavioralFailed");
+        assert_eq!(rejected.message, "candidate rejected");
+    }
+
+    #[test]
+    fn mutation_failure_downcasts() {
+        // v2 correction: the semantic mutate-stage rejection code is
+        // "intentRejected", not "mutationFailed" (see
+        // operational_failures_do_not_downcast for the latter).
+        let response = candidate_error_response("mutate", "intentRejected", vec![]);
+        let error = response.into_candidate_result().unwrap_err();
+        let rejected = error
+            .downcast_ref::<CandidateRejected>()
+            .expect("expected CandidateRejected");
+        assert_eq!(rejected.stage, "mutate");
+        assert_eq!(rejected.code, "intentRejected");
+    }
+
+    #[test]
+    fn operational_failures_do_not_downcast() {
+        let cases = [
+            ("hydrate", "hydrateFailed"),
+            ("validate", "candidateFinalizeFailed"),
+            // Both process-group timeout codes the bounded gate emits
+            // (B-2 Task 6): "we could not finish judging", never a rejection.
+            ("validate", "vitestTimedOut"),
+            ("validate", "tscTimedOut"),
+            // v2 correction: mutationFailed is OPERATIONAL, not semantic.
+            ("mutate", "mutationFailed"),
+        ];
+        for (stage, code) in cases {
+            let response = candidate_error_response(stage, code, vec![]);
+            let error = response.into_candidate_result().unwrap_err();
+            assert!(
+                error.downcast_ref::<CandidateRejected>().is_none(),
+                "expected {stage}/{code} to stay operational, not downcast"
+            );
+        }
+    }
+
+    #[test]
+    fn context_wrapping_preserves_downcast() {
+        let response = candidate_error_response("validate", "typescriptFailed", vec![]);
+        let error = response
+            .into_candidate_result()
+            .unwrap_err()
+            .context("outer");
+        assert!(error.downcast_ref::<CandidateRejected>().is_some());
+    }
+
+    #[test]
+    fn mirror_failure_carries_diagnostics() {
+        let binding = sample_candidate_binding();
+        let diagnostics = vec![diagnostic_json(Some("node-2"), None, 555)];
+        let value =
+            candidate_error_response_json(&binding, "validate", "typescriptFailed", diagnostics);
+        let result = parse_mirror_candidate_delta(value, &binding, 64 * 1024).unwrap();
+        match result {
+            MirrorCandidateResponse::Failed {
+                stage,
+                code,
+                message,
+                diagnostics,
+            } => {
+                assert_eq!(stage, ErrorStage::Validate);
+                assert_eq!(code, "typescriptFailed");
+                assert_eq!(message, "candidate rejected");
+                assert_eq!(diagnostics.len(), 1);
+                assert_eq!(diagnostics[0].node_id.as_deref(), Some("node-2"));
+                assert_eq!(diagnostics[0].module_path, None);
+                assert_eq!(diagnostics[0].code, 555);
+            }
+            MirrorCandidateResponse::Delta(_) => panic!("expected Failed"),
+        }
+    }
+
+    #[test]
+    fn behavioral_profile_is_unconstructible_with_zero_fixtures() {
+        assert!(
+            ValidationProfile::behavioral("/c/src", "/c", Vec::new(), true, 60_000, 90_000)
+                .is_err()
+        );
+        let manual = ValidationProfile::Behavioral {
+            source_root: "/c/src".into(),
+            corpus_root: "/c".into(),
+            behavioral_fixtures: Vec::new(),
+            strict_src_only_tsc_scope: true,
+            tsc_timeout_ms: 60_000,
+            vitest_timeout_ms: 90_000,
+        };
+        assert!(
+            manual.validate().is_err(),
+            "validate() must also enforce the invariant"
+        );
+    }
+
+    /// The default (no `--validation-manifest`) wire must stay BYTE-IDENTICAL
+    /// to the pre-B-2 profile: exactly five keys, with the new optional
+    /// timeouts ABSENT rather than serialized as null.
+    #[test]
+    fn tsc_only_profile_omits_the_timeout_keys_entirely() {
+        let value =
+            serde_json::to_value(ValidationProfile::tsc_only("/c/src", "/c", true)).unwrap();
+        // serde_json's default map is sorted, so compare key SETS (exactly
+        // what the acceptance suite's `assert_exact_object_keys` does).
+        let keys: BTreeSet<&str> = value
+            .as_object()
+            .expect("profile object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "mode",
+                "sourceRoot",
+                "corpusRoot",
+                "behavioralFixtures",
+                "strictSrcOnlyTscScope",
+            ]),
+            "the no-manifest profile must serialize the historic five keys only"
+        );
+        assert_eq!(value["mode"], "tscOnly");
+    }
+
+    /// A manifest-backed behavioral profile carries both budgets, always.
+    #[test]
+    fn behavioral_profile_serializes_exactly_seven_keys() {
+        let profile = ValidationProfile::behavioral(
+            "/c/src",
+            "/c",
+            vec!["tests/a.test.ts".to_owned()],
+            true,
+            60_000,
+            90_000,
+        )
+        .unwrap();
+        let value = serde_json::to_value(&profile).unwrap();
+        let keys: BTreeSet<&str> = value
+            .as_object()
+            .expect("profile object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "mode",
+                "sourceRoot",
+                "corpusRoot",
+                "behavioralFixtures",
+                "strictSrcOnlyTscScope",
+                "tscTimeoutMs",
+                "vitestTimeoutMs",
+            ])
+        );
+        assert_eq!(value["tscTimeoutMs"], 60_000);
+        assert_eq!(value["vitestTimeoutMs"], 90_000);
+        // Round-trips through the strict wire parser.
+        let parsed: ValidationProfile = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, profile);
+        assert!(parsed.validate().is_ok());
+    }
+
+    /// A tscOnly profile MAY carry timeouts (an operator manifest in tscOnly
+    /// mode), and both variants bound every present value to 1s..=180s.
+    #[test]
+    fn present_profile_timeouts_are_bounded_on_both_variants() {
+        let with_timeouts: ValidationProfile = serde_json::from_value(serde_json::json!({
+            "mode": "tscOnly",
+            "sourceRoot": "/c/src",
+            "corpusRoot": "/c",
+            "behavioralFixtures": [],
+            "strictSrcOnlyTscScope": true,
+            "tscTimeoutMs": 60_000,
+            "vitestTimeoutMs": 90_000,
+        }))
+        .unwrap();
+        assert!(with_timeouts.validate().is_ok());
+
+        for (tsc, vitest) in [(999_u64, 90_000_u64), (60_000, 180_001), (0, 90_000)] {
+            let out_of_bounds: ValidationProfile = serde_json::from_value(serde_json::json!({
+                "mode": "tscOnly",
+                "sourceRoot": "/c/src",
+                "corpusRoot": "/c",
+                "behavioralFixtures": [],
+                "strictSrcOnlyTscScope": true,
+                "tscTimeoutMs": tsc,
+                "vitestTimeoutMs": vitest,
+            }))
+            .unwrap();
+            assert!(
+                out_of_bounds.validate().is_err(),
+                "tscOnly must reject {tsc}/{vitest}"
+            );
+
+            let behavioral = ValidationProfile::Behavioral {
+                source_root: "/c/src".into(),
+                corpus_root: "/c".into(),
+                behavioral_fixtures: vec!["tests/a.test.ts".to_owned()],
+                strict_src_only_tsc_scope: true,
+                tsc_timeout_ms: tsc,
+                vitest_timeout_ms: vitest,
+            };
+            assert!(
+                behavioral.validate().is_err(),
+                "behavioral must reject {tsc}/{vitest}"
+            );
+        }
+    }
+
+    /// The behavioral variant cannot be deserialized without both budgets —
+    /// a behavioral run with no bound is exactly what this task forbids.
+    #[test]
+    fn behavioral_profile_without_timeouts_does_not_deserialize() {
+        let missing = serde_json::json!({
+            "mode": "behavioral",
+            "sourceRoot": "/c/src",
+            "corpusRoot": "/c",
+            "behavioralFixtures": ["tests/a.test.ts"],
+            "strictSrcOnlyTscScope": true,
+        });
+        assert!(serde_json::from_value::<ValidationProfile>(missing).is_err());
+    }
+
+    #[test]
+    fn candidate_deadline_nests_tsc_plus_vitest_plus_overhead() {
+        let profile = ValidationProfile::behavioral(
+            "/c/src",
+            "/c",
+            vec!["tests/a.test.ts".to_owned()],
+            true,
+            60_000,
+            90_000,
+        )
+        .unwrap();
+        assert_eq!(
+            profile.candidate_deadline(),
+            Some(std::time::Duration::from_millis(
+                60_000 + 90_000 + CANDIDATE_OVERHEAD_MS
+            ))
+        );
+        // No manifest → no derived deadline; the caller keeps its own.
+        assert_eq!(
+            ValidationProfile::tsc_only("/c/src", "/c", true).candidate_deadline(),
+            None
+        );
+    }
 }

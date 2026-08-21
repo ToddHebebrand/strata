@@ -1,0 +1,2283 @@
+
+> strata@0.0.0 kernel:full-key-free:test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate
+> pnpm kernel:bridge:test && cargo test -p strata-kernel --features redb-spike-api --test full_key_free_acceptance -- --include-ignored --nocapture && cargo test -p strata-kernel && cargo test -p strata-kernel --features coordination-test-api && cargo test -p strata-kernel --features redb-spike-api && cargo test -p strata-kernel --test api_sealing -- --nocapture && pnpm kernel:gate1:test && pnpm kernel:gate2:test && pnpm kernel:gate3:test && pnpm kernel:oracle:test && pnpm kernel:memory:test && pnpm kernel:discovery:test && pnpm kernel:behavioral:test
+
+
+> strata@0.0.0 kernel:bridge:test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate
+> pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/kernel-bridge test && cargo test -p strata-kernel --test node_bridge -- --ignored --nocapture
+
+
+> @strata-code/kernel-bridge@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/kernel-bridge
+> tsc -b
+
+
+> @strata-code/kernel-bridge@0.0.0 test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/kernel-bridge
+> vitest run
+
+
+ RUN  v3.2.4 /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/kernel-bridge
+
+ ✓ tests/frames.test.ts (8 tests) 8ms
+ ✓ tests/syncDigest.test.ts (7 tests | 1 skipped) 10ms
+ ✓ tests/metrics.test.ts (3 tests) 11ms
+ ✓ tests/sync.test.ts (12 tests) 85ms
+ ✓ tests/protocol.test.ts (24 tests) 45ms
+ ✓ tests/analyzeMemo.test.ts (5 tests) 57ms
+ ✓ tests/snapshot.test.ts (12 tests) 195ms
+ ✓ tests/analyze.test.ts (12 tests) 592ms
+ ✓ tests/persistentLoop.test.ts (4 tests) 1385ms
+   ✓ persistent worker loop > serves correlated requests strictly serially, survives per-request errors, and acks shutdown  449ms
+   ✓ persistent worker loop > hydrates a long-lived mirror, serves snapshot-free analyzes, and syncs deltas (Task 6)  317ms
+   ✓ persistent worker loop > exits 0 on stdin EOF without a shutdown frame  321ms
+ ✓ tests/worker.test.ts (16 tests) 6167ms
+   ✓ bounded one-shot worker > emits exactly one newline-terminated analyze success frame  388ms
+   ✓ bounded one-shot worker > emits opt-in stage metrics only when --emit-metrics is in argv  311ms
+   ✓ bounded one-shot worker > emits exactly one newline-terminated candidate success frame  1059ms
+   ✓ bounded one-shot worker > fails boundedly for unknown field input  441ms
+   ✓ bounded one-shot worker > converts a thrown handler error to one bounded protocol frame  432ms
+   ✓ bounded one-shot worker > drops metrics (not the semantic response) when attaching them would overflow the bound  473ms
+   ✓ bounded one-shot worker > normalizes and deterministically truncates combined diagnostics  519ms
+   ✓ bounded one-shot worker > bounds the complete serialized diagnostics array deterministically  503ms
+   ✓ bounded one-shot worker > keeps empty diagnostics and omits one indivisibly oversized diagnostic  659ms
+ ✓ tests/baseline.test.ts (5 tests) 6573ms
+   ✓ seed-green baseline validation > reports green for a type-clean corpus whose scoped fixture passes  1862ms
+   ✓ seed-green baseline validation > reports red with the vitest failure text when a scoped fixture fails  1301ms
+   ✓ seed-green baseline validation > fails operationally with vitestTimedOut when a fixture outruns the budget  2220ms
+   ✓ seed-green baseline validation > runs a tsc-only baseline with no fixtures and stays green  617ms
+   ✓ seed-green baseline validation > reports red for a tsc-only baseline over a corpus with a type error  571ms
+ ✓ tests/candidateIsolation.test.ts (9 tests) 6619ms
+   ✓ mirror candidate savepoint isolation (Task 7) > gate (a): successful candidate equals one-shot and leaves the mirror byte-identical  998ms
+   ✓ mirror candidate savepoint isolation (Task 7) > gate (b): failing candidate (type error) reports identically to one-shot, fingerprints equal  988ms
+   ✓ mirror candidate cross-candidate leakage (gate f) > two back-to-back mirror candidates equal two fresh one-shot runs with a correct analyze between  1391ms
+   ✓ persistent worker mirror candidates (Task 7, loop level) > serves a snapshot-free candidate from the mirror, refuses mismatched identities, and recovers after a mid-candidate kill  1907ms
+   ✓ persistent worker mirror candidates (Task 7, loop level) > poison-state (gate e): corrupting seam poisons the worker, which refuses ALL subsequent requests  703ms
+ ✓ tests/candidate.test.ts (21 tests) 6993ms
+   ✓ validated scratch candidates > builds a TypeScript-clean real-corpus rename delta from one change set  747ms
+   ✓ validated scratch candidates > adds one uniform parameter value at every real greet callsite with bounded ID churn  366ms
+   ✓ validated scratch candidates > maps a null default value to the store operation's undefined input  753ms
+   ✓ validated scratch candidates > uses one explicitly scoped passing behavioral fixture and ignores unrelated red fixtures  1375ms
+   ✓ validated scratch candidates > fails a behavioral candidate whose fixture outruns the vitest timeout with vitestTimedOut  2347ms
+
+ Test Files  13 passed (13)
+      Tests  137 passed | 1 skipped (138)
+   Start at  22:32:57
+   Duration  8.81s (transform 1.47s, setup 0ms, collect 16.56s, tests 28.74s, environment 1ms, prepare 1.54s)
+
+   Compiling strata-kernel v0.1.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/crates/strata-kernel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.59s
+     Running tests/node_bridge.rs (target/debug/deps/node_bridge-1761a31b9594d2c8)
+
+running 4 tests
+test real_worker_derives_greet_callsites_with_production_policy ... ok
+test real_worker_derives_wide_user_rename_without_node_authority_fields ... ok
+test coordination_phases_attribute_their_bridge_runs ... ok
+test real_user_rename_publishes_one_rust_operation_and_recovers_without_node ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 2.45s
+
+   Compiling strata-kernel v0.1.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/crates/strata-kernel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.07s
+     Running tests/full_key_free_acceptance.rs (target/debug/deps/full_key_free_acceptance-3c76d75517ba1678)
+
+running 14 tests
+test acceptance_manifest_covers_each_governing_row_exactly_once ... ok
+test manifest_backed_behavioral_validation_profile_carries_exactly_seven_keys ... ok
+test row_3_real_reference_facts_infer_overlap_before_mutation ... ok
+test row_10_add_parameter_alone_fails_validation_without_publication ... ok
+test row_2_same_symbol_real_renames_require_a_fresh_decision ... ok
+test row_12_real_worker_requests_are_bounded_semantic_inputs_only ... ok
+test rows_6_7_11_restart_fences_old_claim_and_preserves_queue_events_and_exactly_once_publish ... ok
+test row_4_add_parameter_requeues_before_build_and_updates_the_new_callsite ... ok
+test row_10_only_green_together_change_set_publishes_once ... ok
+test row_9_real_publications_replay_exactly_across_a_generation_two_snapshot ... ok
+test same_module_disjoint_renames_publish_concurrently_in_both_orders ... ok
+test row_1_disjoint_real_renames_publish_in_both_orders ... ok
+test row_5_real_scopes_age_the_old_wide_ticket_while_only_disjoint_work_bypasses ... ok
+test row_8_real_claimed_node_publication_crashes_complete_old_or_new ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 13.86s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/lib.rs (target/debug/deps/strata_kernel-d3b1f70d3433c85e)
+
+running 101 tests
+test bridge::executor::tests::untyped_pre_transport_errors_still_fall_back ... ok
+test bridge::executor::tests::only_queued_phase_transport_failures_may_fall_back_one_shot ... ok
+test bridge::executor::tests::message_text_alone_never_grants_a_fallback ... ok
+test bridge::executor::tests::candidate_request_is_bound_only_to_kernel_prepared_authority ... ok
+test bridge::persistent::tests::ahead_refusal_serves_one_shot_without_hydrate_rollback ... ok
+test bridge::persistent::tests::malformed_response_frame_poisons ... ok
+test bridge::persistent::tests::oversized_request_is_phase_queued_because_the_worker_is_untouched ... ok
+test bridge::persistent::tests::hydrate_at_failures_are_phase_sync ... ok
+test bridge::executor::tests::candidate_response_rejects_malformed_or_misbound_data_before_rust_digesting ... ok
+test bridge::persistent::tests::clean_shutdown_reaps_worker_with_exit_zero ... ok
+test bridge::persistent::tests::hydrate_at_attests_without_dispatching_a_semantic_frame ... ok
+test bridge::persistent::tests::oversized_request_is_refused_host_side_without_poisoning ... ok
+test bridge::persistent::tests::oversized_response_frame_poisons ... ok
+test bridge::persistent::tests::refusal_triggered_hydrate_retry_recovers_the_request ... ok
+test bridge::persistent::tests::request_id_mismatch_poisons ... ok
+test bridge::persistent::tests::crash_mid_sync_respawns_and_full_hydrates_on_the_next_request ... ok
+test bridge::persistent::tests::semantic_frame_refusal_clears_attestation_without_poison ... ok
+test bridge::persistent::tests::crash_mid_request_errors_and_next_call_lazily_respawns ... ok
+test bridge::persistent::tests::g_and_g_plus_one_sync_dispatch_pairs_never_interleave ... ok
+test bridge::process::tests::run_records::behavioral_validation_derives_the_nested_candidate_deadline ... ok
+test bridge::persistent::tests::semantic_frame_refusal_is_phase_exchange ... ok
+test bridge::persistent::tests::sync_refusal_clears_attestation_and_retries_once_with_full_hydrate ... ok
+test bridge::persistent::tests::sync_refusal_is_phase_sync ... ok
+test bridge::persistent::tests::stderr_overflow_poisons ... ok
+test bridge::persistent::tests::sync_then_dispatch_with_attested_fast_path_and_epoch ... ok
+test bridge::process::tests::run_records::tsc_only_config_defaults_candidate_deadline_to_the_request_deadline ... ok
+test bridge::process::tests::timeout_cleanup_failure_is_not_hidden_by_successful_cleanup_text ... ok
+test bridge::protocol::tests::behavioral_failure_downcasts_with_message ... ok
+test bridge::protocol::tests::behavioral_profile_is_unconstructible_with_zero_fixtures ... ok
+test bridge::protocol::tests::behavioral_profile_serializes_exactly_seven_keys ... ok
+test bridge::protocol::tests::behavioral_profile_without_timeouts_does_not_deserialize ... ok
+test bridge::protocol::tests::candidate_deadline_nests_tsc_plus_vitest_plus_overhead ... ok
+test bridge::protocol::tests::context_wrapping_preserves_downcast ... ok
+test bridge::protocol::tests::mirror_failure_carries_diagnostics ... ok
+test bridge::protocol::tests::mutation_failure_downcasts ... ok
+test bridge::protocol::tests::operational_failures_do_not_downcast ... ok
+test bridge::protocol::tests::present_profile_timeouts_are_bounded_on_both_variants ... ok
+test bridge::protocol::tests::tsc_only_profile_omits_the_timeout_keys_entirely ... ok
+test bridge::protocol::tests::typescript_failure_downcasts_to_candidate_rejected_with_diagnostics ... ok
+test bridge::provider::tests::analysis_request_rebinds_a_durable_intent_to_the_current_graph_without_mutation ... ok
+test bridge::provider::tests::content_dependencies_pin_namespace_membership_without_reserving ... ok
+test bridge::provider::tests::declaration_name_rejects_malformed_and_ambiguous_identifier_payloads ... ok
+test bridge::provider::tests::declaration_name_tokens_match_persisted_kinds_and_typescript_offsets ... ok
+test bridge::provider::tests::declaration_name_tokens_reject_destructuring_malformed_and_escaped_bindings ... ok
+test bridge::process::tests::reader_pair_join_waits_for_stderr_after_stdout_fails ... ok
+test bridge::provider::tests::declaration_name_uses_the_exact_payload_token_not_a_colliding_child ... ok
+test bridge::provider::tests::facts_reject_unknown_mistyped_mismatched_and_unresolved_members ... ok
+test bridge::provider::tests::provider_reanalyzes_a_durable_intent_once_against_fresh_g1_scope ... ignored, requires pnpm kernel:bridge:build
+test bridge::process::tests::run_records::collect_flag_gates_buffering_and_the_emit_metrics_argument ... ok
+test bridge::provider::tests::rename_namespace_and_absence_resources_are_derived_only_from_rust_inputs ... ok
+test bridge::provider::tests::facts_resolve_to_exact_records_memberships_and_fresh_scope ... ok
+test bridge::router::tests::non_published_identity_is_never_routed_to_the_mirror ... ok
+test bridge::sync_state::tests::ahead_attestation_is_refused_without_any_frame ... ok
+test bridge::sync_state::tests::batch_requires_contiguous_coverage ... ok
+test bridge::sync_state::tests::byte_cap_evicts_from_the_front_whichever_cap_first ... ok
+test bridge::process::tests::run_records::spawn_records_one_ok_run_with_worker_metrics ... ok
+test bridge::sync_state::tests::discontinuous_append_resets_history ... ok
+test bridge::sync_state::tests::captured_batch_survives_append_driven_truncation ... ok
+test bridge::sync_state::tests::entry_cap_evicts_from_the_front ... ok
+test bridge::sync_state::tests::oversized_batch_plans_full_hydrate ... ok
+test bridge::sync_state::tests::plan_yields_exact_contiguous_sync_frame ... ok
+test bridge::sync_state::tests::no_attestation_or_below_floor_plans_full_hydrate ... ok
+test bridge::sync_state::tests::raced_target_no_longer_published_is_refused ... ok
+test bridge::sync_state::tests::record_published_appends_only_contiguous_steps ... ok
+test bridge::sync_state::tests::routing_predicate_is_structural_identity_comparison ... ok
+test coordination::analyzer::tests::existing_identifier_cannot_gain_write_authority_by_reparenting_into_a_writable_statement ... ok
+test coordination::analyzer::tests::fresh_reference_from_materialized_identifier_accepts_a_pinned_target ... ok
+test coordination::analyzer::tests::fresh_reference_without_pin_or_reservation_is_still_rejected ... ok
+test coordination::analyzer::tests::payload_only_upsert_needs_no_parent_reservation ... ok
+test coordination::analyzer::tests::production_idempotency_and_expansion_policy_are_rust_owned ... ok
+test coordination::analyzer::tests::retargeting_an_existing_reference_ignores_validation_pins ... ok
+test coordination::analyzer::tests::shape_changing_upsert_still_needs_the_parent_reservation ... ok
+test coordination::coordinator::tests::offer_context_rejects_a_stale_service_epoch_directly ... ok
+test coordination::analyzer::tests::writable_statement_narrowly_authorizes_materialized_identifier_children_and_edges ... ok
+test coordination::resources::tests::children_resource_is_payload_insensitive_but_shape_sensitive ... ok
+test coordination::resources::tests::children_of_index_matches_filter_scan ... ok
+test coordination::resources::tests::equivalence_on_hostile_synthetic_graph ... ok
+test coordination::resources::tests::equivalence_on_post_apply_state ... ok
+test coordination::resources::tests::equivalence_sampled_at_big1k_scale ... ignored, big1k-scale spot check; run explicitly with --ignored
+test coordination::resources::tests::payload_only_upsert_does_not_bump_parent_membership ... ok
+test coordination::resources::tests::shape_changes_still_bump_parent_membership ... ok
+test model::tests::operation_intent_record_round_trips_parameters_json ... ok
+test model::tests::operation_record_without_intents_field_deserializes_with_empty_intents ... ok
+test sync_digest::tests::digest_is_input_order_independent ... ok
+test sync_digest::tests::empty_graph_digest_hashes_the_documented_literal_encoding ... ok
+test sync_digest::tests::pinned_vectors_reproduce_expected_digests ... ok
+test bridge::process::tests::run_records::enter_phase_attributes_records_then_restores_to_unattributed ... ok
+test sync_digest::tests::regenerate_pinned_vectors_when_requested ... ok
+test sync_digest::tests::randomized_differential_vectors_for_typescript ... ok
+test bridge::router::tests::candidate_speculative_identity_is_never_routed_to_the_mirror ... ok
+test bridge::persistent::tests::worker_reported_mirror_poison_kills_and_respawns_with_full_rehydrate ... ok
+test bridge::router::tests::epoch_mismatch_kills_the_worker_and_disables_the_persistent_path ... ok
+test bridge::persistent::tests::deadline_before_the_worker_attests_is_phase_sync ... ok
+test bridge::persistent::tests::deadline_exceeded_mid_request_poisons ... ok
+test bridge::persistent::tests::mid_exchange_deadline_is_phase_exchange_so_no_one_shot_replay_may_follow ... ok
+test bridge::persistent::tests::unsolicited_frame_poisons_and_next_call_respawns_with_new_pid ... ok
+test bridge::persistent::tests::queued_deadline_is_phase_queued_so_the_caller_may_fall_back_one_shot ... ok
+test coordination::resources::tests::equivalence_on_medium_corpus_fixture ... ok
+test bridge::persistent::tests::queued_caller_deadline_expires_without_poisoning_worker ... ok
+test bridge::process::tests::run_records::candidate_and_analyze_requests_use_their_own_deadlines ... ok
+test bridge::process::tests::run_records::timed_out_run_records_timeout_outcome_and_accumulates_starts ... ok
+
+test result: ok. 99 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 10.14s
+
+     Running unittests src/bin/strata_kernel_service/main.rs (target/debug/deps/strata_kernel_service-3f75c04e3b8c52fa)
+
+running 42 tests
+test audit::tests::events_without_validation_identity_serialize_no_new_keys ... ok
+test manifest::tests::fixture_carrying_tsc_only_manifest_is_rejected ... ok
+test manifest::tests::duplicate_fixture_path_is_rejected ... ok
+test metrics::tests::behavioral_request_records_disclose_present_measurements_only ... ok
+test metrics::tests::tsc_only_request_records_carry_no_disclosure_keys ... ok
+test paths::tests::absolute_payload_outside_root_fails_closed_without_leaking_payload ... ok
+test paths::tests::absolute_payload_under_root_projects_corpus_relative ... ok
+test paths::tests::dot_dot_dot_and_doubled_separator_components_fail_closed ... ok
+test paths::tests::empty_and_backslash_payloads_fail_closed ... ok
+test manifest::tests::wrong_schema_version_is_rejected ... ok
+test paths::tests::over_long_projection_fails_closed ... ok
+test paths::tests::relative_payload_projects_verbatim_as_posix ... ok
+test paths::tests::root_itself_fails_closed ... ok
+test paths::tests::sibling_directory_sharing_a_name_prefix_fails_closed ... ok
+test protocol::tests::get_references_request_bounds_limit_at_256 ... ok
+test protocol::tests::diagnostic_module_path_is_optional_but_validated ... ok
+test protocol::tests::list_modules_request_rejects_zero_and_over_bound_limits ... ok
+test protocol::tests::module_declarations_response_rejects_unknown_kind ... ok
+test protocol::tests::module_path_validator_fails_closed ... ok
+test protocol::tests::read_operation_response_accepts_max_intents_boundary ... ok
+test protocol::tests::read_operation_response_rejects_one_past_max_intents ... ok
+test protocol::tests::read_validation_fixture_request_accepts_any_offset ... ok
+test audit::tests::a_pre_b2_audit_log_still_reopens_and_extends_its_hash_chain ... ok
+test protocol::tests::read_validation_fixture_request_bounds_length_at_8192 ... ok
+test protocol::tests::read_validation_fixture_request_requires_a_digest_shaped_id ... ok
+test protocol::tests::validation_fixture_chunk_response_bounds_and_alphabet ... ok
+test protocol::tests::validation_fixtures_response_bounds_the_listing_and_its_items ... ok
+test session::tests::base64_encode_covers_every_alphabet_symbol_including_62_and_63 ... ok
+test session::tests::base64_encode_matches_rfc4648_vectors ... ok
+test protocol::tests::maximal_modules_page_fits_the_response_frame ... ok
+test manifest::tests::missing_fixture_file_is_rejected ... ok
+test manifest::tests::unknown_json_field_is_rejected ... ok
+test manifest::tests::wrong_sha256_is_rejected ... ok
+test manifest::tests::nesting_bound_violation_is_rejected ... ok
+test manifest::tests::valid_behavioral_manifest_round_trips_with_a_stable_digest ... ok
+test manifest::tests::zero_fixture_behavioral_manifest_is_rejected ... ok
+test manifest::tests::symlinked_fixture_escaping_the_corpus_root_is_rejected ... ok
+test manifest::tests::fixture_path_must_be_under_test_dir_and_a_test_or_spec_file ... ok
+test manifest::tests::absolute_and_dot_dot_fixture_paths_are_rejected ... ok
+test manifest::tests::timeout_of_zero_and_of_200_000_are_rejected ... ok
+test server::tests::event_aggregate_uses_the_shared_bounded_fallback ... ok
+test manifest::tests::manifest_registering_more_than_one_listing_page_is_rejected ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/api_sealing.rs (target/debug/deps/api_sealing-4dd9ddd711c4b8e0)
+
+running 2 tests
+    Checking strata-kernel-tests v0.0.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/target/tests/trybuild/strata-kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.40s
+
+
+test [0m[1mtests/ui/raw_publication_is_sealed.rs[0m ... [0m[32mok
+[0m
+
+test raw_publication_authority_is_not_exported_by_default ... ok
+    Checking strata-kernel-tests v0.0.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/target/tests/trybuild/strata-kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+
+
+test [0m[1mtests/ui/semantic_authority_is_sealed.rs[0m ... [0m[32mok
+[0mtest [0m[1mtests/ui/production_execution_authority_is_sealed.rs[0m ... [0m[32mok
+[0mtest [0m[1mtests/ui/coordinated_crash_execution_is_sealed.rs[0m ... [0m[32mok
+[0mtest [0m[1mtests/ui/coordination_durable_test_authority_is_sealed.rs[0m ... [0m[32mok
+[0mtest [0m[1mtests/ui/local_service_test_authority_is_sealed.rs[0m ... [0m[32mok
+[0m
+
+test semantic_authority_is_not_exported_by_default ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.19s
+
+     Running tests/bridge_protocol.rs (target/debug/deps/bridge_protocol-b55a3f47621a1af4)
+
+running 45 tests
+test process::tests::run_records::tsc_only_config_defaults_candidate_deadline_to_the_request_deadline ... ok
+test process::tests::run_records::behavioral_validation_derives_the_nested_candidate_deadline ... ok
+test process::tests::timeout_cleanup_failure_is_not_hidden_by_successful_cleanup_text ... ok
+test baseline_verdicts_split_red_from_operational_failure ... ok
+test baseline_request_schema_rejects_candidate_authority_and_generation_drift ... ok
+test process_runner_rejects_an_oversized_request_before_execution ... ok
+test baseline_response_binding_and_green_verdict_invariants_are_enforced ... ok
+
+running 1 test
+test process::tests::run_records::enter_phase_attributes_records_then_restores_to_unattributed ... ok
+test process::tests::run_records::collect_flag_gates_buffering_and_the_emit_metrics_argument ... ok
+test process::tests::reader_pair_join_waits_for_stderr_after_stdout_fails ... ok
+test protocol::tests::behavioral_failure_downcasts_with_message ... ok
+test protocol::tests::behavioral_profile_is_unconstructible_with_zero_fixtures ... ok
+test protocol::tests::behavioral_profile_serializes_exactly_seven_keys ... ok
+test protocol::tests::behavioral_profile_without_timeouts_does_not_deserialize ... ok
+test protocol::tests::candidate_deadline_nests_tsc_plus_vitest_plus_overhead ... ok
+test protocol::tests::context_wrapping_preserves_downcast ... ok
+test protocol::tests::mirror_failure_carries_diagnostics ... ok
+test protocol::tests::mutation_failure_downcasts ... ok
+test protocol::tests::operational_failures_do_not_downcast ... ok
+test protocol::tests::present_profile_timeouts_are_bounded_on_both_variants ... ok
+test protocol::tests::tsc_only_profile_omits_the_timeout_keys_entirely ... ok
+test protocol::tests::typescript_failure_downcasts_to_candidate_rejected_with_diagnostics ... ok
+test request_schema_rejects_numeric_generations_and_generation_mismatches ... ok
+test request_schema_rejects_unknown_fields_versions_kinds_and_intent_variants ... ok
+test response_accepts_optional_worker_self_metrics_and_rejects_unknown_metrics_fields ... ok
+test response_bindings_are_checked_before_success_payloads_are_exposed ... ok
+test response_schema_rejects_unknown_fields_variants_and_oversized_diagnostics ... ok
+test schema_rejects_empty_identifiers_and_invalid_digest_or_fingerprint_shapes ... ok
+test shared_protocol_v1_golden_messages_round_trip_without_schema_drift ... ok
+test snapshot_validation_rejects_noncanonical_duplicate_dangling_and_unsafe_records ... ok
+test wire_u64_rejects_numbers_and_noncanonical_decimal_strings ... ok
+test wire_u64_round_trips_the_full_unsigned_range_as_canonical_decimal_strings ... ok
+test process_runner_accepts_one_bound_response ... ok
+test process::tests::run_records::spawn_records_one_ok_run_with_worker_metrics ... ok
+test process_runner_rejects_spawn_failure_nonzero_exit_and_truncated_json ... ok
+test process_runner_drains_stdout_before_the_child_reads_a_large_stdin_request ... ok
+test process_runner_rejects_extra_frames_and_bounded_stream_overflow ... ok
+test process_runner_reports_nonzero_exit_when_child_closes_an_active_writer ... ok
+test process_runner_cleans_up_after_an_early_stdin_write_error ... ok
+test process_runner_rejects_an_unrepresentable_deadline_before_spawning ... ok
+test process_runner_kills_and_reaps_a_timed_out_child ... ok
+test process_runner_deadline_includes_a_blocked_stdin_write ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 1.11s
+
+test process_runner_deadline_includes_a_blocked_stdin_write ... ok
+test process_runner_wait_uses_only_the_remaining_absolute_deadline ... ok
+test process::tests::run_records::candidate_and_analyze_requests_use_their_own_deadlines ... ok
+test process::tests::run_records::timed_out_run_records_timeout_outcome_and_accumulates_starts ... ok
+
+test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.05s
+
+     Running tests/concurrent_readers.rs (target/debug/deps/concurrent_readers-df3e297f7c83560a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_acceptance.rs (target/debug/deps/coordination_acceptance-d05566e8311f7f96)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_authority.rs (target/debug/deps/coordination_authority-4ccebfc9ed2c8a2c)
+
+running 1 test
+test default_kernel_rejects_semantic_execution_without_side_effects ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/coordination_durable.rs (target/debug/deps/coordination_durable-bba8e1993d6a6f5f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_leases.rs (target/debug/deps/coordination_leases-863233d2629f534c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_lifecycle.rs (target/debug/deps/coordination_lifecycle-c2321bfc3764a94b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_model.rs (target/debug/deps/coordination_model-ccec3459a271a331)
+
+running 3 tests
+test constructors_reject_invalid_schema_ids_and_change_set_membership ... ok
+test terminal_states_cannot_transition_back_to_nonterminal_states ... ok
+test coordination_records_are_schema_v1_camel_case_and_round_trip ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_optimistic.rs (target/debug/deps/coordination_optimistic-fbfb691e27cc7320)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_planner.rs (target/debug/deps/coordination_planner-37bcd527d3693e68)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_publication.rs (target/debug/deps/coordination_publication-1e5ebc1a958a2758)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_recovery.rs (target/debug/deps/coordination_recovery-0cb53d81ef7d8eff)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_recovery_default.rs (target/debug/deps/coordination_recovery_default-59a513257c39603f)
+
+running 1 test
+test default_kernel_rejects_retained_version_corruption_without_writing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+     Running tests/coordination_resources.rs (target/debug/deps/coordination_resources-0fcd6ef7134a30f8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_scheduler.rs (target/debug/deps/coordination_scheduler-3b2804d0c46d4dfb)
+
+running 17 tests
+test disjoint_tickets_are_selected_together ... ok
+test a_wide_ticket_is_never_partially_selected ... ok
+test recovery_accepts_older_queued_ticket_disjoint_from_younger_ready_and_claimed_tickets ... ok
+test enqueue_rejects_older_queued_ticket_beneath_younger_ready_ticket ... ok
+test age_orders_only_tickets_that_are_already_fifo_eligible ... ok
+test enqueue_accepts_older_queued_ticket_disjoint_from_younger_ready_and_claimed_tickets ... ok
+test overlapping_tickets_run_in_queue_sequence_order ... ok
+test expiring_an_offer_preserves_fifo_position ... ok
+test claim_and_release_validate_complete_scope_and_transition_atomically ... ok
+test ready_offer_holds_complete_priority_scope_until_claim_or_expiry ... ok
+test enqueue_rejects_older_queued_ticket_beneath_younger_claimed_ticket ... ok
+test an_older_blocked_wide_ticket_blocks_younger_overlap_but_not_disjoint_work ... ok
+test recovery_rejects_claimed_ticket_overlapping_older_queued_ticket ... ok
+test recovery_fails_closed_on_corrupt_cardinality_and_overlap ... ok
+test recovery_rejects_ready_ticket_overlapping_older_queued_ticket ... ok
+test skipped_rounds_age_with_checked_arithmetic_and_no_partial_update ... ok
+test every_four_ticket_interleaving_preserves_disjoint_progress_and_fifo ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_scope.rs (target/debug/deps/coordination_scope-027966439075d95e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/crash_recovery.rs (target/debug/deps/crash_recovery-257b17052f285945)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/discovery_queries.rs (target/debug/deps/discovery_queries-d48db3294dec7119)
+
+running 10 tests
+test find_declarations_pages_instead_of_failing_past_64 ... ok
+test list_module_declarations_lists_names_export_flags_and_nulls ... ok
+test list_modules_pages_deterministically_in_id_order ... ok
+test exported_payload_parity_with_product_discovery ... ok
+test list_modules_counts_only_discovery_statement_kinds ... ok
+test list_module_declarations_rejects_non_module_target ... ok
+test find_declarations_module_scope_filters_to_one_module ... ok
+test list_modules_rejects_out_of_bound_limits ... ok
+test incoming_references_fails_closed_on_broken_parent_chain ... ok
+test incoming_references_aggregate_subtree_and_page_by_from_node_id ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running tests/examples_medium_fixture.rs (target/debug/deps/examples_medium_fixture-c896abc2dd30b4f7)
+
+running 1 test
+test examples_medium_snapshot_is_rust_compatible ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/fencing.rs (target/debug/deps/fencing-218dcce6a4e40dfc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/full_key_free_acceptance.rs (target/debug/deps/full_key_free_acceptance-a2240da763ed5bc2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/graph_generation.rs (target/debug/deps/graph_generation-cf7d4b2d85cedad3)
+
+running 5 tests
+test invalid_snapshots_report_their_specific_integrity_failure ... ok
+test wrong_base_generation_is_rejected ... ok
+test applying_a_delta_publishes_a_new_generation_without_mutating_the_old_one ... ok
+test snapshot_and_digest_are_deterministic_regardless_of_input_order ... ok
+test reverse_reference_index_is_immutable_across_deletion ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/local_service.rs (target/debug/deps/local_service-b5fdea98a53ae359)
+
+running 48 tests
+test protocol::tests::diagnostic_module_path_is_optional_but_validated ... ok
+test protocol::tests::get_references_request_bounds_limit_at_256 ... ok
+test protocol::tests::list_modules_request_rejects_zero_and_over_bound_limits ... ok
+test protocol::tests::maximal_modules_page_fits_the_response_frame ... ok
+test protocol::tests::module_declarations_response_rejects_unknown_kind ... ok
+test protocol::tests::module_path_validator_fails_closed ... ok
+test protocol::tests::read_operation_response_accepts_max_intents_boundary ... ok
+test protocol::tests::read_operation_response_rejects_one_past_max_intents ... ok
+test protocol::tests::read_validation_fixture_request_accepts_any_offset ... ok
+test protocol::tests::read_validation_fixture_request_bounds_length_at_8192 ... ok
+test protocol::tests::read_validation_fixture_request_requires_a_digest_shaped_id ... ok
+test protocol::tests::validation_fixture_chunk_response_bounds_and_alphabet ... ok
+test protocol::tests::validation_fixtures_response_bounds_the_listing_and_its_items ... ok
+test protocol_bounds_duplicate_and_ownership_context ... ok
+test protocol_rejects_cross_client_change_set_access ... ok
+test protocol_rejects_duplicate_request_ids_with_different_bodies ... ok
+test protocol_rejects_frames_over_both_bounds_before_schema_parsing ... ok
+test protocol_rejects_invalid_utf8_and_json ... ok
+test protocol_rejects_missing_empty_extra_and_multiple_frames ... ok
+test protocol_shared_golden_messages_round_trip_as_one_lf_frame ... ok
+test protocol_shared_invalid_messages_are_rejected ... ok
+test protocol_shared_paired_surrogate_raw_json_is_accepted ... ok
+test protocol_shared_raw_json_representations_are_rejected ... ok
+test protocol_shared_reordered_whitespace_raw_json_is_accepted ... ok
+test daemon_rejects_unsafe_or_overlong_socket_paths_before_bind ... ok
+test rejected_ready_fixtures_still_fail_for_their_own_defect ... ok
+test discovery_read_actions_reject_idempotency_keys ... ok
+test discovery_list_module_declarations_matches_registered_target ... ok
+test discovery_list_modules_fails_closed_on_escaping_module_payload ... ok
+test discovery_scoped_find_declarations_resolves_without_global_lookup ... ok
+test serve_rejects_duplicate_validation_manifest_flag_before_required_options ... ok
+test find_declarations_returns_named_interface_and_rejects_unknown_kind ... ok
+test seed_green_baseline_operational_failure_is_fail_closed ... ok
+test discovery_get_references_pages_and_attributes_modules ... ok
+test discovery_list_modules_projects_absolute_payloads_and_pages_deterministically ... ok
+test fixture_reader_offers_nothing_under_tsc_only ... ok
+test tsc_only_daemon_reports_null_digest ... ok
+test seed_tsc_only_manifest_daemon_gets_tsc_baseline ... ok
+test fixture_reader_refuses_an_unregistered_fixture_id ... ok
+test fixture_reader_refuses_content_that_drifted_after_startup ... ok
+test fixture_reader_lists_and_reassembles_the_registered_fixture ... ok
+test taxonomy_semantic_rejection_carries_real_tsc_diagnostics ... ok
+test taxonomy_rejection_still_cancels_and_audits ... ok
+test seed_red_daemon_refuses_to_serve ... ok
+test seed_green_daemon_serves_and_reports_digest ... ok
+test taxonomy_diagnostics_survive_needs_decision_free_path ... ok
+test read_operation_returns_canonical_audit_record_and_rejects_unknown_id ... ok
+test daemon_hosts_two_actor_bound_clients_and_one_safe_canonical_graph ... ok
+
+test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.01s
+
+     Running tests/local_service_hardening.rs (target/debug/deps/local_service_hardening-894f803458102ceb)
+
+running 5 tests
+test inspect_projection_never_returns_module_or_authority_paths ... ok
+test oversized_legal_inspect_gets_one_bounded_response_too_large_error ... ok
+test daemon_rejects_request_id_rebinding_live_and_after_restart ... ok
+test expired_and_lock_wait_deadlines_never_start_a_mutation ... ok
+test cancellation_reports_published_and_needs_decision_truthfully ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.73s
+
+     Running tests/local_service_metrics.rs (target/debug/deps/local_service_metrics-bcfdd5b9d37ca1d6)
+
+running 2 tests
+test no_metrics_flag_writes_no_file ... ok
+test metrics_sink_records_recovery_worker_runs_and_publication ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.19s
+
+     Running tests/local_service_recovery.rs (target/debug/deps/local_service_recovery-9ccb670ceee12102)
+
+running 4 tests
+test journal_accepts_only_a_torn_final_record_and_rejects_complete_corruption ... ok
+test export_snapshot_matches_a_fresh_open_and_rejects_a_missing_database ... ok
+test disconnect_retries_and_restart_preserve_exactly_once_effects_and_events ... ok
+test restart_fences_a_claim_lost_during_bridge_execution_and_publishes_once ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.44s
+
+     Running tests/local_service_sealing.rs (target/debug/deps/local_service_sealing-ba22d549723660e8)
+
+running 2 tests
+test default_build_service_has_no_test_authority_surface ... ok
+test actor_containment_malformed_and_bridge_failures_publish_nothing ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running tests/model_roundtrip.rs (target/debug/deps/model_roundtrip-3c9f0ec5ba0feeb7)
+
+running 4 tests
+test folding_operation_renames_nets_chains_and_drops_round_trips ... ok
+test delete_change_fields_serialize_as_camel_case ... ok
+test operation_records_round_trip_renames_and_accept_legacy_records_without_them ... ok
+test snapshot_and_delta_json_are_versioned_camel_case_and_round_trip ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/node_bridge.rs (target/debug/deps/node_bridge-1761a31b9594d2c8)
+
+running 5 tests
+test coordination_phases_attribute_their_bridge_runs ... ignored, requires pnpm kernel:bridge:build
+test real_user_rename_publishes_one_rust_operation_and_recovers_without_node ... ignored, requires pnpm kernel:bridge:build
+test real_worker_derives_greet_callsites_with_production_policy ... ignored, requires pnpm kernel:bridge:build
+test real_worker_derives_wide_user_rename_without_node_authority_fields ... ignored, requires pnpm kernel:bridge:build
+test fixture_helper_selects_the_actual_user_declaration ... ok
+
+test result: ok. 1 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/node_bridge_failures.rs (target/debug/deps/node_bridge_failures-f20792c1df7bb987)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/recovery.rs (target/debug/deps/recovery-f1570aa98f67c87a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/storage_atomic.rs (target/debug/deps/storage_atomic-04dcac497a2790ad)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/sync_published_log.rs (target/debug/deps/sync_published_log-a2583f04956f9ba6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests strata_kernel
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling strata-kernel v0.1.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/crates/strata-kernel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.55s
+     Running unittests src/lib.rs (target/debug/deps/strata_kernel-29f49f6ee0c329c4)
+
+running 101 tests
+test bridge::executor::tests::untyped_pre_transport_errors_still_fall_back ... ok
+test bridge::executor::tests::message_text_alone_never_grants_a_fallback ... ok
+test bridge::executor::tests::only_queued_phase_transport_failures_may_fall_back_one_shot ... ok
+test bridge::executor::tests::candidate_request_is_bound_only_to_kernel_prepared_authority ... ok
+test bridge::executor::tests::candidate_response_rejects_malformed_or_misbound_data_before_rust_digesting ... ok
+test bridge::persistent::tests::hydrate_at_failures_are_phase_sync ... ok
+test bridge::persistent::tests::clean_shutdown_reaps_worker_with_exit_zero ... ok
+test bridge::persistent::tests::oversized_request_is_phase_queued_because_the_worker_is_untouched ... ok
+test bridge::persistent::tests::malformed_response_frame_poisons ... ok
+test bridge::persistent::tests::ahead_refusal_serves_one_shot_without_hydrate_rollback ... ok
+test bridge::persistent::tests::oversized_response_frame_poisons ... ok
+test bridge::persistent::tests::oversized_request_is_refused_host_side_without_poisoning ... ok
+test bridge::persistent::tests::semantic_frame_refusal_is_phase_exchange ... ok
+test bridge::persistent::tests::refusal_triggered_hydrate_retry_recovers_the_request ... ok
+test bridge::persistent::tests::request_id_mismatch_poisons ... ok
+test bridge::persistent::tests::semantic_frame_refusal_clears_attestation_without_poison ... ok
+test bridge::persistent::tests::stderr_overflow_poisons ... ok
+test bridge::persistent::tests::crash_mid_request_errors_and_next_call_lazily_respawns ... ok
+test bridge::persistent::tests::hydrate_at_attests_without_dispatching_a_semantic_frame ... ok
+test bridge::process::tests::run_records::behavioral_validation_derives_the_nested_candidate_deadline ... ok
+test bridge::persistent::tests::crash_mid_sync_respawns_and_full_hydrates_on_the_next_request ... ok
+test bridge::process::tests::reader_pair_join_waits_for_stderr_after_stdout_fails ... ok
+test bridge::persistent::tests::sync_refusal_clears_attestation_and_retries_once_with_full_hydrate ... ok
+test bridge::persistent::tests::sync_then_dispatch_with_attested_fast_path_and_epoch ... ok
+test bridge::persistent::tests::sync_refusal_is_phase_sync ... ok
+test bridge::process::tests::run_records::tsc_only_config_defaults_candidate_deadline_to_the_request_deadline ... ok
+test bridge::process::tests::timeout_cleanup_failure_is_not_hidden_by_successful_cleanup_text ... ok
+test bridge::protocol::tests::behavioral_failure_downcasts_with_message ... ok
+test bridge::protocol::tests::behavioral_profile_is_unconstructible_with_zero_fixtures ... ok
+test bridge::protocol::tests::behavioral_profile_serializes_exactly_seven_keys ... ok
+test bridge::protocol::tests::behavioral_profile_without_timeouts_does_not_deserialize ... ok
+test bridge::protocol::tests::candidate_deadline_nests_tsc_plus_vitest_plus_overhead ... ok
+test bridge::protocol::tests::context_wrapping_preserves_downcast ... ok
+test bridge::protocol::tests::mirror_failure_carries_diagnostics ... ok
+test bridge::protocol::tests::mutation_failure_downcasts ... ok
+test bridge::protocol::tests::operational_failures_do_not_downcast ... ok
+test bridge::protocol::tests::present_profile_timeouts_are_bounded_on_both_variants ... ok
+test bridge::protocol::tests::tsc_only_profile_omits_the_timeout_keys_entirely ... ok
+test bridge::protocol::tests::typescript_failure_downcasts_to_candidate_rejected_with_diagnostics ... ok
+test bridge::provider::tests::analysis_request_rebinds_a_durable_intent_to_the_current_graph_without_mutation ... ok
+test bridge::provider::tests::content_dependencies_pin_namespace_membership_without_reserving ... ok
+test bridge::provider::tests::declaration_name_rejects_malformed_and_ambiguous_identifier_payloads ... ok
+test bridge::provider::tests::declaration_name_tokens_match_persisted_kinds_and_typescript_offsets ... ok
+test bridge::provider::tests::declaration_name_tokens_reject_destructuring_malformed_and_escaped_bindings ... ok
+test bridge::provider::tests::declaration_name_uses_the_exact_payload_token_not_a_colliding_child ... ok
+test bridge::provider::tests::facts_reject_unknown_mistyped_mismatched_and_unresolved_members ... ok
+test bridge::provider::tests::facts_resolve_to_exact_records_memberships_and_fresh_scope ... ok
+test bridge::provider::tests::provider_reanalyzes_a_durable_intent_once_against_fresh_g1_scope ... ignored, requires pnpm kernel:bridge:build
+test bridge::process::tests::run_records::spawn_records_one_ok_run_with_worker_metrics ... ok
+test bridge::provider::tests::rename_namespace_and_absence_resources_are_derived_only_from_rust_inputs ... ok
+test bridge::process::tests::run_records::collect_flag_gates_buffering_and_the_emit_metrics_argument ... ok
+test bridge::process::tests::run_records::enter_phase_attributes_records_then_restores_to_unattributed ... ok
+test bridge::sync_state::tests::ahead_attestation_is_refused_without_any_frame ... ok
+test bridge::sync_state::tests::batch_requires_contiguous_coverage ... ok
+test bridge::router::tests::non_published_identity_is_never_routed_to_the_mirror ... ok
+test bridge::sync_state::tests::byte_cap_evicts_from_the_front_whichever_cap_first ... ok
+test bridge::sync_state::tests::discontinuous_append_resets_history ... ok
+test bridge::sync_state::tests::entry_cap_evicts_from_the_front ... ok
+test bridge::sync_state::tests::captured_batch_survives_append_driven_truncation ... ok
+test bridge::sync_state::tests::no_attestation_or_below_floor_plans_full_hydrate ... ok
+test bridge::sync_state::tests::oversized_batch_plans_full_hydrate ... ok
+test bridge::sync_state::tests::plan_yields_exact_contiguous_sync_frame ... ok
+test bridge::sync_state::tests::record_published_appends_only_contiguous_steps ... ok
+test bridge::sync_state::tests::raced_target_no_longer_published_is_refused ... ok
+test bridge::sync_state::tests::routing_predicate_is_structural_identity_comparison ... ok
+test coordination::analyzer::tests::existing_identifier_cannot_gain_write_authority_by_reparenting_into_a_writable_statement ... ok
+test coordination::analyzer::tests::fresh_reference_from_materialized_identifier_accepts_a_pinned_target ... ok
+test coordination::analyzer::tests::fresh_reference_without_pin_or_reservation_is_still_rejected ... ok
+test coordination::analyzer::tests::payload_only_upsert_needs_no_parent_reservation ... ok
+test coordination::analyzer::tests::production_idempotency_and_expansion_policy_are_rust_owned ... ok
+test coordination::analyzer::tests::retargeting_an_existing_reference_ignores_validation_pins ... ok
+test coordination::analyzer::tests::shape_changing_upsert_still_needs_the_parent_reservation ... ok
+test coordination::coordinator::tests::offer_context_rejects_a_stale_service_epoch_directly ... ok
+test coordination::analyzer::tests::writable_statement_narrowly_authorizes_materialized_identifier_children_and_edges ... ok
+test coordination::resources::tests::children_resource_is_payload_insensitive_but_shape_sensitive ... ok
+test coordination::resources::tests::children_of_index_matches_filter_scan ... ok
+test coordination::resources::tests::equivalence_on_hostile_synthetic_graph ... ok
+test coordination::resources::tests::equivalence_on_post_apply_state ... ok
+test coordination::resources::tests::equivalence_sampled_at_big1k_scale ... ignored, big1k-scale spot check; run explicitly with --ignored
+test coordination::resources::tests::payload_only_upsert_does_not_bump_parent_membership ... ok
+test coordination::resources::tests::shape_changes_still_bump_parent_membership ... ok
+test model::tests::operation_intent_record_round_trips_parameters_json ... ok
+test model::tests::operation_record_without_intents_field_deserializes_with_empty_intents ... ok
+test sync_digest::tests::digest_is_input_order_independent ... ok
+test sync_digest::tests::empty_graph_digest_hashes_the_documented_literal_encoding ... ok
+test sync_digest::tests::pinned_vectors_reproduce_expected_digests ... ok
+test bridge::persistent::tests::g_and_g_plus_one_sync_dispatch_pairs_never_interleave ... ok
+test bridge::persistent::tests::worker_reported_mirror_poison_kills_and_respawns_with_full_rehydrate ... ok
+test sync_digest::tests::regenerate_pinned_vectors_when_requested ... ok
+test sync_digest::tests::randomized_differential_vectors_for_typescript ... ok
+test bridge::router::tests::candidate_speculative_identity_is_never_routed_to_the_mirror ... ok
+test bridge::router::tests::epoch_mismatch_kills_the_worker_and_disables_the_persistent_path ... ok
+test bridge::persistent::tests::deadline_exceeded_mid_request_poisons ... ok
+test bridge::persistent::tests::deadline_before_the_worker_attests_is_phase_sync ... ok
+test bridge::persistent::tests::mid_exchange_deadline_is_phase_exchange_so_no_one_shot_replay_may_follow ... ok
+test bridge::persistent::tests::unsolicited_frame_poisons_and_next_call_respawns_with_new_pid ... ok
+test bridge::persistent::tests::queued_deadline_is_phase_queued_so_the_caller_may_fall_back_one_shot ... ok
+test coordination::resources::tests::equivalence_on_medium_corpus_fixture ... ok
+test bridge::persistent::tests::queued_caller_deadline_expires_without_poisoning_worker ... ok
+test bridge::process::tests::run_records::candidate_and_analyze_requests_use_their_own_deadlines ... ok
+test bridge::process::tests::run_records::timed_out_run_records_timeout_outcome_and_accumulates_starts ... ok
+
+test result: ok. 99 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 10.26s
+
+     Running unittests src/bin/strata_kernel_service/main.rs (target/debug/deps/strata_kernel_service-5a348d706fa3b07d)
+
+running 42 tests
+test audit::tests::events_without_validation_identity_serialize_no_new_keys ... ok
+test audit::tests::a_pre_b2_audit_log_still_reopens_and_extends_its_hash_chain ... ok
+test manifest::tests::fixture_carrying_tsc_only_manifest_is_rejected ... ok
+test metrics::tests::behavioral_request_records_disclose_present_measurements_only ... ok
+test metrics::tests::tsc_only_request_records_carry_no_disclosure_keys ... ok
+test paths::tests::absolute_payload_outside_root_fails_closed_without_leaking_payload ... ok
+test paths::tests::absolute_payload_under_root_projects_corpus_relative ... ok
+test manifest::tests::duplicate_fixture_path_is_rejected ... ok
+test paths::tests::dot_dot_dot_and_doubled_separator_components_fail_closed ... ok
+test manifest::tests::unknown_json_field_is_rejected ... ok
+test paths::tests::empty_and_backslash_payloads_fail_closed ... ok
+test paths::tests::over_long_projection_fails_closed ... ok
+test manifest::tests::missing_fixture_file_is_rejected ... ok
+test paths::tests::relative_payload_projects_verbatim_as_posix ... ok
+test paths::tests::sibling_directory_sharing_a_name_prefix_fails_closed ... ok
+test protocol::tests::diagnostic_module_path_is_optional_but_validated ... ok
+test paths::tests::root_itself_fails_closed ... ok
+test protocol::tests::get_references_request_bounds_limit_at_256 ... ok
+test protocol::tests::list_modules_request_rejects_zero_and_over_bound_limits ... ok
+test manifest::tests::nesting_bound_violation_is_rejected ... ok
+test protocol::tests::module_declarations_response_rejects_unknown_kind ... ok
+test protocol::tests::module_path_validator_fails_closed ... ok
+test protocol::tests::read_validation_fixture_request_accepts_any_offset ... ok
+test protocol::tests::read_operation_response_accepts_max_intents_boundary ... ok
+test protocol::tests::read_validation_fixture_request_bounds_length_at_8192 ... ok
+test protocol::tests::read_operation_response_rejects_one_past_max_intents ... ok
+test protocol::tests::read_validation_fixture_request_requires_a_digest_shaped_id ... ok
+test protocol::tests::validation_fixture_chunk_response_bounds_and_alphabet ... ok
+test protocol::tests::validation_fixtures_response_bounds_the_listing_and_its_items ... ok
+test manifest::tests::wrong_schema_version_is_rejected ... ok
+test session::tests::base64_encode_covers_every_alphabet_symbol_including_62_and_63 ... ok
+test session::tests::base64_encode_matches_rfc4648_vectors ... ok
+test manifest::tests::wrong_sha256_is_rejected ... ok
+test protocol::tests::maximal_modules_page_fits_the_response_frame ... ok
+test manifest::tests::symlinked_fixture_escaping_the_corpus_root_is_rejected ... ok
+test manifest::tests::fixture_path_must_be_under_test_dir_and_a_test_or_spec_file ... ok
+test manifest::tests::absolute_and_dot_dot_fixture_paths_are_rejected ... ok
+test server::tests::event_aggregate_uses_the_shared_bounded_fallback ... ok
+test manifest::tests::zero_fixture_behavioral_manifest_is_rejected ... ok
+test manifest::tests::valid_behavioral_manifest_round_trips_with_a_stable_digest ... ok
+test manifest::tests::timeout_of_zero_and_of_200_000_are_rejected ... ok
+test manifest::tests::manifest_registering_more_than_one_listing_page_is_rejected ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.07s
+
+     Running tests/api_sealing.rs (target/debug/deps/api_sealing-76a8a8a18997e7f2)
+
+running 1 test
+    Checking strata-kernel-tests v0.0.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/target/tests/trybuild/strata-kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.97s
+
+
+test [0m[1mtests/ui/raw_publication_is_sealed.rs[0m ... [0m[32mok
+[0m
+
+test raw_publication_authority_is_not_exported_by_default ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.62s
+
+     Running tests/bridge_protocol.rs (target/debug/deps/bridge_protocol-8f984cb1b780cb9f)
+
+running 45 tests
+test process::tests::run_records::tsc_only_config_defaults_candidate_deadline_to_the_request_deadline ... ok
+test process::tests::run_records::behavioral_validation_derives_the_nested_candidate_deadline ... ok
+test process::tests::timeout_cleanup_failure_is_not_hidden_by_successful_cleanup_text ... ok
+test baseline_verdicts_split_red_from_operational_failure ... ok
+test process_runner_rejects_an_oversized_request_before_execution ... ok
+
+running 1 test
+test baseline_request_schema_rejects_candidate_authority_and_generation_drift ... ok
+test baseline_response_binding_and_green_verdict_invariants_are_enforced ... ok
+test process::tests::run_records::spawn_records_one_ok_run_with_worker_metrics ... ok
+test process::tests::reader_pair_join_waits_for_stderr_after_stdout_fails ... ok
+test process_runner_accepts_one_bound_response ... ok
+test protocol::tests::behavioral_failure_downcasts_with_message ... ok
+test protocol::tests::behavioral_profile_is_unconstructible_with_zero_fixtures ... ok
+test protocol::tests::behavioral_profile_serializes_exactly_seven_keys ... ok
+test protocol::tests::behavioral_profile_without_timeouts_does_not_deserialize ... ok
+test protocol::tests::candidate_deadline_nests_tsc_plus_vitest_plus_overhead ... ok
+test protocol::tests::context_wrapping_preserves_downcast ... ok
+test protocol::tests::mirror_failure_carries_diagnostics ... ok
+test protocol::tests::mutation_failure_downcasts ... ok
+test protocol::tests::operational_failures_do_not_downcast ... ok
+test protocol::tests::present_profile_timeouts_are_bounded_on_both_variants ... ok
+test protocol::tests::tsc_only_profile_omits_the_timeout_keys_entirely ... ok
+test protocol::tests::typescript_failure_downcasts_to_candidate_rejected_with_diagnostics ... ok
+test request_schema_rejects_numeric_generations_and_generation_mismatches ... ok
+test request_schema_rejects_unknown_fields_versions_kinds_and_intent_variants ... ok
+test process::tests::run_records::enter_phase_attributes_records_then_restores_to_unattributed ... ok
+test response_accepts_optional_worker_self_metrics_and_rejects_unknown_metrics_fields ... ok
+test response_schema_rejects_unknown_fields_variants_and_oversized_diagnostics ... ok
+test response_bindings_are_checked_before_success_payloads_are_exposed ... ok
+test schema_rejects_empty_identifiers_and_invalid_digest_or_fingerprint_shapes ... ok
+test snapshot_validation_rejects_noncanonical_duplicate_dangling_and_unsafe_records ... ok
+test wire_u64_rejects_numbers_and_noncanonical_decimal_strings ... ok
+test wire_u64_round_trips_the_full_unsigned_range_as_canonical_decimal_strings ... ok
+test shared_protocol_v1_golden_messages_round_trip_without_schema_drift ... ok
+test process_runner_drains_stdout_before_the_child_reads_a_large_stdin_request ... ok
+test process_runner_rejects_spawn_failure_nonzero_exit_and_truncated_json ... ok
+test process_runner_reports_nonzero_exit_when_child_closes_an_active_writer ... ok
+test process_runner_rejects_extra_frames_and_bounded_stream_overflow ... ok
+test process_runner_rejects_an_unrepresentable_deadline_before_spawning ... ok
+test process_runner_cleans_up_after_an_early_stdin_write_error ... ok
+test process_runner_kills_and_reaps_a_timed_out_child ... ok
+test process_runner_deadline_includes_a_blocked_stdin_write ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 1.14s
+
+test process_runner_deadline_includes_a_blocked_stdin_write ... ok
+test process_runner_wait_uses_only_the_remaining_absolute_deadline ... ok
+test process::tests::run_records::collect_flag_gates_buffering_and_the_emit_metrics_argument ... ok
+test process::tests::run_records::candidate_and_analyze_requests_use_their_own_deadlines ... ok
+test process::tests::run_records::timed_out_run_records_timeout_outcome_and_accumulates_starts ... ok
+
+test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.04s
+
+     Running tests/concurrent_readers.rs (target/debug/deps/concurrent_readers-a9e60f810f855785)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_acceptance.rs (target/debug/deps/coordination_acceptance-fda914eff66f587d)
+
+running 11 tests
+test scheduler_acceptance_uses_the_real_examples_medium_graph ... ok
+test analyzer_is_intent_and_graph_derived_and_client_inputs_are_key_free ... ok
+test composite_change_set_publishes_two_real_nodes_in_exactly_one_generation ... ok
+test publication_reanalyzes_unchanged_successor_and_emits_its_fresh_fingerprint ... ok
+test same_symbol_is_fifo_then_wakes_with_bounded_context_and_needs_fresh_decision ... ok
+test publication_persists_expanded_successor_scope_before_issuing_ready_authority ... ok
+test restart_preserves_ticket_event_identity_invalidates_offers_and_keeps_cursors_independent ... ok
+test reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutation ... ok
+test malicious_node_and_reference_deltas_are_contained_with_zero_side_effects ... ok
+test disjoint_work_is_ready_together_and_commits_after_fresh_claims_in_either_order ... ok
+test older_wide_ticket_ages_without_starvation_while_only_disjoint_work_passes ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.30s
+
+     Running tests/coordination_authority.rs (target/debug/deps/coordination_authority-2ce343e7c3db59ae)
+
+running 2 tests
+test claimed_execution_without_installed_executor_is_side_effect_free ... ok
+test default_kernel_rejects_semantic_execution_without_side_effects ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+     Running tests/coordination_durable.rs (target/debug/deps/coordination_durable-59e83546e67ce16a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_leases.rs (target/debug/deps/coordination_leases-eff1471dc901ebc4)
+
+running 10 tests
+test an_expired_draft_cannot_be_revived_by_submission ... ok
+test drafts_have_deterministic_expiry_and_are_retained_as_cancelled_audit_records ... ok
+test offer_expiry_uses_fresh_analysis_and_replaces_stale_authority_atomically ... ok
+test release_claim_for_retry_refuses_a_change_set_that_is_not_claimed ... ok
+test release_claim_for_retry_requeues_the_claimed_change_set_for_a_genuine_retry ... ok
+test claim_rejection_runs_fresh_planning_after_the_unlocked_release_simulation ... ok
+test claim_expiry_fences_late_results_and_freshly_wakes_waiters ... ok
+test cancellation_fences_a_delayed_claim_and_freshly_wakes_the_waiter ... ok
+test restart_and_expiry_are_idempotent_and_old_epoch_claims_are_fenced ... ok
+test every_release_cause_uses_the_latest_provider_scope_and_current_generation ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.18s
+
+     Running tests/coordination_lifecycle.rs (target/debug/deps/coordination_lifecycle-417cb40f63dd3a14)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_model.rs (target/debug/deps/coordination_model-828dd30441c09250)
+
+running 4 tests
+test constructors_reject_invalid_schema_ids_and_change_set_membership ... ok
+test legacy_publication_attempt_without_prepared_generation_remains_readable ... ok
+test terminal_states_cannot_transition_back_to_nonterminal_states ... ok
+test coordination_records_are_schema_v1_camel_case_and_round_trip ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_optimistic.rs (target/debug/deps/coordination_optimistic-57217fb432eccba6)
+
+running 18 tests
+test final_lifecycle_commit_holds_publication_then_scheduler_before_redb ... ok
+test candidate_builder_observes_both_global_mutexes_unlocked ... ok
+test panicking_builder_leaves_claim_active_until_explicit_release ... ok
+test publication_successor_offer_uses_fresh_unlocked_analysis_on_committed_graph ... ok
+test age_only_reconsideration_during_final_check_does_not_starve_older_claim ... ok
+test central_planner_requires_decision_when_a_stale_resource_member_disappears ... ok
+test queued_provider_failure_does_not_abort_due_claim_expiry_or_disjoint_readiness ... ok
+test optimistic_retry_exhaustion_from_disjoint_churn_keeps_claim_non_terminal ... ok
+test known_dependency_drift_survives_three_invalidation_losses_without_stranding_authority ... ok
+test queued_provider_failure_does_not_abort_claimed_cancellation_or_disjoint_readiness ... ok
+test queued_provider_failure_does_not_abort_claimed_publication_or_disjoint_readiness ... ok
+test builder_can_run_disjoint_lifecycle_and_event_replay_without_global_lock_blocking ... ok
+test rebased_builder_replay_uses_durable_original_prepared_generation_after_reopen ... ok
+test three_unrelated_final_state_losses_exhaust_once_without_rebuilding ... ok
+test third_final_check_dependency_drift_atomically_requeues_and_fences_the_stale_claim ... ok
+test retried_publication_accumulates_analysis_time_and_keeps_candidate_time ... ok
+test two_disjoint_claims_captured_before_publication_both_commit_in_either_order ... ok
+test every_dependency_clock_class_invalidates_affected_work_but_unrelated_work_rebases ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.06s
+
+     Running tests/coordination_planner.rs (target/debug/deps/coordination_planner-e072e0b42fe656f0)
+
+running 3 tests
+test scheduler_revision_discards_a_stale_readiness_plan_and_retries ... ok
+test every_ready_transition_uses_fresh_analysis ... ok
+    Checking strata-kernel-tests v0.0.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/target/tests/trybuild/strata-kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.81s
+
+
+test [0m[1mtests/ui/ready_offer_is_planner_private.rs[0m ... [0m[32mok
+[0m
+
+test ready_offer_cannot_be_constructed_outside_planner ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.63s
+
+     Running tests/coordination_publication.rs (target/debug/deps/coordination_publication-1778bc09b5352ed9)
+
+running 21 tests
+test builder_wrong_schema_and_base_are_rejected_before_graph_coordination_or_fences_change ... ok
+test external_envelope_with_unbound_base_generation_is_rejected_without_side_effects ... ok
+test publication_reanalysis_happens_before_builder_and_changed_scope_needs_decision ... ok
+test committed_replay_builder_panic_returns_error_without_changing_committed_state ... ok
+test coordination_test_api_prevalidated_source_reports_zero_candidate_time ... ok
+test malicious_candidate_digest_is_rejected_before_graph_or_lifecycle_state_changes ... ok
+test envelope_digest_validation_runs_once_with_both_global_mutexes_free ... ok
+test committed_builder_replay_uses_only_durable_prepared_authority ... ok
+test commit_atomically_wakes_successor_with_a_fresh_thirty_tick_offer ... ok
+test material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter ... ok
+test changed_builder_output_for_same_attempt_is_rejected ... ok
+test empty_delta_publication_reopens_without_a_false_clock_marker ... ok
+test claimed_composite_publication_is_kernel_owned_atomic_and_idempotent_after_reopen ... ok
+test committed_envelope_replays_without_semantic_provider ... ok
+test publication_report_carries_phase_timings_and_core_record_bytes ... ok
+test stale_claim_and_rogue_delta_are_rejected_without_side_effects ... ok
+test wake_event_context_is_bounded_while_canonical_operation_keeps_every_affected_node ... ok
+test two_intents_publish_one_aggregate_operation_and_generation ... ok
+test validation_only_semantic_pins_do_not_bump_their_clocks ... ok
+test same_attempt_same_digest_replays_but_changed_digest_is_rejected ... ok
+test retry_after_a_later_disjoint_generation_returns_the_earlier_generation_and_digest ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.41s
+
+     Running tests/coordination_recovery.rs (target/debug/deps/coordination_recovery-1c0dea72b80b3074)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_recovery_default.rs (target/debug/deps/coordination_recovery_default-020a2c8acb4e3bd4)
+
+running 1 test
+test default_kernel_rejects_retained_version_corruption_without_writing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.94s
+
+     Running tests/coordination_resources.rs (target/debug/deps/coordination_resources-a46d1347d4d8fd4d)
+
+running 2 tests
+test changing_the_same_node_twice_advances_its_clock_to_two ... ok
+test every_structural_and_index_bucket_advances_monotonically ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.54s
+
+     Running tests/coordination_scheduler.rs (target/debug/deps/coordination_scheduler-cc91c47f9b13367a)
+
+running 17 tests
+test enqueue_rejects_older_queued_ticket_beneath_younger_claimed_ticket ... ok
+test claim_and_release_validate_complete_scope_and_transition_atomically ... ok
+test disjoint_tickets_are_selected_together ... ok
+test recovery_accepts_older_queued_ticket_disjoint_from_younger_ready_and_claimed_tickets ... ok
+test age_orders_only_tickets_that_are_already_fifo_eligible ... ok
+test enqueue_rejects_older_queued_ticket_beneath_younger_ready_ticket ... ok
+test ready_offer_holds_complete_priority_scope_until_claim_or_expiry ... ok
+test overlapping_tickets_run_in_queue_sequence_order ... ok
+test a_wide_ticket_is_never_partially_selected ... ok
+test expiring_an_offer_preserves_fifo_position ... ok
+test enqueue_accepts_older_queued_ticket_disjoint_from_younger_ready_and_claimed_tickets ... ok
+test an_older_blocked_wide_ticket_blocks_younger_overlap_but_not_disjoint_work ... ok
+test recovery_fails_closed_on_corrupt_cardinality_and_overlap ... ok
+test recovery_rejects_ready_ticket_overlapping_older_queued_ticket ... ok
+test recovery_rejects_claimed_ticket_overlapping_older_queued_ticket ... ok
+test skipped_rounds_age_with_checked_arithmetic_and_no_partial_update ... ok
+test every_four_ticket_interleaving_preserves_disjoint_progress_and_fifo ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/coordination_scope.rs (target/debug/deps/coordination_scope-78b5b0f281046b76)
+
+running 11 tests
+test reference_delta_authority_uses_edge_identity_but_node_endpoint_coverage ... ok
+test delta_containment_rejects_a_rogue_write_outside_inferred_scope ... ok
+test node_delta_authority_includes_node_and_old_and_new_parent_coverage ... ok
+test scope_expansion_with_an_idempotency_change_is_material ... ok
+test scope_expansion_with_a_policy_change_is_material ... ok
+test change_set_analysis_rejects_empty_intents_and_uses_strictest_modes ... ok
+test membership_only_version_drift_is_expansion_only_with_new_scope_keys ... ok
+test removals_replacements_and_unrelated_common_version_drift_are_material ... ok
+test composite_scope_is_canonical_and_order_independent ... ok
+test scope_change_classifies_unchanged_expanded_and_material_replacements ... ok
+test production_coordination_has_no_fake_analyzer_or_candidate_builder ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/crash_recovery.rs (target/debug/deps/crash_recovery-91faff90d6732f9e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/discovery_queries.rs (target/debug/deps/discovery_queries-9b295e06d46be241)
+
+running 10 tests
+test find_declarations_module_scope_filters_to_one_module ... ok
+test incoming_references_aggregate_subtree_and_page_by_from_node_id ... ok
+test incoming_references_fails_closed_on_broken_parent_chain ... ok
+test list_modules_pages_deterministically_in_id_order ... ok
+test list_modules_rejects_out_of_bound_limits ... ok
+test exported_payload_parity_with_product_discovery ... ok
+test list_modules_counts_only_discovery_statement_kinds ... ok
+test list_module_declarations_rejects_non_module_target ... ok
+test list_module_declarations_lists_names_export_flags_and_nulls ... ok
+test find_declarations_pages_instead_of_failing_past_64 ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s
+
+     Running tests/examples_medium_fixture.rs (target/debug/deps/examples_medium_fixture-fd3149d0017a600f)
+
+running 1 test
+test examples_medium_snapshot_is_rust_compatible ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/fencing.rs (target/debug/deps/fencing-d9f81b9db781f605)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/full_key_free_acceptance.rs (target/debug/deps/full_key_free_acceptance-92692c19d4b2879e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/graph_generation.rs (target/debug/deps/graph_generation-5777c8d7a4bfabd5)
+
+running 5 tests
+test wrong_base_generation_is_rejected ... ok
+test invalid_snapshots_report_their_specific_integrity_failure ... ok
+test applying_a_delta_publishes_a_new_generation_without_mutating_the_old_one ... ok
+test reverse_reference_index_is_immutable_across_deletion ... ok
+test snapshot_and_digest_are_deterministic_regardless_of_input_order ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/local_service.rs (target/debug/deps/local_service-5e1b629a8f7c0a75)
+
+running 50 tests
+test daemon_rejects_unsafe_or_overlong_socket_paths_before_bind ... ok
+test protocol::tests::diagnostic_module_path_is_optional_but_validated ... ok
+test protocol::tests::get_references_request_bounds_limit_at_256 ... ok
+test protocol::tests::list_modules_request_rejects_zero_and_over_bound_limits ... ok
+test protocol::tests::maximal_modules_page_fits_the_response_frame ... ok
+test protocol::tests::module_declarations_response_rejects_unknown_kind ... ok
+test protocol::tests::module_path_validator_fails_closed ... ok
+test protocol::tests::read_operation_response_accepts_max_intents_boundary ... ok
+test protocol::tests::read_operation_response_rejects_one_past_max_intents ... ok
+test protocol::tests::read_validation_fixture_request_accepts_any_offset ... ok
+test protocol::tests::read_validation_fixture_request_bounds_length_at_8192 ... ok
+test protocol::tests::read_validation_fixture_request_requires_a_digest_shaped_id ... ok
+test protocol::tests::validation_fixture_chunk_response_bounds_and_alphabet ... ok
+test protocol::tests::validation_fixtures_response_bounds_the_listing_and_its_items ... ok
+test protocol_bounds_duplicate_and_ownership_context ... ok
+test protocol_rejects_cross_client_change_set_access ... ok
+test protocol_rejects_duplicate_request_ids_with_different_bodies ... ok
+test protocol_rejects_frames_over_both_bounds_before_schema_parsing ... ok
+test protocol_rejects_invalid_utf8_and_json ... ok
+test protocol_rejects_missing_empty_extra_and_multiple_frames ... ok
+test protocol_shared_golden_messages_round_trip_as_one_lf_frame ... ok
+test protocol_shared_invalid_messages_are_rejected ... ok
+test protocol_shared_paired_surrogate_raw_json_is_accepted ... ok
+test protocol_shared_raw_json_representations_are_rejected ... ok
+test protocol_shared_reordered_whitespace_raw_json_is_accepted ... ok
+test discovery_read_actions_reject_idempotency_keys ... ok
+test rejected_ready_fixtures_still_fail_for_their_own_defect ... ok
+test discovery_list_module_declarations_matches_registered_target ... ok
+test discovery_list_modules_fails_closed_on_escaping_module_payload ... ok
+test discovery_scoped_find_declarations_resolves_without_global_lookup ... ok
+test find_declarations_returns_named_interface_and_rejects_unknown_kind ... ok
+test discovery_get_references_pages_and_attributes_modules ... ok
+test serve_rejects_duplicate_validation_manifest_flag_before_required_options ... ok
+test discovery_list_modules_projects_absolute_payloads_and_pages_deterministically ... ok
+test seed_green_baseline_operational_failure_is_fail_closed ... ok
+test seed_tsc_only_manifest_daemon_gets_tsc_baseline ... ok
+test fixture_reader_offers_nothing_under_tsc_only ... ok
+test tsc_only_daemon_reports_null_digest ... ok
+test read_operation_returns_canonical_audit_record_and_rejects_unknown_id ... ok
+test seed_red_daemon_refuses_to_serve ... ok
+test healthy_recovering_daemon_keeps_its_recovery_then_start_audit_order ... ok
+test seed_green_daemon_serves_and_reports_digest ... ok
+test fixture_reader_refuses_an_unregistered_fixture_id ... ok
+test fixture_reader_refuses_content_that_drifted_after_startup ... ok
+test fixture_reader_lists_and_reassembles_the_registered_fixture ... ok
+test seed_red_recovering_daemon_audits_nothing_including_recovery_events ... ok
+test taxonomy_semantic_rejection_carries_real_tsc_diagnostics ... ok
+test taxonomy_rejection_still_cancels_and_audits ... ok
+test taxonomy_diagnostics_survive_needs_decision_free_path ... ok
+test daemon_hosts_two_actor_bound_clients_and_one_safe_canonical_graph ... ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.02s
+
+     Running tests/local_service_hardening.rs (target/debug/deps/local_service_hardening-a887f0013d787924)
+
+running 5 tests
+test inspect_projection_never_returns_module_or_authority_paths ... ok
+test oversized_legal_inspect_gets_one_bounded_response_too_large_error ... ok
+test daemon_rejects_request_id_rebinding_live_and_after_restart ... ok
+test expired_and_lock_wait_deadlines_never_start_a_mutation ... ok
+test cancellation_reports_published_and_needs_decision_truthfully ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.94s
+
+     Running tests/local_service_metrics.rs (target/debug/deps/local_service_metrics-066ffc838f0c790a)
+
+running 2 tests
+test no_metrics_flag_writes_no_file ... ok
+test metrics_sink_records_recovery_worker_runs_and_publication ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.30s
+
+     Running tests/local_service_recovery.rs (target/debug/deps/local_service_recovery-3a534159f0f715ec)
+
+running 9 tests
+test journal_accepts_only_a_torn_final_record_and_rejects_complete_corruption ... ok
+test ambiguous_pending_add_intent_fails_closed_before_socket_bind ... ok
+test export_snapshot_matches_a_fresh_open_and_rejects_a_missing_database ... ok
+test journal_crash_boundaries_replay_one_exact_begin_effect ... ok
+test disconnect_retries_and_restart_preserve_exactly_once_effects_and_events ... ok
+test published_effect_recovery_preserves_the_publication_digest ... ok
+test published_effect_recovery_preserves_its_historical_digest_after_another_publication ... ok
+test restart_fences_a_claim_lost_during_bridge_execution_and_publishes_once ... ok
+test execution_failure_recovery_requeues_retryably_across_every_crash_stage ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.56s
+
+     Running tests/local_service_sealing.rs (target/debug/deps/local_service_sealing-8cf20efa94153665)
+
+running 2 tests
+test default_build_service_has_no_test_authority_surface ... ok
+test actor_containment_malformed_and_bridge_failures_publish_nothing ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running tests/model_roundtrip.rs (target/debug/deps/model_roundtrip-06b7b5a99d51787d)
+
+running 4 tests
+test delete_change_fields_serialize_as_camel_case ... ok
+test folding_operation_renames_nets_chains_and_drops_round_trips ... ok
+test operation_records_round_trip_renames_and_accept_legacy_records_without_them ... ok
+test snapshot_and_delta_json_are_versioned_camel_case_and_round_trip ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/node_bridge.rs (target/debug/deps/node_bridge-fa4e0f4296ab59e1)
+
+running 9 tests
+test coordination_phases_attribute_their_bridge_runs ... ignored, requires pnpm kernel:bridge:build
+test real_disjoint_renames_build_at_g0_and_publish_in_both_orders ... ignored, requires pnpm kernel:bridge:build
+test real_user_rename_publishes_one_rust_operation_and_recovers_without_node ... ignored, requires pnpm kernel:bridge:build
+test real_validation_dependency_drift_requeues_and_rebuilds_instead_of_reusing ... ignored, requires pnpm kernel:bridge:build
+test real_worker_derives_greet_callsites_with_production_policy ... ignored, requires pnpm kernel:bridge:build
+test real_worker_derives_wide_user_rename_without_node_authority_fields ... ignored, requires pnpm kernel:bridge:build
+test trusted_source_projection_has_explicit_counts_and_cross_boundary_exclusions ... ignored, requires pnpm kernel:bridge:build
+test fixture_helper_selects_the_actual_user_declaration ... ok
+test bounded_leader_wait_propagates_failure_and_timeout ... ok
+
+test result: ok. 2 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/node_bridge_failures.rs (target/debug/deps/node_bridge_failures-827ea2e4b7fe8315)
+
+running 1 test
+test candidate_process_protocol_binding_and_containment_failures_are_side_effect_free ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.24s
+
+     Running tests/recovery.rs (target/debug/deps/recovery-d6a85a3ffedc49eb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/storage_atomic.rs (target/debug/deps/storage_atomic-ad441b1d67c6d614)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/sync_published_log.rs (target/debug/deps/sync_published_log-d91aaea2be59f4b7)
+
+running 2 tests
+test invalidated_publication_after_readiness_planning_never_enters_the_log ... ok
+test published_publications_append_exactly_one_log_entry_each ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+   Doc-tests strata_kernel
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Compiling strata-kernel v0.1.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/crates/strata-kernel)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.51s
+     Running unittests src/lib.rs (target/debug/deps/strata_kernel-64a0429db98e1bcb)
+
+running 105 tests
+test bridge::executor::tests::untyped_pre_transport_errors_still_fall_back ... ok
+test bridge::executor::tests::message_text_alone_never_grants_a_fallback ... ok
+test bridge::executor::tests::only_queued_phase_transport_failures_may_fall_back_one_shot ... ok
+test bridge::executor::tests::candidate_response_rejects_malformed_or_misbound_data_before_rust_digesting ... ok
+test bridge::executor::tests::candidate_request_is_bound_only_to_kernel_prepared_authority ... ok
+test bridge::persistent::tests::oversized_request_is_phase_queued_because_the_worker_is_untouched ... ok
+test bridge::persistent::tests::hydrate_at_failures_are_phase_sync ... ok
+test bridge::persistent::tests::clean_shutdown_reaps_worker_with_exit_zero ... ok
+test bridge::persistent::tests::ahead_refusal_serves_one_shot_without_hydrate_rollback ... ok
+test bridge::persistent::tests::malformed_response_frame_poisons ... ok
+test bridge::persistent::tests::hydrate_at_attests_without_dispatching_a_semantic_frame ... ok
+test bridge::persistent::tests::oversized_response_frame_poisons ... ok
+test bridge::persistent::tests::oversized_request_is_refused_host_side_without_poisoning ... ok
+test bridge::persistent::tests::crash_mid_sync_respawns_and_full_hydrates_on_the_next_request ... ok
+test bridge::persistent::tests::crash_mid_request_errors_and_next_call_lazily_respawns ... ok
+test bridge::persistent::tests::request_id_mismatch_poisons ... ok
+test bridge::persistent::tests::refusal_triggered_hydrate_retry_recovers_the_request ... ok
+test bridge::persistent::tests::semantic_frame_refusal_clears_attestation_without_poison ... ok
+test bridge::persistent::tests::semantic_frame_refusal_is_phase_exchange ... ok
+test bridge::process::tests::run_records::behavioral_validation_derives_the_nested_candidate_deadline ... ok
+test bridge::persistent::tests::sync_refusal_clears_attestation_and_retries_once_with_full_hydrate ... ok
+test bridge::persistent::tests::stderr_overflow_poisons ... ok
+test bridge::process::tests::reader_pair_join_waits_for_stderr_after_stdout_fails ... ok
+test bridge::persistent::tests::g_and_g_plus_one_sync_dispatch_pairs_never_interleave ... ok
+test bridge::process::tests::run_records::collect_flag_gates_buffering_and_the_emit_metrics_argument ... ok
+test bridge::persistent::tests::sync_then_dispatch_with_attested_fast_path_and_epoch ... ok
+test bridge::process::tests::run_records::tsc_only_config_defaults_candidate_deadline_to_the_request_deadline ... ok
+test bridge::process::tests::timeout_cleanup_failure_is_not_hidden_by_successful_cleanup_text ... ok
+test bridge::protocol::tests::behavioral_profile_is_unconstructible_with_zero_fixtures ... ok
+test bridge::persistent::tests::sync_refusal_is_phase_sync ... ok
+test bridge::protocol::tests::behavioral_failure_downcasts_with_message ... ok
+test bridge::protocol::tests::behavioral_profile_serializes_exactly_seven_keys ... ok
+test bridge::protocol::tests::behavioral_profile_without_timeouts_does_not_deserialize ... ok
+test bridge::protocol::tests::candidate_deadline_nests_tsc_plus_vitest_plus_overhead ... ok
+test bridge::protocol::tests::context_wrapping_preserves_downcast ... ok
+test bridge::protocol::tests::mirror_failure_carries_diagnostics ... ok
+test bridge::protocol::tests::mutation_failure_downcasts ... ok
+test bridge::protocol::tests::present_profile_timeouts_are_bounded_on_both_variants ... ok
+test bridge::protocol::tests::tsc_only_profile_omits_the_timeout_keys_entirely ... ok
+test bridge::protocol::tests::operational_failures_do_not_downcast ... ok
+test bridge::protocol::tests::typescript_failure_downcasts_to_candidate_rejected_with_diagnostics ... ok
+test bridge::provider::tests::analysis_request_rebinds_a_durable_intent_to_the_current_graph_without_mutation ... ok
+test bridge::provider::tests::declaration_name_rejects_malformed_and_ambiguous_identifier_payloads ... ok
+test bridge::provider::tests::declaration_name_tokens_reject_destructuring_malformed_and_escaped_bindings ... ok
+test bridge::provider::tests::declaration_name_tokens_match_persisted_kinds_and_typescript_offsets ... ok
+test bridge::provider::tests::facts_reject_unknown_mistyped_mismatched_and_unresolved_members ... ok
+test bridge::provider::tests::declaration_name_uses_the_exact_payload_token_not_a_colliding_child ... ok
+test bridge::provider::tests::provider_reanalyzes_a_durable_intent_once_against_fresh_g1_scope ... ignored, requires pnpm kernel:bridge:build
+test bridge::provider::tests::rename_namespace_and_absence_resources_are_derived_only_from_rust_inputs ... ok
+test bridge::provider::tests::facts_resolve_to_exact_records_memberships_and_fresh_scope ... ok
+test bridge::provider::tests::content_dependencies_pin_namespace_membership_without_reserving ... ok
+test bridge::router::tests::non_published_identity_is_never_routed_to_the_mirror ... ok
+test bridge::sync_state::tests::ahead_attestation_is_refused_without_any_frame ... ok
+test bridge::sync_state::tests::batch_requires_contiguous_coverage ... ok
+test bridge::sync_state::tests::byte_cap_evicts_from_the_front_whichever_cap_first ... ok
+test bridge::process::tests::run_records::spawn_records_one_ok_run_with_worker_metrics ... ok
+test bridge::sync_state::tests::discontinuous_append_resets_history ... ok
+test bridge::sync_state::tests::entry_cap_evicts_from_the_front ... ok
+test bridge::sync_state::tests::captured_batch_survives_append_driven_truncation ... ok
+test bridge::sync_state::tests::oversized_batch_plans_full_hydrate ... ok
+test bridge::sync_state::tests::plan_yields_exact_contiguous_sync_frame ... ok
+test bridge::sync_state::tests::raced_target_no_longer_published_is_refused ... ok
+test bridge::sync_state::tests::no_attestation_or_below_floor_plans_full_hydrate ... ok
+test bridge::sync_state::tests::record_published_appends_only_contiguous_steps ... ok
+test bridge::sync_state::tests::routing_predicate_is_structural_identity_comparison ... ok
+test coordination::analyzer::tests::existing_identifier_cannot_gain_write_authority_by_reparenting_into_a_writable_statement ... ok
+test coordination::analyzer::tests::fresh_reference_from_materialized_identifier_accepts_a_pinned_target ... ok
+test coordination::analyzer::tests::fresh_reference_without_pin_or_reservation_is_still_rejected ... ok
+test coordination::analyzer::tests::production_idempotency_and_expansion_policy_are_rust_owned ... ok
+test coordination::analyzer::tests::payload_only_upsert_needs_no_parent_reservation ... ok
+test coordination::analyzer::tests::retargeting_an_existing_reference_ignores_validation_pins ... ok
+test coordination::analyzer::tests::shape_changing_upsert_still_needs_the_parent_reservation ... ok
+test coordination::coordinator::tests::offer_context_rejects_a_stale_service_epoch_directly ... ok
+test coordination::analyzer::tests::writable_statement_narrowly_authorizes_materialized_identifier_children_and_edges ... ok
+test coordination::resources::tests::children_resource_is_payload_insensitive_but_shape_sensitive ... ok
+test coordination::resources::tests::children_of_index_matches_filter_scan ... ok
+test bridge::process::tests::run_records::enter_phase_attributes_records_then_restores_to_unattributed ... ok
+test coordination::resources::tests::equivalence_on_hostile_synthetic_graph ... ok
+test coordination::resources::tests::equivalence_sampled_at_big1k_scale ... ignored, big1k-scale spot check; run explicitly with --ignored
+test coordination::resources::tests::payload_only_upsert_does_not_bump_parent_membership ... ok
+test coordination::resources::tests::shape_changes_still_bump_parent_membership ... ok
+test model::tests::operation_intent_record_round_trips_parameters_json ... ok
+test model::tests::operation_record_without_intents_field_deserializes_with_empty_intents ... ok
+test coordination::resources::tests::equivalence_on_post_apply_state ... ok
+test bridge::persistent::tests::worker_reported_mirror_poison_kills_and_respawns_with_full_rehydrate ... ok
+test bridge::router::tests::epoch_mismatch_kills_the_worker_and_disables_the_persistent_path ... ok
+test bridge::router::tests::candidate_speculative_identity_is_never_routed_to_the_mirror ... ok
+test sync_digest::tests::digest_is_input_order_independent ... ok
+test sync_digest::tests::empty_graph_digest_hashes_the_documented_literal_encoding ... ok
+test sync_digest::tests::pinned_vectors_reproduce_expected_digests ... ok
+test sync_digest::tests::randomized_differential_vectors_for_typescript ... ok
+test bridge::persistent::tests::deadline_exceeded_mid_request_poisons ... ok
+test bridge::persistent::tests::deadline_before_the_worker_attests_is_phase_sync ... ok
+test sync_digest::tests::regenerate_pinned_vectors_when_requested ... ok
+test bridge::persistent::tests::mid_exchange_deadline_is_phase_exchange_so_no_one_shot_replay_may_follow ... ok
+test storage::tests::metadata_values_must_be_exactly_eight_bytes ... ok
+test storage::tests::seed_creates_empty_publication_tables_and_generation_zero ... ok
+test storage::tests::rejected_publication_preserves_generation_and_every_table_count ... ok
+test storage::tests::old_operation_record_without_intents_field_recovers_with_empty_intents ... ok
+test bridge::persistent::tests::unsolicited_frame_poisons_and_next_call_respawns_with_new_pid ... ok
+test bridge::persistent::tests::queued_deadline_is_phase_queued_so_the_caller_may_fall_back_one_shot ... ok
+test coordination::resources::tests::equivalence_on_medium_corpus_fixture ... ok
+test bridge::persistent::tests::queued_caller_deadline_expires_without_poisoning_worker ... ok
+test bridge::process::tests::run_records::candidate_and_analyze_requests_use_their_own_deadlines ... ok
+test bridge::process::tests::run_records::timed_out_run_records_timeout_outcome_and_accumulates_starts ... ok
+
+test result: ok. 103 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 10.16s
+
+     Running unittests src/bin/redb_spike.rs (target/debug/deps/redb_spike-c8ee56881298c8da)
+
+running 1 test
+test tests::nearest_rank_distribution_uses_every_sample ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/strata_kernel_service/main.rs (target/debug/deps/strata_kernel_service-498bec8bfc8c443d)
+
+running 42 tests
+test audit::tests::events_without_validation_identity_serialize_no_new_keys ... ok
+test manifest::tests::duplicate_fixture_path_is_rejected ... ok
+test manifest::tests::wrong_schema_version_is_rejected ... ok
+test manifest::tests::missing_fixture_file_is_rejected ... ok
+test metrics::tests::behavioral_request_records_disclose_present_measurements_only ... ok
+test metrics::tests::tsc_only_request_records_carry_no_disclosure_keys ... ok
+test paths::tests::absolute_payload_outside_root_fails_closed_without_leaking_payload ... ok
+test paths::tests::absolute_payload_under_root_projects_corpus_relative ... ok
+test paths::tests::dot_dot_dot_and_doubled_separator_components_fail_closed ... ok
+test paths::tests::empty_and_backslash_payloads_fail_closed ... ok
+test paths::tests::over_long_projection_fails_closed ... ok
+test paths::tests::relative_payload_projects_verbatim_as_posix ... ok
+test paths::tests::root_itself_fails_closed ... ok
+test paths::tests::sibling_directory_sharing_a_name_prefix_fails_closed ... ok
+test protocol::tests::diagnostic_module_path_is_optional_but_validated ... ok
+test protocol::tests::get_references_request_bounds_limit_at_256 ... ok
+test protocol::tests::list_modules_request_rejects_zero_and_over_bound_limits ... ok
+test protocol::tests::module_declarations_response_rejects_unknown_kind ... ok
+test protocol::tests::module_path_validator_fails_closed ... ok
+test protocol::tests::read_operation_response_accepts_max_intents_boundary ... ok
+test protocol::tests::read_operation_response_rejects_one_past_max_intents ... ok
+test protocol::tests::read_validation_fixture_request_accepts_any_offset ... ok
+test protocol::tests::read_validation_fixture_request_bounds_length_at_8192 ... ok
+test protocol::tests::read_validation_fixture_request_requires_a_digest_shaped_id ... ok
+test protocol::tests::validation_fixture_chunk_response_bounds_and_alphabet ... ok
+test protocol::tests::validation_fixtures_response_bounds_the_listing_and_its_items ... ok
+test manifest::tests::fixture_carrying_tsc_only_manifest_is_rejected ... ok
+test session::tests::base64_encode_covers_every_alphabet_symbol_including_62_and_63 ... ok
+test protocol::tests::maximal_modules_page_fits_the_response_frame ... ok
+test session::tests::base64_encode_matches_rfc4648_vectors ... ok
+test manifest::tests::nesting_bound_violation_is_rejected ... ok
+test manifest::tests::symlinked_fixture_escaping_the_corpus_root_is_rejected ... ok
+test audit::tests::a_pre_b2_audit_log_still_reopens_and_extends_its_hash_chain ... ok
+test manifest::tests::wrong_sha256_is_rejected ... ok
+test manifest::tests::absolute_and_dot_dot_fixture_paths_are_rejected ... ok
+test server::tests::event_aggregate_uses_the_shared_bounded_fallback ... ok
+test manifest::tests::zero_fixture_behavioral_manifest_is_rejected ... ok
+test manifest::tests::unknown_json_field_is_rejected ... ok
+test manifest::tests::valid_behavioral_manifest_round_trips_with_a_stable_digest ... ok
+test manifest::tests::fixture_path_must_be_under_test_dir_and_a_test_or_spec_file ... ok
+test manifest::tests::timeout_of_zero_and_of_200_000_are_rejected ... ok
+test manifest::tests::manifest_registering_more_than_one_listing_page_is_rejected ... ok
+
+test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/api_sealing.rs (target/debug/deps/api_sealing-f9ac584fe1b6dce8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/bridge_protocol.rs (target/debug/deps/bridge_protocol-d27bad1ed34c3565)
+
+running 45 tests
+test process::tests::run_records::tsc_only_config_defaults_candidate_deadline_to_the_request_deadline ... ok
+test process::tests::timeout_cleanup_failure_is_not_hidden_by_successful_cleanup_text ... ok
+test process::tests::run_records::behavioral_validation_derives_the_nested_candidate_deadline ... ok
+
+running 1 test
+test baseline_verdicts_split_red_from_operational_failure ... ok
+test process_runner_rejects_an_oversized_request_before_execution ... ok
+test baseline_request_schema_rejects_candidate_authority_and_generation_drift ... ok
+test process::tests::reader_pair_join_waits_for_stderr_after_stdout_fails ... ok
+test process::tests::run_records::spawn_records_one_ok_run_with_worker_metrics ... ok
+test baseline_response_binding_and_green_verdict_invariants_are_enforced ... ok
+test process::tests::run_records::collect_flag_gates_buffering_and_the_emit_metrics_argument ... ok
+test protocol::tests::behavioral_failure_downcasts_with_message ... ok
+test protocol::tests::behavioral_profile_is_unconstructible_with_zero_fixtures ... ok
+test protocol::tests::behavioral_profile_serializes_exactly_seven_keys ... ok
+test protocol::tests::behavioral_profile_without_timeouts_does_not_deserialize ... ok
+test process::tests::run_records::enter_phase_attributes_records_then_restores_to_unattributed ... ok
+test protocol::tests::candidate_deadline_nests_tsc_plus_vitest_plus_overhead ... ok
+test protocol::tests::context_wrapping_preserves_downcast ... ok
+test protocol::tests::mirror_failure_carries_diagnostics ... ok
+test protocol::tests::mutation_failure_downcasts ... ok
+test protocol::tests::present_profile_timeouts_are_bounded_on_both_variants ... ok
+test protocol::tests::tsc_only_profile_omits_the_timeout_keys_entirely ... ok
+test protocol::tests::operational_failures_do_not_downcast ... ok
+test protocol::tests::typescript_failure_downcasts_to_candidate_rejected_with_diagnostics ... ok
+test request_schema_rejects_numeric_generations_and_generation_mismatches ... ok
+test request_schema_rejects_unknown_fields_versions_kinds_and_intent_variants ... ok
+test response_accepts_optional_worker_self_metrics_and_rejects_unknown_metrics_fields ... ok
+test response_bindings_are_checked_before_success_payloads_are_exposed ... ok
+test schema_rejects_empty_identifiers_and_invalid_digest_or_fingerprint_shapes ... ok
+test response_schema_rejects_unknown_fields_variants_and_oversized_diagnostics ... ok
+test shared_protocol_v1_golden_messages_round_trip_without_schema_drift ... ok
+test wire_u64_rejects_numbers_and_noncanonical_decimal_strings ... ok
+test wire_u64_round_trips_the_full_unsigned_range_as_canonical_decimal_strings ... ok
+test process_runner_accepts_one_bound_response ... ok
+test snapshot_validation_rejects_noncanonical_duplicate_dangling_and_unsafe_records ... ok
+test process_runner_drains_stdout_before_the_child_reads_a_large_stdin_request ... ok
+test process_runner_rejects_spawn_failure_nonzero_exit_and_truncated_json ... ok
+test process_runner_rejects_extra_frames_and_bounded_stream_overflow ... ok
+test process_runner_reports_nonzero_exit_when_child_closes_an_active_writer ... ok
+test process_runner_cleans_up_after_an_early_stdin_write_error ... ok
+test process_runner_rejects_an_unrepresentable_deadline_before_spawning ... ok
+test process_runner_kills_and_reaps_a_timed_out_child ... ok
+test process_runner_deadline_includes_a_blocked_stdin_write ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 1.11s
+
+test process_runner_deadline_includes_a_blocked_stdin_write ... ok
+test process_runner_wait_uses_only_the_remaining_absolute_deadline ... ok
+test process::tests::run_records::candidate_and_analyze_requests_use_their_own_deadlines ... ok
+test process::tests::run_records::timed_out_run_records_timeout_outcome_and_accumulates_starts ... ok
+
+test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.04s
+
+     Running tests/concurrent_readers.rs (target/debug/deps/concurrent_readers-a175aebd2c9d159e)
+
+running 1 test
+test eight_readers_never_observe_a_torn_generation ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.37s
+
+     Running tests/coordination_acceptance.rs (target/debug/deps/coordination_acceptance-dda3b7c8f2c6a177)
+
+running 12 tests
+test scheduler_acceptance_uses_the_real_examples_medium_graph ... ok
+test analyzer_is_intent_and_graph_derived_and_client_inputs_are_key_free ... ok
+test same_symbol_is_fifo_then_wakes_with_bounded_context_and_needs_fresh_decision ... ok
+test publication_reanalyzes_unchanged_successor_and_emits_its_fresh_fingerprint ... ok
+test composite_change_set_publishes_two_real_nodes_in_exactly_one_generation ... ok
+test publication_persists_expanded_successor_scope_before_issuing_ready_authority ... ok
+test restart_preserves_ticket_event_identity_invalidates_offers_and_keeps_cursors_independent ... ok
+test composite_precommit_failure_exposes_neither_real_node_change ... ok
+test reference_overlap_and_claim_time_callsite_expansion_are_inferred_before_mutation ... ok
+test disjoint_work_is_ready_together_and_commits_after_fresh_claims_in_either_order ... ok
+test malicious_node_and_reference_deltas_are_contained_with_zero_side_effects ... ok
+test older_wide_ticket_ages_without_starvation_while_only_disjoint_work_passes ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.84s
+
+     Running tests/coordination_authority.rs (target/debug/deps/coordination_authority-1b5b44b43c329e3b)
+
+running 2 tests
+test claimed_execution_without_installed_executor_is_side_effect_free ... ok
+test default_kernel_rejects_semantic_execution_without_side_effects ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running tests/coordination_durable.rs (target/debug/deps/coordination_durable-d3201bf37119977b)
+
+running 9 tests
+test failed_draft_creation_rolls_back_its_idempotency_mapping ... ok
+test event_ids_are_unique_across_sequences ... ok
+test draft_and_intent_mutations_advance_scheduler_revision_exactly_once ... ok
+test failed_submit_rolls_back_every_coordination_write ... ok
+test coordination_lifecycle_round_trips_after_reopen ... ok
+test kernel_open_upgrades_a_pre_coordination_database_atomically_and_idempotently ... ok
+test create_draft_rejects_every_non_pristine_new_record ... ok
+test submit_rejects_fabricated_transition_owned_fields ... ok
+test submission_key_always_returns_the_current_original_change_set ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.78s
+
+     Running tests/coordination_leases.rs (target/debug/deps/coordination_leases-7925d8be90800509)
+
+running 10 tests
+test drafts_have_deterministic_expiry_and_are_retained_as_cancelled_audit_records ... ok
+test an_expired_draft_cannot_be_revived_by_submission ... ok
+test offer_expiry_uses_fresh_analysis_and_replaces_stale_authority_atomically ... ok
+test release_claim_for_retry_refuses_a_change_set_that_is_not_claimed ... ok
+test release_claim_for_retry_requeues_the_claimed_change_set_for_a_genuine_retry ... ok
+test cancellation_fences_a_delayed_claim_and_freshly_wakes_the_waiter ... ok
+test claim_rejection_runs_fresh_planning_after_the_unlocked_release_simulation ... ok
+test claim_expiry_fences_late_results_and_freshly_wakes_waiters ... ok
+test restart_and_expiry_are_idempotent_and_old_epoch_claims_are_fenced ... ok
+test every_release_cause_uses_the_latest_provider_scope_and_current_generation ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.05s
+
+     Running tests/coordination_lifecycle.rs (target/debug/deps/coordination_lifecycle-7b0245c3583b8e06)
+
+running 10 tests
+test begin_reuses_the_submission_key_without_creating_a_second_draft ... ok
+test claim_handle_serialization_contains_scope_but_no_fencing_or_publication_data ... ok
+test expiry_consumes_old_offer_and_atomically_reoffers_the_oldest_ticket ... ok
+test claim_requeues_pure_addition_when_common_membership_versions_advance ... ok
+test claim_validation_failures_leave_the_offer_claimable_exactly_once ... ok
+test reopening_invalidates_prior_epoch_offers_before_exposing_the_kernel ... ok
+test claim_reanalyzes_and_strict_expansion_requeues_three_times_then_needs_decision ... ok
+test submit_atomically_persists_ready_offer_and_holds_full_priority_scope ... ok
+test material_scope_change_needs_decision_and_cancellation_unblocks_waiters ... ok
+    Checking strata-kernel v0.1.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/crates/strata-kernel)
+    Checking strata-kernel-tests v0.0.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/target/tests/trybuild/strata-kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.61s
+
+
+test [0m[1mtests/ui/claim_has_no_fence.rs[0m ... [0m[32mok
+[0m
+
+test claim_handle_has_no_fencing_or_raw_publication_capability ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.72s
+
+     Running tests/coordination_model.rs (target/debug/deps/coordination_model-9a836f10c8d5a811)
+
+running 4 tests
+test constructors_reject_invalid_schema_ids_and_change_set_membership ... ok
+test legacy_publication_attempt_without_prepared_generation_remains_readable ... ok
+test terminal_states_cannot_transition_back_to_nonterminal_states ... ok
+test coordination_records_are_schema_v1_camel_case_and_round_trip ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/coordination_optimistic.rs (target/debug/deps/coordination_optimistic-1ba5e61d6e8ff152)
+
+running 18 tests
+test final_lifecycle_commit_holds_publication_then_scheduler_before_redb ... ok
+test candidate_builder_observes_both_global_mutexes_unlocked ... ok
+test publication_successor_offer_uses_fresh_unlocked_analysis_on_committed_graph ... ok
+test age_only_reconsideration_during_final_check_does_not_starve_older_claim ... ok
+test panicking_builder_leaves_claim_active_until_explicit_release ... ok
+test optimistic_retry_exhaustion_from_disjoint_churn_keeps_claim_non_terminal ... ok
+test central_planner_requires_decision_when_a_stale_resource_member_disappears ... ok
+test known_dependency_drift_survives_three_invalidation_losses_without_stranding_authority ... ok
+test queued_provider_failure_does_not_abort_claimed_publication_or_disjoint_readiness ... ok
+test builder_can_run_disjoint_lifecycle_and_event_replay_without_global_lock_blocking ... ok
+test queued_provider_failure_does_not_abort_due_claim_expiry_or_disjoint_readiness ... ok
+test queued_provider_failure_does_not_abort_claimed_cancellation_or_disjoint_readiness ... ok
+test rebased_builder_replay_uses_durable_original_prepared_generation_after_reopen ... ok
+test three_unrelated_final_state_losses_exhaust_once_without_rebuilding ... ok
+test third_final_check_dependency_drift_atomically_requeues_and_fences_the_stale_claim ... ok
+test retried_publication_accumulates_analysis_time_and_keeps_candidate_time ... ok
+test two_disjoint_claims_captured_before_publication_both_commit_in_either_order ... ok
+test every_dependency_clock_class_invalidates_affected_work_but_unrelated_work_rebases ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.67s
+
+     Running tests/coordination_planner.rs (target/debug/deps/coordination_planner-8b223509aba42d7f)
+
+running 4 tests
+test concurrent_submissions_retry_after_publication_without_scope_crossing ... ok
+test scheduler_revision_discards_a_stale_readiness_plan_and_retries ... ok
+    Checking strata-kernel-tests v0.0.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/target/tests/trybuild/strata-kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.25s
+
+
+test every_ready_transition_uses_fresh_analysis ... ok
+test [0m[1mtests/ui/ready_offer_is_planner_private.rs[0m ... [0m[32mok
+[0m
+
+test ready_offer_cannot_be_constructed_outside_planner ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
+
+     Running tests/coordination_publication.rs (target/debug/deps/coordination_publication-306972e3c5f109ce)
+
+running 24 tests
+test builder_wrong_schema_and_base_are_rejected_before_graph_coordination_or_fences_change ... ok
+test envelope_digest_validation_runs_once_with_both_global_mutexes_free ... ok
+test coordination_test_api_prevalidated_source_reports_zero_candidate_time ... ok
+test external_envelope_with_unbound_base_generation_is_rejected_without_side_effects ... ok
+test concurrent_duplicate_racing_a_finishing_publication_returns_the_same_original_commit ... ok
+test committed_replay_builder_panic_returns_error_without_changing_committed_state ... ok
+test changed_builder_output_for_same_attempt_is_rejected ... ok
+test commit_atomically_wakes_successor_with_a_fresh_thirty_tick_offer ... ok
+test committed_builder_replay_uses_only_durable_prepared_authority ... ok
+test committed_envelope_replays_without_semantic_provider ... ok
+test empty_delta_publication_reopens_without_a_false_clock_marker ... ok
+test claimed_composite_publication_is_kernel_owned_atomic_and_idempotent_after_reopen ... ok
+test atomic_state_distinguishes_wrong_graph_publication_content ... ok
+test malicious_candidate_digest_is_rejected_before_graph_or_lifecycle_state_changes ... ok
+test publication_reanalysis_happens_before_builder_and_changed_scope_needs_decision ... ok
+test material_publication_scope_change_atomically_wakes_and_offers_blocked_waiter ... ok
+test validation_only_semantic_pins_do_not_bump_their_clocks ... ok
+test stale_claim_and_rogue_delta_are_rejected_without_side_effects ... ok
+test publication_report_carries_phase_timings_and_core_record_bytes ... ok
+test two_intents_publish_one_aggregate_operation_and_generation ... ok
+test wake_event_context_is_bounded_while_canonical_operation_keeps_every_affected_node ... ok
+test same_attempt_same_digest_replays_but_changed_digest_is_rejected ... ok
+test retry_after_a_later_disjoint_generation_returns_the_earlier_generation_and_digest ... ok
+test failure_after_in_transaction_fence_mutation_rolls_back_fences_graph_and_coordination ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.42s
+
+     Running tests/coordination_recovery.rs (target/debug/deps/coordination_recovery-d580da5905a7e64e)
+
+running 23 tests
+test empty_pre_clock_database_remains_compatible_before_first_clocked_publication ... ok
+test events_replay_with_stable_ids_and_monotonic_isolated_client_cursors ... ok
+test empty_clock_table_is_rejected_after_first_clocked_publication ... ok
+test failed_open_does_not_self_heal_a_missing_versioned_lifecycle_marker ... ok
+test legacy_serialized_draft_gets_one_deterministic_expiry_on_reopen ... ok
+test legacy_validation_markers_are_backfilled_after_read_only_validation ... ok
+test failed_open_does_not_self_heal_a_missing_versioned_clock_marker_or_clocks ... ok
+test failed_legacy_validation_migration_rolls_back_schema_markers_and_service_epoch ... ok
+test failed_restart_recovery_is_atomic_and_the_next_open_applies_it_once ... ok
+test failed_open_does_not_recreate_missing_versioned_event_sequence_metadata ... ok
+test marker_absent_8422f4e_schema_without_clock_or_attempt_tables_migrates_atomically ... ok
+test queued_tickets_and_unacknowledged_events_survive_restart ... ok
+test reopen_rejects_a_changed_candidate_digest_for_the_same_attempt_id ... ok
+test reopen_rejects_a_changed_graph_digest_for_a_publication_attempt ... ok
+test reopen_rejects_a_missing_resource_clock_for_a_nonzero_dependency ... ok
+test reopen_rejects_a_publication_attempt_bound_to_a_different_change_set ... ok
+test reopen_rejects_an_attempt_whose_graph_event_has_another_operation ... ok
+test reopen_rejects_an_attempt_whose_graph_operation_has_another_change_set ... ok
+test failed_open_does_not_recreate_missing_required_versioned_tables ... ok
+test reopen_rejects_scheduler_revision_behind_latest_lifecycle_revision ... ok
+test restart_requeues_ready_and_executing_work_once_and_leaves_terminal_records_untouched ... ok
+test failed_open_does_not_backfill_or_rewrite_versioned_event_id_mappings ... ok
+test failed_open_does_not_recreate_missing_versioned_queue_or_revision_metadata ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.21s
+
+     Running tests/coordination_recovery_default.rs (target/debug/deps/coordination_recovery_default-7ca52f62d6b20620)
+
+running 1 test
+test default_kernel_rejects_retained_version_corruption_without_writing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+
+     Running tests/coordination_resources.rs (target/debug/deps/coordination_resources-946da5f3e4fd3732)
+
+running 2 tests
+test every_structural_and_index_bucket_advances_monotonically ... ok
+test changing_the_same_node_twice_advances_its_clock_to_two ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running tests/coordination_scheduler.rs (target/debug/deps/coordination_scheduler-247b6fba989a0a21)
+
+running 17 tests
+test a_wide_ticket_is_never_partially_selected ... ok
+test enqueue_accepts_older_queued_ticket_disjoint_from_younger_ready_and_claimed_tickets ... ok
+test claim_and_release_validate_complete_scope_and_transition_atomically ... ok
+test disjoint_tickets_are_selected_together ... ok
+test enqueue_rejects_older_queued_ticket_beneath_younger_claimed_ticket ... ok
+test an_older_blocked_wide_ticket_blocks_younger_overlap_but_not_disjoint_work ... ok
+test expiring_an_offer_preserves_fifo_position ... ok
+test age_orders_only_tickets_that_are_already_fifo_eligible ... ok
+test overlapping_tickets_run_in_queue_sequence_order ... ok
+test enqueue_rejects_older_queued_ticket_beneath_younger_ready_ticket ... ok
+test ready_offer_holds_complete_priority_scope_until_claim_or_expiry ... ok
+test recovery_accepts_older_queued_ticket_disjoint_from_younger_ready_and_claimed_tickets ... ok
+test recovery_fails_closed_on_corrupt_cardinality_and_overlap ... ok
+test recovery_rejects_claimed_ticket_overlapping_older_queued_ticket ... ok
+test recovery_rejects_ready_ticket_overlapping_older_queued_ticket ... ok
+test skipped_rounds_age_with_checked_arithmetic_and_no_partial_update ... ok
+test every_four_ticket_interleaving_preserves_disjoint_progress_and_fifo ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/coordination_scope.rs (target/debug/deps/coordination_scope-2837677411b8cc6f)
+
+running 11 tests
+test node_delta_authority_includes_node_and_old_and_new_parent_coverage ... ok
+test delta_containment_rejects_a_rogue_write_outside_inferred_scope ... ok
+test reference_delta_authority_uses_edge_identity_but_node_endpoint_coverage ... ok
+test scope_expansion_with_an_idempotency_change_is_material ... ok
+test change_set_analysis_rejects_empty_intents_and_uses_strictest_modes ... ok
+test composite_scope_is_canonical_and_order_independent ... ok
+test membership_only_version_drift_is_expansion_only_with_new_scope_keys ... ok
+test scope_expansion_with_a_policy_change_is_material ... ok
+test removals_replacements_and_unrelated_common_version_drift_are_material ... ok
+test scope_change_classifies_unchanged_expanded_and_material_replacements ... ok
+test production_coordination_has_no_fake_analyzer_or_candidate_builder ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/crash_recovery.rs (target/debug/deps/crash_recovery-32155fbfc46cf926)
+
+running 4 tests
+test seed_and_measure_emit_complete_evidence_metrics ... ok
+test measure_events_reference_their_same_iteration_operations ... ok
+test consecutive_measure_runs_publish_distinct_generations_and_records ... ok
+test process_crashes_recover_only_durably_committed_generations ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.14s
+
+     Running tests/discovery_queries.rs (target/debug/deps/discovery_queries-9ba955d1a97f6d04)
+
+running 10 tests
+test incoming_references_aggregate_subtree_and_page_by_from_node_id ... ok
+test list_module_declarations_rejects_non_module_target ... ok
+test incoming_references_fails_closed_on_broken_parent_chain ... ok
+test exported_payload_parity_with_product_discovery ... ok
+test find_declarations_module_scope_filters_to_one_module ... ok
+test list_modules_rejects_out_of_bound_limits ... ok
+test list_module_declarations_lists_names_export_flags_and_nulls ... ok
+test list_modules_counts_only_discovery_statement_kinds ... ok
+test list_modules_pages_deterministically_in_id_order ... ok
+test find_declarations_pages_instead_of_failing_past_64 ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/examples_medium_fixture.rs (target/debug/deps/examples_medium_fixture-850d7b973da313be)
+
+running 1 test
+test examples_medium_snapshot_is_rust_compatible ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/fencing.rs (target/debug/deps/fencing-29a0b21c6c60d313)
+
+running 6 tests
+test durable_issuance_rejects_a_non_current_service_epoch ... ok
+test a_new_publication_requires_a_non_empty_claim ... ok
+test newer_resource_token_supersedes_an_older_claim ... ok
+test restart_increments_the_epoch_and_invalidates_an_old_claim ... ok
+test a_claim_is_consumed_once_but_an_idempotent_retry_still_succeeds ... ok
+test issuing_resources_is_sorted_deduplicated_and_atomic_on_failure ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests/full_key_free_acceptance.rs (target/debug/deps/full_key_free_acceptance-3c76d75517ba1678)
+
+running 14 tests
+test row_10_add_parameter_alone_fails_validation_without_publication ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test row_10_only_green_together_change_set_publishes_once ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test row_12_real_worker_requests_are_bounded_semantic_inputs_only ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test row_1_disjoint_real_renames_publish_in_both_orders ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test row_2_same_symbol_real_renames_require_a_fresh_decision ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test row_3_real_reference_facts_infer_overlap_before_mutation ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test row_4_add_parameter_requeues_before_build_and_updates_the_new_callsite ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test row_5_real_scopes_age_the_old_wide_ticket_while_only_disjoint_work_bypasses ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test row_8_real_claimed_node_publication_crashes_complete_old_or_new ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test row_9_real_publications_replay_exactly_across_a_generation_two_snapshot ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test rows_6_7_11_restart_fences_old_claim_and_preserves_queue_events_and_exactly_once_publish ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test same_module_disjoint_renames_publish_concurrently_in_both_orders ... ignored, run through pnpm kernel:full-key-free:test after building the Node worker
+test acceptance_manifest_covers_each_governing_row_exactly_once ... ok
+test manifest_backed_behavioral_validation_profile_carries_exactly_seven_keys ... ok
+
+test result: ok. 2 passed; 0 failed; 12 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/graph_generation.rs (target/debug/deps/graph_generation-0b667ce3e6ca2d85)
+
+running 5 tests
+test wrong_base_generation_is_rejected ... ok
+test applying_a_delta_publishes_a_new_generation_without_mutating_the_old_one ... ok
+test reverse_reference_index_is_immutable_across_deletion ... ok
+test invalid_snapshots_report_their_specific_integrity_failure ... ok
+test snapshot_and_digest_are_deterministic_regardless_of_input_order ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/local_service.rs (target/debug/deps/local_service-104a11e99ba44ff1)
+
+running 50 tests
+test daemon_rejects_unsafe_or_overlong_socket_paths_before_bind ... ok
+test protocol::tests::diagnostic_module_path_is_optional_but_validated ... ok
+test protocol::tests::get_references_request_bounds_limit_at_256 ... ok
+test protocol::tests::list_modules_request_rejects_zero_and_over_bound_limits ... ok
+test protocol::tests::maximal_modules_page_fits_the_response_frame ... ok
+test protocol::tests::module_declarations_response_rejects_unknown_kind ... ok
+test protocol::tests::module_path_validator_fails_closed ... ok
+test protocol::tests::read_operation_response_accepts_max_intents_boundary ... ok
+test protocol::tests::read_operation_response_rejects_one_past_max_intents ... ok
+test protocol::tests::read_validation_fixture_request_accepts_any_offset ... ok
+test protocol::tests::read_validation_fixture_request_bounds_length_at_8192 ... ok
+test protocol::tests::read_validation_fixture_request_requires_a_digest_shaped_id ... ok
+test protocol::tests::validation_fixture_chunk_response_bounds_and_alphabet ... ok
+test protocol::tests::validation_fixtures_response_bounds_the_listing_and_its_items ... ok
+test protocol_bounds_duplicate_and_ownership_context ... ok
+test protocol_rejects_cross_client_change_set_access ... ok
+test protocol_rejects_duplicate_request_ids_with_different_bodies ... ok
+test protocol_rejects_frames_over_both_bounds_before_schema_parsing ... ok
+test protocol_rejects_invalid_utf8_and_json ... ok
+test protocol_rejects_missing_empty_extra_and_multiple_frames ... ok
+test protocol_shared_golden_messages_round_trip_as_one_lf_frame ... ok
+test protocol_shared_invalid_messages_are_rejected ... ok
+test protocol_shared_paired_surrogate_raw_json_is_accepted ... ok
+test protocol_shared_raw_json_representations_are_rejected ... ok
+test protocol_shared_reordered_whitespace_raw_json_is_accepted ... ok
+test discovery_read_actions_reject_idempotency_keys ... ok
+test rejected_ready_fixtures_still_fail_for_their_own_defect ... ok
+test discovery_list_module_declarations_matches_registered_target ... ok
+test discovery_scoped_find_declarations_resolves_without_global_lookup ... ok
+test discovery_list_modules_fails_closed_on_escaping_module_payload ... ok
+test find_declarations_returns_named_interface_and_rejects_unknown_kind ... ok
+test discovery_get_references_pages_and_attributes_modules ... ok
+test serve_rejects_duplicate_validation_manifest_flag_before_required_options ... ok
+test discovery_list_modules_projects_absolute_payloads_and_pages_deterministically ... ok
+test seed_green_baseline_operational_failure_is_fail_closed ... ok
+test fixture_reader_offers_nothing_under_tsc_only ... ok
+test tsc_only_daemon_reports_null_digest ... ok
+test seed_tsc_only_manifest_daemon_gets_tsc_baseline ... ok
+test healthy_recovering_daemon_keeps_its_recovery_then_start_audit_order ... ok
+test fixture_reader_refuses_an_unregistered_fixture_id ... ok
+test fixture_reader_refuses_content_that_drifted_after_startup ... ok
+test fixture_reader_lists_and_reassembles_the_registered_fixture ... ok
+test read_operation_returns_canonical_audit_record_and_rejects_unknown_id ... ok
+test seed_red_daemon_refuses_to_serve ... ok
+test seed_red_recovering_daemon_audits_nothing_including_recovery_events ... ok
+test seed_green_daemon_serves_and_reports_digest ... ok
+test taxonomy_rejection_still_cancels_and_audits ... ok
+test taxonomy_semantic_rejection_carries_real_tsc_diagnostics ... ok
+test taxonomy_diagnostics_survive_needs_decision_free_path ... ok
+test daemon_hosts_two_actor_bound_clients_and_one_safe_canonical_graph ... ok
+
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.06s
+
+     Running tests/local_service_hardening.rs (target/debug/deps/local_service_hardening-d2a23ddd827cccf3)
+
+running 5 tests
+test inspect_projection_never_returns_module_or_authority_paths ... ok
+test daemon_rejects_request_id_rebinding_live_and_after_restart ... ok
+test oversized_legal_inspect_gets_one_bounded_response_too_large_error ... ok
+test cancellation_reports_published_and_needs_decision_truthfully ... ok
+test expired_and_lock_wait_deadlines_never_start_a_mutation ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.56s
+
+     Running tests/local_service_metrics.rs (target/debug/deps/local_service_metrics-39450b4f3274b7ae)
+
+running 2 tests
+test no_metrics_flag_writes_no_file ... ok
+test metrics_sink_records_recovery_worker_runs_and_publication ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.19s
+
+     Running tests/local_service_recovery.rs (target/debug/deps/local_service_recovery-69f9833fe6ed378c)
+
+running 9 tests
+test journal_accepts_only_a_torn_final_record_and_rejects_complete_corruption ... ok
+test ambiguous_pending_add_intent_fails_closed_before_socket_bind ... ok
+test journal_crash_boundaries_replay_one_exact_begin_effect ... ok
+test export_snapshot_matches_a_fresh_open_and_rejects_a_missing_database ... ok
+test published_effect_recovery_preserves_the_publication_digest ... ok
+test disconnect_retries_and_restart_preserve_exactly_once_effects_and_events ... ok
+test published_effect_recovery_preserves_its_historical_digest_after_another_publication ... ok
+test restart_fences_a_claim_lost_during_bridge_execution_and_publishes_once ... ok
+test execution_failure_recovery_requeues_retryably_across_every_crash_stage ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.56s
+
+     Running tests/local_service_sealing.rs (target/debug/deps/local_service_sealing-8a3ba1cc63f393df)
+
+running 2 tests
+test default_build_service_has_no_test_authority_surface ... ok
+test actor_containment_malformed_and_bridge_failures_publish_nothing ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running tests/model_roundtrip.rs (target/debug/deps/model_roundtrip-3fc9eeb9d89e7df7)
+
+running 4 tests
+test delete_change_fields_serialize_as_camel_case ... ok
+test folding_operation_renames_nets_chains_and_drops_round_trips ... ok
+test operation_records_round_trip_renames_and_accept_legacy_records_without_them ... ok
+test snapshot_and_delta_json_are_versioned_camel_case_and_round_trip ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/node_bridge.rs (target/debug/deps/node_bridge-f0cec1a96dae0f9f)
+
+running 12 tests
+test add_parameter_claim_reanalyzes_g1_and_requeues_before_candidate_construction ... ignored, requires pnpm kernel:bridge:build
+test coordination_phases_attribute_their_bridge_runs ... ignored, requires pnpm kernel:bridge:build
+test ordered_composite_publishes_once_and_a_failing_second_intent_publishes_nothing ... ignored, requires pnpm kernel:bridge:build
+test real_add_parameter_on_g1_publishes_declaration_and_new_callsite_once ... ignored, requires pnpm kernel:bridge:build
+test real_disjoint_renames_build_at_g0_and_publish_in_both_orders ... ignored, requires pnpm kernel:bridge:build
+test real_user_rename_publishes_one_rust_operation_and_recovers_without_node ... ignored, requires pnpm kernel:bridge:build
+test real_validation_dependency_drift_requeues_and_rebuilds_instead_of_reusing ... ignored, requires pnpm kernel:bridge:build
+test real_worker_derives_greet_callsites_with_production_policy ... ignored, requires pnpm kernel:bridge:build
+test real_worker_derives_wide_user_rename_without_node_authority_fields ... ignored, requires pnpm kernel:bridge:build
+test trusted_source_projection_has_explicit_counts_and_cross_boundary_exclusions ... ignored, requires pnpm kernel:bridge:build
+test fixture_helper_selects_the_actual_user_declaration ... ok
+test bounded_leader_wait_propagates_failure_and_timeout ... ok
+
+test result: ok. 2 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/node_bridge_failures.rs (target/debug/deps/node_bridge_failures-b814b5f53ba65495)
+
+running 1 test
+test candidate_process_protocol_binding_and_containment_failures_are_side_effect_free ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.94s
+
+     Running tests/recovery.rs (target/debug/deps/recovery-3078e75fbd4e2e7e)
+
+running 8 tests
+test restart_recovers_latest_snapshot_and_replays_later_deltas ... ok
+test write_snapshot_rejects_a_valid_historical_snapshot_with_uncommitted_content ... ok
+test restart_rejects_a_structurally_valid_snapshot_with_the_wrong_digest ... ok
+test restart_rejects_a_missing_delta_with_the_expected_generation ... ok
+test restart_rejects_a_corrupt_intermediate_delta_even_when_the_final_digest_matches ... ok
+test restart_rejects_a_delta_whose_base_does_not_match_replay_generation ... ok
+test restart_rejects_a_snapshot_whose_key_and_payload_generations_differ ... ok
+test restart_rejects_a_structurally_valid_delta_that_changes_the_committed_digest ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+
+     Running tests/storage_atomic.rs (target/debug/deps/storage_atomic-1fb457f92ae1ff26)
+
+running 4 tests
+test seed_refuses_to_replace_an_existing_generation_zero_snapshot ... ok
+test failed_validation_leaves_all_publication_tables_unchanged ... ok
+test duplicate_idempotency_key_returns_original_generation_without_appending ... ok
+test publication_is_atomic_and_durable_across_reopen ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests/sync_published_log.rs (target/debug/deps/sync_published_log-4333832cb250f6ae)
+
+running 2 tests
+test invalidated_publication_after_readiness_planning_never_enters_the_log ... ok
+test published_publications_append_exactly_one_log_entry_each ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+   Doc-tests strata_kernel
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/api_sealing.rs (target/debug/deps/api_sealing-4dd9ddd711c4b8e0)
+
+running 2 tests
+    Checking strata-kernel-tests v0.0.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/target/tests/trybuild/strata-kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.18s
+
+
+test [0m[1mtests/ui/raw_publication_is_sealed.rs[0m ... [0m[32mok
+[0m
+
+test raw_publication_authority_is_not_exported_by_default ... ok
+    Checking strata-kernel-tests v0.0.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/target/tests/trybuild/strata-kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.09s
+
+
+test [0m[1mtests/ui/semantic_authority_is_sealed.rs[0m ... [0m[32mok
+[0mtest [0m[1mtests/ui/production_execution_authority_is_sealed.rs[0m ... [0m[32mok
+[0mtest [0m[1mtests/ui/coordinated_crash_execution_is_sealed.rs[0m ... [0m[32mok
+[0mtest [0m[1mtests/ui/coordination_durable_test_authority_is_sealed.rs[0m ... [0m[32mok
+[0mtest [0m[1mtests/ui/local_service_test_authority_is_sealed.rs[0m ... [0m[32mok
+[0m
+
+test semantic_authority_is_not_exported_by_default ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.98s
+
+
+> strata@0.0.0 kernel:gate1:test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate
+> pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel && cargo build -p strata-kernel --features redb-spike-api && pnpm --filter @strata-code/live-compare test gate1
+
+
+> @strata-code/kernel-bridge@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/kernel-bridge
+> tsc -b
+
+
+> @strata-code/live-compare@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> tsc -b
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s
+   Compiling strata-kernel v0.1.0 (/Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/crates/strata-kernel)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.11s
+
+> @strata-code/live-compare@0.0.0 test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> vitest run gate1
+
+
+ RUN  v3.2.4 /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+
+ ✓ tests/gate1Intrusion.test.ts (10 tests) 43764ms
+   ✓ gate 1: second-client intrusion — stage-specific FIFO oracles > pre-submit overlap at after_discovery: A publishes as sequential N+1 op, no needs_decision  4742ms
+   ✓ gate 1: second-client intrusion — stage-specific FIFO oracles > pre-submit overlap at after_begin: A publishes as sequential N+1 op, no needs_decision  4213ms
+   ✓ gate 1: second-client intrusion — stage-specific FIFO oracles > pre-submit overlap at after_add_intent: A publishes as sequential N+1 op, no needs_decision  4247ms
+   ✓ gate 1: second-client intrusion — stage-specific FIFO oracles > after_submit overlap: A commits first; B yields needs_decision naming User->Account  3347ms
+   ✓ gate 1: second-client intrusion — stage-specific FIFO oracles > disjoint intrusion at after_discovery: both renames land independently, tree green  4278ms
+   ✓ gate 1: second-client intrusion — stage-specific FIFO oracles > disjoint intrusion at after_begin: both renames land independently, tree green  4797ms
+   ✓ gate 1: second-client intrusion — stage-specific FIFO oracles > disjoint intrusion at after_add_intent: both renames land independently, tree green  5716ms
+   ✓ gate 1: second-client intrusion — stage-specific FIFO oracles > disjoint intrusion at after_submit: both renames land independently, tree green  4564ms
+   ✓ gate 1: second-client intrusion — stage-specific FIFO oracles > concurrent advances: durable-queue order forces A to win, B yields needs_decision  3988ms
+   ✓ gate 1: second-client intrusion — stage-specific FIFO oracles > ownership: B's advance/cancel on A's change set is rejected; A's change set is untouched  3278ms
+ ✓ tests/gate1Crash.test.ts (10 tests) 40956ms
+   ✓ gate 1: crash injection at the advance publication > default-features daemon rejects --test-publish-failpoint  390ms
+   ✓ gate 1: crash injection at the advance publication > journal after_pending at advance recovers complete-old  2785ms
+   ✓ gate 1: crash injection at the advance publication > journal after_effect at advance recovers complete-new  2528ms
+   ✓ gate 1: crash injection at the advance publication > journal after_prepared at advance recovers complete-new  2485ms
+   ✓ gate 1: crash injection at the advance publication > journal after_follow_up at advance recovers complete-new  2498ms
+   ✓ gate 1: crash injection at the advance publication > journal after_completed at advance recovers complete-new  2482ms
+   ✓ gate 1: crash injection at the advance publication > publish beforeRedbTransaction recovers complete-old  3687ms
+   ✓ gate 1: crash injection at the advance publication > publish insideRedbTransaction recovers complete-old  3725ms
+   ✓ gate 1: crash injection at the advance publication > publish afterRedbCommitBeforeMemoryPublish recovers complete-new  2563ms
+   ✓ gate 1: crash injection at the advance publication > publish afterMemoryPublish recovers complete-new  2465ms
+ ✓ tests/gate1Parity.test.ts (1 test) 4008ms
+   ✓ gate 1: key-free semantic parity (kernel vs SQLite product arm) > produces equivalent nodes, references, rendered TS, tsc+vitest, criteria, and audit  3469ms
+
+ Test Files  3 passed (3)
+      Tests  21 passed (21)
+   Start at  22:37:54
+   Duration  90.83s (transform 192ms, setup 0ms, collect 1.58s, tests 88.73s, environment 0ms, prepare 194ms)
+
+
+> strata@0.0.0 kernel:gate2:test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate
+> pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel && cargo build -p strata-kernel --features redb-spike-api && pnpm --filter @strata-code/live-compare test gate2
+
+
+> @strata-code/kernel-bridge@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/kernel-bridge
+> tsc -b
+
+
+> @strata-code/live-compare@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> tsc -b
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.07s
+
+> @strata-code/live-compare@0.0.0 test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> vitest run gate2
+
+
+ RUN  v3.2.4 /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+
+ ✓ tests/gate2Observability.test.ts (1 test) 2446ms
+   ✓ gate 2: per-stage observability profile (key-free) > produces a complete, internally consistent kernel-arm T03 profile  2446ms
+ ✓ tests/gate2Profile.unit.test.ts (11 tests) 6ms
+
+ Test Files  2 passed (2)
+      Tests  12 passed (12)
+   Start at  22:39:26
+   Duration  3.16s (transform 72ms, setup 0ms, collect 466ms, tests 2.45s, environment 0ms, prepare 74ms)
+
+
+> strata@0.0.0 kernel:gate3:test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate
+> pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel && cargo build -p strata-kernel --features redb-spike-api && pnpm --filter @strata-code/live-compare test gate3Noninferiority gate3Artifact persistenceExitArtifact
+
+
+> @strata-code/kernel-bridge@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/kernel-bridge
+> tsc -b
+
+
+> @strata-code/live-compare@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> tsc -b
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+
+> @strata-code/live-compare@0.0.0 test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> vitest run gate3Noninferiority gate3Artifact persistenceExitArtifact
+
+
+ RUN  v3.2.4 /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+
+ ✓ tests/gate3Noninferiority.test.ts (1 test) 61023ms
+   ✓ gate3 noninferiority — medium acceptance > medium cold+warm at pre-registered N/seed: pins recorded FAIL (cold FAIL, warm FAIL), lifecycle 4/4, RSS captured  60641ms
+ ✓ tests/persistenceExitArtifact.ci.test.ts (3 tests | 1 skipped) 92ms
+ ✓ tests/gate3Artifact.ci.test.ts (3 tests | 1 skipped) 64ms
+
+ Test Files  3 passed (3)
+      Tests  5 passed | 2 skipped (7)
+   Start at  22:39:30
+   Duration  62.18s (transform 139ms, setup 0ms, collect 630ms, tests 61.18s, environment 0ms, prepare 108ms)
+
+
+> strata@0.0.0 kernel:oracle:test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate
+> pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel && pnpm --filter @strata-code/live-compare test persistenceOracle
+
+
+> @strata-code/kernel-bridge@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/kernel-bridge
+> tsc -b
+
+
+> @strata-code/live-compare@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> tsc -b
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
+
+> @strata-code/live-compare@0.0.0 test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> vitest run persistenceOracle
+
+
+ RUN  v3.2.4 /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+
+ ✓ tests/persistenceOracle.test.ts (1 test) 40166ms
+   ✓ differential shadow oracle (persistent vs one-shot bridge) > drives sequential, concurrent, and failpoint sequences through both arms with zero semantic mismatches  39788ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  22:40:34
+   Duration  40.77s (transform 102ms, setup 0ms, collect 484ms, tests 40.17s, environment 0ms, prepare 32ms)
+
+
+> strata@0.0.0 kernel:memory:test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate
+> pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel && pnpm --filter @strata-code/live-compare test persistenceMemory
+
+
+> @strata-code/kernel-bridge@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/kernel-bridge
+> tsc -b
+
+
+> @strata-code/live-compare@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> tsc -b
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+
+> @strata-code/live-compare@0.0.0 test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> vitest run persistenceMemory
+
+
+ RUN  v3.2.4 /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+
+ ✓ tests/persistenceMemory.test.ts (9 tests) 13012ms
+   ✓ true-process RSS guard (N=12 warm mutations, --persistent-bridge) > holds PID continuity across 12 mutations and passes the pre-registered leak check  12481ms
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  22:41:16
+   Duration  13.60s (transform 78ms, setup 0ms, collect 434ms, tests 13.01s, environment 0ms, prepare 66ms)
+
+
+> strata@0.0.0 kernel:discovery:test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate
+> pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && cargo build -p strata-kernel && pnpm --filter @strata-code/live-compare test discoveryBootstrap
+
+
+> @strata-code/kernel-bridge@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/kernel-bridge
+> tsc -b
+
+
+> @strata-code/live-compare@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> tsc -b
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.13s
+
+> @strata-code/live-compare@0.0.0 test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> vitest run discoveryBootstrap
+
+
+ RUN  v3.2.4 /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+
+ ✓ tests/discoveryBootstrap.test.ts (1 test) 3605ms
+   ✓ zero-ID discovery bootstrap (spec B-1 gate b) > resolves and publishes a T03-class rename from zero supplied IDs  3595ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  22:41:31
+   Duration  4.08s (transform 55ms, setup 0ms, collect 342ms, tests 3.61s, environment 0ms, prepare 52ms)
+
+
+> strata@0.0.0 kernel:behavioral:test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate
+> pnpm --filter @strata-code/kernel-bridge build && pnpm --filter @strata-code/live-compare build && pnpm --filter @strata-code/verify build && cargo build -p strata-kernel && pnpm --filter @strata-code/verify test behavioralParity && pnpm --filter @strata-code/live-compare test behavioralGate behavioralTimeout
+
+
+> @strata-code/kernel-bridge@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/kernel-bridge
+> tsc -b
+
+
+> @strata-code/live-compare@0.0.0 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> tsc -b
+
+
+> @strata-code/verify@0.1.1 build /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/verify
+> tsc -b
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s
+
+> @strata-code/verify@0.1.1 test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/verify
+> vitest run behavioralParity
+
+
+ RUN  v3.2.4 /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/verify
+
+ ✓ tests/behavioralParity.test.ts (2 tests) 2004ms
+   ✓ commitWithBehavioralGate parity — product path (spec B-2 gate c) > rejects the same compiles-but-behaviorally-wrong rename (greet -> welcomeUser)  1058ms
+   ✓ commitWithBehavioralGate parity — product path (spec B-2 gate c) > publishes the same clean rename (User -> Account)  945ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  22:41:36
+   Duration  2.53s (transform 100ms, setup 0ms, collect 345ms, tests 2.00s, environment 0ms, prepare 44ms)
+
+
+> @strata-code/live-compare@0.0.0 test /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+> vitest run behavioralGate behavioralTimeout
+
+
+ RUN  v3.2.4 /Users/toddhebebrand/Strata/.claude/worktrees/item-b2-behavioral-gate/packages/live-compare
+
+ ✓ tests/behavioralTimeout.test.ts (1 test) 18390ms
+   ✓ behavioral timeout / savepoint recovery gate — kernel path (spec B-2 gate d) > requeues an operational vitest timeout, re-drives it on a fresh advance, and stays healthy for a clean publish  18378ms
+ ✓ tests/behavioralGate.test.ts (2 tests) 7319ms
+   ✓ behavioral rejection/parity gate — kernel path (spec B-2 gate c) > rejects a compiles-but-behaviorally-wrong rename with real vitest diagnostics  3886ms
+   ✓ behavioral rejection/parity gate — kernel path (spec B-2 gate c) > publishes a clean rename the fixture cannot observe at runtime  3414ms
+
+ Test Files  2 passed (2)
+      Tests  3 passed (3)
+   Start at  22:41:39
+   Duration  26.42s (transform 64ms, setup 0ms, collect 497ms, tests 25.71s, environment 0ms, prepare 55ms)
+

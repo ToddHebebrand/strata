@@ -4,6 +4,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, ensure};
 
 use super::observer;
+use super::persistent::{TransportFailure, TransportPhase};
 use super::process::NodeBridgeClient;
 use super::router::{MirrorCandidate, PersistentBridgeRouter};
 use super::protocol::{
@@ -47,6 +48,24 @@ impl NodeCandidateExecutor {
     ) -> Self {
         self.persistent = router;
         self
+    }
+}
+
+/// Fallback classification for a persistent-path candidate failure, decided
+/// by the error's TYPE (B-2 Task 6). Only a `Queued`-phase transport failure —
+/// the caller's deadline lapsed before the worker was touched, or the frame
+/// was refused host-side before a byte was written — may be replayed on the
+/// one-shot transport. Everything else is OPERATIONAL: the worker may be
+/// mid-validation, and the coordinator's requeue path re-offers the change set
+/// the moment the error propagates, so a one-shot replay here would race a
+/// live first attempt over the same corpus tree.
+///
+/// An UNTYPED error is router-local and pre-transport (binding parse, frame
+/// encoding): equivalent to "not routed", so it falls back.
+fn candidate_transport_allows_fallback(error: &anyhow::Error) -> bool {
+    match error.downcast_ref::<TransportFailure>() {
+        Some(failure) => failure.phase == TransportPhase::Queued,
+        None => true,
     }
 }
 
@@ -147,13 +166,24 @@ impl CandidateExecutor for NodeCandidateExecutor {
                 // the one-shot path's exact error surface — never re-run.
                 Ok(MirrorCandidate::Failed(error)) => return Err(error),
                 Ok(MirrorCandidate::NotRouted) => {} // speculative/disabled → one-shot below
-                Err(error) => {
+                Err(error) if candidate_transport_allows_fallback(&error) => {
                     // Same operational convention as every persistent-path
                     // fallback: bounded stderr line, request served one-shot.
+                    self.client.record_one_shot_fallback();
                     eprintln!(
-                        "persistent mirror candidate failed; serving this request one-shot: \
-                         {error:#}"
+                        "persistent mirror candidate failed before the worker was touched; \
+                         serving this request one-shot: {error:#}"
                     );
+                }
+                Err(error) => {
+                    // Sync/Exchange phase: the worker was engaged and may still
+                    // be running this candidate's tsc/vitest. Surface the
+                    // operational failure (untyped — never a CandidateRejected,
+                    // so it releases and requeues) instead of replaying it.
+                    return Err(error.context(
+                        "persistent mirror candidate failed after the worker was engaged; \
+                         NOT replayed one-shot",
+                    ));
                 }
             }
         }
@@ -172,7 +202,7 @@ impl CandidateExecutor for NodeCandidateExecutor {
                 BridgeRequest::BuildValidateCandidate(inner) => serde_json::to_vec(&inner.snapshot)
                     .context("serialize candidate snapshot for run metrics")?
                     .len() as u64,
-                BridgeRequest::AnalyzeIntent(_) => 0,
+                BridgeRequest::AnalyzeIntent(_) | BridgeRequest::ValidateBaseline(_) => 0,
             };
             observer::set_request_build(snapshot_bytes, snapshot_build_ns);
         }
@@ -186,8 +216,52 @@ impl CandidateExecutor for NodeCandidateExecutor {
 
 #[cfg(test)]
 mod tests {
+    use super::super::persistent::{TransportFailure, TransportPhase};
     use super::super::protocol::parse_bridge_response;
     use super::*;
+
+    /// B-2 Task 6: fallback eligibility is decided by the error's TYPE, never
+    /// by matching its message. Only a `Queued`-phase failure — the worker was
+    /// never touched, so nothing can be running — may be replayed one-shot.
+    #[test]
+    fn only_queued_phase_transport_failures_may_fall_back_one_shot() {
+        assert!(candidate_transport_allows_fallback(&TransportFailure::new(
+            TransportPhase::Queued,
+            anyhow::anyhow!("deadline elapsed while queued")
+        )
+        .into()));
+        for phase in [TransportPhase::Sync, TransportPhase::Exchange] {
+            assert!(
+                !candidate_transport_allows_fallback(
+                    &TransportFailure::new(phase, anyhow::anyhow!("poisoned")).into()
+                ),
+                "{phase:?} must never be replayed one-shot"
+            );
+        }
+    }
+
+    /// Router-local failures raised BEFORE any host interaction (binding
+    /// parse, frame encoding) are untyped and pre-transport: they are
+    /// equivalent to "not routed", so the one-shot path serves them.
+    #[test]
+    fn untyped_pre_transport_errors_still_fall_back() {
+        assert!(candidate_transport_allows_fallback(&anyhow::anyhow!(
+            "encode mirror binding"
+        )));
+    }
+
+    /// A message that merely CONTAINS the word "queued" must not buy a
+    /// fallback: string matching is exactly what this classification replaces.
+    #[test]
+    fn message_text_alone_never_grants_a_fallback() {
+        assert!(!candidate_transport_allows_fallback(
+            &TransportFailure::new(
+                TransportPhase::Exchange,
+                anyhow::anyhow!("worker was queued behind a validation and then timed out")
+            )
+            .into()
+        ));
+    }
     use crate::coordination::{ChangeSetRecord, IntentParameters, IntentRecord};
     use crate::{GraphGeneration, GraphSnapshot, SCHEMA_VERSION};
 

@@ -78,17 +78,28 @@ function success(
   });
 }
 
+/**
+ * The `hello` result a no-manifest daemon returns (B-2 Task 7): both identity
+ * fields are present, and the digest is an explicit `null` rather than an
+ * omitted key.
+ */
+const READY_RESULT = {
+  type: "ready",
+  validationMode: "tscOnly",
+  validationManifestDigest: null
+} as const;
+
 describe("unprivileged coordination Unix-socket client", () => {
   it("uses one Unix connection and one bound request/response frame", async () => {
     const service = await unixServer((socket, request) => {
-      socket.end(success(request.requestId, { type: "ready" }));
+      socket.end(success(request.requestId, READY_RESULT));
     });
     const client = createCoordinationClient({
       socketPath: service.socketPath,
       clientId: "client:alpha"
     });
 
-    await expect(client.hello(1_000)).resolves.toEqual({ type: "ready" });
+    await expect(client.hello(1_000)).resolves.toEqual(READY_RESULT);
     expect(service.requests).toHaveLength(1);
     expect(service.requests[0]).toMatchObject({
       protocolVersion: 1,
@@ -258,7 +269,7 @@ describe("unprivileged coordination Unix-socket client", () => {
 
   it("rejects a response bound to a different request ID before exposing its result", async () => {
     const service = await unixServer((socket) => {
-      socket.end(success("request:wrong", { type: "ready" }));
+      socket.end(success("request:wrong", READY_RESULT));
     });
     const client = createCoordinationClient({
       socketPath: service.socketPath,
@@ -271,8 +282,9 @@ describe("unprivileged coordination Unix-socket client", () => {
   });
 
   it.each([
-    ["unknown response field", (requestId: string) => Buffer.from(`${JSON.stringify({ protocolVersion: 1, requestId, ok: true, result: { type: "ready", redbPath: "/secret" } })}\n`)],
-    ["multiple response frames", (requestId: string) => Buffer.concat([success(requestId, { type: "ready" }), success(requestId, { type: "ready" })])],
+    ["unknown response field", (requestId: string) => Buffer.from(`${JSON.stringify({ protocolVersion: 1, requestId, ok: true, result: { ...READY_RESULT, redbPath: "/secret" } })}\n`)],
+    ["missing validation identity", (requestId: string) => Buffer.from(`${JSON.stringify({ protocolVersion: 1, requestId, ok: true, result: { type: "ready" } })}\n`)],
+    ["multiple response frames", (requestId: string) => Buffer.concat([success(requestId, READY_RESULT), success(requestId, READY_RESULT)])],
     ["oversized response", () => Buffer.alloc(MAX_RESPONSE_FRAME_BYTES + 1, 0x78)]
   ])("fails closed on %s", async (_name, response) => {
     const service = await unixServer((socket, request) => {
@@ -591,6 +603,91 @@ describe("unprivileged coordination Unix-socket client", () => {
         CoordinationClientError
       );
       expect(service.requests).toHaveLength(1);
+    });
+  });
+
+  describe("validation-fixture reads", () => {
+    const FIXTURE_ID = "b".repeat(64);
+
+    it("EXACT-serializes listValidationFixtures as a read-only action with no idempotencyKey", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "validation_fixtures",
+            validationMode: "behavioral",
+            validationManifestDigest: FIXTURE_ID,
+            fixtures: [
+              { fixtureId: FIXTURE_ID, path: "tests/greet.test.ts", bytes: "120" }
+            ]
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await expect(client.listValidationFixtures(1_000)).resolves.toMatchObject({
+        type: "validation_fixtures",
+        validationMode: "behavioral"
+      });
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({ type: "list_validation_fixtures" });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("EXACT-serializes readValidationFixture with the canonical-u64 offset string and no idempotencyKey", async () => {
+      const service = await unixServer((socket, request) => {
+        socket.end(
+          success(request.requestId, {
+            type: "validation_fixture_chunk",
+            fixtureId: FIXTURE_ID,
+            offset: "0",
+            contentBase64: "Zm9vYmFy",
+            eof: true
+          })
+        );
+      });
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await expect(
+        client.readValidationFixture(FIXTURE_ID, "0", 64, 1_000)
+      ).resolves.toEqual({
+        type: "validation_fixture_chunk",
+        fixtureId: FIXTURE_ID,
+        offset: "0",
+        contentBase64: "Zm9vYmFy",
+        eof: true
+      });
+      expect(service.requests).toHaveLength(1);
+      expect(service.requests[0]!.action).toEqual({
+        type: "read_validation_fixture",
+        fixtureId: FIXTURE_ID,
+        offset: "0",
+        length: 64
+      });
+      expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+    });
+
+    it("does not retry either validation-fixture read after an ambiguous disconnect", async () => {
+      const service = await unixServer((socket) => socket.destroy());
+      const client = createCoordinationClient({
+        socketPath: service.socketPath,
+        clientId: "client:alpha"
+      });
+
+      await expect(client.listValidationFixtures(250)).rejects.toThrow(
+        CoordinationClientError
+      );
+      expect(service.requests).toHaveLength(1);
+
+      await expect(
+        client.readValidationFixture(FIXTURE_ID, "0", 64, 250)
+      ).rejects.toThrow(CoordinationClientError);
+      expect(service.requests).toHaveLength(2);
     });
   });
 });

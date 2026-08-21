@@ -1,4 +1,5 @@
 import { analyzeIntent, analyzeIntentInDb } from "./analyze";
+import { validateBaseline } from "./baseline";
 import {
   buildValidateCandidate,
   buildValidateCandidateOnMirror,
@@ -21,7 +22,8 @@ import {
   type BridgeKind,
   type BridgeRequest,
   type BridgeResponse,
-  type BuildValidateCandidateRequest
+  type BuildValidateCandidateRequest,
+  type ValidateBaselineRequest
 } from "./protocol";
 import {
   MirrorState,
@@ -53,11 +55,16 @@ export interface WorkerHandlers {
     request: BuildValidateCandidateRequest,
     recorder?: StageRecorder
   ) => ReturnType<typeof buildValidateCandidate>;
+  validateBaseline: (
+    request: ValidateBaselineRequest,
+    recorder?: StageRecorder
+  ) => ReturnType<typeof validateBaseline>;
 }
 
 const defaultHandlers: WorkerHandlers = {
   analyzeIntent,
-  buildValidateCandidate
+  buildValidateCandidate,
+  validateBaseline
 };
 
 class RequestTooLargeError extends Error {}
@@ -103,12 +110,12 @@ export async function runOneShotWorker(
   }
 
   try {
-    const response = dispatch(request, handlers, recorder);
+    const response = await dispatch(request, handlers, recorder);
     await emitResponse(response, responseIdentityOf(request), recorder);
   } catch (error) {
     const response = requestErrorResponse(
       request,
-      request.kind === "analyzeIntent" ? "analyze" : "mutate",
+      unexpectedFailureStage(request.kind),
       failureCode(error, "handlerFailed"),
       error,
       []
@@ -116,6 +123,16 @@ export async function runOneShotWorker(
     await emitResponse(response, responseIdentityOf(request), recorder);
     writeOperationalError(response.error.code, error);
   }
+}
+
+/**
+ * Stage attributed to an UNEXPECTED throw out of a semantic handler: the stage
+ * that request kind was in when it could still fail this way. A baseline never
+ * mutates, so its only such stage is `validate`.
+ */
+function unexpectedFailureStage(kind: BridgeKind): BridgeErrorPayload["stage"] {
+  if (kind === "analyzeIntent") return "analyze";
+  return kind === "validateBaseline" ? "validate" : "mutate";
 }
 
 /**
@@ -232,6 +249,10 @@ async function servePersistentFrame(
     await serveMirrorCandidate(value, requestId, emitMetrics, mirror);
     return false;
   }
+  // `validateBaseline` is deliberately NOT served here: the seed-green gate is
+  // a one-shot startup trip (`Kernel::validate_baseline`) taken before any
+  // mirror exists, so a baseline frame on the persistent transport is a bug
+  // and is refused as an unknown kind below.
   if (kind !== "analyzeIntent" && kind !== "buildValidateCandidate") {
     await writeLoopErrorFrame(
       requestId,
@@ -255,12 +276,12 @@ async function servePersistentFrame(
     return false;
   }
   try {
-    const response = dispatch(request, handlers, recorder);
+    const response = await dispatch(request, handlers, recorder);
     await writePersistentResponse(response, responseIdentityOf(request), recorder);
   } catch (error) {
     const response = requestErrorResponse(
       request,
-      request.kind === "analyzeIntent" ? "analyze" : "mutate",
+      unexpectedFailureStage(request.kind),
       failureCode(error, "handlerFailed"),
       error,
       []
@@ -437,7 +458,7 @@ async function serveMirrorCandidate(
       ? corruptingMirrorPipelineForTests
       : undefined;
   try {
-    const outcome = buildValidateCandidateOnMirror(request, db, recorder, pipeline);
+    const outcome = await buildValidateCandidateOnMirror(request, db, recorder, pipeline);
     if (outcome.kind === "poisoned") {
       mirror.markPoisoned(outcome.detail);
       await writeLoopErrorFrame(request.requestId, "mirrorPoisoned", new Error(outcome.detail));
@@ -570,11 +591,11 @@ async function readBoundedInput(): Promise<string> {
   return Buffer.concat(chunks, bytes).toString("utf8");
 }
 
-function dispatch(
+async function dispatch(
   request: BridgeRequest,
   handlers: WorkerHandlers,
   recorder?: StageRecorder
-): BridgeResponse {
+): Promise<BridgeResponse> {
   if (request.kind === "analyzeIntent") {
     const result = handlers.analyzeIntent(request, recorder);
     const response = "facts" in result
@@ -596,7 +617,29 @@ function dispatch(
     return bridgeResponseSchema.parse(response);
   }
 
-  const result = handlers.buildValidateCandidate(request, recorder);
+  if (request.kind === "validateBaseline") {
+    const verdict = await handlers.validateBaseline(request, recorder);
+    const response =
+      "green" in verdict
+        ? {
+            protocolVersion: 1 as const,
+            requestId: request.requestId,
+            kind: request.kind,
+            binding: request.binding,
+            ok: true as const,
+            result: verdict
+          }
+        : requestErrorResponse(
+            request,
+            verdict.stage,
+            verdict.code,
+            verdict.message,
+            verdict.diagnostics
+          );
+    return bridgeResponseSchema.parse(response);
+  }
+
+  const result = await handlers.buildValidateCandidate(request, recorder);
   const response = "delta" in result
     ? {
         protocolVersion: 1 as const,

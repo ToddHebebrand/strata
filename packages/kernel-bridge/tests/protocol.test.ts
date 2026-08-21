@@ -14,6 +14,8 @@ const FIXTURE_NAMES = [
   "analyze-response-add-parameter",
   "candidate-request",
   "candidate-response",
+  "baseline-request",
+  "baseline-response",
   "error-response"
 ] as const;
 
@@ -168,6 +170,26 @@ describe("bridge protocol v1", () => {
     const response = clone(fixture("candidate-response")) as any;
     response.result.delta.baseGeneration = "1";
     expectResponseRejected(response);
+  });
+
+  it("keeps the baseline kind free of every candidate-only authority field", () => {
+    for (const field of ["attemptId", "scopeFingerprint", "changeSet", "intent"]) {
+      const request = clone(fixture("baseline-request")) as any;
+      request[field] = clone(fixture("candidate-request") as any)[field] ?? "x";
+      expectRejected(request);
+    }
+    const mismatched = clone(fixture("baseline-request")) as any;
+    mismatched.snapshot.generation = "1";
+    expectRejected(mismatched);
+  });
+
+  it("rejects a green baseline verdict that still carries diagnostics", () => {
+    const response = clone(fixture("baseline-response")) as any;
+    response.result.green = true;
+    expectResponseRejected(response);
+
+    response.result.diagnostics = [];
+    expect(bridgeResponseSchema.safeParse(response).success).toBe(true);
   });
 
   it("rejects malformed content dependency declarations", () => {

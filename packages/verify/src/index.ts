@@ -4,9 +4,12 @@ export {
   validate,
   renderPendingModules,
   commitWithBehavioralGate,
+  commitWithBehavioralGateBounded,
   type CommitResult,
   type Diagnostic,
   type AcceptanceContext,
+  type BoundedAcceptanceContext,
+  type BoundedGatedCommitResult,
   type GatedCommitResult
 } from "./validate";
 export {
@@ -48,9 +51,21 @@ export {
   tscNoEmitSrc,
   vitestRun,
   runCorpusAcceptance,
+  boundedTscNoEmit,
+  boundedRunVitest,
+  runCorpusAcceptanceBounded,
   type QualityResult,
-  type CorpusAcceptanceResult
+  type CorpusAcceptanceResult,
+  type BoundedQualityResult,
+  type BoundedVitestResult,
+  type BoundedCorpusAcceptanceResult,
+  type BoundedCorpusAcceptanceOptions
 } from "./corpusRun";
+export {
+  boundedProcessRun,
+  type BoundedProcessRunOptions,
+  type BoundedRunResult
+} from "./boundedRun";
 export {
   TASK_BEHAVIORAL_FIXTURES,
   behavioralFixturesForTask

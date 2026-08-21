@@ -39,18 +39,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use super::observer::{self, WorkerRunMetrics};
 use super::persistent::{
-    GraphIdentity, PersistentWorkerConfig, PersistentWorkerHost, SyncPlanner,
+    GraphIdentity, PersistentWorkerConfig, PersistentWorkerHost, SyncPlanner, TransportFailure,
+    TransportPhase,
 };
 use super::process::{NodeBridgeClient, NodeBridgeConfig, elapsed_ns};
 use super::protocol::{
     BridgeBinding, CandidateBinding, ChangeSet, Hash64, MirrorCandidateResponse,
-    PROTOCOL_VERSION, SemanticFacts, ValidationProfile, WireGraphDelta, WireU64,
-    parse_mirror_analyze_facts, parse_mirror_candidate_delta,
+    PROTOCOL_VERSION, QUEUE_ALLOWANCE_MS, SemanticFacts, ValidationProfile, WireGraphDelta,
+    WireU64, candidate_failure_to_error, parse_mirror_analyze_facts,
+    parse_mirror_candidate_delta,
 };
 use super::provider::wire_intent;
 use super::sync_state::SyncShared;
@@ -82,9 +84,15 @@ impl SyncPlanner for PublishedSyncPlanner {
 pub(crate) struct PersistentBridgeRouter {
     host: PersistentWorkerHost,
     sync: Arc<SyncShared>,
-    /// Per-request deadline — the same value the one-shot transport uses, so
-    /// a hung worker is bounded identically on both transports.
+    /// Per-request deadline for ANALYZE frames — the same value the one-shot
+    /// transport uses, so a hung worker is bounded identically on both
+    /// transports. Also the eager-hydration budget.
     deadline: Duration,
+    /// Transport total for CANDIDATE frames: `QUEUE_ALLOWANCE_MS` on top of
+    /// the config's candidate deadline, so a candidate that legitimately
+    /// spends its whole validation budget is not cut off by time it spent
+    /// queued behind another caller (B-2 Task 6 deadline nesting).
+    candidate_deadline: Duration,
     max_request_bytes: usize,
     max_diagnostics_bytes: usize,
     collect_metrics: bool,
@@ -128,6 +136,8 @@ impl PersistentBridgeRouter {
             host,
             sync,
             deadline: config.deadline,
+            candidate_deadline: Duration::from_millis(QUEUE_ALLOWANCE_MS)
+                .saturating_add(config.candidate_deadline),
             max_request_bytes: config.max_request_bytes,
             max_diagnostics_bytes: config.max_diagnostics_bytes,
             collect_metrics: config.collect_metrics,
@@ -138,6 +148,10 @@ impl PersistentBridgeRouter {
     /// Total worker children the underlying host has spawned this session.
     pub(crate) fn spawns_total(&self) -> u64 {
         self.host.spawns_total()
+    }
+
+    pub(crate) fn rehydrations_total(&self) -> u64 {
+        self.host.rehydrations_total()
     }
 
     fn planner(&self) -> PublishedSyncPlanner {
@@ -244,17 +258,20 @@ impl PersistentBridgeRouter {
                 .request_at_with_size(&target, frame, self.deadline, &self.planner());
         let bridge_wall_ns = elapsed_ns(wall_start);
 
-        let (outcome, response_bytes, result) = match exchanged {
-            Ok((value, response_bytes)) => {
-                let metrics = value
+        let (outcome, response_bytes, queue_wait_ns, result) = match exchanged {
+            Ok(exchange) => {
+                let metrics = exchange
+                    .value
                     .get("metrics")
                     .and_then(|metrics| serde_json::from_value(metrics.clone()).ok());
-                match parse_mirror_analyze_facts(value, &binding) {
-                    Ok(facts) => ("ok", response_bytes, Ok((facts, metrics))),
-                    Err(error) => ("parseFailed", response_bytes, Err(error)),
+                let response_bytes = exchange.response_bytes;
+                let queue_wait_ns = Some(exchange.queue_wait_ns);
+                match parse_mirror_analyze_facts(exchange.value, &binding) {
+                    Ok(facts) => ("ok", response_bytes, queue_wait_ns, Ok((facts, metrics))),
+                    Err(error) => ("parseFailed", response_bytes, queue_wait_ns, Err(error)),
                 }
             }
-            Err(error) => ("persistentError", 0, Err(error)),
+            Err(error) => ("persistentError", 0, None, Err(error)),
         };
 
         if self.collect_metrics {
@@ -270,6 +287,7 @@ impl PersistentBridgeRouter {
                 snapshot_build_ns: 0,
                 request_serialize_ns,
                 response_bytes,
+                queue_wait_ns,
                 worker: result.as_ref().ok().and_then(|(_, metrics)| metrics.clone()),
             });
         }
@@ -361,29 +379,45 @@ impl PersistentBridgeRouter {
         let request_serialize_ns = elapsed_ns(serialize_start);
 
         let wall_start = Instant::now();
-        let exchanged =
-            self.host
-                .request_at_with_size(&target, frame, self.deadline, &self.planner());
+        let exchanged = self.host.request_at_with_size(
+            &target,
+            frame,
+            self.candidate_deadline,
+            &self.planner(),
+        );
         let bridge_wall_ns = elapsed_ns(wall_start);
 
-        let (outcome, response_bytes, result) = match exchanged {
-            Ok((value, response_bytes)) => {
-                let metrics = value
+        let (outcome, response_bytes, queue_wait_ns, result) = match exchanged {
+            Ok(exchange) => {
+                let metrics = exchange
+                    .value
                     .get("metrics")
                     .and_then(|metrics| serde_json::from_value(metrics.clone()).ok());
+                let response_bytes = exchange.response_bytes;
+                let queue_wait_ns = Some(exchange.queue_wait_ns);
                 match parse_mirror_candidate_delta(
-                    value,
+                    exchange.value,
                     &expected_binding,
                     self.max_diagnostics_bytes,
                 ) {
                     // A parsed CandidateError is a semantic outcome, recorded
                     // "ok" exactly as the one-shot transport records it (its
                     // parse succeeds there too; the failure surfaces after).
-                    Ok(parsed) => ("ok", response_bytes, Ok((parsed, metrics))),
-                    Err(error) => ("parseFailed", response_bytes, Err(error)),
+                    Ok(parsed) => ("ok", response_bytes, queue_wait_ns, Ok((parsed, metrics))),
+                    // The worker DID run this candidate; we just could not read
+                    // its answer. Exchange phase — never replayed one-shot.
+                    Err(error) => (
+                        "parseFailed",
+                        response_bytes,
+                        queue_wait_ns,
+                        Err(anyhow::Error::new(TransportFailure::new(
+                            TransportPhase::Exchange,
+                            error,
+                        ))),
+                    ),
                 }
             }
-            Err(error) => ("persistentError", 0, Err(error)),
+            Err(error) => ("persistentError", 0, None, Err(error)),
         };
 
         if self.collect_metrics {
@@ -399,6 +433,7 @@ impl PersistentBridgeRouter {
                 snapshot_build_ns: 0,
                 request_serialize_ns,
                 response_bytes,
+                queue_wait_ns,
                 worker: result.as_ref().ok().and_then(|(_, metrics)| metrics.clone()),
             });
         }
@@ -409,11 +444,14 @@ impl PersistentBridgeRouter {
                 stage,
                 code,
                 message,
-            } => MirrorCandidate::Failed(anyhow!(
+                diagnostics,
+            } => MirrorCandidate::Failed(
                 // EXACT one-shot failure surface (into_candidate_result), so
-                // a failing candidate reports identically on both routes.
-                "Node bridge candidate failed at {stage:?}/{code}: {message}"
-            )),
+                // a failing candidate reports identically — semantic
+                // (typed CandidateRejected, downcastable) or operational
+                // (untyped anyhow) — on both routes.
+                candidate_failure_to_error(stage, code, message, diagnostics),
+            ),
         })
     }
 

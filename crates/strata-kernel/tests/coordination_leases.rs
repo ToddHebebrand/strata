@@ -7,10 +7,16 @@ use strata_kernel::{
     BeginChangeSet, CandidateBuilder, CandidateEnvelope, ChangeSetState, ClaimOutcome,
     CoordinationError, CoordinationEventKind, DRAFT_TTL_TICKS, DynamicExpansionPolicy, GraphDelta,
     GraphGeneration, GraphSnapshot, IdempotencyClass, IntentAnalysis, IntentParameters,
-    IntentRecord, Kernel, PreparedCandidate, ResourceVersion, SCHEMA_VERSION, SubmissionOutcome,
-    TestSemanticProvider,
+    IntentRecord, Kernel, PreparedCandidate, PublishClaimOutcome, ResourceVersion, SCHEMA_VERSION,
+    SubmissionOutcome, TestSemanticProvider, TicketState,
 };
 use tempfile::tempdir;
+
+/// The `User` interface declaration in the shared `examples/medium` fixture.
+/// Tests that must drive a claim all the way to a real publication need a
+/// rename target that actually exists in the graph; the bare reservation-key
+/// placeholders the lease tests use ("shared") never publish.
+const USER_INTERFACE_ID: &str = "fc98295bca9efc3e";
 
 #[derive(Default)]
 struct CountingProvider {
@@ -327,6 +333,150 @@ fn cancellation_fences_a_delayed_claim_and_freshly_wakes_the_waiter() {
     assert_eq!(
         error.downcast_ref::<CoordinationError>(),
         Some(&CoordinationError::LeaseExpired),
+    );
+}
+
+/// The operational arm of the session failure taxonomy (item-B2 Task 4): a
+/// candidate that failed BEFORE any validation verdict must not strand the
+/// claim until lease expiry. `release_claim_for_retry` performs the same
+/// shape of transition the claim-expiry path does — simulate the release,
+/// recompute readiness without holding the scheduler lock, persist the
+/// release plus the fresh offers as ONE optimistic lifecycle transition —
+/// but targeted at exactly one claimed change set, and WITHOUT deferring it
+/// (an operational retry wants the work re-offered immediately, which is
+/// what makes the wire's `retryable: true` honest).
+#[test]
+fn release_claim_for_retry_requeues_the_claimed_change_set_for_a_genuine_retry() {
+    let provider = Arc::new(CountingProvider::default());
+    let (_directory, kernel) = kernel(provider.clone());
+    let offer = match begin_and_submit(&kernel, "change:operational", USER_INTERFACE_ID, 1) {
+        SubmissionOutcome::Ready { offer, .. } => offer,
+        other => panic!("expected Ready offer, got {other:?}"),
+    };
+    let stranded = match kernel
+        .claim_ready(&offer.offer_id, &offer.claim_token, 2)
+        .unwrap()
+    {
+        ClaimOutcome::Claimed(claim) => claim,
+        other => panic!("expected claim, got {other:?}"),
+    };
+    assert_eq!(
+        kernel
+            .change_set("change:operational")
+            .unwrap()
+            .unwrap()
+            .state,
+        ChangeSetState::Executing,
+    );
+
+    let calls_before = provider.calls();
+    let offers = kernel
+        .release_claim_for_retry("change:operational", 3)
+        .unwrap();
+    assert!(
+        provider.calls() > calls_before,
+        "the requeue must recompute readiness from fresh analysis"
+    );
+
+    // The claim is gone from the ticket, and the readiness pass in the SAME
+    // transition put a fresh offer back on the wire.
+    let ticket = kernel
+        .ticket_for_change_set("change:operational")
+        .unwrap()
+        .expect("the requeued change set keeps its scheduler ticket");
+    assert_eq!(ticket.state, TicketState::Ready);
+    assert_eq!(ticket.active_claim_id, None);
+    let replacement = kernel
+        .ready_offer_for_change_set("change:operational")
+        .unwrap()
+        .expect("the requeue must emit a fresh offer, not wait for lease expiry");
+    assert_ne!(replacement.offer_id, offer.offer_id);
+    assert!(
+        offers
+            .iter()
+            .any(|planned| planned.offer_id == replacement.offer_id),
+        "the returned offers must name the fresh offer: {offers:?}"
+    );
+    assert_eq!(
+        replacement.scope_fingerprint,
+        kernel
+            .change_set("change:operational")
+            .unwrap()
+            .unwrap()
+            .inferred_scope
+            .unwrap()
+            .scope_fingerprint,
+    );
+
+    // The released claim is fenced — no double-publish from the failed attempt.
+    let error = kernel
+        .publish_claimed(&stranded, &EmptyBuilder, 4)
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<CoordinationError>(),
+        Some(&CoordinationError::LeaseExpired),
+    );
+
+    // `retryable: true` is honest: a later claim + publish of the SAME change
+    // set genuinely re-drives it to a commit.
+    let retry = match kernel
+        .claim_ready(&replacement.offer_id, &replacement.claim_token, 5)
+        .unwrap()
+    {
+        ClaimOutcome::Claimed(claim) => claim,
+        other => panic!("expected the requeued change set to be reclaimable, got {other:?}"),
+    };
+    assert!(matches!(
+        kernel.publish_claimed(&retry, &EmptyBuilder, 6).unwrap(),
+        PublishClaimOutcome::Published(_)
+    ));
+    assert_eq!(
+        kernel
+            .change_set("change:operational")
+            .unwrap()
+            .unwrap()
+            .state,
+        ChangeSetState::Committed,
+    );
+}
+
+#[test]
+fn release_claim_for_retry_refuses_a_change_set_that_is_not_claimed() {
+    let provider = Arc::new(CountingProvider::default());
+    let (_directory, kernel) = kernel(provider.clone());
+    let offer = match begin_and_submit(&kernel, "change:unclaimed", USER_INTERFACE_ID, 1) {
+        SubmissionOutcome::Ready { offer, .. } => offer,
+        other => panic!("expected Ready offer, got {other:?}"),
+    };
+    // Offered but never claimed: there is no claim to release, and silently
+    // treating that as success would let the session report a requeue it
+    // never performed.
+    assert!(
+        kernel
+            .release_claim_for_retry("change:unclaimed", 2)
+            .is_err()
+    );
+
+    let claim = match kernel
+        .claim_ready(&offer.offer_id, &offer.claim_token, 2)
+        .unwrap()
+    {
+        ClaimOutcome::Claimed(claim) => claim,
+        other => panic!("expected claim, got {other:?}"),
+    };
+    assert!(matches!(
+        kernel.publish_claimed(&claim, &EmptyBuilder, 3).unwrap(),
+        PublishClaimOutcome::Published(_)
+    ));
+    assert!(
+        kernel
+            .release_claim_for_retry("change:unclaimed", 4)
+            .is_err(),
+        "a committed change set has no claim to release"
+    );
+    assert!(
+        kernel.release_claim_for_retry("change:missing", 4).is_err(),
+        "an unknown change set has no claim to release"
     );
 }
 

@@ -1,0 +1,22 @@
+{
+  "protocolVersion": 1,
+  "requestId": "request-baseline-1",
+  "kind": "validateBaseline",
+  "binding": {
+    "serviceEpoch": "1",
+    "graphGeneration": "0",
+    "graphDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "ok": true,
+  "result": {
+    "green": false,
+    "diagnostics": [
+      {
+        "nodeId": null,
+        "modulePath": null,
+        "message": "FAIL tests/baseline-pin.test.ts",
+        "code": 1
+      }
+    ]
+  }
+}

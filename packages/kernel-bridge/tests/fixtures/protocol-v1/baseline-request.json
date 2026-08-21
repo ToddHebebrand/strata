@@ -1,0 +1,42 @@
+{
+  "protocolVersion": 1,
+  "requestId": "request-baseline-1",
+  "kind": "validateBaseline",
+  "binding": {
+    "serviceEpoch": "1",
+    "graphGeneration": "0",
+    "graphDigest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  },
+  "snapshot": {
+    "schemaVersion": 1,
+    "generation": "0",
+    "nodes": [
+      {
+        "id": "decl:greet",
+        "kind": "FunctionDeclaration",
+        "parentId": "module:main",
+        "childIndex": 0,
+        "payload": "export function greet() {}"
+      },
+      {
+        "id": "module:main",
+        "kind": "Module",
+        "parentId": null,
+        "childIndex": null,
+        "payload": "/project/main.ts"
+      }
+    ],
+    "references": []
+  },
+  "validationProfile": {
+    "mode": "behavioral",
+    "sourceRoot": "/project/src",
+    "corpusRoot": "/project",
+    "behavioralFixtures": [
+      "tests/baseline-pin.test.ts"
+    ],
+    "strictSrcOnlyTscScope": true,
+    "tscTimeoutMs": 60000,
+    "vitestTimeoutMs": 90000
+  }
+}

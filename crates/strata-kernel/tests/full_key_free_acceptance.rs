@@ -16,8 +16,9 @@ use full_key_free_support::{
     localized_only_green_together_fixture, reopen_projected_kernel,
 };
 use strata_kernel::{
-    ChangeSetState, ClaimHandle, ClaimOutcome, CoordinationEventKind, IntentParameters, Kernel,
-    PublishClaimOutcome, PublishFailpoint, ReadyOffer, SubmissionOutcome, TicketState,
+    CANDIDATE_OVERHEAD_MS, CandidateRejected, ChangeSetState, ClaimHandle, ClaimOutcome,
+    CoordinationEventKind, IntentParameters, Kernel, NodeBridgeConfig, PublishClaimOutcome,
+    PublishFailpoint, ReadyOffer, SubmissionOutcome, TicketState,
 };
 use tempfile::tempdir;
 
@@ -1603,7 +1604,16 @@ fn row_10_add_parameter_alone_fails_validation_without_publication() {
 
     let error = actor.execute_claimed(&kernel, &claimed, 3).unwrap_err();
     let message = error.to_string();
-    assert!(message.contains("Validate/typescriptFailed"), "{error:#}");
+    // A tsc red is a SEMANTIC rejection, so since item-B2 Task 1 it arrives as
+    // a typed, downcastable `CandidateRejected` whose Display names the
+    // lowercased stage/code pair — not the old untyped `Validate/...` anyhow
+    // string.
+    let rejected = error
+        .downcast_ref::<CandidateRejected>()
+        .unwrap_or_else(|| panic!("a tsc red must be a typed rejection: {error:#}"));
+    assert_eq!(rejected.stage, "validate");
+    assert_eq!(rejected.code, "typescriptFailed");
+    assert!(message.contains("validate/typescriptFailed"), "{error:#}");
     assert!(
         message.contains("candidate TypeScript validation failed"),
         "{error:#}"
@@ -1974,4 +1984,63 @@ fn row_12_real_worker_requests_are_bounded_semantic_inputs_only() {
     assert_eq!(analyze.response["ok"], true);
     assert_eq!(candidate.response["ok"], true);
     assert_projected_typescript_green(&kernel.snapshot().snapshot());
+}
+
+/// SIBLING of row 12's five-key `validationProfile` pin (which is unmodified
+/// above and still asserts the DEFAULT, no-manifest wire): a manifest-backed
+/// BEHAVIORAL profile carries exactly seven keys — the historic five plus the
+/// two per-step budgets — and its candidate deadline is the nested
+/// `tsc + vitest + CANDIDATE_OVERHEAD_MS`.
+#[test]
+fn manifest_backed_behavioral_validation_profile_carries_exactly_seven_keys() {
+    let default_config = NodeBridgeConfig::tsc_only(
+        "node",
+        Vec::new(),
+        std::time::Duration::from_secs(30),
+        "/corpus/src",
+        "/corpus",
+        true,
+    );
+    assert_exact_object_keys(
+        &default_config.test_validation_profile_json(),
+        &[
+            "mode",
+            "sourceRoot",
+            "corpusRoot",
+            "behavioralFixtures",
+            "strictSrcOnlyTscScope",
+        ],
+        "default (no-manifest) validation profile",
+    );
+    assert_eq!(
+        default_config.test_candidate_deadline(),
+        std::time::Duration::from_secs(30),
+        "without a manifest the candidate deadline IS the existing deadline"
+    );
+
+    let behavioral = default_config
+        .with_behavioral_validation(vec!["tests/greet.test.ts".to_owned()], 60_000, 90_000)
+        .expect("a fixture-carrying behavioral profile is constructible");
+    let profile = behavioral.test_validation_profile_json();
+    assert_exact_object_keys(
+        &profile,
+        &[
+            "mode",
+            "sourceRoot",
+            "corpusRoot",
+            "behavioralFixtures",
+            "strictSrcOnlyTscScope",
+            "tscTimeoutMs",
+            "vitestTimeoutMs",
+        ],
+        "manifest-backed behavioral validation profile",
+    );
+    assert_eq!(profile["mode"], "behavioral");
+    assert_eq!(profile["tscTimeoutMs"], 60_000);
+    assert_eq!(profile["vitestTimeoutMs"], 90_000);
+    assert_eq!(profile["behavioralFixtures"][0], "tests/greet.test.ts");
+    assert_eq!(
+        behavioral.test_candidate_deadline(),
+        std::time::Duration::from_millis(60_000 + 90_000 + CANDIDATE_OVERHEAD_MS)
+    );
 }

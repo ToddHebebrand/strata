@@ -29,6 +29,18 @@ const MAX_EVENT_LIMIT: u32 = 256;
 // standalone via `#[path] mod protocol;` without a sibling `session` module,
 // so the two constants are kept in sync by hand instead.
 const MAX_OPERATION_INTENTS: usize = 256;
+/// Largest fixture slice one `read_validation_fixture` call may return. The
+/// reader is deliberately chunked: a registered fixture is read in bounded
+/// pieces like every other collection on this wire, never streamed whole.
+pub(super) const MAX_FIXTURE_CHUNK_BYTES: u32 = 8_192;
+/// Base64 of `MAX_FIXTURE_CHUNK_BYTES` raw bytes: 4 characters per 3-byte
+/// group, padded up. Bounding the encoded field as well as the requested
+/// length keeps a malformed response from smuggling past the raw-length cap.
+const MAX_FIXTURE_CHUNK_BASE64_BYTES: usize =
+    (MAX_FIXTURE_CHUNK_BYTES as usize).div_ceil(3) * 4;
+/// Registered fixtures per manifest, and therefore per listing — the listing
+/// is single-page by construction, so it carries no cursor.
+pub(super) const MAX_VALIDATION_FIXTURES: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct WireU64(u64);
@@ -165,6 +177,12 @@ pub(super) enum RequestAction {
     ReadOperation {
         operation_id: String,
     },
+    ListValidationFixtures {},
+    ReadValidationFixture {
+        fixture_id: String,
+        offset: WireU64,
+        length: u32,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -263,6 +281,25 @@ impl<'de> Deserialize<'de> for False {
     }
 }
 
+/// The daemon's validation regime, as published on the readiness line, the
+/// start audit event and the `hello` response. One vocabulary for all three so
+/// the three surfaces cannot drift.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum ValidationMode {
+    TscOnly,
+    Behavioral,
+}
+
+impl ValidationMode {
+    pub(super) fn as_label(self) -> &'static str {
+        match self {
+            Self::TscOnly => "tscOnly",
+            Self::Behavioral => "behavioral",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(
     tag = "type",
@@ -271,7 +308,16 @@ impl<'de> Deserialize<'de> for False {
     deny_unknown_fields
 )]
 pub(super) enum ResponseResult {
-    Ready {},
+    /// `hello`. Both fields are REQUIRED on the wire (B-2 Task 7): a client
+    /// must be able to read the daemon's validation regime off its first
+    /// response rather than infer it from a key's absence. The digest is
+    /// NULLABLE, not optional — `null` states "no operator manifest", which is
+    /// a different claim from "this daemon predates the field".
+    Ready {
+        validation_mode: ValidationMode,
+        #[serde(deserialize_with = "required_nullable_digest")]
+        validation_manifest_digest: Option<String>,
+    },
     Nodes {
         graph_generation: WireU64,
         nodes: Vec<InspectedNode>,
@@ -332,6 +378,34 @@ pub(super) enum ResponseResult {
         intents: Vec<OperationIntentSummary>,
         publication_digest: String,
     },
+    /// `list_validation_fixtures`. Carries the daemon's validation regime with
+    /// the listing so a client can tell "this daemon runs no behavioral
+    /// fixtures" (tsc-only: empty list, `null` digest) apart from "this
+    /// behavioral daemon happens to have none" — which the manifest loader
+    /// makes unconstructible, but the wire still states rather than implies.
+    ValidationFixtures {
+        validation_mode: ValidationMode,
+        #[serde(deserialize_with = "required_nullable_digest")]
+        validation_manifest_digest: Option<String>,
+        fixtures: Vec<FixtureSummary>,
+    },
+    ValidationFixtureChunk {
+        fixture_id: String,
+        offset: WireU64,
+        content_base64: String,
+        eof: bool,
+    },
+}
+
+/// One registered behavioral fixture. `fixture_id` IS the fixture's sha256 —
+/// the manifest registers content, not a name, so an id that no longer hashes
+/// the file on disk is a drifted fixture rather than a different one.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct FixtureSummary {
+    pub(super) fixture_id: String,
+    pub(super) path: String,
+    pub(super) bytes: WireU64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -439,6 +513,13 @@ pub(super) struct Diagnostic {
     pub(super) code: String,
     pub(super) message: String,
     pub(super) node_id: Option<String>,
+    /// Corpus-relative POSIX display path of the module the diagnostic
+    /// points at, when the service could project one. NEVER a raw payload
+    /// path — the session projects (B-1 `project_module_path`) and drops
+    /// to absent on failure. Optional on the wire (absent when None) so
+    /// every pre-B-2 frame stays valid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) module_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -597,6 +678,8 @@ impl RequestAction {
             Self::AckEvents { .. } => "ack_events",
             Self::CancelChangeSet { .. } => "cancel_change_set",
             Self::ReadOperation { .. } => "read_operation",
+            Self::ListValidationFixtures { .. } => "list_validation_fixtures",
+            Self::ReadValidationFixture { .. } => "read_validation_fixture",
         }
     }
 
@@ -674,6 +757,23 @@ impl RequestAction {
             Self::AckEvents { .. } => {}
             Self::ReadOperation { operation_id } => {
                 validate_string(operation_id, MAX_ID_BYTES, false, "operationId")?;
+            }
+            Self::ListValidationFixtures {} => {}
+            Self::ReadValidationFixture {
+                fixture_id,
+                offset: _,
+                length,
+            } => {
+                // The id IS a content digest, so the digest rule is the id
+                // rule: 64 lowercase hex, rejected here rather than looked up
+                // and missed. Any offset is representable — a read past EOF is
+                // an empty terminal chunk, not a bad request.
+                validate_digest_field(fixture_id, "fixtureId")?;
+                validate_page_limit(
+                    *length,
+                    MAX_FIXTURE_CHUNK_BYTES as usize,
+                    "read_validation_fixture",
+                )?;
             }
         }
         Ok(())
@@ -802,7 +902,10 @@ impl ErrorResponse {
 impl ResponseResult {
     fn validate(&self) -> Result<()> {
         match self {
-            Self::Ready {} => {}
+            Self::Ready {
+                validation_manifest_digest,
+                ..
+            } => validate_optional_digest(validation_manifest_digest)?,
             Self::Nodes { nodes, .. } => {
                 bounded_items(nodes.len(), 0, MAX_ARRAY_ITEMS, "nodes")?;
                 for node in nodes {
@@ -917,6 +1020,33 @@ impl ResponseResult {
                 }
                 validate_digest(publication_digest)?;
             }
+            Self::ValidationFixtures {
+                validation_manifest_digest,
+                fixtures,
+                ..
+            } => {
+                validate_optional_digest(validation_manifest_digest)?;
+                bounded_items(fixtures.len(), 0, MAX_VALIDATION_FIXTURES, "fixtures")?;
+                for fixture in fixtures {
+                    fixture.validate()?;
+                }
+            }
+            Self::ValidationFixtureChunk {
+                fixture_id,
+                content_base64,
+                ..
+            } => {
+                validate_digest_field(fixture_id, "fixtureId")?;
+                // Empty is legal and meaningful: a read at or past EOF returns
+                // no bytes with `eof: true`.
+                validate_string(
+                    content_base64,
+                    MAX_FIXTURE_CHUNK_BASE64_BYTES,
+                    true,
+                    "contentBase64",
+                )?;
+                validate_base64(content_base64)?;
+            }
         }
         Ok(())
     }
@@ -954,6 +1084,13 @@ impl DeclarationSummary {
 impl ModuleSummary {
     fn validate(&self) -> Result<()> {
         validate_string(&self.module_id, MAX_ID_BYTES, false, "moduleId")?;
+        validate_module_path(&self.path)
+    }
+}
+
+impl FixtureSummary {
+    fn validate(&self) -> Result<()> {
+        validate_digest_field(&self.fixture_id, "fixtureId")?;
         validate_module_path(&self.path)
     }
 }
@@ -1015,7 +1152,11 @@ impl Diagnostic {
     fn validate(&self) -> Result<()> {
         validate_string(&self.code, MAX_ID_BYTES, false, "diagnostic code")?;
         validate_string(&self.message, MAX_TEXT_BYTES, true, "diagnostic message")?;
-        validate_optional_id(&self.node_id, "diagnostic nodeId")
+        validate_optional_id(&self.node_id, "diagnostic nodeId")?;
+        if let Some(module_path) = &self.module_path {
+            validate_module_path(module_path)?;
+        }
+        Ok(())
     }
 }
 
@@ -1129,6 +1270,20 @@ fn validate_diagnostics(diagnostics: &[Diagnostic]) -> Result<()> {
     Ok(())
 }
 
+/// Deserializes a NULLABLE-but-REQUIRED digest.
+///
+/// serde treats a bare `Option<T>` field as implicitly defaulted, so a
+/// `hello` response that simply omitted `validationManifestDigest` would parse
+/// as `None` and silently read as "no manifest". Naming a `deserialize_with`
+/// suppresses that implicit default, so the key must be present — `null` or a
+/// digest, never absent.
+fn required_nullable_digest<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
+}
+
 fn validate_optional_digest(value: &Option<String>) -> Result<()> {
     if let Some(value) = value {
         validate_digest(value)?;
@@ -1137,12 +1292,36 @@ fn validate_optional_digest(value: &Option<String>) -> Result<()> {
 }
 
 fn validate_digest(value: &str) -> Result<()> {
+    validate_digest_field(value, "publicationDigest")
+}
+
+/// Standard padded base64 (RFC 4648), the only encoding this wire emits for
+/// fixture bytes. Validated structurally — length a multiple of four, padding
+/// only in the final group — so a malformed chunk is refused at the protocol
+/// boundary instead of decoding to something surprising client-side.
+fn validate_base64(value: &str) -> Result<()> {
+    if value.len() % 4 != 0 {
+        bail!("contentBase64 length must be a multiple of four");
+    }
+    let unpadded = value.trim_end_matches('=');
+    if value.len() - unpadded.len() > 2 {
+        bail!("contentBase64 has more than two padding characters");
+    }
+    if !unpadded.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/'
+    }) {
+        bail!("contentBase64 contains a character outside the base64 alphabet");
+    }
+    Ok(())
+}
+
+fn validate_digest_field(value: &str, field: &str) -> Result<()> {
     if value.len() != 64
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
-        bail!("publicationDigest must be 64 lowercase hexadecimal characters");
+        bail!("{field} must be 64 lowercase hexadecimal characters");
     }
     Ok(())
 }
@@ -1167,7 +1346,7 @@ fn validate_page_limit(limit: u32, max: usize, action: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_module_path(value: &str) -> Result<()> {
+pub(super) fn validate_module_path(value: &str) -> Result<()> {
     if value.is_empty() {
         bail!("module path must not be empty");
     }
@@ -1271,6 +1450,31 @@ mod tests {
     }
 
     #[test]
+    fn diagnostic_module_path_is_optional_but_validated() {
+        let bare = Diagnostic {
+            code: "c".into(),
+            message: "m".into(),
+            node_id: None,
+            module_path: None,
+        };
+        bare.validate().expect("absent modulePath must validate");
+        assert!(!serde_json::to_string(&bare).unwrap().contains("modulePath"));
+        let good = Diagnostic {
+            module_path: Some("src/x.ts".into()),
+            ..bare.clone()
+        };
+        good.validate()
+            .expect("relative POSIX modulePath must validate");
+        for bad in ["/abs/x.ts", "src/../x.ts", ""] {
+            let diagnostic = Diagnostic {
+                module_path: Some(bad.into()),
+                ..bare.clone()
+            };
+            assert!(diagnostic.validate().is_err(), "{bad:?} must be rejected");
+        }
+    }
+
+    #[test]
     fn module_declarations_response_rejects_unknown_kind() {
         let result = ResponseResult::ModuleDeclarations {
             graph_generation: WireU64::new(1),
@@ -1301,6 +1505,119 @@ mod tests {
         assert!(over.validate().is_err());
     }
 
+    #[test]
+    fn read_validation_fixture_request_bounds_length_at_8192() {
+        let digest = "a".repeat(64);
+        let ok = RequestAction::ReadValidationFixture {
+            fixture_id: digest.clone(),
+            offset: WireU64::new(0),
+            length: MAX_FIXTURE_CHUNK_BYTES,
+        };
+        ok.validate().expect("length 8192 must validate");
+        for bad_length in [0, MAX_FIXTURE_CHUNK_BYTES + 1] {
+            let over = RequestAction::ReadValidationFixture {
+                fixture_id: digest.clone(),
+                offset: WireU64::new(0),
+                length: bad_length,
+            };
+            assert!(
+                over.validate().is_err(),
+                "length {bad_length} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn read_validation_fixture_request_requires_a_digest_shaped_id() {
+        for bad_id in [
+            "".to_owned(),
+            "a".repeat(63),
+            "a".repeat(65),
+            "A".repeat(64),
+            format!("{}g", "a".repeat(63)),
+        ] {
+            let action = RequestAction::ReadValidationFixture {
+                fixture_id: bad_id.clone(),
+                offset: WireU64::new(0),
+                length: 64,
+            };
+            assert!(
+                action.validate().is_err(),
+                "fixtureId {bad_id:?} must be rejected"
+            );
+        }
+    }
+
+    /// An offset past the end of a fixture is a legal request — the daemon
+    /// answers it with the terminal empty chunk — so the validator must not
+    /// invent a bound the reader does not enforce.
+    #[test]
+    fn read_validation_fixture_request_accepts_any_offset() {
+        let action = RequestAction::ReadValidationFixture {
+            fixture_id: "a".repeat(64),
+            offset: WireU64::new(u64::MAX),
+            length: 1,
+        };
+        action.validate().expect("any offset must validate");
+    }
+
+    #[test]
+    fn validation_fixture_chunk_response_bounds_and_alphabet() {
+        let chunk = |content: &str| ResponseResult::ValidationFixtureChunk {
+            fixture_id: "a".repeat(64),
+            offset: WireU64::new(0),
+            content_base64: content.to_owned(),
+            eof: true,
+        };
+        chunk("").validate().expect("an empty terminal chunk is legal");
+        chunk("Zm9vYmFy").validate().expect("base64 must validate");
+        chunk("+/+/").validate().expect("62/63 symbols must validate");
+        chunk("Zg==").validate().expect("padding must validate");
+        for bad in ["Zm9vYmF", "Zm9*YmFy", "Z===", "Zm9vYmFy="] {
+            assert!(chunk(bad).validate().is_err(), "{bad:?} must be rejected");
+        }
+        let oversized = "A".repeat(MAX_FIXTURE_CHUNK_BASE64_BYTES + 4);
+        assert!(chunk(&oversized).validate().is_err());
+    }
+
+    #[test]
+    fn validation_fixtures_response_bounds_the_listing_and_its_items() {
+        let summary = |path: &str| FixtureSummary {
+            fixture_id: "a".repeat(64),
+            path: path.to_owned(),
+            bytes: WireU64::new(10),
+        };
+        ResponseResult::ValidationFixtures {
+            validation_mode: ValidationMode::Behavioral,
+            validation_manifest_digest: Some("b".repeat(64)),
+            fixtures: vec![summary("tests/greet.test.ts")],
+        }
+        .validate()
+        .expect("a registered fixture listing must validate");
+        // tsc-only states its emptiness rather than implying it.
+        ResponseResult::ValidationFixtures {
+            validation_mode: ValidationMode::TscOnly,
+            validation_manifest_digest: None,
+            fixtures: Vec::new(),
+        }
+        .validate()
+        .expect("an empty tsc-only listing must validate");
+        for bad_path in ["/abs/x.test.ts", "tests/../x.test.ts", ""] {
+            let result = ResponseResult::ValidationFixtures {
+                validation_mode: ValidationMode::Behavioral,
+                validation_manifest_digest: Some("b".repeat(64)),
+                fixtures: vec![summary(bad_path)],
+            };
+            assert!(result.validate().is_err(), "{bad_path:?} must be rejected");
+        }
+        let over = ResponseResult::ValidationFixtures {
+            validation_mode: ValidationMode::Behavioral,
+            validation_manifest_digest: Some("b".repeat(64)),
+            fixtures: vec![summary("tests/greet.test.ts"); MAX_VALIDATION_FIXTURES + 1],
+        };
+        assert!(over.validate().is_err());
+    }
+
     /// Pins the frame-headroom assumption from the plan review: a maximal
     /// modules page (64 items, 512-byte paths) serializes well inside
     /// MAX_RESPONSE_FRAME_BYTES.
@@ -1323,3 +1640,4 @@ mod tests {
         serialize_response_frame(&response).expect("maximal modules page must fit the frame");
     }
 }
+

@@ -836,8 +836,15 @@ fn published_effect_recovery_preserves_its_historical_digest_after_another_publi
     assert_eq!(response["result"]["graphGeneration"], "2");
 }
 
+/// The wrapper worker below fails `buildValidateCandidate` by exiting
+/// non-zero — it never returns a candidate verdict — so under the B-2
+/// failure taxonomy this is an OPERATIONAL failure, not a rejection. It is
+/// therefore also the daemon-level coverage of the operational arm: a
+/// retryable `candidate_execution_failed` error, an atomic release-and-
+/// requeue instead of a cancel, and a change set that a later advance can
+/// genuinely re-drive to a publication.
 #[cfg(feature = "coordination-test-api")]
-fn assert_validation_failure_recovery(stage: &str) {
+fn assert_execution_failure_recovery(stage: &str) {
     let directory = tempfile::tempdir().unwrap();
     let real_worker = bridge_worker();
     let wrapper = directory.path().join("validation-fails.mjs");
@@ -912,24 +919,38 @@ fn assert_validation_failure_recovery(stage: &str) {
         Some("advance"),
         json!({"type":"advance_change_set","changeSetId":change}),
     );
-    assert_eq!(first["result"], second["result"]);
-    assert_eq!(first["result"]["state"], "validation_failed", "{first}");
+    // The recorded effect replays byte-identically across the crash boundary.
+    assert_eq!(first["error"], second["error"], "{first} vs {second}");
+    assert_eq!(first["ok"], false, "{first}");
+    assert_eq!(first["error"]["code"], "candidate_execution_failed", "{first}");
+    assert_eq!(first["error"]["retryable"], true, "{first}");
     assert_eq!(
-        first["result"]["diagnostics"][0]["code"],
-        "candidate_validation_failed"
+        first["error"]["diagnostics"].as_array().unwrap().len(),
+        0,
+        "an operational failure has no verdict to report: {first}"
     );
-    assert_eq!(
-        first["result"]["diagnostics"][0]["message"],
-        "candidate validation failed"
+    drop(recovered);
+
+    // `retryable: true` is honest end to end: the change set was requeued
+    // (not cancelled, not left stranded under a dead claim), so the same
+    // change set publishes once the worker stops failing.
+    let healthy = start(&directory, "validation-healthy", &real_worker);
+    let published = send(
+        &healthy,
+        "advance:after-requeue",
+        "client:validation",
+        Some("advance:after-requeue"),
+        json!({"type":"advance_change_set","changeSetId":change}),
     );
+    assert_eq!(published["result"]["state"], "published", "{published}");
 }
 
 #[cfg(feature = "coordination-test-api")]
 #[test]
-fn validation_failure_recovery_preserves_the_exact_diagnostic() {
-    assert_validation_failure_recovery("after_effect");
-    assert_validation_failure_recovery("after_prepared");
-    assert_validation_failure_recovery("after_follow_up");
+fn execution_failure_recovery_requeues_retryably_across_every_crash_stage() {
+    assert_execution_failure_recovery("after_effect");
+    assert_execution_failure_recovery("after_prepared");
+    assert_execution_failure_recovery("after_follow_up");
 }
 
 /// `export-snapshot` is the offline oracle for the parity/crash harness: seed

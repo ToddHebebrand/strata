@@ -1,6 +1,6 @@
 use super::observer::{self, WorkerRunMetrics};
 use super::protocol::{
-    BridgeRequest, BridgeResponse, ValidationProfile, parse_bridge_response,
+    BridgeKind, BridgeRequest, BridgeResponse, ValidationProfile, parse_bridge_response,
     serialize_bridge_request,
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -30,7 +30,15 @@ pub(crate) const DEFAULT_MAX_STDERR_BYTES: usize = 64 * 1024;
 pub struct NodeBridgeConfig {
     pub(crate) executable: PathBuf,
     pub(crate) arguments: Vec<OsString>,
+    /// Transport deadline for an ANALYZE frame, and the base deadline the
+    /// persistent host and its shutdown grace use. Unchanged by B-2.
     pub(crate) deadline: Duration,
+    /// Transport deadline for a CANDIDATE frame. Equals `deadline` without an
+    /// operator validation manifest (byte-identical default); with one it is
+    /// the nested `tsc + vitest + CANDIDATE_OVERHEAD_MS`, so a candidate that
+    /// is allowed to spend three minutes validating is not cut off by the
+    /// analyze-sized budget.
+    pub(crate) candidate_deadline: Duration,
     pub(crate) max_request_bytes: usize,
     pub(crate) max_response_bytes: usize,
     pub(crate) max_stderr_bytes: usize,
@@ -66,6 +74,7 @@ impl NodeBridgeConfig {
             executable: executable.into(),
             arguments,
             deadline,
+            candidate_deadline: deadline,
             max_request_bytes: MAX_REQUEST_FRAME_BYTES,
             max_response_bytes: MAX_RESPONSE_FRAME_BYTES,
             max_stderr_bytes: DEFAULT_MAX_STDERR_BYTES,
@@ -78,6 +87,93 @@ impl NodeBridgeConfig {
             collect_metrics: false,
             persistent_scaffold: false,
         }
+    }
+
+    /// Switches this config to manifest-backed BEHAVIORAL validation: the
+    /// candidate request carries the fixtures and both per-step budgets, and
+    /// the candidate deadline becomes the nested
+    /// `tsc + vitest + CANDIDATE_OVERHEAD_MS`. Errors if the fixture list is
+    /// empty or a budget is out of bounds — a behavioral profile that
+    /// validates nothing, or one with no bound, must not be constructible.
+    pub fn with_behavioral_validation(
+        mut self,
+        behavioral_fixtures: Vec<String>,
+        tsc_timeout_ms: u64,
+        vitest_timeout_ms: u64,
+    ) -> Result<Self> {
+        let (source_root, corpus_root) = match &self.validation_profile {
+            ValidationProfile::TscOnly {
+                source_root,
+                corpus_root,
+                ..
+            }
+            | ValidationProfile::Behavioral {
+                source_root,
+                corpus_root,
+                ..
+            } => (source_root.clone(), corpus_root.clone()),
+        };
+        let strict_src_only_tsc_scope = match &self.validation_profile {
+            ValidationProfile::TscOnly {
+                strict_src_only_tsc_scope,
+                ..
+            }
+            | ValidationProfile::Behavioral {
+                strict_src_only_tsc_scope,
+                ..
+            } => *strict_src_only_tsc_scope,
+        };
+        let profile = ValidationProfile::behavioral(
+            source_root,
+            corpus_root,
+            behavioral_fixtures,
+            strict_src_only_tsc_scope,
+            tsc_timeout_ms,
+            vitest_timeout_ms,
+        )?;
+        self.candidate_deadline = profile
+            .candidate_deadline()
+            .expect("a behavioral profile always derives a candidate deadline");
+        self.validation_profile = profile;
+        Ok(self)
+    }
+
+    /// Applies an operator manifest's per-step budgets to a `tscOnly` profile
+    /// (B-2 Task 7): the profile keeps its five historic keys plus the two now
+    /// PRESENT timeouts, and the candidate deadline becomes the same nested
+    /// `tsc + vitest + CANDIDATE_OVERHEAD_MS` a behavioral session gets.
+    ///
+    /// This exists because a `tscOnly` MANIFEST is still an operator decision
+    /// to bound validation; only the no-manifest default leaves the timeouts
+    /// absent, which is what keeps the pre-B-2 wire byte-identical. Errors if
+    /// the profile is already behavioral (that path has its own constructor)
+    /// or a budget is out of bounds.
+    pub fn with_tsc_only_timeouts(
+        mut self,
+        tsc_timeout_ms: u64,
+        vitest_timeout_ms: u64,
+    ) -> Result<Self> {
+        let ValidationProfile::TscOnly {
+            source_root,
+            corpus_root,
+            strict_src_only_tsc_scope,
+            ..
+        } = &self.validation_profile
+        else {
+            bail!("with_tsc_only_timeouts requires a tscOnly validation profile");
+        };
+        let profile = ValidationProfile::tsc_only_bounded(
+            source_root.clone(),
+            corpus_root.clone(),
+            *strict_src_only_tsc_scope,
+            tsc_timeout_ms,
+            vitest_timeout_ms,
+        )?;
+        self.candidate_deadline = profile
+            .candidate_deadline()
+            .expect("a timeout-carrying tscOnly profile always derives a deadline");
+        self.validation_profile = profile;
+        Ok(self)
     }
 
     /// Opts this config into per-run metrics collection. When enabled, spawned
@@ -117,11 +213,31 @@ impl NodeBridgeConfig {
         self
     }
 
+    /// Test seam: shrinks BOTH deadlines. Without a manifest they are the
+    /// same value, and a test that shrinks the transport deadline to force a
+    /// timeout means it for candidates too.
     #[doc(hidden)]
     #[cfg(feature = "coordination-test-api")]
     pub fn test_with_deadline(mut self, deadline: Duration) -> Self {
         self.deadline = deadline;
+        self.candidate_deadline = deadline;
         self
+    }
+
+    /// Test seam: the exact JSON a candidate request would carry as its
+    /// `validationProfile`. Lets the acceptance suite pin the default
+    /// five-key wire and the manifest-backed seven-key wire side by side.
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_validation_profile_json(&self) -> serde_json::Value {
+        serde_json::to_value(&self.validation_profile)
+            .expect("a validation profile always serializes")
+    }
+
+    #[doc(hidden)]
+    #[cfg(feature = "coordination-test-api")]
+    pub fn test_candidate_deadline(&self) -> Duration {
+        self.candidate_deadline
     }
 }
 
@@ -132,6 +248,11 @@ pub(crate) struct NodeBridgeClient {
     /// from the test-only pre-spawn `run_count`: this increments once per
     /// `Command::spawn` that succeeds, regardless of `collect_metrics`.
     worker_starts: AtomicU64,
+    /// Count of requests the persistent route declined or failed EARLY ENOUGH
+    /// to be re-served one-shot. Not a count of one-shot runs: a daemon with no
+    /// persistent bridge at all serves everything one-shot and never falls
+    /// back. Purely observational.
+    one_shot_fallbacks: AtomicU64,
     /// Buffer of terminal per-run records, drained by `take_worker_run_metrics`.
     /// Only appended to when `config.collect_metrics` is true.
     run_metrics: Mutex<Vec<WorkerRunMetrics>>,
@@ -144,6 +265,7 @@ impl NodeBridgeClient {
         Self {
             config,
             worker_starts: AtomicU64::new(0),
+            one_shot_fallbacks: AtomicU64::new(0),
             run_metrics: Mutex::new(Vec::new()),
             #[cfg(test)]
             run_count: Arc::new(AtomicUsize::new(0)),
@@ -166,6 +288,18 @@ impl NodeBridgeClient {
     /// Total worker children successfully spawned over this client's lifetime.
     pub(crate) fn worker_starts_total(&self) -> u64 {
         self.worker_starts.load(Ordering::SeqCst)
+    }
+
+    /// Records that the persistent route handed this request back to be served
+    /// one-shot. Called by the provider/executor fallback arms.
+    pub(crate) fn record_one_shot_fallback(&self) {
+        self.one_shot_fallbacks.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Total persistent-route requests re-served one-shot over this client's
+    /// lifetime.
+    pub(crate) fn one_shot_fallbacks_total(&self) -> u64 {
+        self.one_shot_fallbacks.load(Ordering::SeqCst)
     }
 
     /// Appends one externally produced run record to the shared buffer. Used
@@ -198,8 +332,19 @@ impl NodeBridgeClient {
         // Validation policy is service-startup-owned configuration. Candidate request
         // construction consumes it in the executor task; intent input never does.
         let _startup_validation_profile = &self.config.validation_profile;
+        // Per-kind deadline selection (B-2 Task 6): a candidate frame spends
+        // the nested validation budget; an analyze frame keeps the separate,
+        // unchanged transport deadline.
+        let budget = match request.kind() {
+            // A baseline spawns the same tsc/vitest pair a candidate does, so
+            // it spends the same nested budget.
+            BridgeKind::BuildValidateCandidate | BridgeKind::ValidateBaseline => {
+                self.config.candidate_deadline
+            }
+            BridgeKind::AnalyzeIntent => self.config.deadline,
+        };
         let deadline = Instant::now()
-            .checked_add(self.config.deadline)
+            .checked_add(budget)
             .ok_or_else(|| anyhow!("Node bridge deadline is too large"))?;
 
         let mut command = Command::new(&self.config.executable);
@@ -238,6 +383,9 @@ impl NodeBridgeClient {
                 snapshot_build_ns: request_build.map_or(0, |build| build.snapshot_build_ns),
                 request_serialize_ns,
                 response_bytes: spawned.response_bytes,
+                // A one-shot run spawns its own child; there is no shared
+                // worker to queue for.
+                queue_wait_ns: None,
                 worker: spawned
                     .result
                     .as_ref()
@@ -685,8 +833,8 @@ mod tests {
         // crate and the test-binary root in the synthetic one.
         use super::super::super::observer;
         use super::super::super::protocol::{
-            AnalyzeIntentRequest, BridgeBinding, BridgeKind, BridgeRequest, Hash64,
-            IntentParameters, IntentRecord, PROTOCOL_VERSION, ValidationProfile, WireNode,
+            AnalyzeIntentRequest, BridgeBinding, BridgeKind, BridgeRequest, CANDIDATE_OVERHEAD_MS,
+            Hash64, IntentParameters, IntentRecord, PROTOCOL_VERSION, ValidationProfile, WireNode,
             WireSnapshot, WireU64,
         };
         use super::super::{NodeBridgeClient, NodeBridgeConfig};
@@ -781,6 +929,7 @@ mod tests {
                 executable: PathBuf::from("/bin/sh"),
                 arguments,
                 deadline: Duration::from_secs(10),
+                candidate_deadline: Duration::from_secs(10),
                 max_request_bytes: 32 * 1024 * 1024,
                 max_response_bytes: 16 * 1024 * 1024,
                 max_stderr_bytes: 64 * 1024,
@@ -889,6 +1038,131 @@ mod tests {
             );
             // Collecting records even a non-ok outcome.
             assert_eq!(on_client.take_worker_run_metrics().len(), 1);
+        }
+
+        /// A minimal but fully valid candidate request, so `run()` can select
+        /// the candidate deadline for it.
+        fn minimal_candidate_request() -> BridgeRequest {
+            use super::super::super::protocol::{
+                BuildValidateCandidateRequest, ChangeSet, IntentRecord,
+            };
+            let intent = IntentRecord {
+                schema_version: SCHEMA_VERSION,
+                intent_id: "i1".into(),
+                change_set_id: "cs-deadline".into(),
+                base_generation: WireU64::new(0),
+                parameters: IntentParameters::RenameSymbol {
+                    declaration_id: "m".into(),
+                    new_name: "X".into(),
+                },
+            };
+            BridgeRequest::BuildValidateCandidate(BuildValidateCandidateRequest {
+                protocol_version: PROTOCOL_VERSION,
+                request_id: "candidate:7:0:a1".into(),
+                kind: BridgeKind::BuildValidateCandidate,
+                binding: BridgeBinding {
+                    service_epoch: WireU64::new(7),
+                    graph_generation: WireU64::new(0),
+                    graph_digest: Hash64::parse("a".repeat(64)).unwrap(),
+                },
+                snapshot: WireSnapshot {
+                    schema_version: SCHEMA_VERSION,
+                    generation: WireU64::new(0),
+                    nodes: vec![WireNode {
+                        id: "m".into(),
+                        kind: "Module".into(),
+                        parent_id: None,
+                        child_index: None,
+                        payload: "src/x.ts".into(),
+                    }],
+                    references: vec![],
+                },
+                attempt_id: "a1".into(),
+                scope_fingerprint: Hash64::parse("b".repeat(64)).unwrap(),
+                change_set: ChangeSet {
+                    change_set_id: "cs-deadline".into(),
+                    actor: "agent:deadline".into(),
+                    reasoning: "select the candidate deadline".into(),
+                    ordered_intents: vec![intent],
+                },
+                validation_profile: ValidationProfile::tsc_only("/project/src", "/project", true),
+            })
+        }
+
+        /// Per-kind deadline selection (B-2 Task 6): a candidate frame is
+        /// bounded by `candidate_deadline` (manifest-derived tsc+vitest+
+        /// overhead), an analyze frame by the separate `deadline`. Same client,
+        /// same sleepy stub, opposite outcomes.
+        #[test]
+        fn candidate_and_analyze_requests_use_their_own_deadlines() {
+            let mut config = stub_config(sh_args("cat >/dev/null; sleep 2", "sh"), true);
+            config.deadline = Duration::from_secs(30);
+            config.candidate_deadline = Duration::from_millis(250);
+            let client = NodeBridgeClient::new(config);
+
+            assert!(client.run(&minimal_candidate_request()).is_err());
+            let records = client.take_worker_run_metrics();
+            assert_eq!(records.len(), 1);
+            assert_eq!(
+                records[0].outcome, "timedOut",
+                "a candidate must be bounded by candidate_deadline, not deadline"
+            );
+
+            // The analyze frame outlives the same 2s stub because ITS budget is
+            // the 30s deadline: it fails on the empty response, never on time.
+            assert!(client.run(&minimal_analyze_request()).is_err());
+            let records = client.take_worker_run_metrics();
+            assert_eq!(records.len(), 1);
+            assert_ne!(
+                records[0].outcome, "timedOut",
+                "analyze must keep the separate (unchanged) deadline"
+            );
+        }
+
+        #[test]
+        fn tsc_only_config_defaults_candidate_deadline_to_the_request_deadline() {
+            let config = NodeBridgeConfig::tsc_only(
+                "/bin/sh",
+                vec![],
+                Duration::from_secs(30),
+                "/project/src",
+                "/project",
+                true,
+            );
+            assert_eq!(config.candidate_deadline, Duration::from_secs(30));
+        }
+
+        #[test]
+        fn behavioral_validation_derives_the_nested_candidate_deadline() {
+            let config = NodeBridgeConfig::tsc_only(
+                "/bin/sh",
+                vec![],
+                Duration::from_secs(30),
+                "/project/src",
+                "/project",
+                true,
+            )
+            .with_behavioral_validation(vec!["tests/a.test.ts".to_owned()], 60_000, 90_000)
+            .unwrap();
+            assert_eq!(
+                config.candidate_deadline,
+                Duration::from_millis(60_000 + 90_000 + CANDIDATE_OVERHEAD_MS)
+            );
+            // The analyze/transport deadline is untouched by the manifest.
+            assert_eq!(config.deadline, Duration::from_secs(30));
+            assert!(
+                NodeBridgeConfig::tsc_only(
+                    "/bin/sh",
+                    vec![],
+                    Duration::from_secs(30),
+                    "/project/src",
+                    "/project",
+                    true,
+                )
+                .with_behavioral_validation(vec![], 60_000, 90_000)
+                .is_err(),
+                "behavioral validation still requires at least one fixture"
+            );
         }
 
         #[test]

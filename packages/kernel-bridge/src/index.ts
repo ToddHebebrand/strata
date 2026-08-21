@@ -2,6 +2,11 @@ export * from "./protocol";
 export * from "./snapshot";
 export * from "./analyze";
 export { buildValidateCandidate, type CandidateSuccess } from "./candidate";
+export {
+  validateBaseline,
+  type BaselineVerdict,
+  type ValidateBaselineResult
+} from "./baseline";
 export * from "./metrics";
 export * from "./mirror-fingerprint";
 export * from "./sync-digest";
