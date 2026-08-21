@@ -2654,3 +2654,85 @@ fn a_half_written_frame_dies_at_the_absolute_deadline_with_no_response() {
         "the trickle was not cut off at the absolute deadline"
     );
 }
+
+/// Task 3: admission is bounded, and the bound is announced rather than
+/// enforced by a silent close.
+///
+/// Before D-2 every accepted connection spawned an uncapped detached thread,
+/// and a valid request could hold one for the protocol's 300-second ceiling.
+/// This is the regression test for that being a LIVE exhaustion path.
+#[test]
+fn over_cap_connections_are_refused_with_server_busy() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-admission");
+
+    // Fill the un-handshaken budget: connections that say nothing at all.
+    let mut silent = Vec::new();
+    for _ in 0..16 {
+        silent.push(UnixStream::connect(&service.socket_path).unwrap());
+    }
+
+    // The next silent connector is over the un-handshaken cap and is told so.
+    let mut refused = UnixStream::connect(&service.socket_path).unwrap();
+    refused
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let frame = session::read_frame(&mut refused).expect("over-cap peer got no refusal frame");
+    let frame: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+    assert_eq!(frame["type"], "session_rejected", "{frame}");
+    assert_eq!(frame["error"]["code"], "server_busy", "{frame}");
+    assert_eq!(
+        frame["error"]["retryable"], true,
+        "server_busy must tell the client to back off rather than give up: {frame}"
+    );
+
+    // Un-handshaken pressure must not lock out real work. Once the silent
+    // connectors go away their permits are released by the RAII guard, and a
+    // legitimate session opens immediately.
+    drop(silent);
+    drop(refused);
+    let mut stream = session::open_work_session(&service.socket_path, "client:after-cap");
+    let response = session::exchange(
+        &mut stream,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:after-cap",
+            "clientId": "client:after-cap",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// The handshake deadline is absolute and short: a connection that opens and
+/// then says nothing is reclaimed, so silent connectors cannot accumulate.
+#[test]
+fn a_silent_connection_is_reclaimed_at_the_handshake_deadline() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-silent");
+
+    let mut silent = UnixStream::connect(&service.socket_path).unwrap();
+    silent
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let started = Instant::now();
+    // Answered, not silently dropped: a bare close is indistinguishable from a
+    // crashed daemon, and the two call for different client behavior. The
+    // timeout is reported as its own retryable code rather than being
+    // collapsed into the terminal version-mismatch refusal.
+    let frame = session::read_frame(&mut silent).expect("silent peer got no refusal frame");
+    let frame: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+    assert_eq!(frame["type"], "session_rejected", "{frame}");
+    assert_eq!(frame["error"]["code"], "handshake_timeout", "{frame}");
+    assert_eq!(frame["error"]["retryable"], true, "{frame}");
+    assert!(
+        session::read_frame(&mut silent).is_none(),
+        "the daemon kept a timed-out connection open"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "silent connection held for {:?}",
+        started.elapsed()
+    );
+}

@@ -3,7 +3,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -95,12 +95,19 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
     stdout.flush()?;
     drop(stdout);
 
+    let admission = Arc::new(Admission::default());
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
+                // Capacity FIRST. An over-cap connection is refused without
+                // ever costing a handler thread.
+                let Some(permit) = admission.admit() else {
+                    refuse_over_cap(stream);
+                    continue;
+                };
                 let session = Arc::clone(&session);
                 thread::spawn(move || {
-                    let _ = handle_connection(stream, &session, service_epoch);
+                    let _ = handle_connection(stream, &session, service_epoch, permit);
                 });
             }
             Err(error) => return Err(error).context("accept local service connection"),
@@ -194,6 +201,94 @@ fn bind_private_socket(path: &Path) -> Result<UnixListener> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))
         .context("protect local service Unix socket")?;
     Ok(listener)
+}
+
+/// Total connections the daemon will hold open at once.
+///
+/// Ten actors imply twenty normal lanes. The cap is not twenty: takeover
+/// requires a replacement lane to CONNECT while the lane it replaces still
+/// holds its permit, so a cap sized to the steady state would deadlock exactly
+/// the recovery path it was meant to protect.
+const MAX_ADMITTED_CONNECTIONS: usize = 64;
+/// Of those, how many may simultaneously be un-handshaken. A peer that
+/// connects and says nothing is the cheapest possible attack, so it gets the
+/// tightest budget -- exhausting this cannot touch established sessions.
+const MAX_UNHANDSHAKEN_CONNECTIONS: usize = 16;
+/// How long the ACCEPT LOOP will spend writing a refusal to an over-cap peer.
+/// Deliberately short: this write is inline, because spawning a thread to
+/// deliver a refusal would reintroduce the unbounded-thread problem the cap
+/// exists to solve. A peer that will not read its own refusal costs the
+/// listener this much and no more.
+const BUSY_REFUSAL_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Bounded connection admission.
+///
+/// Before D-2 every accepted connection spawned a detached thread with no cap,
+/// and a valid request could occupy one for the protocol's full 300-second
+/// ceiling because the socket timeout does not bound request execution. That
+/// made connection and request storms a live resource-exhaustion path on the
+/// running daemon, not a theoretical one.
+#[derive(Default)]
+struct Admission {
+    counts: Mutex<AdmissionCounts>,
+}
+
+#[derive(Default)]
+struct AdmissionCounts {
+    admitted: usize,
+    unhandshaken: usize,
+}
+
+impl Admission {
+    /// Takes a permit, or `None` when either cap is reached. Called BEFORE the
+    /// handler thread is spawned, so an over-cap connection never costs a
+    /// thread at all.
+    fn admit(self: &Arc<Self>) -> Option<AdmissionPermit> {
+        let mut counts = self.counts.lock().ok()?;
+        if counts.admitted >= MAX_ADMITTED_CONNECTIONS
+            || counts.unhandshaken >= MAX_UNHANDSHAKEN_CONNECTIONS
+        {
+            return None;
+        }
+        counts.admitted += 1;
+        counts.unhandshaken += 1;
+        Some(AdmissionPermit {
+            admission: Arc::clone(self),
+            handshaken: false,
+        })
+    }
+}
+
+/// RAII: the permit is released when the handler thread unwinds or returns,
+/// including on panic. Nothing in the handler has to remember to give it back.
+struct AdmissionPermit {
+    admission: Arc<Admission>,
+    handshaken: bool,
+}
+
+impl AdmissionPermit {
+    /// Moves this connection out of the un-handshaken budget and into the
+    /// established one. Called once, the moment the handshake succeeds.
+    fn handshaken(&mut self) {
+        if self.handshaken {
+            return;
+        }
+        self.handshaken = true;
+        if let Ok(mut counts) = self.admission.counts.lock() {
+            counts.unhandshaken = counts.unhandshaken.saturating_sub(1);
+        }
+    }
+}
+
+impl Drop for AdmissionPermit {
+    fn drop(&mut self) {
+        if let Ok(mut counts) = self.admission.counts.lock() {
+            counts.admitted = counts.admitted.saturating_sub(1);
+            if !self.handshaken {
+                counts.unhandshaken = counts.unhandshaken.saturating_sub(1);
+            }
+        }
+    }
 }
 
 /// Absolute wall-clock a connection gets to complete its handshake, measured
@@ -314,43 +409,83 @@ impl FrameReader {
 /// request per lane, so pipelining is deliberately not supported; a peer that
 /// writes two request frames back-to-back has its second frame served only
 /// after the first response is written.
+/// Tells an over-cap peer WHY, in a frame it can parse, then closes.
+///
+/// A silent close would be indistinguishable from a crashed daemon, and a
+/// client that cannot tell those apart cannot choose between backing off and
+/// giving up. `server_busy` is marked retryable so it backs off with jitter.
+fn refuse_over_cap(mut stream: UnixStream) {
+    let _ = stream.set_write_timeout(Some(BUSY_REFUSAL_WRITE_TIMEOUT));
+    let reply = SessionReply::rejected(
+        "server_busy",
+        "daemon is at its connection admission cap; retry with backoff",
+        true,
+    );
+    if let Ok(frame) = serialize_session_reply(&reply) {
+        let _ = stream.write_all(&frame);
+        let _ = stream.flush();
+    }
+}
+
+/// Writes a handshake refusal and ends the connection. Always `Ok`: refusing a
+/// peer is a normal outcome of serving one, not a failure of the daemon.
+fn refuse_handshake(
+    stream: &mut UnixStream,
+    code: &str,
+    message: &str,
+    retryable: bool,
+) -> Result<()> {
+    let reply = SessionReply::rejected(code, message, retryable);
+    if let Ok(frame) = serialize_session_reply(&reply) {
+        let _ = stream.write_all(&frame);
+        let _ = stream.flush();
+    }
+    Ok(())
+}
+
 fn handle_connection(
     mut stream: UnixStream,
     session: &ServiceSession,
     service_epoch: u64,
+    mut permit: AdmissionPermit,
 ) -> Result<()> {
     stream.set_read_timeout(Some(READ_POLL_INTERVAL))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let mut reader = FrameReader::new();
 
     let accepted = Instant::now();
-    let opened = reader
-        .read_frame(&mut stream, MAX_HANDSHAKE_FRAME_BYTES, |_| {
-            accepted + HANDSHAKE_DEADLINE
-        })
-        .and_then(|frame| match frame {
-            // The peer closed before saying anything. Nothing to reject.
-            None => Ok(None),
-            Some(frame) => parse_open_session_frame(&frame).map(Some),
-        });
-    let handshake = match opened {
-        Ok(Some(handshake)) => handshake,
+    // The two failure modes are kept apart because they mean different things
+    // to a client: "you spoke a protocol I do not serve" is terminal, while
+    // "you did not finish speaking in time" is a transport problem worth
+    // retrying. Collapsing them into one code would tell a slow-but-correct
+    // client to give up.
+    let handshake = match reader.read_frame(&mut stream, MAX_HANDSHAKE_FRAME_BYTES, |_| {
+        accepted + HANDSHAKE_DEADLINE
+    }) {
+        // The peer closed before saying anything. Nothing to reject.
         Ok(None) => return Ok(()),
-        Err(error) => {
-            // Fail-fast, both directions: a v1 client's first frame is a
-            // request, which fails to parse as a handshake and lands here. The
-            // rejection is WRITTEN and then the connection closed, so the peer
-            // learns why instead of waiting on EOF.
-            let reply = SessionReply::rejected(
-                "unsupported_protocol_version",
-                &bounded_handshake_message(&error.to_string()),
-                false,
-            );
-            if let Ok(frame) = serialize_session_reply(&reply) {
-                let _ = stream.write_all(&frame);
-                let _ = stream.flush();
+        Ok(Some(frame)) => match parse_open_session_frame(&frame) {
+            Ok(handshake) => handshake,
+            Err(error) => {
+                // Fail-fast, both directions: a v1 client's first frame is a
+                // request, which fails to parse as a handshake and lands here.
+                // The rejection is WRITTEN and then the connection closed, so
+                // the peer learns why instead of waiting on EOF.
+                return refuse_handshake(
+                    &mut stream,
+                    "unsupported_protocol_version",
+                    &bounded_handshake_message(&error.to_string()),
+                    false,
+                );
             }
-            return Ok(());
+        },
+        Err(_) => {
+            return refuse_handshake(
+                &mut stream,
+                "handshake_timeout",
+                "no complete open_session frame arrived within the handshake deadline",
+                true,
+            );
         }
     };
 
@@ -364,6 +499,9 @@ fn handle_connection(
     };
     stream.write_all(&serialize_session_reply(&reply)?)?;
     stream.flush()?;
+    // Established. Release the un-handshaken budget so a burst of silent
+    // connectors cannot starve clients that are actually working.
+    permit.handshaken();
 
     loop {
         let idle_since = Instant::now();
