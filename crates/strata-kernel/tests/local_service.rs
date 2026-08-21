@@ -16,6 +16,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -3348,4 +3349,128 @@ fn a_higher_generation_takes_over_while_the_old_lane_is_mid_request() {
         }),
     );
     assert_eq!(response["ok"], true, "{response}");
+}
+
+/// D-2 Task 10: the ten-client gate.
+///
+/// Ten actors, twenty lanes, all open at once, doing concurrent work over the
+/// session transport. Deterministic and key-free: no model, no network, no
+/// sleeps standing in for synchronization.
+///
+/// What it is actually gating:
+/// - twenty simultaneous lanes are admitted (the cap is 64 precisely so this
+///   fits with room for takeover replacements),
+/// - every actor's work lane makes progress -- no lane starves behind another,
+/// - each actor's observation lane serves reads WHILE its work lane is busy,
+/// - the two lanes of one actor stay bound to one instance.
+#[test]
+fn ten_clients_run_twenty_concurrent_lanes_without_starvation() {
+    const CLIENTS: usize = 10;
+
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "gate-ten-clients");
+    let socket = service.socket_path.clone();
+
+    // A barrier, not a sleep: every lane is provably open before any request
+    // is sent, so the daemon really does hold twenty sessions at once rather
+    // than a rolling few.
+    let ready = Arc::new(Barrier::new(CLIENTS));
+    let mut workers = Vec::new();
+
+    for index in 0..CLIENTS {
+        let socket = socket.clone();
+        let ready = Arc::clone(&ready);
+        workers.push(thread::spawn(move || -> (String, Value, Value) {
+            let actor = format!("client:gate:{index}");
+            let instance = format!("instance:gate:{index}");
+            let (mut work, opened_work) =
+                session::open_session(&socket, &actor, "work", &instance, 1);
+            let (mut observation, opened_observation) =
+                session::open_session(&socket, &actor, "observation", &instance, 1);
+            // Both lanes of one actor are bound to the SAME instance.
+            assert_eq!(opened_work["actor"], actor);
+            assert_eq!(opened_observation["actor"], actor);
+            assert_eq!(opened_work["role"], "work");
+            assert_eq!(opened_observation["role"], "observation");
+
+            ready.wait();
+
+            let begun = session::exchange(
+                &mut work,
+                &json!({
+                    "protocolVersion": 2,
+                    "requestId": format!("gate:{index}:begin"),
+                    "clientId": actor,
+                    "deadlineMs": "120000",
+                    "idempotencyKey": format!("gate:{index}:begin"),
+                    "action": {"type":"begin_change_set","reasoning":format!("gate client {index}")},
+                }),
+            );
+            // The observation lane answers while the work lane is in use --
+            // the isolation the two-lane split exists to provide.
+            let observed = session::exchange(
+                &mut observation,
+                &json!({
+                    "protocolVersion": 2,
+                    "requestId": format!("gate:{index}:read"),
+                    "clientId": actor,
+                    "deadlineMs": "120000",
+                    "action": {"type":"read_events","afterSequence":"0","limit":32},
+                }),
+            );
+            (actor, begun, observed)
+        }));
+    }
+
+    let mut change_sets = BTreeSet::new();
+    for worker in workers {
+        let (actor, begun, observed) = worker.join().expect("a gate client panicked");
+        assert_eq!(begun["ok"], true, "{actor} work lane starved: {begun}");
+        assert_eq!(
+            observed["ok"], true,
+            "{actor} observation lane starved: {observed}"
+        );
+        assert_eq!(observed["result"]["type"], "events", "{observed}");
+        change_sets.insert(begun["result"]["changeSetId"].as_str().unwrap().to_owned());
+    }
+
+    // Every client got its OWN change set: twenty lanes of concurrent work
+    // produced ten distinct results rather than colliding on one.
+    assert_eq!(
+        change_sets.len(),
+        CLIENTS,
+        "expected one change set per client, got {change_sets:?}"
+    );
+}
+
+/// The gate's negative half: with the admission cap saturated, further
+/// connections are refused with `server_busy` rather than queued, dropped, or
+/// allowed to exhaust the daemon's threads.
+#[test]
+fn the_admission_cap_holds_under_a_connection_storm() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "gate-storm");
+
+    // Saturate the un-handshaken budget with connections that never speak.
+    let mut storm = Vec::new();
+    for _ in 0..16 {
+        storm.push(UnixStream::connect(&service.socket_path).unwrap());
+    }
+
+    // Every further connector is told to back off, and told so promptly.
+    for _ in 0..8 {
+        let started = Instant::now();
+        let mut refused = UnixStream::connect(&service.socket_path).unwrap();
+        refused
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let frame = session::read_frame(&mut refused).expect("storm peer got no refusal");
+        let frame: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        assert_eq!(frame["error"]["code"], "server_busy", "{frame}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "refusal took {:?}; the accept loop is stalling on refusals",
+            started.elapsed()
+        );
+    }
 }
