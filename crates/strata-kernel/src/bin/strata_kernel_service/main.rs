@@ -1,4 +1,5 @@
 mod audit;
+mod lifecycle;
 mod manifest;
 mod metrics;
 mod ownership;
