@@ -19,7 +19,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::protocol::{MAX_DEADLINE_MS, validate_module_path};
+use super::protocol::{MAX_DEADLINE_MS, MAX_VALIDATION_FIXTURES, validate_module_path};
 
 /// Fixed overhead the daemon adds on top of a candidate's own tsc+vitest
 /// budget before it reaches the wire's `MAX_DEADLINE_MS` (Task 6 spends
@@ -154,6 +154,17 @@ pub(super) fn load_validation_manifest(path: &Path, corpus_root: &Path) -> Resul
         nested_ms <= MAX_DEADLINE_MS,
         "validation manifest tscTimeoutMs + vitestTimeoutMs + {CANDIDATE_OVERHEAD_MS}ms overhead + \
          {QUEUE_ALLOWANCE_MS}ms queue allowance = {nested_ms}ms exceeds the {MAX_DEADLINE_MS}ms wire deadline bound"
+    );
+
+    // The registered set must fit one `list_validation_fixtures` page. Bounded
+    // HERE, at load, on the same principle as the nesting arithmetic above: an
+    // over-large manifest fails startup rather than producing a daemon that
+    // serves happily but can never answer a listing.
+    ensure!(
+        manifest.fixtures.len() <= MAX_VALIDATION_FIXTURES,
+        "validation manifest registers {} fixtures, more than the {MAX_VALIDATION_FIXTURES} a \
+         single listing can return",
+        manifest.fixtures.len()
     );
 
     let mut seen_paths = BTreeSet::new();
@@ -339,6 +350,55 @@ mod tests {
             first.digest, third.digest,
             "a field mutation must change the digest"
         );
+    }
+
+    /// A manifest may not register more fixtures than one listing can return.
+    /// The failure belongs at load, not at the first `list_validation_fixtures`
+    /// call on an already-serving daemon.
+    #[test]
+    fn manifest_registering_more_than_one_listing_page_is_rejected() {
+        let dir = corpus_with_fixture();
+        let tests_dir = dir.path().join("tests");
+        let mut fixtures = Vec::new();
+        for index in 0..=MAX_VALIDATION_FIXTURES {
+            let name = format!("sample-{index}.test.ts");
+            let contents = format!("export const ok = {index};\n");
+            fs::write(tests_dir.join(&name), &contents).unwrap();
+            fixtures.push(json!({
+                "path": format!("tests/{name}"),
+                "sha256": format!("{:x}", Sha256::digest(contents.as_bytes())),
+            }));
+        }
+        assert_eq!(fixtures.len(), MAX_VALIDATION_FIXTURES + 1);
+        let over = write_manifest(
+            &dir,
+            &json!({
+                "schemaVersion": 1,
+                "mode": "behavioral",
+                "strictSrcOnlyTscScope": true,
+                "tscTimeoutMs": 60_000,
+                "vitestTimeoutMs": 90_000,
+                "fixtures": fixtures.clone(),
+            }),
+        );
+        let error = load_validation_manifest(&over, dir.path()).unwrap_err();
+        assert!(error.to_string().contains("listing"), "{error:#}");
+
+        // One fewer is exactly at the bound and must load.
+        fixtures.pop();
+        let at_bound = write_manifest(
+            &dir,
+            &json!({
+                "schemaVersion": 1,
+                "mode": "behavioral",
+                "strictSrcOnlyTscScope": true,
+                "tscTimeoutMs": 60_000,
+                "vitestTimeoutMs": 90_000,
+                "fixtures": fixtures,
+            }),
+        );
+        load_validation_manifest(&at_bound, dir.path())
+            .expect("a manifest at exactly the listing bound must load");
     }
 
     #[test]
