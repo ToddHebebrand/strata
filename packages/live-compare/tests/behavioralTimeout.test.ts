@@ -7,10 +7,10 @@
 // flags differ.
 //
 // THE LEVER (task-9-brief.md, review-validated): a namespace-import fixture
-// that sleeps 10s only when its target export is missing:
+// that sleeps (FIXTURE_SLEEP_MS below) only when its target export is missing:
 //
 //   import * as mod from "../../src/users/greet.ts";
-//   if (!("greet" in mod)) { writeFileSync(pidfile, pid); await sleep(10_000); }
+//   if (!("greet" in mod)) { writeFileSync(pidfile, pid); await sleep(FIXTURE_SLEEP_MS); }
 //
 // Generation zero: `greet` exists -> no sleep -> seed-green (which reuses the
 // SAME manifest timeouts) passes fast. After renaming `greet` -> `welcomeUser`,
