@@ -2369,3 +2369,68 @@ fn fixture_reader_refuses_an_unregistered_fixture_id() {
     let malformed = read_fixture_chunk(&service, "request:chunk:malformed", "not-a-digest", 0, 64);
     assert_eq!(malformed["code"], "invalid_request", "{malformed}");
 }
+
+/// The Rust half of the dual-language action-partition lockstep (D-1 Task 2).
+///
+/// The mutating/read-only split is maintained in two languages, and getting it
+/// wrong is quiet: a read classified as mutating is sent with an idempotency
+/// key, which the daemon then refuses. `action-partition.json` is the shared
+/// oracle — TypeScript asserts its predicate and its schema against it, and
+/// this asserts `RequestAction::is_mutating` against the same file.
+///
+/// Coverage is exhaustive by construction: every partition entry must be
+/// exercised by a real accepted golden request, so an action added to the
+/// protocol without a golden sample fails here rather than going unchecked.
+#[test]
+fn protocol_action_partition_matches_the_shared_fixture() {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Partition {
+        mutating: Vec<String>,
+        read_only: Vec<String>,
+    }
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/live-compare/tests/fixtures/protocol-v1/action-partition.json");
+    let partition: Partition = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+
+    for name in partition.mutating.iter().chain(partition.read_only.iter()) {
+        assert!(
+            !partition.mutating.contains(name) || !partition.read_only.contains(name),
+            "{name} appears in both halves of the partition"
+        );
+    }
+
+    let mut sampled = BTreeSet::new();
+    for case in fixture("accepted").cases {
+        if case.direction != "request" {
+            continue;
+        }
+        let request = parse_request_frame(&frame(&case.value), None)
+            .unwrap_or_else(|error| panic!("accepted request {} must parse: {error:#}", case.name));
+        let name = request.action.name();
+        sampled.insert(name.to_owned());
+        let expected_mutating = partition.mutating.iter().any(|entry| entry == name);
+        assert!(
+            partition.mutating.iter().any(|entry| entry == name)
+                || partition.read_only.iter().any(|entry| entry == name),
+            "action {name} is missing from the shared partition fixture"
+        );
+        assert_eq!(
+            request.action.is_mutating(),
+            expected_mutating,
+            "action {name} disagrees with the shared partition fixture"
+        );
+    }
+
+    let declared: BTreeSet<String> = partition
+        .mutating
+        .iter()
+        .chain(partition.read_only.iter())
+        .cloned()
+        .collect();
+    assert_eq!(
+        declared, sampled,
+        "every partitioned action needs an accepted golden request sampling it"
+    );
+}
