@@ -7,6 +7,98 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-08-20 — Item D chartered: three slices, identity threat model stated, binary packaging cut
+
+**Decision:** Roadmap item D (typed client + session hygiene) is chartered as
+THREE independently green slices — D-1 extraction and wire parity, D-2 protocol
+v2 sessions, D-3 lifecycle — per
+`docs/superpowers/specs/2026-08-20-item-d-design.md`. Independent design review
+(Codex gpt-5.6-sol, xhigh, read-only) ran BEFORE the spec was written; brief and
+output archived as `2026-08-20-item-d-review-brief.md` and
+`2026-08-20-item-d-review-codex.md`.
+
+**Four decision-grade findings, each source-verified before acceptance** (the
+house rule: the outside review surfaces blind spots, it is not trusted on faith):
+
+1. **A real, latent cross-language defect.** TypeScript caps operation intents
+   at 16 (`protocol.ts:16`) while Rust allows 256 (`protocol.rs:31`, matching
+   `session.rs:30`'s `MAX_INTENTS`). A change set with more than 16 intents
+   produces a valid `read_operation` response that the typed client REJECTS.
+   Rust even carries a comment saying this constant must track `MAX_INTENTS`
+   (`protocol.rs:1375`); the mirror did not. Latent only because no test builds
+   a change set that large. D-1 fixes it before extraction freezes the contract.
+2. **A retryable operational failure is durably cached as a completed effect**
+   (`session.rs:699` `append_effect_result`), so replaying the same
+   `idempotencyKey` returns the cached ERROR rather than re-driving. A later
+   `advance_change_set` must therefore be a NEW top-level request with a NEW
+   key. This is a client-contract fact B-2's `retryable: true` depends on and
+   the current client does not state.
+3. **Every previously-unseen request costs an fsync, reads included.**
+   `bind_request` appends a `RequestBound` record (`audit.rs:170-182`) and
+   `append` ends in `sync_data()` (`audit.rs:241-255`). Ten event pollers can
+   serialize on disk before transport matters — so transport work must not be
+   credited with latency that belongs to durable I/O.
+4. **Two unbounded structures.** `request_bindings` is insert-only and rebuilt
+   by a full journal scan at startup (`audit.rs:83`); `change_set_locks` is
+   insert-only with no eviction (`session.rs:162`, `:1549`). Both need a
+   retention story before the daemon is called long-lived.
+
+**Connection reuse is a protocol change, not a client optimization.** "connection
+contains multiple frames" is enforced and tested in both languages
+(`protocol.rs:1203`, `protocol.ts:741`); the server handles one request per
+connection and drops it (`server.rs:195-215`); the client completes a response
+only at EOF (`client.ts:100-173`). Both sides change together, which is what
+forced the three-slice split.
+
+**Design choices taken, with the reasoning:**
+- **Serial newline-framed sessions with two role lanes per actor (work /
+  observation), NOT multiplexing.** Head-of-line blocking is real —
+  `advance_change_set` can consume its 300s deadline while ready offers are
+  time-limited — but multiplexing would add a concurrency model the server does
+  not have (one unbounded OS thread per connection, no executor) and could not
+  raise semantic throughput anyway, because the persistent Node bridge is
+  single-flight behind one mutex (`persistent.rs:232`). It would enlarge queues,
+  not do more work. Two serial lanes get the benefit without the machinery.
+- **No permanent v1 compatibility mode.** A v1 client waits for EOF and would
+  HANG against a persistent server, so v1 must fail fast and close. v1 stays
+  green through D-1 only as a transitional checkpoint.
+- **The request-ID check stays global.** The 1024-entry protocol context is a
+  transient validation window drained immediately after journal binding
+  (`session.rs:388`), not the durable dedupe mechanism — the brief had this
+  wrong, and making it per-connection would WEAKEN cross-connection replay
+  checking.
+- **Identity: connection-bound `(actor, role, client-instance)` handshake, with
+  an explicitly stated threat model** — cooperating processes under one OS user;
+  a deliberately hostile same-uid process is OUTSIDE the boundary. Peer
+  credentials authenticate the wrong axis (every agent shares a uid) and issued
+  capabilities buy little against a same-principal attacker unless their
+  delivery and storage are isolated too. Doing nothing was rejected: with ten
+  clients, duplicate or misrouted actor configuration is plausible enough to
+  corrupt audit meaning with no attacker at all. Docs must say attribution is
+  authoritative within a cooperating session, not proof against malicious
+  same-uid software.
+- **Ownership by a lifetime-held file lock on the state directory, acquired
+  BEFORE `ServiceSession::open`.** Ordering is load-bearing: recovery and
+  durable session construction happen before binding today (`server.rs:41`), so
+  a losing second daemon must be excluded before that work, not when it tries to
+  bind. PID data is metadata, never authority.
+- **`stop` drains active request handlers, not durable change sets**, and must
+  never report a change set as cancelled unless the canonical lifecycle actually
+  cancelled it.
+
+**Scope cut:** platform-binary distribution is REMOVED from item D and deferred
+until after item E. The daemon is not self-contained — six mandatory path flags,
+a required built `worker.js`, `node` from `PATH` (`main.rs:85`, `:146`) — and
+freezing those assumptions into distribution machinery before E shows what an
+embedder needs would be guessing. E uses an explicit developer launcher.
+
+**Design-doc impact:** none — `strata-design.md` untouched. The roadmap's item-D
+bullet is updated to the three-slice shape with packaging struck.
+
+**Revisit when:** item E reveals what an embedder actually needs (packaging), or
+the durable-I/O serialization above shows up as the binding constraint at ten
+clients, whichever comes first.
+
 ## 2026-08-20 — B-2 behavioral gate landed: the kernel's commit gate now runs the tests, and says what failed
 
 **Decision:** B-2 (chartering entry 2026-07-31, design
