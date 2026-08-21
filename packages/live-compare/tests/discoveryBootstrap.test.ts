@@ -1,7 +1,7 @@
 import { readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { CoordinationClient } from "../src/client.js";
+import { CoordinationClient } from "@strata-code/coordination-client";
 import { materializeFinalTree, startKernelService } from "../src/service.js";
 import { createQualifiedTaskManifest } from "../src/tasks.js";
 import { advanceUntilTerminal, credentialFreeEnv, ensureBuilt } from "./serviceHarness.js";

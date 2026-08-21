@@ -11,7 +11,7 @@ import {
   type BaselineSessionOutcome,
   type BaselineSessionRequest
 } from "./baseline.js";
-import { createCoordinationClient } from "./client.js";
+import { createCoordinationClient } from "@strata-code/coordination-client";
 import type { LiveAdapter } from "./cli.js";
 import { runComparisonRound, type ArmExecutionResult } from "./orchestrator.js";
 import {

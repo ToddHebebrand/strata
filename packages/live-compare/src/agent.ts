@@ -5,7 +5,7 @@ import {
   type HermeticTerminalReason
 } from "@strata-code/agent";
 import { createHash } from "node:crypto";
-import { createCoordinationClient } from "./client.js";
+import { createCoordinationClient } from "@strata-code/coordination-client";
 import {
   COORDINATION_QUALIFIED_TOOL_NAMES,
   COORDINATION_SERVER_NAME,

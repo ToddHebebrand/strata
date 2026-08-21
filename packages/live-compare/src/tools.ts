@@ -4,7 +4,11 @@ import {
   type SdkMcpToolDefinition
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod/v4";
-import type { CoordinationIntent, CoordinationResult } from "./client.js";
+import type {
+  CoordinationClient,
+  CoordinationIntent,
+  CoordinationResult
+} from "@strata-code/coordination-client";
 
 const MAX_ID_CHARS = 512;
 const MAX_REASONING_CHARS = 4_096;
@@ -103,41 +107,36 @@ export const COORDINATION_TOOL_INPUT_SCHEMAS = {
     .strict()
 } as const;
 
-export interface CoordinationClientApi {
-  listModules(
-    options?: { afterModuleId?: string },
-    limit?: number
-  ): Promise<CoordinationResult>;
-  listModuleDeclarations(
-    moduleId: string,
-    options?: { afterNodeId?: string },
-    limit?: number
-  ): Promise<CoordinationResult>;
-  findDeclarations(
-    name: string,
-    options?: { kind?: string; moduleId?: string; afterNodeId?: string }
-  ): Promise<CoordinationResult>;
-  inspectNodes(nodeIds: string[]): Promise<CoordinationResult>;
-  getReferences(
-    nodeId: string,
-    options?: { afterReferenceKey?: string },
-    limit?: number
-  ): Promise<CoordinationResult>;
-  beginChangeSet(reasoning: string): Promise<CoordinationResult>;
-  addIntent(changeSetId: string, intent: CoordinationIntent): Promise<CoordinationResult>;
-  submitChangeSet(changeSetId: string): Promise<CoordinationResult>;
-  advanceChangeSet(changeSetId: string): Promise<CoordinationResult>;
-  readEvents(afterSequence: string, limit: number): Promise<CoordinationResult>;
-  ackEvents(throughSequence: string): Promise<CoordinationResult>;
-  cancelChangeSet(changeSetId: string): Promise<CoordinationResult>;
-  readOperation(operationId: string): Promise<CoordinationResult>;
-  listValidationFixtures(): Promise<CoordinationResult>;
-  readValidationFixture(
-    fixtureId: string,
-    offset: string,
-    length: number
-  ): Promise<CoordinationResult>;
-}
+/**
+ * The client surface the coordination tools depend on.
+ *
+ * Derived from `CoordinationClient` with `Pick` rather than declared
+ * independently: the two used to be related only structurally, with no
+ * `implements` clause, and had already drifted (the interface widened
+ * `findDeclarations`'s `kind` to `string` and dropped the trailing
+ * `deadlineMs`). Structural compatibility hid it, and method parameter
+ * bivariance means a `satisfies` assertion would have hidden it too. Picking
+ * from the class makes drift impossible instead of merely detectable, which
+ * matters more now that the client lives in another package.
+ */
+export type CoordinationClientApi = Pick<
+  CoordinationClient,
+  | "listModules"
+  | "listModuleDeclarations"
+  | "findDeclarations"
+  | "inspectNodes"
+  | "getReferences"
+  | "beginChangeSet"
+  | "addIntent"
+  | "submitChangeSet"
+  | "advanceChangeSet"
+  | "readEvents"
+  | "ackEvents"
+  | "cancelChangeSet"
+  | "readOperation"
+  | "listValidationFixtures"
+  | "readValidationFixture"
+>;
 
 function textResult(value: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }] };

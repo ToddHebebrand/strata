@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
-import { CoordinationClient } from "./client.js";
+import { CoordinationClient } from "@strata-code/coordination-client";
 import {
   ADVANCE_DEADLINE_MS,
   DISCOVERY_DEADLINE_MS,

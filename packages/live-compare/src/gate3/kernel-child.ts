@@ -22,7 +22,7 @@ import {
   expectResult,
   kernelServiceBinary
 } from "../gate1.js";
-import { CoordinationClient } from "../client.js";
+import { CoordinationClient } from "@strata-code/coordination-client";
 import { startKernelService } from "../service.js";
 import {
   childMaxRssBytes,

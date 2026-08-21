@@ -38,7 +38,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CoordinationClient } from "../src/client.js";
+import { CoordinationClient } from "@strata-code/coordination-client";
 import {
   ADVANCE_DEADLINE_MS,
   DISCOVERY_DEADLINE_MS,

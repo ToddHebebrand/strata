@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, cpSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { CoordinationClient } from "../src/client.js";
+import { CoordinationClient } from "@strata-code/coordination-client";
 import {
   DEFAULT_READINESS_TIMEOUT_MS,
   GATED_READINESS_TIMEOUT_MS,

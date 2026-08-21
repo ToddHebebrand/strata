@@ -17,6 +17,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.118",
     "@strata-code/agent": "workspace:*",
+    "@strata-code/coordination-client": "workspace:*",
     "@strata-code/ingest": "workspace:*",
     "@strata-code/kernel-bridge": "workspace:*",
     "@strata-code/render": "workspace:*",

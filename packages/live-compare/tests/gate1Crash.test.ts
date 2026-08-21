@@ -25,7 +25,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { CoordinationClient, CoordinationClientError, type CoordinationResult } from "../src/client.js";
+import { CoordinationClient, CoordinationClientError, type CoordinationResult } from "@strata-code/coordination-client";
 import { exportKernelSnapshot, runKernelArmT03, type KernelArmOutcome } from "../src/gate1.js";
 import { startKernelService, type RunningKernelService } from "../src/service.js";
 import { credentialFreeEnv, ensureBuilt } from "./serviceHarness.js";

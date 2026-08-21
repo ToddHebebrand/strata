@@ -71,7 +71,7 @@ import {
   CoordinationClient,
   type CoordinationIntent,
   type CoordinationResult
-} from "../client.js";
+} from "@strata-code/coordination-client";
 import {
   ADVANCE_DEADLINE_MS,
   DISCOVERY_DEADLINE_MS,

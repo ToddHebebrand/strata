@@ -45,7 +45,7 @@ struct FixtureCase {
 
 fn fixture(name: &str) -> FixtureFile {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/live-compare/tests/fixtures/protocol-v1")
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v1")
         .join(format!("{name}.json"));
     serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
 }
@@ -76,14 +76,14 @@ fn rejected_value(name: &str) -> Value {
 
 fn raw_rejected_frame(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/live-compare/tests/fixtures/protocol-v1/raw-rejected")
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v1/raw-rejected")
         .join(format!("{name}.json"));
     fs::read(path).unwrap()
 }
 
 fn raw_accepted_frame(name: &str) -> Vec<u8> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/live-compare/tests/fixtures/protocol-v1/raw-accepted")
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v1/raw-accepted")
         .join(format!("{name}.json"));
     fs::read(path).unwrap()
 }
@@ -2391,7 +2391,7 @@ fn protocol_action_partition_matches_the_shared_fixture() {
     }
 
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../packages/live-compare/tests/fixtures/protocol-v1/action-partition.json");
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v1/action-partition.json");
     let partition: Partition = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
 
     for name in partition.mutating.iter().chain(partition.read_only.iter()) {

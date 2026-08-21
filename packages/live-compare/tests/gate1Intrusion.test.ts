@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { evaluateT03TextCriteria } from "@strata-code/verify";
-import { CoordinationClient, CoordinationClientError, type CoordinationResult } from "../src/client.js";
+import { CoordinationClient, CoordinationClientError, type CoordinationResult } from "@strata-code/coordination-client";
 import {
   TASK_PROMPT,
   exportKernelSnapshot,
