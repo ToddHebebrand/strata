@@ -7,6 +7,63 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-08-21 — D-3 splits into D-3a (ownership + health) and D-3b (drain + stop)
+
+**Context:** The D-3 lifecycle plan took two independent methodology reviews and
+came back DO-NOT-PROCEED both times (archived:
+`docs/superpowers/specs/2026-08-21-item-d3-plan-review-codex.md` and
+`...-round2.md`). The verdicts were not the same failure twice. v1 had a wrong
+ownership architecture; v2 fixed that — the round-2 reviewer explicitly endorsed
+the two-lock scheme, the request-start seam, and forced `process::exit(3)` — and
+the remaining blockers clustered almost entirely in the drain half.
+
+**Considered:**
+- (a) A third full-plan revision and a third review of all eleven tasks.
+- (b) Fold the corrections in and execute without another review.
+- (c) Split the slice at spec level and plan each half separately.
+
+**Decided:** (c). D-3a is ownership + health (two locks, socket-directory
+hardening, endpoint classification, the health first frame, admission
+reservation). D-3b is drain + stop + CLI + the lock-hold measurement.
+
+**Why:** both review rounds found their hardest problems in the drain half —
+staleness evidence and control reachability during grace — while the ownership
+half converged. Splitting lands single-owner enforcement and health, which are
+independently useful, and shrinks the surface of the genuinely hard half rather
+than re-reviewing eleven tasks to reach it. Option (b) was rejected because each
+round so far found a blocker that a careful read had missed: the endpoint race
+in round one, and unlinking a healthy socket on `ECONNREFUSED` in round two.
+Betting the third read is different is not supported by the evidence.
+
+**The objection this has to answer, and how:** D-2's review REJECTED a
+transport/authority split for a specific reason — a v2 whose wire meaning
+changed between halves would freeze two incompatible meanings of one version.
+That objection does apply here in one place: `health_ok` gains `draining` and
+`activeRequests` in D-3b. **D-3a therefore defines the COMPLETE `health_ok` wire
+shape up front**, with `draining: false` and `activeRequests: "0"` as constants;
+D-3b only makes those fields vary. No frame changes shape between the halves, so
+the D-2 objection is answered rather than ignored.
+
+**The finding that most changed the design:** `ECONNREFUSED` is not proof that a
+socket is stale on Darwin. `sonewconn()` fails under listen-queue exhaustion, so
+a LIVE listener can transiently present as refused, and the v2 classification
+would have unlinked a healthy endpoint — worse than the boolean it replaced.
+Staleness now requires positive evidence: the device/inode and a claim nonce
+recorded in the endpoint lock file at bind time, re-verified before any unlink.
+A pre-D-3 socket, or a mismatched or missing record, fails closed and requires
+explicit operator cleanup. This was the question flagged as least-confident when
+the plan was sent for review, and flagging it is what surfaced it.
+
+**Design-doc impact:** `strata-design.md` is untouched. The item-D design doc's
+§ Slice D-3 is now delivered as two slices; its content and gates are unchanged
+and are partitioned, not reduced. Update the design doc only if the split
+outlives this iteration.
+
+**Revisit when:** D-3a closes. If its review returns PROCEED and execution is
+uneventful, the split was worth it; if D-3a also takes multiple rounds, the
+problem is the spec underspecifying the lifecycle contract rather than the plans,
+and the next step is spec work, not another plan.
+
 ## 2026-08-21 — D-2 closed: a connection is a session, and identity stops being self-asserted
 
 **Decision:** D-2 (design `docs/superpowers/specs/2026-08-20-item-d-design.md`
