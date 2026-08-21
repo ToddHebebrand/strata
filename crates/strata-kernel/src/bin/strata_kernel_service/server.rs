@@ -248,7 +248,14 @@ impl Admission {
     /// handler thread is spawned, so an over-cap connection never costs a
     /// thread at all.
     fn admit(self: &Arc<Self>) -> Option<AdmissionPermit> {
-        let mut counts = self.counts.lock().ok()?;
+        // Recover from poisoning rather than propagating it. A poisoned
+        // admission mutex would otherwise refuse EVERY future connection for
+        // the daemon's remaining lifetime -- a permanent outage caused by one
+        // panic in a critical section that only does arithmetic.
+        let mut counts = self
+            .counts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if counts.admitted >= MAX_ADMITTED_CONNECTIONS
             || counts.unhandshaken >= MAX_UNHANDSHAKEN_CONNECTIONS
         {
@@ -278,19 +285,27 @@ impl AdmissionPermit {
             return;
         }
         self.handshaken = true;
-        if let Ok(mut counts) = self.admission.counts.lock() {
-            counts.unhandshaken = counts.unhandshaken.saturating_sub(1);
-        }
+        let mut counts = self
+            .admission
+            .counts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        counts.unhandshaken = counts.unhandshaken.saturating_sub(1);
     }
 }
 
 impl Drop for AdmissionPermit {
     fn drop(&mut self) {
-        if let Ok(mut counts) = self.admission.counts.lock() {
-            counts.admitted = counts.admitted.saturating_sub(1);
-            if !self.handshaken {
-                counts.unhandshaken = counts.unhandshaken.saturating_sub(1);
-            }
+        // Must not silently skip on poisoning: a permit that is never given
+        // back is a permanently lost slot out of 64.
+        let mut counts = self
+            .admission
+            .counts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        counts.admitted = counts.admitted.saturating_sub(1);
+        if !self.handshaken {
+            counts.unhandshaken = counts.unhandshaken.saturating_sub(1);
         }
     }
 }
