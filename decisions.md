@@ -7,6 +7,144 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-08-20 — B-2 behavioral gate landed: the kernel's commit gate now runs the tests, and says what failed
+
+**Decision:** B-2 (chartering entry 2026-07-31, design
+`docs/superpowers/specs/2026-07-31-item-b-design.md` § Slice B-2, plan v2
+`docs/superpowers/plans/2026-08-01-item-b2-behavioral-gate-plan.md`) is CLOSED
+on `worktree-item-b2-behavioral-gate`, 11 tasks. With B-1 (2026-08-01), roadmap
+item B is complete and item D is unblocked.
+
+Before this slice the daemon hard-coded `NodeBridgeConfig::tsc_only` and
+`ValidationProfile::Behavioral` was a dead variant, so the kernel's commit gate
+was strictly weaker than the product's tsc+vitest gate: a change that
+type-checked and broke behavior would publish to the shared graph, and every
+other client would build on it. It also discarded the worker's real diagnostics
+and fabricated a generic `candidate_validation_failed`, so a caller could not
+tell "your change is wrong" from "the subprocess timed out". Both are closed.
+
+**What shipped:**
+- **Typed candidate rejection.** A downcastable `CandidateRejected` carries the
+  worker's real bounded diagnostics (with an optional corpus-relative
+  `modulePath` on the wire) from `into_candidate_result`/the mirror router
+  through `execute_claimed` to the session. `ValidationFailed` is now reserved
+  for semantic rejections; the fabricated generic string is retired.
+- **The semantic/operational partition, exactly.** SEMANTIC (downcasts to
+  `CandidateRejected`, terminal, never replayed): `validate/typescriptFailed`,
+  `validate/behavioralFailed`, `mutate/intentRejected`. Everything else is
+  OPERATIONAL, including `mutate/mutationFailed` (residual unexpected
+  store/invariant errors), `validate/tscTimedOut`, `validate/vitestTimedOut`,
+  and `candidateFinalizeFailed`. Unknown codes default operational.
+  `intentRejected` is NEW in this slice: the worker now types its KNOWN
+  application rejections (pre-checked targets) so `mutationFailed` can mean
+  what it says.
+- **Release-and-requeue.** Operational candidate failures atomically release
+  the claim via `Kernel::release_claim_for_retry` (modeled on the lease-expiry
+  optimistic transition), so `retryable: true` is honest — a later `advance`
+  genuinely re-drives the work rather than stranding a claim.
+- **Committed, digested validation manifest.** One `--validation-manifest`
+  flag; mode, fixtures + content digests, strict tsc scope, and subprocess
+  deadlines. Deadline-nesting arithmetic is validated at LOAD time so an
+  unsatisfiable manifest fails before any daemon work. Behavioral mode is
+  unconstructible with zero fixtures. The digest rides readiness, the start
+  audit event, and `hello`.
+- **Seed-green startup for ANY manifest.** The daemon runs the manifest's suite
+  against generation zero and REFUSES to serve on red — a daemon serving a
+  broken baseline would report every later candidate as failing. Fail-closed in
+  BOTH directions: a red verdict and an operational failure to REACH a verdict
+  both refuse. A `tscOnly` manifest gets its tsc baseline too; only the
+  no-manifest default skips it.
+  Audit finalization moved to AFTER the baseline, so a refusing daemon never
+  audits a start it did not serve.
+- **Real process-group supervision.** New async bounded runners
+  (`packages/verify/src/boundedRun.ts`: `spawn` + `detached: true`, and on
+  timeout `kill(-pid, SIGKILL)` on the whole group, polled to ESRCH) bound tsc
+  and vitest, so a killed validation leaves no descendants behind; the
+  candidate validate stage is async end-to-end in the worker. The sync product
+  `commit` path is untouched. No `--pool=threads` stand-in.
+- **Typed transport phases.** `Queued` / `Sync` / `Exchange` on persistent-host
+  errors, so the executor classifies replay-safety by TYPE rather than by
+  string matching, and queue/sync time can no longer consume the validation
+  budget (transport total = `QUEUE_ALLOWANCE_MS + candidate_deadline`). A
+  validation timeout is never replayed one-shot.
+- **Digest-pinned fixture reader** (`list_validation_fixtures`,
+  `read_validation_fixture`; tool surface 13 -> 15) and **behavioral cost
+  disclosure** (validation wall, queue wait, one-shot fallbacks, rehydrations,
+  validation timeouts). Disclosure, not gating.
+
+**The no-manifest tsc-only default stays byte-identical**, which is what lets
+every pre-B-2 suite and every recorded gate artifact stand unchanged. Three
+things protect it: `ValidationProfile` timeout fields are OPTIONAL and omitted
+on `TscOnly` (so the exact five-key profile pin in
+`full_key_free_acceptance.rs` keeps passing untouched); the five disclosure
+fields are `Option` + `skip_serializing_if`, pinned by a serialization test to
+add NO keys to a tsc-only request record; and the audit/readiness identity
+fields are optional/defaulted, with a historical-line reopen test.
+
+**Decisions taken during the build, worth recording:**
+1. **The reader serves from the manifest's canonical verified identity, and
+   re-verifies on EVERY read.** `LoadedManifest.canonical_fixture_paths` was
+   being dropped when `ValidationSettings` was built (it stored only
+   `(path, sha256)`); that gap is closed with a `RegisteredFixture` carrying
+   the canonical absolute path. The reader never joins a client-supplied
+   string onto the corpus root, and re-establishes BOTH containment and
+   content digest per read — startup verification is a starting point, not
+   standing trust. A fixture edited after the daemon bound fails the read
+   rather than being served under its pinned digest. Refusals name the
+   corpus-relative path, never the absolute one (the B-1 discipline).
+2. **Base64 is hand-rolled** (~20 lines, tested against the RFC 4648 vectors)
+   rather than adding a dependency: the kernel crate carries no base64 crate
+   and this is its only consumer. The wire validates the encoding structurally.
+3. **`validation_timeouts_total` is process-scoped, not per-kernel.** The
+   classification funnel `candidate_failure_to_error` is a free function shared
+   by both transports, so the counter is a module-level `AtomicU64`. In
+   production the daemon IS the process; a test binary running several kernels
+   in-process would see their sum, which is why the assertions that depend on
+   it live in daemon integration tests rather than unit tests.
+4. **Metrics-record key ORDER was never a stable property.** `MetricsSink::emit`
+   serializes through `serde_json::to_value`, whose map is sorted, so emitted
+   lines are alphabetical regardless of struct field order. What a new field
+   can change is the key SET — which is what the byte-identity test pins.
+5. **`get_references` SUBTREE semantics (B-1) held up** under behavioral use; no
+   change needed.
+
+**Not done, deliberately** (spec non-goals, unchanged): no red-by-design task
+fixtures, no per-change-set profiles, no general file reads, no `semantic_search`
+/embeddings, no `inspect_nodes` semantic change, no item-C stable-ID work, no
+keyed runs, no re-adjudication of recorded exit-gate artifacts. The product gate
+is the ORACLE for the parity gate, not a refactor target.
+
+**Evidence.** `PATH=/opt/homebrew/bin:$PATH pnpm kernel:full-key-free:test`
+GREEN in one pass on the final tree, including the new `kernel:behavioral:test`
+stage appended after `kernel:discovery:test` — 118 `test result: ok` lines, zero
+failures, zero panics (log:
+`docs/spikes/b2-full-key-free-chain-2026-08-20.log`). Package sweep: `ingest`,
+`store`, `render`, `kernel-bridge`, `cli`, `bench` all green, and
+`live-compare` fully green (42 files / 311 tests, including the 68s
+`gate3Noninferiority` acceptance).
+
+Two suites fail IN THIS WORKTREE and pass on the `main` checkout, both the
+SAME pre-existing cause and neither a B-2 regression — node IDs hash absolute
+ingest paths, so anything pinning a recorded ID breaks when the repo is checked
+out elsewhere (decisions.md 2026-08-01, finding 1):
+- `@strata-code/verify` `extractFunctionCommit.test.ts` (1 of 75) — the
+  documented path-order-dependent `extract_function` generic-binding gap.
+  Verified passing on the `main` checkout this session.
+- `@strata-code/agent` `replay.test.ts` + `labSeam.test.ts` (2 of 21 files) —
+  both fail with `Declaration not found: 5073ecfb56151b41`, a fixture-pinned
+  node ID that does not exist under this worktree's path. The whole agent suite
+  passes on the `main` checkout this session (20 passed / 1 skipped).
+
+`pnpm -r test` fail-fasts at `verify`, so the packages after it were run
+individually rather than left unreported (which is what the fail-fast did on
+the B-1 sweep).
+
+**Design-doc impact:** none — `strata-design.md` untouched.
+
+**Revisit when:** item E's scratch-to-release scenario needs red-by-design task
+fixtures or per-change-set validation profiles, or when a second corpus needs a
+manifest and the single-flag shape starts to chafe.
+
 ## 2026-08-01 — B-1 bounded discovery surface landed; key-free chain green; get_references SUBTREE semantics confirmed empirically
 
 **Decision:** B-1 (see 2026-07-31 chartering entry, design
