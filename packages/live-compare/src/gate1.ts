@@ -52,7 +52,7 @@ import {
 } from "@strata-code/verify";
 import { exportSnapshot } from "@strata-code/kernel-bridge";
 import { renderWithSourceMap } from "@strata-code/render";
-import { CoordinationClient, type CoordinationResult } from "./client.js";
+import { CoordinationClient, type CoordinationResult } from "@strata-code/coordination-client";
 import { startKernelService } from "./service.js";
 import { buildCorpusInputs, canonicalGenerationString } from "./tasks.js";
 

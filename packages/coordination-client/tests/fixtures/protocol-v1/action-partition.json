@@ -1,0 +1,22 @@
+{
+  "mutating": [
+    "begin_change_set",
+    "add_intent",
+    "submit_change_set",
+    "advance_change_set",
+    "ack_events",
+    "cancel_change_set"
+  ],
+  "readOnly": [
+    "hello",
+    "inspect_nodes",
+    "find_declarations",
+    "list_modules",
+    "list_module_declarations",
+    "get_references",
+    "read_events",
+    "read_operation",
+    "list_validation_fixtures",
+    "read_validation_fixture"
+  ]
+}

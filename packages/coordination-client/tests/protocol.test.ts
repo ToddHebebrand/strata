@@ -2,7 +2,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  ALL_ACTION_TYPES,
+  isMutatingAction,
   LocalServiceProtocolContext,
+  MAX_OPERATION_INTENTS,
   MAX_REQUEST_FRAME_BYTES,
   MAX_RESPONSE_FRAME_BYTES,
   parseRequestFrame,
@@ -477,5 +480,70 @@ describe("local service protocol v1", () => {
     expect(() => context.recordChangeSetOwner("change:2", "client:alpha")).toThrow(
       /context capacity/
     );
+  });
+  // The typed client must accept every response the daemon can legitimately
+  // produce. A change set may carry up to session.rs's MAX_INTENTS (256)
+  // intents, and the Rust response validator is pinned to that same bound
+  // (`read_operation_response_accepts_max_intents_boundary`). This is the
+  // TypeScript half of that pin; without it the two validators can disagree
+  // about what is valid, which is exactly the drift that shipped as a latent
+  // defect (the mirror sat at 16 while Rust allowed 256).
+  it("accepts a read_operation response carrying the maximum intents the daemon allows", () => {
+    const operationResult = (intents: number): unknown => ({
+      type: "operation",
+      graphGeneration: "7",
+      operationId: "operation:1",
+      changeSetId: "change:1",
+      actor: "client:alpha",
+      kind: "rename_symbol",
+      reasoning: "Rename the shared user type.",
+      affectedNodeIds: ["node:user"],
+      renames: [],
+      intents: Array.from({ length: intents }, () => ({
+        kind: "rename_symbol",
+        parametersJson: "{}"
+      })),
+      publicationDigest: "a".repeat(64)
+    });
+
+    // The bound itself, not just self-consistency with it: Rust asserts
+    // `MAX_OPERATION_INTENTS == SESSION_MAX_INTENTS` and this is the mirror of
+    // that assertion. Without this line the test passes at any value.
+    expect(MAX_OPERATION_INTENTS).toBe(256);
+    expect(responseResultSchema.safeParse(operationResult(MAX_OPERATION_INTENTS)).success).toBe(
+      true
+    );
+    expect(
+      responseResultSchema.safeParse(operationResult(MAX_OPERATION_INTENTS + 1)).success
+    ).toBe(false);
+  });
+  // The mutating/read-only partition is maintained in TWO languages. This
+  // fixture is the shared oracle: TypeScript asserts its own predicate and its
+  // own schema against it, and the Rust suite asserts `is_mutating` against the
+  // same file. An action added to one language and not the other fails a gate
+  // here instead of failing in production, where the symptom is obscure -- a
+  // read sent with an idempotency key that the daemon then refuses.
+  it("matches the shared dual-language action partition exactly", () => {
+    const partition = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("fixtures/protocol-v1/action-partition.json", import.meta.url)),
+        "utf8"
+      )
+    ) as { mutating: string[]; readOnly: string[] };
+
+    // No action may be missing from the fixture, and none may be invented.
+    expect([...partition.mutating, ...partition.readOnly].sort()).toEqual(
+      [...ALL_ACTION_TYPES].sort()
+    );
+    // ...and no action may appear in both halves.
+    for (const type of partition.mutating) {
+      expect(partition.readOnly).not.toContain(type);
+    }
+    for (const type of partition.mutating) {
+      expect(isMutatingAction(type)).toBe(true);
+    }
+    for (const type of partition.readOnly) {
+      expect(isMutatingAction(type)).toBe(false);
+    }
   });
 });

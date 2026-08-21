@@ -38,7 +38,7 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { CoordinationClient } from "../src/client.js";
+import { CoordinationClient } from "@strata-code/coordination-client";
 import { startKernelService, type RunningKernelService } from "../src/service.js";
 import { advanceUntilTerminal, credentialFreeEnv, ensureBuilt } from "./serviceHarness.js";
 

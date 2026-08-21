@@ -13,7 +13,14 @@ const MAX_ARRAY_ITEMS = 256;
 const MAX_DIAGNOSTICS = 64;
 const MAX_EVENT_LIMIT = 256;
 const MAX_DECLARATION_MATCHES = 64;
-const MAX_OPERATION_INTENTS = 16;
+/**
+ * Must track the daemon's `MAX_INTENTS` (crates/.../session.rs), which the Rust
+ * response validator also mirrors and asserts equal
+ * (`read_operation_response_accepts_max_intents_boundary`). A change set may
+ * legitimately carry this many intents, so a smaller bound here rejects
+ * responses the daemon is entitled to send.
+ */
+export const MAX_OPERATION_INTENTS = 256;
 const MAX_MODULE_PAGE_ITEMS = 64;
 const MAX_MODULE_DECLARATION_PAGE_ITEMS = 64;
 const MAX_REFERENCE_PAGE_ITEMS = 256;
@@ -213,7 +220,17 @@ export const requestActionSchema = z.discriminatedUnion("type", [
     .strict()
 ]);
 
-const MUTATING_ACTIONS = new Set([
+/**
+ * THE authority for the mutating/read-only partition on the TypeScript side.
+ *
+ * A POSITIVE list, matching Rust's `RequestAction::is_mutating`. The client
+ * used to keep an independent NEGATIVE list of read-only actions, which meant
+ * a newly added read action defaulted to mutating, was sent with an idempotency
+ * key, and was then rejected by the daemon ("read-only actions must not carry
+ * one"). Two lists that had to be edited together, in opposite polarity, in one
+ * language. There is now one.
+ */
+const MUTATING_ACTIONS: ReadonlySet<string> = new Set([
   "begin_change_set",
   "add_intent",
   "submit_change_set",
@@ -221,6 +238,20 @@ const MUTATING_ACTIONS = new Set([
   "ack_events",
   "cancel_change_set"
 ]);
+
+/** Every action type the request schema accepts, derived from the schema. */
+export const ALL_ACTION_TYPES: readonly string[] = requestActionSchema.options.map(
+  (option) => option.shape.type.value as string
+);
+
+/**
+ * Whether an action mutates canonical state, and therefore must carry an
+ * idempotency key. Derived from `MUTATING_ACTIONS`; callers must not keep
+ * their own copy of the partition.
+ */
+export function isMutatingAction(type: string): boolean {
+  return MUTATING_ACTIONS.has(type);
+}
 
 export const requestSchema = z
   .object({

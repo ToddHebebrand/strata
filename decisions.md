@@ -7,6 +7,107 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-08-20 — D-1 closed: the typed client is its own package, and two wire defects are gone
+
+**Decision:** D-1 (design `docs/superpowers/specs/2026-08-20-item-d-design.md`
+§ Slice D-1, plan v2
+`docs/superpowers/plans/2026-08-20-item-d1-extraction-plan.md` after a
+PROCEED-WITH-CORRECTIONS methodology review) is CLOSED on
+`worktree-item-d1-extraction`. `@strata-code/coordination-client` now holds the
+protocol and client with **zod as its only runtime dependency** — the first
+thing in this repo an embedder could actually take.
+
+**Two real defects fixed, neither cosmetic:**
+1. **The TS operation-intent bound was 16; Rust allows 256.** A change set may
+   carry up to `session.rs`'s `MAX_INTENTS` (256) intents, and the Rust
+   response validator is pinned to that and asserts the two constants equal.
+   The TypeScript mirror sat at 16, so a `read_operation` response the daemon
+   is entitled to send would be REJECTED by the typed client. Latent only
+   because no test builds a change set that large. Found by the design review,
+   verified against source before acceptance.
+2. **The mutating/read-only partition had three copies in two languages** — and
+   the client's was a NEGATIVE list, so a newly added read action defaulted to
+   "mutating", got an idempotency key, and was then refused by the daemon
+   ("read-only actions must not carry one"). B-2 hit exactly this and hand-
+   edited all three. There is now one authority (`isMutatingAction`), plus
+   `action-partition.json` as a shared dual-language oracle: TS asserts the
+   fixture covers exactly the schema's action types and that its predicate
+   agrees; Rust asserts `is_mutating` agrees for every accepted golden request
+   AND that every partitioned action is actually sampled by one, so an action
+   added without a golden sample fails the gate instead of going unchecked.
+   Both halves were verified discriminating by flipping an entry to the wrong
+   half.
+
+En route this filled a gap in the golden corpus: `read_operation` had no
+accepted request sample, so nothing exercised it end to end.
+
+**Decisions taken during the build:**
+- **The 256-intent case is a programmatic test, not a golden fixture.** The plan
+  said "add a maximal golden fixture"; a 256-intent response is ~15KB on one
+  line in a corpus that every byte-exact round-trip test walks, and Rust already
+  pins the bound programmatically. The TS test mirrors Rust's shape instead —
+  and asserts the constant's VALUE, not merely self-consistency with it, which
+  is what makes it discriminating (verified RED at 16).
+- **`CoordinationClientApi` is now `Pick<CoordinationClient, ...>`.** It had been
+  an independently declared interface satisfied only structurally, and the two
+  had already drifted (widened `kind`, dropped the trailing `deadlineMs`).
+  Structural typing hid that, and method parameter bivariance means a
+  `satisfies` assertion would have hidden it too. Picking from the class makes
+  drift impossible rather than merely detectable — which matters more now that
+  the two live in different packages.
+- **The export surface is an explicit named list, not `export *`.** For a
+  package whose export list IS its contract, the flat barrel that made
+  `live-compare` a bag of fifteen unrelated modules is the wrong default.
+- **No compatibility re-export.** `live-compare` is a private leaf nothing
+  imports, so the import break is taken now rather than carried into D-2 as a
+  shim (review-adjudicated).
+- **`live-compare` had no tsconfig project reference at all.** Added, and proven
+  by cold-building with both `dist` directories removed: building `live-compare`
+  now builds the client first. Root gate scripts invoke that build directly, so
+  before this a stale `dist` could have masked a clean-build failure — the
+  review predicted this and it was real.
+- **Not predicted by the review, found by running it:** the new package needed a
+  `"require"` condition in its exports map. I had copied `live-compare`'s shape,
+  which omits it because nothing requires `live-compare` — but the gate-3 child
+  processes require the client via CJS, and they failed with
+  `ERR_PACKAGE_PATH_NOT_EXPORTED`. Every other consumed package in the workspace
+  carries the condition; `live-compare` was the wrong template for that one
+  field.
+
+**Sequencing correction from the review, adopted:** plan v1 moved sources in one
+task and repointed consumers in the next, which would have committed a red
+`live-compare` in between. They landed as one atomic commit. The review also
+corrected two factual claims in v1 (the fixture coupling is three joins in ONE
+Rust file, not six files; consumers are 14 source + 10 test files, not the four
+v1 listed) — both re-verified by enumeration before adoption.
+
+**Evidence.** `pnpm kernel:full-key-free:test` GREEN in one pass on the final
+tree — 118 `test result: ok` lines, zero failures, zero panics. Package sweep
+(run package-by-package, since `pnpm -r test` fail-fasts): `ingest` 21,
+`store` 177, `render` 13, `kernel-bridge` 137, `cli` 22, `bench` 62,
+`coordination-client` 61, `verify` **75 (all passing)**, `live-compare` 40 files
+/ 252 tests. Rust `local_service` 49 passing against the relocated fixtures.
+
+**A sharper read on the known worktree failures.** `verify`'s
+`extractFunctionCommit` FAILED in the B-2 worktree and PASSES here, while
+`agent`'s `replay`/`labSeam` fail in both. That is consistent with, and
+strengthens, the documented cause: node IDs hash absolute ingest paths, so which
+function `extract_function` selects — and whether a fixture-pinned ID exists at
+all — depends on the checkout path, not on the change under test. `agent` fails
+with `Declaration not found: 5073ecfb56151b41`, a pinned ID absent under any
+path but the recording one. Neither is a D-1 regression; both pass on `main`.
+This is item C's problem (stable logical IDs independent of position), and it
+now has two independent worktrees' worth of evidence.
+
+**Design-doc impact:** none — `strata-design.md` untouched. `tasks.ts` changed by
+exactly one import specifier and nothing else; registration digest `628bd6da…`
+unmoved.
+
+**Revisit when:** D-2 makes the client stateful (persistent sessions), at which
+point the package's export surface gains connection lifecycle and the
+`private: true` decision should be revisited against `packages/cli`'s
+publication shape.
+
 ## 2026-08-20 — Item D chartered: three slices, identity threat model stated, binary packaging cut
 
 **Decision:** Roadmap item D (typed client + session hygiene) is chartered as

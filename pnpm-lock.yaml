@@ -114,6 +114,22 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@22.19.19)
 
+  packages/coordination-client:
+    dependencies:
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.29
+        version: 22.19.19
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@22.19.19)
+
   packages/ingest:
     dependencies:
       '@strata-code/store':
@@ -197,6 +213,9 @@ importers:
       '@strata-code/agent':
         specifier: workspace:*
         version: link:../agent
+      '@strata-code/coordination-client':
+        specifier: workspace:*
+        version: link:../coordination-client
       '@strata-code/ingest':
         specifier: workspace:*
         version: link:../ingest

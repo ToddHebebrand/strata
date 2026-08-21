@@ -5,6 +5,7 @@ import {
   MAX_DEADLINE_MS,
   MAX_RESPONSE_FRAME_BYTES,
   PROTOCOL_VERSION,
+  isMutatingAction,
   parseResponseFrame,
   serializeRequestFrame,
   type declarationKindFilterSchema,
@@ -59,18 +60,7 @@ class TransportFailure extends Error {
 }
 
 function isMutating(action: LocalServiceRequest["action"]): boolean {
-  return ![
-    "hello",
-    "inspect_nodes",
-    "find_declarations",
-    "list_modules",
-    "list_module_declarations",
-    "get_references",
-    "read_events",
-    "read_operation",
-    "list_validation_fixtures",
-    "read_validation_fixture"
-  ].includes(action.type);
+  return isMutatingAction(action.type);
 }
 
 function validateDeadline(deadlineMs: number): void {

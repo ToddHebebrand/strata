@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import { CoordinationClient, type CoordinationIntent } from "../src/client.js";
+import { CoordinationClient, type CoordinationIntent } from "@strata-code/coordination-client";
 import { materializeFinalTree, startKernelService, type RunningKernelService } from "../src/service.js";
 import {
   createQualifiedTaskManifest,

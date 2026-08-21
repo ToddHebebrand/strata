@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import type { CoordinationClient } from "./client.js";
+import type { CoordinationClient } from "@strata-code/coordination-client";
 import { createQualifiedKernelSnapshot, type QualifiedTaskManifest } from "./tasks.js";
 
 const packageRoot = resolve(__dirname, "..");
