@@ -3446,26 +3446,48 @@ fn ten_clients_run_twenty_concurrent_lanes_without_starvation() {
 /// The gate's negative half: with the admission cap saturated, further
 /// connections are refused with `server_busy` rather than queued, dropped, or
 /// allowed to exhaust the daemon's threads.
+///
+/// Saturates with ESTABLISHED sessions rather than silent connectors, and that
+/// choice is deliberate. An earlier version filled the un-handshaken budget
+/// with connections that never spoke, which was flaky for a reason worth
+/// recording: silent connections are reclaimed at the 5-second handshake
+/// deadline, so under full-gate parallel load the test outran its own premise
+/// and a later connector was legitimately admitted. Established sessions hold
+/// their permits for the 15-minute idle timeout, so saturation is a fact about
+/// the daemon rather than a race the test has to win.
+///
+/// This also exercises the TOTAL cap (64), which the un-handshaken test above
+/// does not reach.
 #[test]
 fn the_admission_cap_holds_under_a_connection_storm() {
     let directory = TempDir::new().unwrap();
     let service = start_service(&directory, "gate-storm");
 
-    // Saturate the un-handshaken budget with connections that never speak.
-    let mut storm = Vec::new();
-    for _ in 0..16 {
-        storm.push(UnixStream::connect(&service.socket_path).unwrap());
+    // 32 actors x 2 lanes = the full 64-connection budget. Two lanes per actor
+    // rather than 64 actors because ownership is actor-level: a second
+    // instance of one actor would be refused for a different reason entirely.
+    let mut established = Vec::new();
+    for index in 0..32 {
+        let actor = format!("client:storm:{index}");
+        let instance = format!("instance:storm:{index}");
+        established.push(session::open_session(&service.socket_path, &actor, "work", &instance, 1).0);
+        established.push(
+            session::open_session(&service.socket_path, &actor, "observation", &instance, 1).0,
+        );
     }
+    assert_eq!(established.len(), 64, "the cap was not actually saturated");
 
     // Every further connector is told to back off, and told so promptly.
-    for _ in 0..8 {
+    for attempt in 0..8 {
         let started = Instant::now();
         let mut refused = UnixStream::connect(&service.socket_path).unwrap();
-        refused
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let frame = session::read_frame(&mut refused).expect("storm peer got no refusal");
+        // Best-effort: a socket the daemon has already refused and closed can
+        // reject the timeout option, and that is not what this test is about.
+        let _ = refused.set_read_timeout(Some(Duration::from_secs(5)));
+        let frame = session::read_frame(&mut refused)
+            .unwrap_or_else(|| panic!("storm peer {attempt} got no refusal frame"));
         let frame: Value = serde_json::from_slice(&frame[..frame.len() - 1]).unwrap();
+        assert_eq!(frame["type"], "session_rejected", "{frame}");
         assert_eq!(frame["error"]["code"], "server_busy", "{frame}");
         assert!(
             started.elapsed() < Duration::from_secs(2),
@@ -3473,4 +3495,32 @@ fn the_admission_cap_holds_under_a_connection_storm() {
             started.elapsed()
         );
     }
+
+    // Freeing a permit lets real work back in, so the cap throttles rather
+    // than latches.
+    established.truncate(60);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut admitted = false;
+    while Instant::now() < deadline && !admitted {
+        let mut probe = UnixStream::connect(&service.socket_path).unwrap();
+        let _ = probe.set_read_timeout(Some(Duration::from_secs(5)));
+        probe
+            .write_all(&session::frame(&json!({
+                "protocolVersion": 2,
+                "type": "open_session",
+                "actor": "client:storm:late",
+                "role": "work",
+                "clientInstance": "instance:storm:late",
+                "connectionGeneration": "1",
+            })))
+            .unwrap();
+        if let Some(reply) = session::read_frame(&mut probe) {
+            let reply: Value = serde_json::from_slice(&reply[..reply.len() - 1]).unwrap();
+            admitted = reply["type"] == "session_opened";
+        }
+        if !admitted {
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+    assert!(admitted, "the admission cap latched instead of throttling");
 }
