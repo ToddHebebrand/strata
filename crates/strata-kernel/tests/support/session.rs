@@ -57,6 +57,53 @@ pub fn open_work_session(socket: &Path, actor: &str) -> UnixStream {
     open_session(socket, actor, "work", &format!("instance:{actor}"), 1).0
 }
 
+/// Opens an observation-lane session, for tests that drive reads by hand.
+pub fn open_observation_session(socket: &Path, actor: &str) -> UnixStream {
+    open_session(
+        socket,
+        actor,
+        "observation",
+        &format!("instance:{actor}"),
+        1,
+    )
+    .0
+}
+
+/// The lane an action rides, mirroring `action-lane.json`.
+///
+/// Spelled out here rather than imported from the `protocol` module on
+/// purpose: a helper that asked the implementation which lane to use could
+/// never catch the implementation putting an action on the wrong one.
+pub fn lane_for(action: &str) -> &'static str {
+    match action {
+        "begin_change_set" | "add_intent" | "submit_change_set" | "advance_change_set"
+        | "cancel_change_set" => "work",
+        _ => "observation",
+    }
+}
+
+/// Opens the lane this request belongs on, sends it, and returns the response.
+/// One session per call -- not how a real client behaves, but it keeps the
+/// existing suites asserting request semantics rather than connection reuse.
+pub fn send_one(socket: &Path, actor: &str, request: &Value) -> Value {
+    let mut stream = open_lane_for(socket, actor, request);
+    exchange(&mut stream, request)
+}
+
+/// Opens the correct lane for `request` without sending it, for tests that
+/// need to drive the socket by hand afterwards.
+pub fn open_lane_for(socket: &Path, actor: &str, request: &Value) -> UnixStream {
+    let action = request["action"]["type"].as_str().unwrap_or("hello");
+    open_session(
+        socket,
+        actor,
+        lane_for(action),
+        &format!("instance:{actor}"),
+        1,
+    )
+    .0
+}
+
 /// Writes one request frame and reads exactly one response frame back.
 pub fn exchange(stream: &mut UnixStream, request: &Value) -> Value {
     stream.write_all(&frame(request)).unwrap();

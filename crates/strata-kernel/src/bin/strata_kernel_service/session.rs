@@ -24,7 +24,8 @@ use super::protocol::{
     Intent, LocalServiceProtocolContext, LocalServiceRequest, LocalServiceResponse,
     ModuleDeclarationSummary, ModuleSummary, NodeRelationship, OperationIntentSummary,
     OperationRenameTransition, ReferenceSummary, RenamedSymbol, RequestAction, ResponseResult,
-    ServiceEvent, ServiceEventKind, TicketState, ValidationMode, WireU64, parse_request_frame,
+    ServiceEvent, ServiceEventKind, SessionRole, TicketState, ValidationMode, WireU64,
+    parse_request_frame,
 };
 
 const MAX_INTENTS: usize = 256;
@@ -194,6 +195,50 @@ pub(super) struct ServiceSession {
     #[cfg(feature = "redb-spike-api")]
     publish_failpoint: strata_kernel::PublishFailpoint,
     recovered: bool,
+}
+
+/// What one connection's handshake established, and the authority every
+/// request on that connection is checked against.
+///
+/// This is D-2's change to the authority model: identity stops being a string
+/// a client asserts about itself on every request and becomes a property of
+/// the connection. `clientId` still travels on the wire -- keeping the request
+/// schema and the golden corpus intact -- but it is now a consistency check
+/// that must MATCH the binding, not the thing that establishes who is calling.
+pub(super) struct SessionBinding {
+    pub(super) actor: String,
+    pub(super) role: SessionRole,
+}
+
+impl SessionBinding {
+    /// Returns a refusal when the request contradicts what the connection is
+    /// bound to, or `None` when it may proceed to journal binding.
+    fn refuse(&self, request: &LocalServiceRequest) -> Option<LocalServiceResponse> {
+        if request.client_id != self.actor {
+            // Impersonation, whether malicious or a client bug. Either way the
+            // honest answer names the contradiction without echoing the actor
+            // the caller tried to claim.
+            return Some(LocalServiceResponse::error(
+                &request.request_id,
+                "identity_mismatch",
+                "clientId does not match the actor this connection is bound to",
+                false,
+                Vec::new(),
+            ));
+        }
+        if request.action.lane() != self.role {
+            // Sending work down the observation lane would defeat the point of
+            // having two: the ordering guarantees are per lane.
+            return Some(LocalServiceResponse::error(
+                &request.request_id,
+                "lane_mismatch",
+                "action does not belong to the lane this connection is bound to",
+                false,
+                Vec::new(),
+            ));
+        }
+        None
+    }
 }
 
 impl ServiceSession {
@@ -385,7 +430,18 @@ impl ServiceSession {
         self.kernel.eager_hydrate_persistent_bridge()
     }
 
-    pub fn handle_frame(&self, bytes: &[u8]) -> LocalServiceResponse {
+    /// Serves one request frame on a connection already bound to `session`.
+    ///
+    /// The connection binding is checked BETWEEN decode and `bind_request`, and
+    /// that ordering is the point. `bind_request` appends a `RequestBound`
+    /// record ending in `sync_data()`, so validating identity afterwards would
+    /// let a spoofed or wrong-lane request buy a durable write before being
+    /// refused. Rejecting first makes such a request cost no fsync at all.
+    pub fn handle_frame(
+        &self,
+        bytes: &[u8],
+        session: &SessionBinding,
+    ) -> LocalServiceResponse {
         let started = Instant::now();
         let parsed = self
             .protocol
@@ -394,6 +450,15 @@ impl ServiceSession {
             .and_then(|mut context| parse_request_frame(bytes, Some(&mut context)));
         match parsed {
             Ok(request) => {
+                if let Some(refusal) = session.refuse(&request) {
+                    // The transient protocol-context entry this request just
+                    // took must be released, or a rejected request would
+                    // occupy the bounded validation window.
+                    if let Ok(mut context) = self.protocol.lock() {
+                        context.forget_request(&request.request_id);
+                    }
+                    return refusal;
+                }
                 let binding = self
                     .journal
                     .lock()

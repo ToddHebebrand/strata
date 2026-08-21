@@ -197,10 +197,16 @@ fn send_raw(
     deadline_ms: u64,
     action: Value,
 ) -> Vec<u8> {
-    let mut stream = session::open_work_session(&service.socket, client);
-    stream
-        .write_all(&message(request_id, client, key, deadline_ms, action))
-        .unwrap();
+    let frame = message(request_id, client, key, deadline_ms, action.clone());
+    let mut stream = session::open_session(
+        &service.socket,
+        client,
+        session::lane_for(action["type"].as_str().unwrap()),
+        &format!("instance:{client}"),
+        1,
+    )
+    .0;
+    stream.write_all(&frame).unwrap();
     session::read_frame(&mut stream).unwrap_or_default()
 }
 

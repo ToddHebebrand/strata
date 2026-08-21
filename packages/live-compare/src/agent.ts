@@ -256,6 +256,14 @@ export async function runCoordinationAgent(
           message: caught instanceof Error ? caught.message : String(caught)
         })
     }
+  }).finally(() => {
+    // The client now holds PERSISTENT lane sockets. Before D-2 a leaked client
+    // was inert -- every request opened and closed its own connection -- so
+    // there was nothing to release and no cleanup here. Now a leaked client
+    // keeps Node alive on an open handle AND holds one of the daemon's
+    // admission permits, so release is mandatory on every exit path, a session
+    // that throws included.
+    client.close();
   });
 
   return {

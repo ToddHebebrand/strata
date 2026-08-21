@@ -16,7 +16,7 @@ use super::protocol::{
     SessionReply, WireU64, parse_open_session_frame, serialize_response_frame,
     serialize_session_reply,
 };
-use super::session::{ServiceConfig, ServiceSession};
+use super::session::{ServiceConfig, ServiceSession, SessionBinding};
 
 const SOCKET_DIRECTORY: &str = "/tmp/strata-lc";
 const MAX_SOCKET_PATH_BYTES: usize = 96;
@@ -502,6 +502,12 @@ fn handle_connection(
     // Established. Release the un-handshaken budget so a burst of silent
     // connectors cannot starve clients that are actually working.
     permit.handshaken();
+    // Every request on this connection is now checked against what the
+    // handshake bound, before it can reach the journal.
+    let binding = SessionBinding {
+        actor: handshake.actor,
+        role: handshake.role,
+    };
 
     loop {
         let idle_since = Instant::now();
@@ -520,7 +526,7 @@ fn handle_connection(
             // session is over and there is nothing meaningful to answer.
             Ok(None) | Err(_) => return Ok(()),
         };
-        let response = session.handle_frame(&request);
+        let response = session.handle_frame(&request, &binding);
         let frame = bounded_response_frame(&response)?;
         // A peer may disconnect after the durable effect and before receiving
         // the response; that is the retry contract's problem, not ours.

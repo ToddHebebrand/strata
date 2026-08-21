@@ -11,7 +11,10 @@ import {
   type BaselineSessionOutcome,
   type BaselineSessionRequest
 } from "./baseline.js";
-import { createCoordinationClient } from "@strata-code/coordination-client";
+import {
+  createCoordinationClient,
+  type CoordinationClient
+} from "@strata-code/coordination-client";
 import type { LiveAdapter } from "./cli.js";
 import { runComparisonRound, type ArmExecutionResult } from "./orchestrator.js";
 import {
@@ -149,6 +152,10 @@ export function createLiveAdapter(options: LiveAdapterOptions): LiveAdapter {
     const executeStrataArm = async (entry: ScheduledTrial): Promise<ArmExecutionResult> => {
       const service = await startKernelService(corpusRoot);
       let finalTree: string | undefined;
+      // Hoisted out of the try so the existing cleanup below can release it.
+      // Its lane sockets are persistent now, and a leaked one holds one of
+      // the daemon's admission permits for as long as the process lives.
+      let harnessClient: CoordinationClient | undefined;
       try {
         const assignments = manifest.packets[entry.scenario].assignments;
         const started = performance.now();
@@ -189,7 +196,7 @@ export function createLiveAdapter(options: LiveAdapterOptions): LiveAdapter {
           })
         );
 
-        const harnessClient = createCoordinationClient({
+        harnessClient = createCoordinationClient({
           socketPath: service.socketPath,
           clientId: `phase6:${entry.trialId}:harness`
         });
@@ -266,6 +273,7 @@ export function createLiveAdapter(options: LiveAdapterOptions): LiveAdapter {
           evidence: finalTree ? changedEvidence(manifest, finalTree) : {}
         };
       } finally {
+        harnessClient?.close();
         if (finalTree) rmSync(finalTree, { recursive: true, force: true });
         await service.stop();
       }

@@ -550,8 +550,7 @@ fn request(
     // its lanes open -- but it keeps every existing assertion in this suite
     // about request semantics rather than about connection reuse, which the
     // dedicated session tests below cover directly.
-    let mut stream = session::open_work_session(&service.socket_path, client_id);
-    session::exchange(&mut stream, &value)
+    session::send_one(&service.socket_path, client_id, &value)
 }
 
 fn begin(service: &RunningService, client: &str, suffix: &str) -> String {
@@ -2571,7 +2570,7 @@ fn one_session_serves_many_sequential_requests() {
     let directory = TempDir::new().unwrap();
     let service = start_service(&directory, "sessions-sequential");
 
-    let mut stream = session::open_work_session(&service.socket_path, "client:alpha");
+    let mut stream = session::open_observation_session(&service.socket_path, "client:alpha");
     for index in 0..5 {
         let response = session::exchange(
             &mut stream,
@@ -2598,7 +2597,7 @@ fn an_idle_session_survives_past_the_old_read_timeout() {
     let directory = TempDir::new().unwrap();
     let service = start_service(&directory, "sessions-idle");
 
-    let mut stream = session::open_work_session(&service.socket_path, "client:alpha");
+    let mut stream = session::open_observation_session(&service.socket_path, "client:alpha");
     thread::sleep(Duration::from_secs(7));
 
     let response = session::exchange(
@@ -2623,7 +2622,7 @@ fn a_half_written_frame_dies_at_the_absolute_deadline_with_no_response() {
     let directory = TempDir::new().unwrap();
     let service = start_service(&directory, "sessions-trickle");
 
-    let mut stream = session::open_work_session(&service.socket_path, "client:alpha");
+    let mut stream = session::open_observation_session(&service.socket_path, "client:alpha");
     let started = Instant::now();
     // A valid request frame, minus its terminating LF, dripped one byte at a
     // time so that a per-read timeout would keep being reset.
@@ -2691,7 +2690,33 @@ fn over_cap_connections_are_refused_with_server_busy() {
     // legitimate session opens immediately.
     drop(silent);
     drop(refused);
-    let mut stream = session::open_work_session(&service.socket_path, "client:after-cap");
+    // Permits come back when each handler thread NOTICES the peer is gone,
+    // which is bounded by the read poll interval rather than instantaneous.
+    // Waiting for that is the honest test; asserting it happens synchronously
+    // would just be asserting a race we happened to win.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let mut probe = UnixStream::connect(&service.socket_path).unwrap();
+        probe.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        probe
+            .write_all(&session::frame(&json!({
+                "protocolVersion": 2,
+                "type": "open_session",
+                "actor": "client:probe",
+                "role": "observation",
+                "clientInstance": "instance:probe",
+                "connectionGeneration": "1",
+            })))
+            .unwrap();
+        let reply = session::read_frame(&mut probe).expect("probe got no handshake reply");
+        let reply: Value = serde_json::from_slice(&reply[..reply.len() - 1]).unwrap();
+        if reply["type"] == "session_opened" {
+            break;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    let mut stream = session::open_observation_session(&service.socket_path, "client:after-cap");
     let response = session::exchange(
         &mut stream,
         &json!({
@@ -2817,4 +2842,143 @@ fn protocol_action_lane_matches_the_shared_fixture() {
         "ack_events must still be mutating -- that is what makes the lane split \
          a separate authority rather than a rename of the mutation split"
     );
+}
+
+/// Task 7: identity and lane are checked BETWEEN decode and journal binding.
+///
+/// The ordering is the whole finding. `bind_request` appends a `RequestBound`
+/// record ending in `sync_data()`, so a check that ran afterwards would let a
+/// spoofed request buy a durable write before being refused -- an unauthorized
+/// caller could make the daemon fsync on demand. These tests assert the
+/// journal file does not grow by one byte.
+#[test]
+fn a_spoofed_actor_is_refused_before_anything_durable_is_written() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-spoof");
+
+    // Establish a real session so the journal reaches a steady state first.
+    let mut honest = session::open_observation_session(&service.socket_path, "client:alpha");
+    let warmup = session::exchange(
+        &mut honest,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:warmup",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(warmup["ok"], true, "{warmup}");
+
+    let journal = private_journal_len(directory.path());
+    // Guards against a vacuous 0 == 0: the honest request above really did
+    // append a journalled binding, so the assertions below are measuring an
+    // absence of growth rather than an absence of a journal.
+    assert!(journal > 0, "the warmup request should have journalled a binding");
+
+    // Same connection, but the frame claims to be somebody else.
+    let spoofed = session::exchange(
+        &mut honest,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:spoof",
+            "clientId": "client:victim",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(spoofed["ok"], false, "{spoofed}");
+    assert_eq!(spoofed["error"]["code"], "identity_mismatch", "{spoofed}");
+    assert_eq!(
+        private_journal_len(directory.path()),
+        journal,
+        "a spoofed request must not append to the request journal"
+    );
+
+    // The session is still usable afterwards: one bad frame is refused, not
+    // treated as grounds to tear down a legitimate session.
+    let after = session::exchange(
+        &mut honest,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:after-spoof",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(after["ok"], true, "{after}");
+}
+
+/// A mutation sent down the observation lane is refused, and likewise costs
+/// nothing durable. Lanes carry the ordering guarantees, so letting an action
+/// ride the wrong one would silently void them.
+#[test]
+fn a_wrong_lane_request_is_refused_before_anything_durable_is_written() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "sessions-wrong-lane");
+
+    let mut observation =
+        session::open_observation_session(&service.socket_path, "client:alpha");
+    let warmup = session::exchange(
+        &mut observation,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:lane-warmup",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(warmup["ok"], true, "{warmup}");
+
+    let journal = private_journal_len(directory.path());
+    // Guards against a vacuous 0 == 0: the honest request above really did
+    // append a journalled binding, so the assertions below are measuring an
+    // absence of growth rather than an absence of a journal.
+    assert!(journal > 0, "the warmup request should have journalled a binding");
+
+    let misrouted = session::exchange(
+        &mut observation,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:misrouted",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "idempotencyKey": "idem:misrouted",
+            "action": {"type":"begin_change_set","reasoning":"wrong lane"},
+        }),
+    );
+    assert_eq!(misrouted["ok"], false, "{misrouted}");
+    assert_eq!(misrouted["error"]["code"], "lane_mismatch", "{misrouted}");
+    assert_eq!(
+        private_journal_len(directory.path()),
+        journal,
+        "a wrong-lane request must not append to the request journal"
+    );
+
+    // The same action on its own lane is accepted, so the refusal above is
+    // about the lane and not about the action being unsupported.
+    let mut work = session::open_work_session(&service.socket_path, "client:alpha");
+    let accepted = session::exchange(
+        &mut work,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:right-lane",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "idempotencyKey": "idem:right-lane",
+            "action": {"type":"begin_change_set","reasoning":"right lane"},
+        }),
+    );
+    assert_eq!(accepted["ok"], true, "{accepted}");
+}
+
+/// Size of the daemon's private request journal -- the file `bind_request`
+/// appends to and fsyncs (`<db>.service-journal.jsonl`). Zero before the first
+/// journalled request, which is exactly the state these tests preserve.
+fn private_journal_len(root: &Path) -> u64 {
+    fs::metadata(root.join("kernel.redb.service-journal.jsonl"))
+        .map(|meta| meta.len())
+        .unwrap_or(0)
 }

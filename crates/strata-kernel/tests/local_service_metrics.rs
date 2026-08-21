@@ -184,10 +184,16 @@ fn message(request_id: &str, client: &str, key: Option<&str>, action: Value) -> 
 }
 
 fn send(service: &Service, request_id: &str, client: &str, key: Option<&str>, action: Value) -> Value {
-    let mut stream = session::open_work_session(&service.socket, client);
-    stream
-        .write_all(&message(request_id, client, key, action))
-        .unwrap();
+    let frame = message(request_id, client, key, action.clone());
+    let mut stream = session::open_session(
+        &service.socket,
+        client,
+        session::lane_for(action["type"].as_str().unwrap()),
+        &format!("instance:{client}"),
+        1,
+    )
+    .0;
+    stream.write_all(&frame).unwrap();
     let response = session::read_frame(&mut stream).expect("daemon closed before responding");
     serde_json::from_slice(&response[..response.len() - 1]).unwrap()
 }

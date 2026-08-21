@@ -103,8 +103,7 @@ fn actor_containment_malformed_and_bridge_failures_publish_nothing() {
     let socket = PathBuf::from(ready["socketPath"].as_str().unwrap());
     let send = |request: Value| -> Value {
         let client = request["clientId"].as_str().unwrap_or("client:sealing").to_owned();
-        let mut stream = session::open_work_session(&socket, &client);
-        session::exchange(&mut stream, &request)
+        session::send_one(&socket, &client, &request)
     };
     let base = |request_id: &str, client: &str, key: Option<&str>, action: Value| {
         let mut request = json!({"protocolVersion":2,"requestId":request_id,"clientId":client,"deadlineMs":"120000","action":action});
