@@ -13,9 +13,10 @@ use sha2::{Digest, Sha256};
 
 use super::protocol::{
     LocalServiceResponse, MAX_HANDSHAKE_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, PROTOCOL_VERSION,
-    SessionReply, WireU64, parse_open_session_frame, serialize_response_frame,
+    SessionReply, SessionRole, WireU64, parse_open_session_frame, serialize_response_frame,
     serialize_session_reply,
 };
+use super::ownership::{Binding, OwnershipRegistry};
 use super::session::{ServiceConfig, ServiceSession, SessionBinding};
 
 const SOCKET_DIRECTORY: &str = "/tmp/strata-lc";
@@ -96,6 +97,7 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
     drop(stdout);
 
     let admission = Arc::new(Admission::default());
+    let ownership = Arc::new(OwnershipRegistry::default());
     for incoming in listener.incoming() {
         match incoming {
             Ok(stream) => {
@@ -106,8 +108,10 @@ pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
                     continue;
                 };
                 let session = Arc::clone(&session);
+                let ownership = Arc::clone(&ownership);
                 thread::spawn(move || {
-                    let _ = handle_connection(stream, &session, service_epoch, permit);
+                    let _ =
+                        handle_connection(stream, &session, service_epoch, permit, ownership);
                 });
             }
             Err(error) => return Err(error).context("accept local service connection"),
@@ -443,11 +447,28 @@ fn refuse_handshake(
     Ok(())
 }
 
+/// Releases a lane binding when the handler leaves, by any route including a
+/// panic. Removal is token-checked, so a fenced handler unwinding late cannot
+/// unregister the connection that replaced it.
+struct LaneGuard {
+    ownership: Arc<OwnershipRegistry>,
+    actor: String,
+    role: SessionRole,
+    token: u64,
+}
+
+impl Drop for LaneGuard {
+    fn drop(&mut self) {
+        self.ownership.release(&self.actor, self.role, self.token);
+    }
+}
+
 fn handle_connection(
     mut stream: UnixStream,
     session: &ServiceSession,
     service_epoch: u64,
     mut permit: AdmissionPermit,
+    ownership: Arc<OwnershipRegistry>,
 ) -> Result<()> {
     stream.set_read_timeout(Some(READ_POLL_INTERVAL))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -487,6 +508,39 @@ fn handle_connection(
                 true,
             );
         }
+    };
+
+    // Ownership is decided BEFORE the acceptance is written, so a refused
+    // handshake never sees a `session_opened` it then has to walk back.
+    let Binding { token, fenced } = match ownership.bind(
+        &handshake.actor,
+        handshake.role,
+        &handshake.client_instance,
+        handshake.connection_generation.get(),
+        &stream,
+    ) {
+        Ok(binding) => binding,
+        Err(refusal) => {
+            return refuse_handshake(
+                &mut stream,
+                refusal.code(),
+                refusal.message(),
+                refusal.retryable(),
+            );
+        }
+    };
+    // Fencing happens OUTSIDE the registry lock: a shutdown syscall under the
+    // lock would stall every other handshake on the daemon.
+    if let Some(displaced) = fenced {
+        let _ = displaced.shutdown(std::net::Shutdown::Both);
+    }
+    // The guard releases this lane on EVERY exit path, and only if this
+    // handler still owns it -- see `OwnershipRegistry::release`.
+    let _lane = LaneGuard {
+        ownership: Arc::clone(&ownership),
+        actor: handshake.actor.clone(),
+        role: handshake.role,
+        token,
     };
 
     let reply = SessionReply::SessionOpened {

@@ -72,6 +72,48 @@ function isMutating(action: LocalServiceRequest["action"]): boolean {
   return isMutatingAction(action.type);
 }
 
+/**
+ * Codes that mean "ask again with the SAME request identity". Deliberately a
+ * short, closed list.
+ *
+ * `request_in_progress` says the daemon is already working on this exact
+ * identity; `server_busy` says the handshake never got in, so nothing was sent
+ * at all. Both resolve on their own, and asking again is the correct response.
+ *
+ * A retryable OPERATIONAL failure is NOT in this set, and that is the point of
+ * the distinction. The daemon durably caches a retryable error against the
+ * request identity, so replaying the same identity would only re-read the
+ * cached error forever. Recovering from an operational failure means composing
+ * a NEW request with a NEW idempotency key -- a decision that belongs to the
+ * caller, not to the transport.
+ */
+const BACKOFF_CODES = new Set(["request_in_progress", "server_busy"]);
+const MAX_BACKOFF_ATTEMPTS = 6;
+const BASE_BACKOFF_MS = 25;
+const MAX_BACKOFF_MS = 2_000;
+
+/**
+ * Exponential backoff with FULL jitter. The jitter is load-bearing rather than
+ * decorative: ten clients that all saw `server_busy` at the same moment would
+ * otherwise redrive in lockstep and recreate the burst that refused them.
+ */
+function backoffDelayMs(attempt: number): number {
+  const ceiling = Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** (attempt - 1));
+  return Math.max(1, Math.floor(Math.random() * ceiling));
+}
+
+/**
+ * Sleeps, but never past the request's own deadline. Returns false when there
+ * is no time left to wait, so the caller fails on the ORIGINAL deadline rather
+ * than overshooting it by a backoff interval.
+ */
+async function sleepWithinDeadline(delayMs: number, expiresAt: number): Promise<boolean> {
+  const remaining = expiresAt - Date.now();
+  if (remaining <= 0) return false;
+  await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, remaining)));
+  return Date.now() < expiresAt;
+}
+
 function validateDeadline(deadlineMs: number): void {
   if (
     !Number.isSafeInteger(deadlineMs) ||
@@ -402,7 +444,9 @@ export class CoordinationClient {
     const attempts = mutating ? MAX_MUTATION_ATTEMPTS : 1;
     const lane = this.#lane(laneForAction(action.type));
 
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let transportAttempt = 0;
+    let backoffAttempt = 0;
+    for (;;) {
       const remaining = expiresAt - Date.now();
       if (remaining <= 0) {
         throw new CoordinationClientError("request_timeout", "coordination request timed out");
@@ -416,6 +460,24 @@ export class CoordinationClient {
           );
         }
         if (!response.ok) {
+          // BACKOFF_CODES are the codes that mean "ask again with the SAME
+          // identity" -- the answer is not ready yet, but it is coming. Every
+          // other error, including a retryable OPERATIONAL failure, is
+          // surfaced. That distinction is the heart of the retry contract:
+          // transport replay resends identical bytes, whereas an operational
+          // retry is a NEW request the caller composes with a new idempotency
+          // key. Replaying the old identity would only re-read the durably
+          // cached error the daemon already recorded against it.
+          if (BACKOFF_CODES.has(response.error.code) && backoffAttempt < MAX_BACKOFF_ATTEMPTS) {
+            backoffAttempt += 1;
+            if (!(await sleepWithinDeadline(backoffDelayMs(backoffAttempt), expiresAt))) {
+              throw new CoordinationClientError(
+                "request_timeout",
+                "coordination request timed out awaiting an in-progress result"
+              );
+            }
+            continue;
+          }
           throw new CoordinationClientError(
             response.error.code,
             redact(response.error.message, [this.#socketPath, this.#clientId]),
@@ -424,12 +486,33 @@ export class CoordinationClient {
         }
         return response.result;
       } catch (caught) {
+        // A `server_busy` handshake refusal never reached the request path at
+        // all, so it is safe to retry regardless of whether this is a
+        // mutation: nothing was sent.
+        if (
+          caught instanceof CoordinationClientError &&
+          BACKOFF_CODES.has(caught.code) &&
+          backoffAttempt < MAX_BACKOFF_ATTEMPTS
+        ) {
+          backoffAttempt += 1;
+          if (await sleepWithinDeadline(backoffDelayMs(backoffAttempt), expiresAt)) continue;
+          throw new CoordinationClientError(
+            "request_timeout",
+            "coordination request timed out awaiting daemon capacity"
+          );
+        }
         if (
           caught instanceof TransportFailure &&
           caught.kind === "disconnect" &&
           mutating &&
-          attempt + 1 < attempts
+          transportAttempt + 1 < attempts
         ) {
+          // Sent, no response: ambiguous. Replay the EXACT bytes -- same
+          // requestId, same idempotencyKey -- inside the original deadline, so
+          // the daemon either does the work once or returns what it already
+          // did. A read is deliberately NOT replayed here: reissuing it may
+          // observe a later generation, which is the caller's decision to make.
+          transportAttempt += 1;
           continue;
         }
         if (caught instanceof CoordinationClientError) throw caught;
@@ -448,7 +531,6 @@ export class CoordinationClient {
         );
       }
     }
-    throw new CoordinationClientError("connection_lost", "coordination connection was lost");
   }
 
   hello(deadlineMs = DEFAULT_REQUEST_DEADLINE_MS): Promise<CoordinationResult> {

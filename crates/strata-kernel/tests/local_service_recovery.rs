@@ -232,7 +232,7 @@ fn send(
         client,
         session::lane_for(action["type"].as_str().unwrap()),
         &format!("instance:{client}"),
-        1,
+        session::next_generation(),
     )
     .0;
     stream.write_all(&frame).unwrap();

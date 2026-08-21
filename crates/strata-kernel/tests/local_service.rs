@@ -2457,17 +2457,21 @@ fn handshake_binds_identity_and_appends_nothing_durable() {
     let audit_path = directory.path().join("service-audit.jsonl");
     let before = fs::read_to_string(&audit_path).unwrap_or_default();
 
+    // Ten DISTINCT actors, each one instance. Ten instances of one actor would
+    // be a `lane_conflict` -- correctly, since that is a duplicate-process
+    // collision -- and would be testing ownership rather than durability.
     let mut streams = Vec::new();
     for index in 0..10 {
+        let actor = format!("client:alpha:{index}");
         let (stream, reply) = session::open_session(
             &service.socket_path,
-            "client:alpha",
+            &actor,
             if index % 2 == 0 { "work" } else { "observation" },
             &format!("instance:{index}"),
             1,
         );
         assert_eq!(reply["protocolVersion"], 2, "{reply}");
-        assert_eq!(reply["actor"], "client:alpha", "{reply}");
+        assert_eq!(reply["actor"], actor, "{reply}");
         assert_eq!(
             reply["role"],
             if index % 2 == 0 { "work" } else { "observation" },
@@ -2981,4 +2985,367 @@ fn private_journal_len(root: &Path) -> u64 {
     fs::metadata(root.join("kernel.redb.service-journal.jsonl"))
         .map(|meta| meta.len())
         .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// D-2 Task 5: ownership and takeover. One named test per arm of the rule.
+//
+// The rule these replace was "take over a lane that is not currently
+// executing", which was rejected for three reasons: it let a fresh duplicate
+// process steal an idle but healthy lane, it let two duplicates displace each
+// other indefinitely, and it raced unless admission and takeover shared a lock.
+// ---------------------------------------------------------------------------
+
+/// Attempts a handshake and returns the reply WITHOUT asserting it succeeded,
+/// keeping the stream alive so the caller controls when the lane is released.
+fn try_open(
+    socket: &Path,
+    actor: &str,
+    role: &str,
+    instance: &str,
+    generation: u64,
+) -> (UnixStream, Value) {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .write_all(&session::frame(&json!({
+            "protocolVersion": 2,
+            "type": "open_session",
+            "actor": actor,
+            "role": role,
+            "clientInstance": instance,
+            "connectionGeneration": generation.to_string(),
+        })))
+        .unwrap();
+    let reply = session::read_frame(&mut stream).expect("no handshake reply");
+    let reply: Value = serde_json::from_slice(&reply[..reply.len() - 1]).unwrap();
+    (stream, reply)
+}
+
+/// Arm 2: same instance, same lane, strictly higher generation supersedes --
+/// whether the old connection is idle or busy. A reconnecting client is
+/// authoritative about its own newer connection, and the old one is fenced.
+#[test]
+fn a_higher_generation_from_the_same_instance_takes_over_and_fences_the_old_lane() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-generation");
+
+    let (mut first, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "observation",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    let (mut second, reopened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "observation",
+        "instance:a",
+        2,
+    );
+    assert_eq!(reopened["type"], "session_opened", "{reopened}");
+
+    // The displaced connection is fenced, not merely forgotten.
+    assert!(
+        session::read_frame(&mut first).is_none(),
+        "the superseded connection was left open"
+    );
+    // ...and the survivor works.
+    let response = session::exchange(
+        &mut second,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:after-takeover",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// Arm 3: an equal or lower generation from the same instance is stale. This
+/// is what stops a delayed or replayed reconnect from displacing the live one.
+#[test]
+fn an_equal_or_lower_generation_is_refused_as_stale() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-stale");
+
+    let (_live, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        7,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    for generation in [7_u64, 6, 1] {
+        let (_stale, reply) = try_open(
+            &service.socket_path,
+            "client:alpha",
+            "work",
+            "instance:a",
+            generation,
+        );
+        assert_eq!(reply["type"], "session_rejected", "{reply}");
+        assert_eq!(
+            reply["error"]["code"], "stale_generation",
+            "generation {generation} should be stale: {reply}"
+        );
+    }
+}
+
+/// Arm 5, refusal half: a DIFFERENT instance is refused while any lane of the
+/// incumbent is live -- even a completely idle one.
+///
+/// This is the case the rejected heuristic got wrong. An idle lane is not an
+/// abandoned lane, and a fresh duplicate process must not be able to steal one
+/// just because its owner happens to be between requests.
+#[test]
+fn a_different_instance_cannot_steal_an_idle_but_live_lane() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-idle-live");
+
+    let (_incumbent, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+    // Deliberately idle: no request is ever sent on it.
+    thread::sleep(Duration::from_millis(300));
+
+    let (_duplicate, reply) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:b",
+        99,
+    );
+    assert_eq!(reply["type"], "session_rejected", "{reply}");
+    assert_eq!(reply["error"]["code"], "lane_conflict", "{reply}");
+    assert_eq!(
+        reply["error"]["retryable"], true,
+        "a conflict resolves when the other instance exits, so it is worth retrying: {reply}"
+    );
+}
+
+/// Ownership is per ACTOR, not per (actor, role).
+///
+/// Without this, two duplicate clients race to a split state where one owns
+/// `work` and the other owns `observation` -- a configuration in which neither
+/// can make progress and nothing detects it.
+#[test]
+fn ownership_is_actor_level_so_two_instances_cannot_split_the_lanes() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-actor-level");
+
+    let (_work, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    // A duplicate reaching for the OTHER lane is refused, even though that
+    // lane is unbound: the actor already belongs to instance:a.
+    let (_other, reply) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "observation",
+        "instance:b",
+        1,
+    );
+    assert_eq!(reply["type"], "session_rejected", "{reply}");
+    assert_eq!(reply["error"]["code"], "lane_conflict", "{reply}");
+
+    // The owning instance may of course open its own second lane.
+    let (_observation, mine) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "observation",
+        "instance:a",
+        1,
+    );
+    assert_eq!(mine["type"], "session_opened", "{mine}");
+}
+
+/// Arm 5, admission half: a different instance takes over only after POSITIVE
+/// transport evidence that every incumbent lane is dead -- an actual HUP, not
+/// an inference from idleness.
+#[test]
+fn a_different_instance_takes_over_once_the_old_lanes_are_provably_dead() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-hup");
+
+    let (incumbent, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    // The old process dies. THIS is the evidence; nothing before it was.
+    drop(incumbent);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut admitted = None;
+    while Instant::now() < deadline {
+        let (stream, reply) = try_open(
+            &service.socket_path,
+            "client:alpha",
+            "work",
+            "instance:b",
+            1,
+        );
+        if reply["type"] == "session_opened" {
+            admitted = Some(stream);
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let mut admitted = admitted.expect("a replacement instance never took over a dead lane");
+
+    let response = session::exchange(
+        &mut admitted,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:replacement",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "idempotencyKey": "idem:replacement",
+            "action": {"type":"begin_change_set","reasoning":"replacement instance"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// The binding token, exercised through the shutdown race it exists to stop.
+///
+/// A superseded handler unwinds AFTER its replacement is bound. If cleanup
+/// removed the entry by (actor, role) alone, that late unwind would unregister
+/// the replacement, leaving the actor unowned while a live connection still
+/// believed it held the lane -- and a duplicate could then walk in.
+#[test]
+fn a_fenced_handler_cannot_unregister_its_own_replacement() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-token");
+
+    let (first, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    let (mut second, reopened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        2,
+    );
+    assert_eq!(reopened["type"], "session_opened", "{reopened}");
+
+    // Let the fenced handler finish unwinding.
+    drop(first);
+    thread::sleep(Duration::from_secs(2));
+
+    // A duplicate instance must STILL be refused: generation 2 is alive and
+    // owns the actor, whatever the older handler did on its way out.
+    let (_duplicate, reply) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:b",
+        9,
+    );
+    assert_eq!(
+        reply["type"], "session_rejected",
+        "the fenced handler unregistered its replacement: {reply}"
+    );
+    assert_eq!(reply["error"]["code"], "lane_conflict", "{reply}");
+
+    // And the replacement is still serving.
+    let response = session::exchange(
+        &mut second,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:survivor",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "idempotencyKey": "idem:survivor",
+            "action": {"type":"begin_change_set","reasoning":"survivor"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
+}
+
+/// Takeover under load: the incumbent is mid-request when its own newer
+/// generation arrives. The replacement must be admitted rather than deadlock
+/// behind work the old connection is still doing.
+#[test]
+fn a_higher_generation_takes_over_while_the_old_lane_is_mid_request() {
+    let directory = TempDir::new().unwrap();
+    let service = start_service(&directory, "own-under-load");
+
+    let (mut busy, opened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        1,
+    );
+    assert_eq!(opened["type"], "session_opened", "{opened}");
+
+    // Start a real mutation and do NOT read its response, so the lane is
+    // genuinely occupied when the takeover lands.
+    busy.write_all(&session::frame(&json!({
+        "protocolVersion": 2,
+        "requestId": "request:in-flight",
+        "clientId": "client:alpha",
+        "deadlineMs": "120000",
+        "idempotencyKey": "idem:in-flight",
+        "action": {"type":"begin_change_set","reasoning":"in flight during takeover"},
+    })))
+    .unwrap();
+
+    let (mut replacement, reopened) = try_open(
+        &service.socket_path,
+        "client:alpha",
+        "work",
+        "instance:a",
+        2,
+    );
+    assert_eq!(
+        reopened["type"], "session_opened",
+        "takeover deadlocked behind an in-flight request: {reopened}"
+    );
+
+    let response = session::exchange(
+        &mut replacement,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:post-takeover",
+            "clientId": "client:alpha",
+            "deadlineMs": "120000",
+            "idempotencyKey": "idem:post-takeover",
+            "action": {"type":"begin_change_set","reasoning":"after takeover"},
+        }),
+    );
+    assert_eq!(response["ok"], true, "{response}");
 }

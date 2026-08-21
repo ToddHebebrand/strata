@@ -1102,3 +1102,175 @@ describe("protocol v2 sessions", () => {
     client.close();
   });
 });
+
+// The retry matrix, one named case per row. The rows differ in what the client
+// KNOWS about whether the daemon saw the request, and that knowledge is what
+// decides whether replaying identical bytes is safe.
+describe("the retry contract", () => {
+  const CHANGE_SET = {
+    type: "change_set",
+    changeSetId: "change:retry",
+    state: "draft",
+    ticketState: null,
+    graphGeneration: "0",
+    operationId: null,
+    affectedNodeIds: [],
+    diagnostics: [],
+    publicationDigest: null,
+    renamedSymbols: []
+  } as const;
+
+  function errorFrame(
+    requestId: string,
+    code: string,
+    retryable: boolean
+  ): Uint8Array {
+    return serializeResponseFrame({
+      protocolVersion: 2,
+      requestId,
+      ok: false,
+      error: { code, message: `daemon says ${code}`, retryable, diagnostics: [] }
+    });
+  }
+
+  it("replays a sent-but-unanswered MUTATION with byte-identical bytes", async () => {
+    const service = await unixServer((socket, request, connection) => {
+      if (connection === 1) {
+        socket.destroy();
+        return;
+      }
+      socket.write(success(request.requestId, CHANGE_SET));
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:replay"
+    });
+
+    await expect(client.beginChangeSet("ambiguous send", 2_000)).resolves.toMatchObject({
+      changeSetId: "change:retry"
+    });
+    expect(service.rawRequests).toHaveLength(2);
+    expect(service.rawRequests[0]!.equals(service.rawRequests[1]!)).toBe(true);
+    client.close();
+  });
+
+  it("does NOT replay a sent-but-unanswered READ", async () => {
+    // Reissuing a read may observe a LATER generation than the one the caller
+    // was reasoning about, so the transport does not decide that silently.
+    const service = await unixServer((socket) => socket.destroy());
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:read"
+    });
+
+    await expect(client.listModules(undefined, 8, 2_000)).rejects.toBeInstanceOf(
+      CoordinationClientError
+    );
+    expect(service.requests).toHaveLength(1);
+    client.close();
+  });
+
+  it("backs off on request_in_progress and keeps the SAME identity", async () => {
+    let answered = 0;
+    const service = await unixServer((socket, request) => {
+      answered += 1;
+      socket.write(
+        answered < 3
+          ? errorFrame(request.requestId, "request_in_progress", true)
+          : success(request.requestId, CHANGE_SET)
+      );
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:in-progress"
+    });
+
+    await expect(client.beginChangeSet("wait for it", 5_000)).resolves.toMatchObject({
+      changeSetId: "change:retry"
+    });
+    expect(service.requests).toHaveLength(3);
+    // Same identity throughout -- this is one request being asked about again,
+    // not three different requests.
+    const ids = new Set(service.requests.map((request) => request.requestId));
+    const keys = new Set(service.requests.map((request) => request.idempotencyKey));
+    expect(ids.size).toBe(1);
+    expect(keys.size).toBe(1);
+    client.close();
+  });
+
+  it("surfaces a retryable OPERATIONAL failure instead of replaying it", async () => {
+    // The daemon durably caches a retryable error against the request
+    // identity, so replaying the same identity would just re-read the cached
+    // error. Recovery means a NEW request with a NEW key, which is the
+    // caller's decision.
+    const service = await unixServer((socket, request) => {
+      socket.write(errorFrame(request.requestId, "validation_unavailable", true));
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:operational"
+    });
+
+    await expect(client.beginChangeSet("operational failure", 2_000)).rejects.toMatchObject({
+      code: "validation_unavailable",
+      retryable: true
+    });
+    expect(service.requests).toHaveLength(1);
+    client.close();
+  });
+
+  it("backs off on server_busy, which was never sent at all", async () => {
+    let refusals = 0;
+    const service = await unixServer(
+      (socket, request) => {
+        socket.write(success(request.requestId, READY_RESULT));
+      },
+      {
+        handshake: (socket) => {
+          refusals += 1;
+          if (refusals > 2) return true;
+          socket.write(
+            serializeSessionReplyFrame({
+              protocolVersion: 2,
+              type: "session_rejected",
+              error: {
+                code: "server_busy",
+                message: "at the admission cap",
+                retryable: true,
+                diagnostics: []
+              }
+            })
+          );
+          return false;
+        }
+      }
+    );
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:busy"
+    });
+
+    await expect(client.hello(5_000)).resolves.toEqual(READY_RESULT);
+    expect(refusals).toBe(3);
+    client.close();
+  });
+
+  it("gives up on the ORIGINAL deadline rather than overshooting it by a backoff", async () => {
+    const service = await unixServer((socket, request) => {
+      socket.write(errorFrame(request.requestId, "request_in_progress", true));
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:deadline"
+    });
+
+    const started = Date.now();
+    await expect(client.beginChangeSet("never ready", 300)).rejects.toMatchObject({
+      code: "request_timeout"
+    });
+    // Comfortably bounded by the deadline plus scheduling slack, and NOT by
+    // the deadline plus a full backoff interval.
+    expect(Date.now() - started).toBeLessThan(1_500);
+    client.close();
+  });
+});

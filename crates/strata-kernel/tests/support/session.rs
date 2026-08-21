@@ -11,12 +11,25 @@
 
 #![allow(dead_code)]
 
+use serde_json::{Value, json};
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use serde_json::{Value, json};
+/// Monotonic connection generation for this test process.
+///
+/// The convenience helpers below open a fresh session per call, which is a
+/// RECONNECT as far as the daemon's ownership rule is concerned. Reusing
+/// generation 1 every time would be correctly refused as stale, so the helpers
+/// behave like a real client and bump the counter.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+pub fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, Ordering::Relaxed) + 1
+}
 
 /// Connects and completes the handshake, returning the live session stream and
 /// the daemon's `session_opened` reply. Panics on rejection: a test that means
@@ -54,7 +67,14 @@ pub fn open_session(
 /// Opens a work-lane session with defaulted instance identity, for the many
 /// tests that only care that a session exists.
 pub fn open_work_session(socket: &Path, actor: &str) -> UnixStream {
-    open_session(socket, actor, "work", &format!("instance:{actor}"), 1).0
+    open_session(
+        socket,
+        actor,
+        "work",
+        &format!("instance:{actor}"),
+        next_generation(),
+    )
+    .0
 }
 
 /// Opens an observation-lane session, for tests that drive reads by hand.
@@ -64,7 +84,7 @@ pub fn open_observation_session(socket: &Path, actor: &str) -> UnixStream {
         actor,
         "observation",
         &format!("instance:{actor}"),
-        1,
+        next_generation(),
     )
     .0
 }
@@ -99,7 +119,7 @@ pub fn open_lane_for(socket: &Path, actor: &str, request: &Value) -> UnixStream 
         actor,
         lane_for(action),
         &format!("instance:{actor}"),
-        1,
+        next_generation(),
     )
     .0
 }
