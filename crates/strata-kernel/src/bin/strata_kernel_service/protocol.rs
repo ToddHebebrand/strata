@@ -815,6 +815,39 @@ impl RequestAction {
         )
     }
 
+    /// Which serial lane this action travels on.
+    ///
+    /// Its OWN authority, deliberately NOT derived from `is_mutating`. The two
+    /// answer different questions: `ack_events` is mutating (it needs an
+    /// idempotency key for exactly-once semantics) but observational (it is
+    /// the back half of the read/ack cycle), and keeping read and ack on the
+    /// SAME serial lane preserves their natural ordering. Deriving lanes from
+    /// mutation would split them onto different lanes and lose that ordering.
+    ///
+    /// Exhaustive by construction -- adding an action forces a decision here
+    /// rather than defaulting -- and asserted against `action-lane.json`, the
+    /// same fixture the TypeScript client asserts its own mapping against.
+    pub(super) const fn lane(&self) -> SessionRole {
+        match self {
+            Self::BeginChangeSet { .. }
+            | Self::AddIntent { .. }
+            | Self::SubmitChangeSet { .. }
+            | Self::AdvanceChangeSet { .. }
+            | Self::CancelChangeSet { .. } => SessionRole::Work,
+            Self::Hello { .. }
+            | Self::InspectNodes { .. }
+            | Self::FindDeclarations { .. }
+            | Self::ListModules { .. }
+            | Self::ListModuleDeclarations { .. }
+            | Self::GetReferences { .. }
+            | Self::ReadEvents { .. }
+            | Self::AckEvents { .. }
+            | Self::ReadOperation { .. }
+            | Self::ListValidationFixtures { .. }
+            | Self::ReadValidationFixture { .. } => SessionRole::Observation,
+        }
+    }
+
     pub(super) fn change_set_id(&self) -> Option<&str> {
         match self {
             Self::AddIntent { change_set_id, .. }

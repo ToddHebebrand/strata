@@ -2736,3 +2736,85 @@ fn a_silent_connection_is_reclaimed_at_the_handshake_deadline() {
         started.elapsed()
     );
 }
+
+/// The Rust half of the dual-language action-LANE lockstep (D-2 Task 6).
+///
+/// Lane assignment is its own authority, and the fixture is what keeps the two
+/// languages from drifting. Getting it wrong is quiet in a way that matters:
+/// if the client sends `ack_events` on the work lane while `read_events` goes
+/// on the observation lane, the read/ack ordering that exactly-once delivery
+/// depends on is silently lost.
+///
+/// The test also asserts the lane split is NOT the mutation split, so nobody
+/// can later "simplify" `lane()` into `is_mutating()` and still pass.
+#[test]
+fn protocol_action_lane_matches_the_shared_fixture() {
+    #[derive(Deserialize)]
+    struct Lanes {
+        work: Vec<String>,
+        observation: Vec<String>,
+    }
+
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../packages/coordination-client/tests/fixtures/protocol-v2/action-lane.json");
+    let lanes: Lanes = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+
+    for name in lanes.work.iter() {
+        assert!(
+            !lanes.observation.contains(name),
+            "{name} appears in both lanes"
+        );
+    }
+
+    let mut sampled = BTreeSet::new();
+    for case in fixture("accepted").cases {
+        if case.direction != "request" {
+            continue;
+        }
+        let request = parse_request_frame(&frame(&case.value), None)
+            .unwrap_or_else(|error| panic!("accepted request {} must parse: {error:#}", case.name));
+        let name = request.action.name();
+        sampled.insert(name.to_owned());
+        let expected_work = lanes.work.iter().any(|entry| entry == name);
+        assert!(
+            expected_work || lanes.observation.iter().any(|entry| entry == name),
+            "action {name} is missing from the shared lane fixture"
+        );
+        assert_eq!(
+            request.action.lane().as_label(),
+            if expected_work { "work" } else { "observation" },
+            "action {name} disagrees with the shared lane fixture"
+        );
+    }
+
+    let declared: BTreeSet<String> = lanes
+        .work
+        .iter()
+        .chain(lanes.observation.iter())
+        .cloned()
+        .collect();
+    assert_eq!(
+        declared, sampled,
+        "every lane-assigned action needs an accepted golden request sampling it"
+    );
+
+    // The load-bearing negative: `ack_events` is MUTATING but OBSERVATIONAL.
+    // If lanes were ever derived from the mutation partition, this fails.
+    assert!(
+        lanes.observation.iter().any(|entry| entry == "ack_events"),
+        "ack_events must ride the observation lane with read_events"
+    );
+    let partition_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
+        "../../packages/coordination-client/tests/fixtures/protocol-v2/action-partition.json",
+    );
+    let partition: Value = serde_json::from_slice(&fs::read(partition_path).unwrap()).unwrap();
+    assert!(
+        partition["mutating"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry == "ack_events"),
+        "ack_events must still be mutating -- that is what makes the lane split \
+         a separate authority rather than a rename of the mutation split"
+    );
+}

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   ALL_ACTION_TYPES,
   isMutatingAction,
+  laneForAction,
   LocalServiceProtocolContext,
   MAX_OPERATION_INTENTS,
   MAX_REQUEST_FRAME_BYTES,
@@ -545,5 +546,39 @@ describe("local service protocol v1", () => {
     for (const type of partition.readOnly) {
       expect(isMutatingAction(type)).toBe(false);
     }
+  });
+
+  // Lane assignment is a SECOND dual-language authority, kept separate from
+  // the mutation partition above on purpose. The Rust suite asserts
+  // `RequestAction::lane` against this same file.
+  it("matches the shared dual-language action lane authority exactly", () => {
+    const lanes = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL("fixtures/protocol-v2/action-lane.json", import.meta.url)),
+        "utf8"
+      )
+    ) as { work: string[]; observation: string[] };
+
+    expect([...lanes.work, ...lanes.observation].sort()).toEqual([...ALL_ACTION_TYPES].sort());
+    for (const type of lanes.work) {
+      expect(lanes.observation).not.toContain(type);
+      expect(laneForAction(type)).toBe("work");
+    }
+    for (const type of lanes.observation) {
+      expect(laneForAction(type)).toBe("observation");
+    }
+    // An unknown action has no lane, and saying so beats guessing one.
+    expect(() => laneForAction("teleport_declaration")).toThrow();
+  });
+
+  // The load-bearing negative, mirrored from the Rust suite: the lane split is
+  // NOT the mutation split. `ack_events` mutates (for exactly-once) but rides
+  // the observation lane so that read and ack keep their natural ordering.
+  // Deriving lanes from `isMutatingAction` would pass every other assertion
+  // here and quietly break that ordering.
+  it("keeps ack_events mutating but observational", () => {
+    expect(isMutatingAction("ack_events")).toBe(true);
+    expect(laneForAction("ack_events")).toBe("observation");
+    expect(laneForAction("read_events")).toBe(laneForAction("ack_events"));
   });
 });
