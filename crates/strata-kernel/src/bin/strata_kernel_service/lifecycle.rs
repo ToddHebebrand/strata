@@ -474,6 +474,27 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
+    /// A root short enough to bind a socket under.
+    ///
+    /// The default tempdir lands under `/var/folders/...`, which blows
+    /// `SUN_LEN` once an 81-byte incarnation basename is appended. Production's
+    /// `/tmp/strata-lc` has exactly enough room; a test root has to be at least
+    /// as short.
+    fn short_root() -> (PathBuf, impl Drop) {
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let unique = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path = PathBuf::from(format!("/tmp/u{:x}{unique:x}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        (path.clone(), Cleanup(path))
+    }
+
     #[test]
     fn a_second_holder_is_refused_and_a_dead_holder_leaves_nothing_behind() {
         let dir = temp_root();
@@ -565,6 +586,53 @@ mod tests {
         // The chmod must not have been redirected through the link.
         let mode = std::fs::metadata(&target).unwrap().mode() & 0o777;
         assert_eq!(mode, 0o755, "chmod followed the symlink to its target");
+    }
+
+    #[test]
+    fn a_bound_endpoint_unlinks_its_own_socket_on_drop() {
+        // Tested in-process rather than through a clean daemon shutdown,
+        // because D-3a deliberately adds NO graceful exit -- that is D-3b.
+        // Asserting a process-level clean shutdown here would be asserting a
+        // mechanism this slice does not have.
+        let (path, _cleanup) = short_root();
+        let root = std::sync::Arc::new(SocketRoot::open(&path).unwrap());
+        let hash = "c".repeat(64);
+        let path = {
+            let (bound, _listener) = BoundEndpoint::bind(&root, &hash, "abc123").unwrap();
+            assert!(bound.path().exists(), "bind did not create the socket");
+            bound.path().to_owned()
+        };
+        assert!(!path.exists(), "BoundEndpoint::drop left its socket behind");
+    }
+
+    #[test]
+    fn the_record_round_trips_and_rejects_a_foreign_name() {
+        let dir = temp_root();
+        let root = SocketRoot::open(&dir.path().join("root")).unwrap();
+        let hash = "d".repeat(64);
+        assert_eq!(EndpointRecord::read(&root, &hash), None, "no record yet");
+
+        let name = SocketRoot::socket_name(&hash, "abc123");
+        EndpointRecord::publish(&root, &hash, &name).unwrap();
+        assert_eq!(EndpointRecord::read(&root, &hash).as_deref(), Some(name.as_str()));
+
+        // A record naming another token's socket is not actionable: reading it
+        // back must not hand us a name we would then feel entitled to unlink.
+        let foreign = SocketRoot::socket_name(&"e".repeat(64), "abc123");
+        EndpointRecord::publish(&root, &hash, &foreign).unwrap();
+        assert_eq!(
+            EndpointRecord::read(&root, &hash),
+            None,
+            "a record naming a foreign token was treated as actionable"
+        );
+    }
+
+    #[test]
+    fn the_lock_and_the_record_are_separate_files() {
+        // Load-bearing: the record is replaced by rename, and renaming over the
+        // lock file would replace the very inode the flock protects.
+        let hash = "f".repeat(64);
+        assert_ne!(SocketRoot::lock_name(&hash), SocketRoot::record_name(&hash));
     }
 
     #[test]

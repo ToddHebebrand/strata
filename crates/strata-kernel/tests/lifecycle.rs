@@ -788,3 +788,55 @@ fn an_ambiguous_legacy_leftover_fails_closed_without_deleting_it() {
         "an ambiguous legacy leftover was deleted on inference"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 1 gate — the lock must not ride into a bridge worker
+// ---------------------------------------------------------------------------
+
+/// Rust's `OpenOptions` sets `O_CLOEXEC`, but "should" is not a gate.
+///
+/// An `flock` belongs to the open file description and is released only when
+/// ALL duplicated descriptors close. If the lock fd ever survived `exec` into a
+/// Node bridge worker, a SIGKILLed daemon would leave its state directory
+/// unownable for as long as any worker outlived it — a daemon that cannot be
+/// restarted after a crash, which is the opposite of what this slice is for.
+#[test]
+fn a_sigkilled_daemon_releases_ownership_despite_live_bridge_workers() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+
+    // `--persistent-bridge` eagerly hydrates a worker at startup, so a real
+    // child process exists before the kill.
+    let mut child = {
+        let mut command = daemon_command(state.path(), "d3a-cloexec", &root);
+        command.arg("--persistent-bridge");
+        command.spawn().unwrap()
+    };
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(!line.trim().is_empty(), "the bridge daemon never became ready");
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Bounded rather than instant: the kernel reclaims when the last descriptor
+    // closes, and a worker may take a moment to notice its parent is gone.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut reclaimed = false;
+    while Instant::now() < deadline && !reclaimed {
+        match try_start_daemon(&state, "d3a-cloexec", &root) {
+            Ok(replacement) => {
+                reclaimed = true;
+                drop(replacement);
+            }
+            Err(_) => thread::sleep(Duration::from_millis(250)),
+        }
+    }
+    assert!(
+        reclaimed,
+        "a bridge worker retained the owner lock past the daemon's death"
+    );
+}
