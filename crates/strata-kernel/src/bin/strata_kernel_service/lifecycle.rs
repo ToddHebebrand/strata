@@ -32,6 +32,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
@@ -578,4 +579,188 @@ mod tests {
         std::fs::set_permissions(&path, Permissions::from_mode(0o700)).unwrap();
         assert!(root.reverify().is_err(), "a replaced root was not detected");
     }
+}
+
+/// How a `health` probe ended, and the exit code it maps to.
+///
+/// Distinct outcomes rather than a boolean, because they tell an operator
+/// different things: "nothing is there" is a different situation from "something
+/// is there and will not talk to me".
+pub(super) enum HealthOutcome {
+    Healthy,
+    Draining,
+    Absent,
+    Unreachable(String),
+    TimedOut,
+}
+
+impl HealthOutcome {
+    pub(super) fn exit_code(&self) -> i32 {
+        match self {
+            Self::Healthy => 0,
+            // Defined here, unreachable until D-3b gives `draining` a live
+            // value. Fixed now so the matrix does not change between slices.
+            Self::Draining => 5,
+            Self::Absent => 3,
+            Self::Unreachable(_) => 4,
+            Self::TimedOut => 6,
+        }
+    }
+}
+
+/// Connects with a real deadline.
+///
+/// `UnixStream::connect` blocks, and setting read/write timeouts AFTERWARDS
+/// does not bound it — so the socket is created non-blocking and `poll`ed for
+/// writability. That distinction matters for a peer that accepts and then
+/// stalls, which is precisely the case a post-connect timeout would miss.
+fn connect_deadlined(path: &Path, deadline: Duration) -> Result<std::os::unix::net::UnixStream> {
+    use std::os::fd::FromRawFd;
+
+    let raw = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .context("socket path contains an interior NUL")?;
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error()).context("create probe socket");
+    }
+    // SAFETY: `socket` just returned this descriptor and nothing else owns it.
+    let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(fd) };
+    stream.set_nonblocking(true).context("set probe non-blocking")?;
+
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    let bytes = raw.as_bytes();
+    if bytes.len() >= address.sun_path.len() {
+        bail!("socket path is too long for sockaddr_un");
+    }
+    for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
+        *slot = *byte as libc::c_char;
+    }
+    let connected = unsafe {
+        libc::connect(
+            fd,
+            std::ptr::addr_of!(address).cast::<libc::sockaddr>(),
+            std::mem::size_of::<libc::sockaddr_un>() as libc::socklen_t,
+        )
+    };
+    if connected != 0 {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::WouldBlock
+            && error.raw_os_error() != Some(libc::EINPROGRESS)
+        {
+            return Err(error).context("connect");
+        }
+        let mut poll_fd = libc::pollfd {
+            fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let ready = unsafe {
+            libc::poll(
+                std::ptr::addr_of_mut!(poll_fd),
+                1,
+                deadline.as_millis() as libc::c_int,
+            )
+        };
+        if ready == 0 {
+            bail!("connect timed out");
+        }
+        if ready < 0 {
+            return Err(io::Error::last_os_error()).context("poll for connect");
+        }
+    }
+    stream.set_nonblocking(false).context("restore blocking mode")?;
+    stream
+        .set_read_timeout(Some(deadline))
+        .context("set probe read timeout")?;
+    stream
+        .set_write_timeout(Some(deadline))
+        .context("set probe write timeout")?;
+    Ok(stream)
+}
+
+/// Probes an endpoint's health, bounded end to end.
+pub(super) fn probe_health(path: &Path, deadline: Duration) -> HealthOutcome {
+    use std::io::{Read, Write};
+
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return HealthOutcome::Absent,
+        Err(error) => return HealthOutcome::Unreachable(error.to_string()),
+        Ok(meta) => {
+            use std::os::unix::fs::FileTypeExt;
+            if !meta.file_type().is_socket() {
+                return HealthOutcome::Unreachable("path is not a socket".to_owned());
+            }
+        }
+    }
+
+    let mut stream = match connect_deadlined(path, deadline) {
+        Ok(stream) => stream,
+        Err(error) => {
+            let text = format!("{error:#}");
+            return if text.contains("timed out") {
+                HealthOutcome::TimedOut
+            } else {
+                HealthOutcome::Unreachable(text)
+            };
+        }
+    };
+
+    let mut frame =
+        serde_json::to_vec(&serde_json::json!({"protocolVersion": 2, "type": "health"}))
+            .unwrap_or_default();
+    frame.push(b'\n');
+    if let Err(error) = stream.write_all(&frame) {
+        return HealthOutcome::Unreachable(error.to_string());
+    }
+
+    let mut buffer = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => {
+                return HealthOutcome::Unreachable("endpoint closed without replying".to_owned());
+            }
+            Ok(_) => {
+                buffer.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if buffer.len() > MAX_HEALTH_REPLY_BYTES {
+                    return HealthOutcome::Unreachable("reply exceeded its bound".to_owned());
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                return HealthOutcome::TimedOut;
+            }
+            Err(error) => return HealthOutcome::Unreachable(error.to_string()),
+        }
+    }
+
+    let parsed: serde_json::Value = match serde_json::from_slice(&buffer[..buffer.len() - 1]) {
+        Ok(value) => value,
+        Err(error) => return HealthOutcome::Unreachable(error.to_string()),
+    };
+    if parsed.get("type").and_then(serde_json::Value::as_str) != Some("health_ok") {
+        return HealthOutcome::Unreachable("endpoint did not speak this protocol".to_owned());
+    }
+    if parsed.get("draining").and_then(serde_json::Value::as_bool) == Some(true) {
+        return HealthOutcome::Draining;
+    }
+    HealthOutcome::Healthy
+}
+
+const MAX_HEALTH_REPLY_BYTES: usize = 4 * 1024;
+
+/// Resolves the socket a token is currently bound to, via the stable record.
+///
+/// With per-incarnation names the path is no longer derivable from the token
+/// alone, so this is how an operator who knows only the token finds the daemon.
+pub(super) fn resolve_socket_for_token(root: &SocketRoot, token_hash: &str) -> Option<PathBuf> {
+    EndpointRecord::read(root, token_hash).map(|name| root.join(&name))
 }

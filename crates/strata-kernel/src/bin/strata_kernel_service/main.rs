@@ -36,8 +36,18 @@ fn run() -> Result<()> {
         return Ok(());
     }
     let remaining = arguments.collect::<Vec<_>>();
+    // Subcommand help must be handled BEFORE option parsing: `parse_named`
+    // bails on an odd argument count, so a bare `--help` after a subcommand
+    // would otherwise fail with a confusing pair-parse error.
+    if remaining.iter().any(|argument| argument == "--help" || argument == "-h") {
+        print_help();
+        return Ok(());
+    }
     match command.to_str() {
-        Some("serve") => serve(&remaining),
+        // `start` is an ALIAS, not a rename: every existing harness invokes
+        // `serve`, and renaming would break them all for no benefit.
+        Some("serve") | Some("start") => serve(&remaining),
+        Some("health") => health(&remaining),
         Some("validate-socket") => validate_socket(&remaining),
         Some("export-snapshot") => export_snapshot(&remaining),
         _ => bail!("unknown command; run with --help"),
@@ -209,6 +219,58 @@ fn serve(arguments: &[OsString]) -> Result<()> {
         &token,
         socket_root,
     )
+}
+
+/// `health --socket <path>` or `health --token <token>`.
+///
+/// Exits with a per-command code rather than the blanket 2 that `main` gives
+/// every error, because an operator scripting against this needs to tell
+/// "nothing is there" apart from "something is there and will not talk".
+///
+/// | Code | Meaning |
+/// |---|---|
+/// | 0 | healthy |
+/// | 3 | endpoint absent |
+/// | 4 | present but unreachable, or not our protocol |
+/// | 5 | healthy and draining (defined now, reachable in D-3b) |
+/// | 6 | timed out |
+fn health(arguments: &[OsString]) -> Result<()> {
+    const PROBE_DEADLINE: Duration = Duration::from_secs(5);
+
+    let values = parse_named(arguments)?;
+    reject_unknown(&values, &["--socket", "--token", "--socket-root"])?;
+
+    let socket = match optional_path(&values, "--socket") {
+        Some(path) => path,
+        None => {
+            // With per-incarnation names the path is no longer derivable from
+            // the token, so resolve it through the stable record.
+            let token = required_text(&values, "--token").context(
+                "health needs either --socket <path> or --token <token>",
+            )?;
+            let root = match optional_path(&values, "--socket-root") {
+                Some(path) => lifecycle::SocketRoot::open(&path)?,
+                None => lifecycle::SocketRoot::production()?,
+            };
+            match lifecycle::resolve_socket_for_token(&root, &server::token_hash(&token)) {
+                Some(path) => path,
+                None => {
+                    eprintln!("no endpoint is recorded for that token");
+                    std::process::exit(3);
+                }
+            }
+        }
+    };
+
+    let outcome = lifecycle::probe_health(&socket, PROBE_DEADLINE);
+    match &outcome {
+        lifecycle::HealthOutcome::Healthy => println!("healthy"),
+        lifecycle::HealthOutcome::Draining => println!("draining"),
+        lifecycle::HealthOutcome::Absent => eprintln!("endpoint absent"),
+        lifecycle::HealthOutcome::Unreachable(why) => eprintln!("endpoint unreachable: {why}"),
+        lifecycle::HealthOutcome::TimedOut => eprintln!("health probe timed out"),
+    }
+    std::process::exit(outcome.exit_code());
 }
 
 fn validate_socket(arguments: &[OsString]) -> Result<()> {

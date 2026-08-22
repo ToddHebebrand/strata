@@ -587,3 +587,121 @@ fn both_reserve_slots_are_reclaimed_on_their_own_shorter_deadline() {
     );
     drop(silent);
 }
+
+// ---------------------------------------------------------------------------
+// Task 7 — start alias and the health CLI
+// ---------------------------------------------------------------------------
+
+fn run_cli(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// Per-command exit codes, not the blanket 2 that `main` gives every error.
+///
+/// An operator scripting against this has to tell "nothing is there" apart from
+/// "something is there and will not talk to me".
+#[test]
+fn health_cli_exit_codes_are_per_command() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let service = start_daemon(&state, "d3a-cli", &root);
+
+    assert_eq!(
+        run_cli(&["health", "--socket", service.socket_path.to_str().unwrap()])
+            .status
+            .code(),
+        Some(0),
+        "a live endpoint must report healthy"
+    );
+
+    // With per-incarnation names the path is not derivable from the token, so
+    // this is the operator's route in.
+    assert_eq!(
+        run_cli(&[
+            "health",
+            "--token",
+            "d3a-cli",
+            "--socket-root",
+            root.to_str().unwrap()
+        ])
+        .status
+        .code(),
+        Some(0),
+        "token resolution must find the recorded endpoint"
+    );
+
+    let absent = root.join(format!("{}.0123abcd.sock", token_hash("nobody")));
+    assert_eq!(
+        run_cli(&["health", "--socket", absent.to_str().unwrap()])
+            .status
+            .code(),
+        Some(3),
+        "an absent endpoint is code 3"
+    );
+
+    let squat = root.join("not-a-socket");
+    std::fs::write(&squat, b"regular file").unwrap();
+    assert_eq!(
+        run_cli(&["health", "--socket", squat.to_str().unwrap()])
+            .status
+            .code(),
+        Some(4),
+        "a non-socket at the path is code 4, not a crash"
+    );
+}
+
+/// A listener that accepts and then says nothing.
+///
+/// Setting read/write timeouts AFTER `UnixStream::connect` would not bound the
+/// connect itself, which is why the probe uses a non-blocking connect plus
+/// `poll`. This is the case that distinguishes the two.
+#[test]
+fn health_times_out_rather_than_hanging_on_a_stalled_listener() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = root.join(format!("{}.0123abcd.sock", "c".repeat(64)));
+    let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    let _stalled = thread::spawn(move || {
+        // Accept, then hold the connection open without ever replying.
+        while let Ok((stream, _)) = listener.accept() {
+            thread::sleep(Duration::from_secs(30));
+            drop(stream);
+        }
+    });
+
+    let started = Instant::now();
+    let code = run_cli(&["health", "--socket", path.to_str().unwrap()])
+        .status
+        .code();
+    assert_eq!(code, Some(6), "a stalled listener must time out, not hang");
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "the probe took {:?}, which is not bounded",
+        started.elapsed()
+    );
+}
+
+/// `start` is an alias for `serve`, and BOTH dispatch routes accept help.
+///
+/// `parse_named` bails on an odd argument count, so subcommand help has to be
+/// handled before option parsing or a bare `--help` fails with a confusing
+/// pair-parse error.
+#[test]
+fn start_is_an_alias_and_both_dispatch_routes_accept_help() {
+    assert!(run_cli(&["start", "--help"]).status.success());
+    assert!(run_cli(&["serve", "--help"]).status.success());
+    // And `start` really reaches serve's option parsing rather than falling
+    // through to "unknown command".
+    let missing = run_cli(&["start", "--db", "/tmp/nowhere.redb"]);
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        !stderr.contains("unknown command"),
+        "`start` did not dispatch to serve: {stderr}"
+    );
+}
