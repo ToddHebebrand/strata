@@ -7,6 +7,106 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-08-21 — D-3a closed: staleness stops being a decision the daemon has to make
+
+**Decision:** D-3a (ownership + health) is CLOSED on
+`worktree-item-d3a-ownership`. Exactly one daemon owns a state directory and an
+endpoint token, a leftover socket can never be mistaken for a live one, and
+health can be polled without a single durable write. Plan v3
+(`docs/superpowers/plans/2026-08-21-item-d3a-ownership-health-plan.md`) after
+two review rounds on the combined D-3 plan and two more on D-3a itself.
+
+**The finding that reshaped the design, and how it was reached.** The spec says
+"if we hold the lock and the socket is dead, unlink as stale" — assuming
+deadness is decidable. It is not, cheaply, on this platform:
+
+- `ECONNREFUSED` is not proof of death on Darwin. `sonewconn()` fails under
+  listen-queue exhaustion, so a LIVE listener can transiently present as
+  refused. A design that unlinked on that basis would delete a healthy endpoint.
+- `(device, inode)` cannot prove an incarnation across deletion and inode reuse,
+  and Darwin's `st_gen` — which exists precisely to distinguish incarnations —
+  is unavailable to ordinary users.
+
+Both were surfaced by asking the reviewer about the parts I was least sure of
+rather than the parts I wanted confirmed. **So D-3a stops deciding staleness.**
+The socket path is per-incarnation, beside a stable flock'd lock and a
+separately-renamed record. A leftover is simply not the current path.
+
+**Record BEFORE bind**, which makes every crash point exactly recoverable:
+
+| Crash point | What the next start finds |
+|---|---|
+| Before the record | No new socket exists |
+| After record, before bind | Record names an absent endpoint |
+| After bind | Record names the exact orphan |
+
+The reverse order was ownership-safe but left an UNRECORDED orphan on every
+crash in that window, so debris grew without limit and needed a directory
+sweep — and "bound the sweep" is not implementable, because bounding deletions
+does not bound a `read_dir` traversal. Exact-record reclamation is one
+`unlinkat` and touches nothing it cannot name.
+
+**Three files, not two.** The flocked `.lock` cannot also store the socket name:
+the record is replaced by `rename`, and renaming over the lock would replace the
+very inode the lock protects.
+
+**The reclamation invariant, stated at its real strength.** Only a daemon
+holding this token's endpoint claim creates `<hash>.*.sock`. That is a namespace
+invariant of the cooperative same-UID deployment contract — NOT evidence the
+socket itself carries. An earlier draft claimed the stronger thing.
+
+**What is deliberately not claimed:** this is not TOCTOU-free. A held directory
+fd closes the races for the lock and record children, but `bind()` and a
+socket's `chmod` are pathname-based and cannot use `openat`, so the root's
+device/inode is re-verified before each pathname operation and the guarantee is
+scoped to the declared threat model.
+
+**A hazard neither the plan nor its author found — the review did.** A D-2
+binary takes no endpoint lock and binds the old `<hash>.sock`. A D-2 and a D-3a
+daemon sharing a token but pointed at different databases would have served
+simultaneously, each believing it was alone, writing two states behind one
+endpoint name. D-3a refuses to start beside a live legacy endpoint, and fails
+closed on an ambiguous one rather than deleting it. **Deployment precondition:
+stop all pre-D-3a daemons before upgrading.** The check is a safety net, not a
+substitute.
+
+**Three D-2 contracts changed deliberately**, each with a comment naming D-3a:
+the two admission tests (the control reserve makes silent connectors 17–18 land
+in the reserve rather than being refused immediately) and the two stale basename
+surfaces. The reserve change is worth recording because the plan asserted the
+opposite — that D-2 behavior was unchanged — and the review caught it.
+
+**The socket path budget turned out to be the binding constraint.** The
+incarnation basename is 81 bytes and `/tmp/strata-lc` is 14, so the production
+path is EXACTLY 96 — the limit. The 11-hex nonce bound is precisely what makes
+it fit, with zero margin. It also constrained the tests: default temp directories
+are too long to bind an incarnation socket under, in both the unit and
+integration suites.
+
+**Design-doc impact:** none. D-3a implements § Slice D-3's ownership and health
+half. The staleness mechanism differs from the spec's sketch ("unlink as stale")
+because that sketch assumed a decidable predicate; this entry is the record of
+that divergence.
+
+**Revisit when:** D-3b lands drain and `stop`. It consumes `health_ok`'s
+`draining` and `activeRequests` fields, which D-3a froze with their final
+semantics and constant values so no frame changes shape between the slices, and
+the control reserve, which exists so `stop` stays reachable at the cap.
+
+**Carried, unchanged:** unbounded `request_bindings`; insert-only
+`change_set_locks`; in-memory-only delivered ceilings. All three grow more
+load-bearing as the daemon moves toward long-lived and still need decisions.
+The lock-hold-time measurement D-2 recorded as owed is D-3b's Task, and remains
+owed.
+
+**Process note worth acting on if it recurs.** Twice this session a gate failed
+on checkout setup rather than code: main's `node_modules` had silently drifted
+three weeks behind D-1's new workspace package, and this fresh worktree had
+unbuilt package declarations. Both were invisible until the chain ran somewhere
+other than where the work was done. A `pnpm install && pnpm -r build` step
+belongs in the plan template's setup, and the chain should be run in the main
+checkout after every merge.
+
 ## 2026-08-21 — D-3 splits into D-3a (ownership + health) and D-3b (drain + stop)
 
 **Context:** The D-3 lifecycle plan took two independent methodology reviews and
