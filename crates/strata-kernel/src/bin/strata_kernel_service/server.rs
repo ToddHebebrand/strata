@@ -147,15 +147,21 @@ pub(super) fn serve_in_root(
             Ok(stream) => {
                 // Capacity FIRST. An over-cap connection is refused without
                 // ever costing a handler thread.
-                let Some(permit) = admission.admit() else {
+                let Some((permit, pool)) = admission.admit() else {
                     refuse_over_cap(stream);
                     continue;
                 };
                 let session = Arc::clone(&session);
                 let ownership = Arc::clone(&ownership);
                 thread::spawn(move || {
-                    let _ =
-                        handle_connection(stream, &session, service_epoch, permit, ownership);
+                    let _ = handle_connection(
+                        stream,
+                        &session,
+                        service_epoch,
+                        permit,
+                        pool,
+                        ownership,
+                    );
                 });
             }
             Err(error) => return Err(error).context("accept local service connection"),
@@ -273,6 +279,27 @@ const MAX_UNHANDSHAKEN_CONNECTIONS: usize = 16;
 /// exists to solve. A peer that will not read its own refusal costs the
 /// listener this much and no more.
 const BUSY_REFUSAL_WRITE_TIMEOUT: Duration = Duration::from_millis(250);
+/// Slots reserved ABOVE the session cap for control probes (`health` today,
+/// `stop` in D-3b).
+///
+/// Above rather than carved out of the 64: that number was chosen as takeover
+/// headroom, not demonstrated as a resource cliff, and carving would drop
+/// established capacity to 62 for no reason. The cost is two accepted fds, two
+/// handler threads, and bounded first-frame buffers.
+///
+/// The true ceiling is therefore 66 admitted/handler-owned connections, PLUS at
+/// most one transient connection already accepted and held for the inline
+/// refusal below. "Physical maximum 66" would be wrong.
+const CONTROL_RESERVE_SLOTS: usize = 2;
+/// One ABSOLUTE deadline for a reserve occupant, covering read, classification,
+/// AND response flush. It replaces the 5s write timeout for these connections
+/// rather than sitting beside it -- a second, longer timer would dominate the
+/// flush and make the 1s promise meaningless.
+///
+/// What this bounds is each occupant's TENURE. It is not a guarantee of
+/// eventual reachability: a peer that continuously reacquires freed slots can
+/// still starve control. Same-UID hostility is outside the threat model.
+const CONTROL_CANDIDATE_DEADLINE: Duration = Duration::from_secs(1);
 
 /// Bounded connection admission.
 ///
@@ -290,13 +317,14 @@ struct Admission {
 struct AdmissionCounts {
     admitted: usize,
     unhandshaken: usize,
+    control: usize,
 }
 
 impl Admission {
     /// Takes a permit, or `None` when either cap is reached. Called BEFORE the
     /// handler thread is spawned, so an over-cap connection never costs a
     /// thread at all.
-    fn admit(self: &Arc<Self>) -> Option<AdmissionPermit> {
+    fn admit(self: &Arc<Self>) -> Option<(AdmissionPermit, AdmissionPool)> {
         // Recover from poisoning rather than propagating it. A poisoned
         // admission mutex would otherwise refuse EVERY future connection for
         // the daemon's remaining lifetime -- a permanent outage caused by one
@@ -305,24 +333,51 @@ impl Admission {
             .counts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if counts.admitted >= MAX_ADMITTED_CONNECTIONS
-            || counts.unhandshaken >= MAX_UNHANDSHAKEN_CONNECTIONS
-        {
+        let normal_available = counts.admitted < MAX_ADMITTED_CONNECTIONS
+            && counts.unhandshaken < MAX_UNHANDSHAKEN_CONNECTIONS;
+        let pool = if normal_available {
+            AdmissionPool::Normal
+        } else if counts.control < CONTROL_RESERVE_SLOTS {
+            // The session pools are full. The reserve exists so that health --
+            // and, in D-3b, stop -- do not go blind exactly when they are most
+            // needed.
+            AdmissionPool::ControlCandidate
+        } else {
             return None;
-        }
+        };
         counts.admitted += 1;
-        counts.unhandshaken += 1;
-        Some(AdmissionPermit {
-            admission: Arc::clone(self),
-            handshaken: false,
-        })
+        match pool {
+            AdmissionPool::Normal => counts.unhandshaken += 1,
+            AdmissionPool::ControlCandidate => counts.control += 1,
+        }
+        Some((
+            AdmissionPermit {
+                admission: Arc::clone(self),
+                pool,
+                handshaken: false,
+            },
+            pool,
+        ))
     }
+}
+
+/// Which budget a permit came out of.
+///
+/// A connection's KIND is not knowable at admission -- the permit is taken
+/// before the first frame is read -- so `ControlCandidate` means "admitted into
+/// the reserve", not "known to be a control probe". A candidate that turns out
+/// to be an `open_session` is refused rather than promoted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AdmissionPool {
+    Normal,
+    ControlCandidate,
 }
 
 /// RAII: the permit is released when the handler thread unwinds or returns,
 /// including on panic. Nothing in the handler has to remember to give it back.
 struct AdmissionPermit {
     admission: Arc<Admission>,
+    pool: AdmissionPool,
     handshaken: bool,
 }
 
@@ -334,6 +389,9 @@ impl AdmissionPermit {
             return;
         }
         self.handshaken = true;
+        if self.pool != AdmissionPool::Normal {
+            return;
+        }
         let mut counts = self
             .admission
             .counts
@@ -353,8 +411,14 @@ impl Drop for AdmissionPermit {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         counts.admitted = counts.admitted.saturating_sub(1);
-        if !self.handshaken {
-            counts.unhandshaken = counts.unhandshaken.saturating_sub(1);
+        match self.pool {
+            AdmissionPool::Normal if !self.handshaken => {
+                counts.unhandshaken = counts.unhandshaken.saturating_sub(1);
+            }
+            AdmissionPool::ControlCandidate => {
+                counts.control = counts.control.saturating_sub(1);
+            }
+            AdmissionPool::Normal => {}
         }
     }
 }
@@ -532,20 +596,34 @@ fn handle_connection(
     session: &ServiceSession,
     service_epoch: u64,
     mut permit: AdmissionPermit,
+    pool: AdmissionPool,
     ownership: Arc<OwnershipRegistry>,
 ) -> Result<()> {
+    let accepted = Instant::now();
+    let control = pool == AdmissionPool::ControlCandidate;
     stream.set_read_timeout(Some(READ_POLL_INTERVAL))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    // A reserve occupant gets ONE absolute deadline covering read,
+    // classification, and flush. Setting the usual 5s write timeout here would
+    // dominate the flush and make the 1s bound meaningless.
+    stream.set_write_timeout(Some(if control {
+        CONTROL_CANDIDATE_DEADLINE
+    } else {
+        Duration::from_secs(5)
+    }))?;
     let mut reader = FrameReader::new();
 
-    let accepted = Instant::now();
     // The two failure modes are kept apart because they mean different things
     // to a client: "you spoke a protocol I do not serve" is terminal, while
     // "you did not finish speaking in time" is a transport problem worth
     // retrying. Collapsing them into one code would tell a slow-but-correct
     // client to give up.
-    let handshake = match reader.read_frame(&mut stream, MAX_HANDSHAKE_FRAME_BYTES, |_| {
+    let first_frame_deadline = if control {
+        accepted + CONTROL_CANDIDATE_DEADLINE
+    } else {
         accepted + HANDSHAKE_DEADLINE
+    };
+    let handshake = match reader.read_frame(&mut stream, MAX_HANDSHAKE_FRAME_BYTES, |_| {
+        first_frame_deadline
     }) {
         // The peer closed before saying anything. Nothing to reject.
         Ok(None) => return Ok(()),
@@ -574,6 +652,18 @@ fn handle_connection(
                     let _ = stream.flush();
                 }
                 return Ok(());
+            }
+            Ok(FirstFrame::OpenSession { .. }) if control => {
+                // Admitted into the CONTROL reserve, but asking for a session.
+                // Refuse rather than promote -- promoting would let a session
+                // launder its way past a full cap through the very slots that
+                // exist to keep shutdown and monitoring reachable.
+                return refuse_handshake(
+                    &mut stream,
+                    "server_busy",
+                    "daemon is at its session admission cap; retry with backoff",
+                    true,
+                );
             }
             Ok(FirstFrame::OpenSession {
                 protocol_version: _,

@@ -6,6 +6,7 @@
 //! or a parallel test's.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -457,4 +458,132 @@ fn validate_socket_accepts_the_incarnation_shape_and_still_rejects_junk() {
     ] {
         assert!(!run(&bad), "{bad} should have been rejected");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task 6 — the control reserve
+// ---------------------------------------------------------------------------
+
+/// Opens `count` sessions, returning the live streams so they keep their
+/// admission permits. 32 actors x 2 lanes saturates the 64-session cap.
+fn saturate_admission(socket: &Path) -> Vec<UnixStream> {
+    let mut held = Vec::new();
+    for index in 0..32 {
+        for role in ["work", "observation"] {
+            let mut stream = UnixStream::connect(socket).unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut frame = serde_json::to_vec(&json!({
+                "protocolVersion": 2,
+                "type": "open_session",
+                "actor": format!("client:sat:{index}"),
+                "role": role,
+                "clientInstance": format!("instance:sat:{index}"),
+                "connectionGeneration": "1",
+            }))
+            .unwrap();
+            frame.push(b'\n');
+            stream.write_all(&frame).unwrap();
+            let reply = read_frame(&mut stream).expect("no handshake reply while saturating");
+            let reply: Value = serde_json::from_slice(&reply[..reply.len() - 1]).unwrap();
+            assert_eq!(reply["type"], "session_opened", "{reply}");
+            held.push(stream);
+        }
+    }
+    held
+}
+
+/// Health must stay reachable when sessions saturate admission, or monitoring
+/// goes blind exactly when it is most needed.
+#[test]
+fn health_stays_reachable_when_sessions_saturate_admission() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let service = start_daemon(&state, "d3a-reserve", &root);
+
+    let _saturating = saturate_admission(&service.socket_path);
+    assert_eq!(
+        health_probe(&service.socket_path)["type"],
+        "health_ok",
+        "health went blind exactly when it was needed"
+    );
+}
+
+/// A reserve occupant that asks for a session is refused, never promoted --
+/// promoting would let a session launder past a full cap through the slots that
+/// exist to keep control reachable.
+#[test]
+fn a_control_candidate_that_opens_a_session_is_refused_not_promoted() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let service = start_daemon(&state, "d3a-launder", &root);
+    let _saturating = saturate_admission(&service.socket_path);
+
+    let mut stream = UnixStream::connect(&service.socket_path).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut frame = serde_json::to_vec(&json!({
+        "protocolVersion": 2,
+        "type": "open_session",
+        "actor": "client:sneaky",
+        "role": "work",
+        "clientInstance": "instance:sneaky",
+        "connectionGeneration": "1",
+    }))
+    .unwrap();
+    frame.push(b'\n');
+    stream.write_all(&frame).unwrap();
+    let reply = read_frame(&mut stream).expect("no refusal for a laundering candidate");
+    let reply: Value = serde_json::from_slice(&reply[..reply.len() - 1]).unwrap();
+    assert_eq!(reply["type"], "session_rejected", "{reply}");
+    assert_eq!(reply["error"]["code"], "server_busy", "{reply}");
+}
+
+/// BOTH reserve slots are reclaimed on their own shorter deadline.
+///
+/// Occupying only one would let health succeed through the other even if
+/// reclamation never happened, and the bound has to sit BELOW the 5s handshake
+/// deadline or it cannot tell the promised 1s reserve timer from that one.
+#[test]
+fn both_reserve_slots_are_reclaimed_on_their_own_shorter_deadline() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let service = start_daemon(&state, "d3a-tenure", &root);
+    let _saturating = saturate_admission(&service.socket_path);
+
+    let silent: Vec<UnixStream> = (0..2)
+        .map(|_| UnixStream::connect(&service.socket_path).unwrap())
+        .collect();
+
+    let started = Instant::now();
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut reachable = false;
+    while Instant::now() < deadline && !reachable {
+        if let Ok(mut probe) = UnixStream::connect(&service.socket_path) {
+            probe.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut frame =
+                serde_json::to_vec(&json!({"protocolVersion": 2, "type": "health"})).unwrap();
+            frame.push(b'\n');
+            if probe.write_all(&frame).is_ok()
+                && let Some(reply) = read_frame(&mut probe)
+            {
+                let reply: Value = serde_json::from_slice(&reply[..reply.len() - 1]).unwrap();
+                reachable = reply["type"] == "health_ok";
+            }
+        }
+        if !reachable {
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+    assert!(
+        reachable,
+        "the control reserve was not reclaimed on its own deadline"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "reclamation took {:?}; that is the 5s handshake timer, not the 1s reserve one",
+        started.elapsed()
+    );
+    drop(silent);
 }

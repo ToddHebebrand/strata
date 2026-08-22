@@ -2674,13 +2674,21 @@ fn over_cap_connections_are_refused_with_server_busy() {
     let directory = TempDir::new().unwrap();
     let service = start_service(&directory, "sessions-admission");
 
-    // Fill the un-handshaken budget: connections that say nothing at all.
+    // D-3a CHANGES THIS CONTRACT, deliberately. Under D-2 the seventeenth
+    // silent connector was refused immediately, because 16 was the whole
+    // un-handshaken budget. D-3a adds two control-reserve slots ABOVE the
+    // session cap so that `health` (and, in D-3b, `stop`) stay reachable when
+    // sessions saturate admission -- so connectors 17 and 18 now land in the
+    // reserve and are reclaimed on its shorter 1s deadline instead.
+    //
+    // The refusal contract itself is unchanged: past ALL the budgets, a peer is
+    // still told `server_busy` rather than being dropped silently.
     let mut silent = Vec::new();
-    for _ in 0..16 {
+    for _ in 0..18 {
         silent.push(UnixStream::connect(&service.socket_path).unwrap());
     }
 
-    // The next silent connector is over the un-handshaken cap and is told so.
+    // Past the un-handshaken budget AND the control reserve.
     let mut refused = UnixStream::connect(&service.socket_path).unwrap();
     refused
         .set_read_timeout(Some(Duration::from_secs(10)))
@@ -3480,6 +3488,15 @@ fn the_admission_cap_holds_under_a_connection_storm() {
         );
     }
     assert_eq!(established.len(), 64, "the cap was not actually saturated");
+
+    // D-3a CHANGES THIS CONTRACT, deliberately. The two control-reserve slots
+    // sit ABOVE the 64-session cap so health and stop stay reachable while
+    // sessions saturate admission, so the first two further connectors land in
+    // the reserve rather than being refused. Occupy them first; the refusal
+    // contract past ALL budgets is what this test is about.
+    let _reserve: Vec<UnixStream> = (0..2)
+        .map(|_| UnixStream::connect(&service.socket_path).unwrap())
+        .collect();
 
     // Every further connector is told to back off, and told so promptly.
     for attempt in 0..8 {
