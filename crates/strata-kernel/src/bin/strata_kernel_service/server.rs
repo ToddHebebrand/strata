@@ -71,6 +71,13 @@ pub(super) fn serve_in_root(
     let _endpoint = EndpointClaim::acquire(&root, &token_hash)
         .map_err(|refusal| refusal.into_error("this socket endpoint"))?;
 
+    // Before ANY canonical state is opened: a pre-D-3a daemon takes no endpoint
+    // lock and binds the old `<hash>.sock`, so the endpoint claim above cannot
+    // see it. Without this check, a D-2 and a D-3a daemon sharing a token but
+    // pointed at different databases would serve simultaneously, each believing
+    // it was alone.
+    lifecycle::refuse_beside_legacy_daemon(&root, &token_hash)?;
+
     // Recovery is intentionally complete before the authority becomes reachable.
     let (session, service_epoch) = ServiceSession::open(config)?;
     // Only now are BOTH locks held AND the epoch real. Publishing earlier would

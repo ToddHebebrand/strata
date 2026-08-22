@@ -705,3 +705,86 @@ fn start_is_an_alias_and_both_dispatch_routes_accept_help() {
         "`start` did not dispatch to serve: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 8 — the D-2 coexistence boundary
+// ---------------------------------------------------------------------------
+
+/// A pre-D-3a daemon takes NO endpoint lock and binds the old `<hash>.sock`, so
+/// the endpoint claim cannot see it. Without this check, a D-2 and a D-3a daemon
+/// sharing a token but pointed at different databases would serve
+/// simultaneously, each believing it was alone.
+#[test]
+fn a_live_legacy_endpoint_blocks_startup() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    // Stand up something that answers `health` on the OLD path shape, exactly
+    // as a running pre-D-3a daemon's endpoint would be found.
+    let legacy = root.join(format!("{}.sock", token_hash("d3a-legacy")));
+    let listener = std::os::unix::net::UnixListener::bind(&legacy).unwrap();
+    let _serving = thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            let mut byte = [0_u8; 1];
+            let mut request = Vec::new();
+            while let Ok(1) = stream.read(&mut byte) {
+                request.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            let mut reply = serde_json::to_vec(&json!({
+                "protocolVersion": 2,
+                "type": "health_ok",
+                "serviceEpoch": "1",
+                "recovered": false,
+                "validationMode": "tscOnly",
+                "validationManifestDigest": null,
+                "draining": false,
+                "activeRequests": "0",
+            }))
+            .unwrap();
+            reply.push(b'\n');
+            let _ = stream.write_all(&reply);
+        }
+    });
+
+    let state = TempDir::new().unwrap();
+    let refusal = start_daemon_expecting_failure(&state, "d3a-legacy", &root);
+    assert_eq!(refusal.code, Some(2), "{}", refusal.stderr);
+    assert!(
+        refusal.stderr.contains("already serving this token"),
+        "the refusal must name the reason: {}",
+        refusal.stderr
+    );
+    assert!(legacy.exists(), "a live legacy endpoint was removed");
+}
+
+/// An ambiguous legacy leftover fails closed and is NOT deleted. Refusing is
+/// recoverable by an operator; deleting something that was alive is not.
+#[test]
+fn an_ambiguous_legacy_leftover_fails_closed_without_deleting_it() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let legacy = root.join(format!("{}.sock", token_hash("d3a-legacy-dead")));
+    let listener = std::os::unix::net::UnixListener::bind(&legacy).unwrap();
+    drop(listener); // bound, then abandoned -- the shape a crash leaves.
+
+    let state = TempDir::new().unwrap();
+    let refusal = start_daemon_expecting_failure(&state, "d3a-legacy-dead", &root);
+    assert_eq!(refusal.code, Some(2), "{}", refusal.stderr);
+    assert!(
+        refusal.stderr.contains("could not be identified"),
+        "the refusal must say why it is ambiguous: {}",
+        refusal.stderr
+    );
+    assert!(
+        legacy.exists(),
+        "an ambiguous legacy leftover was deleted on inference"
+    );
+}

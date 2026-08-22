@@ -764,3 +764,45 @@ const MAX_HEALTH_REPLY_BYTES: usize = 4 * 1024;
 pub(super) fn resolve_socket_for_token(root: &SocketRoot, token_hash: &str) -> Option<PathBuf> {
     EndpointRecord::read(root, token_hash).map(|name| root.join(&name))
 }
+
+/// The pre-D-3a socket name for a token: `<hash>.sock`, with no incarnation.
+pub(super) fn legacy_socket_name(token_hash: &str) -> String {
+    format!("{token_hash}.sock")
+}
+
+/// Refuses to start beside a pre-D-3a daemon serving the same token.
+///
+/// The namespace invariant reclamation rests on — "only a holder of this
+/// token's endpoint claim creates `<hash>.*.sock`" — holds only among
+/// D-3a-and-newer binaries. A D-2 daemon takes NO endpoint lock and binds the
+/// old `<hash>.sock`, so a D-2 and a D-3a daemon sharing a token but pointed at
+/// different databases would serve simultaneously, each believing it was alone.
+///
+/// This is not a v1 compatibility mode — D-2 already speaks protocol version 2.
+/// It is an upgrade-window safety net, and it is a net rather than a substitute
+/// for the deployment rule: stop pre-D-3a daemons before upgrading.
+pub(super) fn refuse_beside_legacy_daemon(root: &SocketRoot, token_hash: &str) -> Result<()> {
+    let name = legacy_socket_name(token_hash);
+    let path = root.join(&name);
+    match std::fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).context("stat the legacy endpoint");
+        }
+        Ok(_) => {}
+    }
+    // Positive evidence first: something that answers our protocol on the old
+    // path is a LIVE daemon serving this token.
+    match probe_health(&path, Duration::from_secs(2)) {
+        HealthOutcome::Healthy | HealthOutcome::Draining => bail!(
+            "a pre-D-3a daemon is already serving this token at {};              stop it before starting this one",
+            path.display()
+        ),
+        // Present but silent, or not our protocol. Ambiguous -- fail closed
+        // rather than deleting something that might be alive.
+        _ => bail!(
+            "a legacy endpoint at {} could not be identified;              refusing to serve. Remove it manually if you are certain it is dead.",
+            path.display()
+        ),
+    }
+}
