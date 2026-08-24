@@ -779,11 +779,14 @@ fn handle_connection(
             // session is over and there is nothing meaningful to answer.
             Ok(None) | Err(_) => return Ok(()),
         };
-        let response = session.handle_frame(&request, &binding);
+        let handled = session.handle_frame(&request, &binding);
+        let (response, active) = handled.finish();
         let frame = bounded_response_frame(&response)?;
         // A peer may disconnect after the durable effect and before receiving
         // the response; that is the retry contract's problem, not ours.
-        if stream.write_all(&frame).is_err() || stream.flush().is_err() {
+        let write_failed = stream.write_all(&frame).is_err() || stream.flush().is_err();
+        drop(active);
+        if write_failed {
             return Ok(());
         }
     }

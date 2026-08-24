@@ -4,6 +4,8 @@ use std::os::fd::RawFd;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+pub(super) const DEFAULT_DRAIN_GRACE: Duration = Duration::from_secs(30);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct DrainHealth {
     pub(super) draining: bool,

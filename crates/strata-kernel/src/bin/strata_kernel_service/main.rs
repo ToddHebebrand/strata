@@ -214,6 +214,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             validation,
             failpoint,
             metrics_path,
+            drain_grace: drain::DEFAULT_DRAIN_GRACE,
             #[cfg(feature = "redb-spike-api")]
             publish_failpoint,
         },

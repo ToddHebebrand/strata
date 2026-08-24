@@ -18,6 +18,7 @@ use super::audit::{
     AuditEvent, FollowUp, PendingRequest, RequestJournal, RequestLedgerEntry, ServiceAudit,
     action_body_hash, client_hash, request_identity,
 };
+use super::drain::{ActiveRequest, DrainController};
 use super::paths::project_module_path;
 use super::protocol::{
     CancelledState, ChangeSetState, DeclarationSummary, Diagnostic, FixtureSummary, InspectedNode,
@@ -147,6 +148,7 @@ pub(super) struct ServiceConfig {
     /// JSONL sink. `None` (the default, no `--metrics`) is byte-identical
     /// behavior with no sink and no worker metrics collection.
     pub metrics_path: Option<PathBuf>,
+    pub drain_grace: Duration,
     /// Publication-boundary crash failpoint (redb-spike-api only). When set to
     /// anything other than `None`, the advance path publishes via
     /// `execute_claimed_with_failpoint`; `None` is byte-for-byte the existing
@@ -163,6 +165,7 @@ pub(super) struct ServiceSession {
     change_set_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     delivered_events: Mutex<BTreeMap<String, u64>>,
     protocol: Mutex<LocalServiceProtocolContext>,
+    drain: Arc<DrainController>,
     /// Canonicalized once at `open`; consumed by `paths::project_module_path`
     /// in the `list_modules` read handler.
     canonical_corpus_root: PathBuf,
@@ -210,6 +213,31 @@ pub(super) struct SessionBinding {
     pub(super) role: SessionRole,
 }
 
+pub(super) struct HandledFrame {
+    response: LocalServiceResponse,
+    active: Option<ActiveRequest>,
+}
+
+impl HandledFrame {
+    fn guarded(response: LocalServiceResponse, active: ActiveRequest) -> Self {
+        Self {
+            response,
+            active: Some(active),
+        }
+    }
+
+    fn unguarded(response: LocalServiceResponse) -> Self {
+        Self {
+            response,
+            active: None,
+        }
+    }
+
+    pub(super) fn finish(self) -> (LocalServiceResponse, Option<ActiveRequest>) {
+        (self.response, self.active)
+    }
+}
+
 impl SessionBinding {
     /// Returns a refusal when the request contradicts what the connection is
     /// bound to, or `None` when it may proceed to journal binding.
@@ -243,6 +271,10 @@ impl SessionBinding {
 
 impl ServiceSession {
     pub fn open(config: ServiceConfig) -> Result<(Arc<Self>, u64)> {
+        let drain = Arc::new(
+            DrainController::new(config.drain_grace)
+                .context("create drain controller wake pipe")?,
+        );
         // Open the sink before any coordination work so a bad `--metrics` path
         // fails startup loudly rather than silently dropping records.
         let metrics = match config.metrics_path.as_deref() {
@@ -289,6 +321,7 @@ impl ServiceSession {
             change_set_locks: Mutex::new(BTreeMap::new()),
             delivered_events: Mutex::new(BTreeMap::new()),
             protocol: Mutex::new(LocalServiceProtocolContext::default()),
+            drain,
             canonical_corpus_root,
             validation: config.validation,
             failpoint: config.failpoint,
@@ -356,6 +389,10 @@ impl ServiceSession {
 
     pub fn recovered(&self) -> bool {
         self.recovered
+    }
+
+    pub(super) fn drain_controller(&self) -> Arc<DrainController> {
+        Arc::clone(&self.drain)
     }
 
     /// `"tscOnly"` or `"behavioral"` — the session's validation regime, as
@@ -441,7 +478,7 @@ impl ServiceSession {
         &self,
         bytes: &[u8],
         session: &SessionBinding,
-    ) -> LocalServiceResponse {
+    ) -> HandledFrame {
         let started = Instant::now();
         let parsed = self
             .protocol
@@ -457,14 +494,26 @@ impl ServiceSession {
                     if let Ok(mut context) = self.protocol.lock() {
                         context.forget_request(&request.request_id);
                     }
-                    return refusal;
+                    return HandledFrame::unguarded(refusal);
                 }
+                let Some(active) = self.drain.begin_request() else {
+                    if let Ok(mut context) = self.protocol.lock() {
+                        context.forget_request(&request.request_id);
+                    }
+                    return HandledFrame::unguarded(LocalServiceResponse::error(
+                        &request.request_id,
+                        "service_draining",
+                        "daemon is draining and is not accepting new requests",
+                        true,
+                        Vec::new(),
+                    ));
+                };
                 let binding = self
                     .journal
                     .lock()
                     .map_err(lock_error)
                     .and_then(|mut journal| journal.bind_request(&request));
-                match binding {
+                let response = match binding {
                     Ok(true) => {
                         if let Ok(mut context) = self.protocol.lock() {
                             context.forget_request(&request.request_id);
@@ -490,15 +539,16 @@ impl ServiceSession {
                         false,
                         Vec::new(),
                     ),
-                }
+                };
+                HandledFrame::guarded(response, active)
             }
-            Err(error) => LocalServiceResponse::error(
+            Err(error) => HandledFrame::unguarded(LocalServiceResponse::error(
                 request_id_from_untrusted_frame(bytes),
                 "invalid_request",
                 bounded_message(&error.to_string()),
                 false,
                 Vec::new(),
-            ),
+            )),
         }
     }
 
@@ -1967,7 +2017,28 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::base64_encode;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use super::{HandledFrame, LocalServiceResponse, base64_encode};
+    use crate::drain::DrainController;
+
+    #[test]
+    fn handled_frame_keeps_the_active_guard_until_the_writer_drops_it() {
+        let drain = Arc::new(DrainController::new(Duration::from_secs(30)).unwrap());
+        let active = drain.begin_request().unwrap();
+        assert!(drain.start_from_signal());
+        let handled = HandledFrame::guarded(
+            LocalServiceResponse::error("req-1", "test", "test", false, Vec::new()),
+            active,
+        );
+
+        let (_response, active) = handled.finish();
+        assert_eq!(drain.health().active_requests, 1);
+        drop(active);
+        assert_eq!(drain.health().active_requests, 0);
+        assert!(drain.ready_to_exit());
+    }
 
     #[test]
     fn base64_encode_matches_rfc4648_vectors() {
