@@ -135,6 +135,20 @@ const READY_RESULT = {
   validationManifestDigest: null
 } as const;
 
+function serviceDraining(requestId: string): Uint8Array {
+  return serializeResponseFrame({
+    protocolVersion: 2,
+    requestId,
+    ok: false,
+    error: {
+      code: "service_draining",
+      message: "daemon is draining",
+      retryable: true,
+      diagnostics: []
+    }
+  });
+}
+
 describe("unprivileged coordination Unix-socket client", () => {
   it("uses one Unix connection and one bound request/response frame", async () => {
     const service = await unixServer((socket, request) => {
@@ -155,6 +169,54 @@ describe("unprivileged coordination Unix-socket client", () => {
     });
     expect(service.requests[0]!.requestId).toMatch(/^[0-9a-f-]{36}$/);
     expect(service.requests[0]).not.toHaveProperty("idempotencyKey");
+  });
+
+  it("surfaces service_draining once and reconnects the lane for the next request", async () => {
+    const service = await unixServer((socket, request, connection) => {
+      socket.write(
+        connection === 1
+          ? serviceDraining(request.requestId)
+          : success(request.requestId, READY_RESULT)
+      );
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:draining"
+    });
+
+    await expect(client.hello(1_000)).rejects.toMatchObject({
+      code: "service_draining",
+      retryable: true
+    });
+    await expect(client.hello(1_000)).resolves.toEqual(READY_RESULT);
+
+    expect(service.requests).toHaveLength(2);
+    expect(service.connections()).toBe(2);
+    expect(service.handshakes.map((open) => open.connectionGeneration)).toEqual(["1", "2"]);
+    expect(service.requests[0]!.requestId).not.toBe(service.requests[1]!.requestId);
+  });
+
+  it("reconnects an unsent same-lane request queued behind service_draining", async () => {
+    const service = await unixServer((socket, request, connection) => {
+      socket.write(
+        connection === 1
+          ? serviceDraining(request.requestId)
+          : success(request.requestId, READY_RESULT)
+      );
+    });
+    const client = createCoordinationClient({
+      socketPath: service.socketPath,
+      clientId: "client:queued-drain"
+    });
+
+    const first = client.hello(1_000);
+    const queued = client.hello(1_000);
+    await expect(first).rejects.toMatchObject({ code: "service_draining" });
+    await expect(queued).resolves.toEqual(READY_RESULT);
+
+    expect(service.requests).toHaveLength(2);
+    expect(service.connections()).toBe(2);
+    expect(service.handshakes.map((open) => open.connectionGeneration)).toEqual(["1", "2"]);
   });
 
   it("retries a disconnected mutation once with the exact request ID and idempotency key", async () => {

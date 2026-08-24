@@ -214,6 +214,15 @@ class LaneConnection {
     socket?.destroy();
   }
 
+  /**
+   * Retires only the current transport. The lane remains usable, so a request
+   * already queued behind the failed exchange opens a higher-generation
+   * session instead of inheriting a daemon that has begun draining.
+   */
+  reset(failure: TransportFailure): void {
+    this.#drop(failure);
+  }
+
   async #exchange(frame: Uint8Array, expiresAt: number): Promise<Uint8Array> {
     if (this.#closed) {
       throw new TransportFailure("unsent", "client is closed");
@@ -460,6 +469,11 @@ export class CoordinationClient {
           );
         }
         if (!response.ok) {
+          if (response.error.code === "service_draining") {
+            lane.reset(
+              new TransportFailure("disconnect", "daemon is draining this session")
+            );
+          }
           // BACKOFF_CODES are the codes that mean "ask again with the SAME
           // identity" -- the answer is not ready yet, but it is coming. Every
           // other error, including a retryable OPERATIONAL failure, is
