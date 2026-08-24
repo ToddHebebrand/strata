@@ -262,6 +262,8 @@ pub(super) enum FirstFrame {
     },
     #[serde(rename_all = "camelCase")]
     Health { protocol_version: u8 },
+    #[serde(rename_all = "camelCase")]
+    Stop { protocol_version: u8 },
 }
 
 /// The health reply.
@@ -288,6 +290,52 @@ pub(super) enum HealthReply {
     },
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "type",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub(super) enum StopReply {
+    StopAccepted {
+        protocol_version: u8,
+        service_epoch: WireU64,
+        draining: bool,
+        active_requests: WireU64,
+    },
+    AlreadyDraining {
+        protocol_version: u8,
+        service_epoch: WireU64,
+        draining: bool,
+        active_requests: WireU64,
+    },
+}
+
+impl StopReply {
+    fn validate(&self) -> Result<()> {
+        let (protocol_version, draining) = match self {
+            Self::StopAccepted {
+                protocol_version,
+                draining,
+                ..
+            }
+            | Self::AlreadyDraining {
+                protocol_version,
+                draining,
+                ..
+            } => (*protocol_version, *draining),
+        };
+        if protocol_version != PROTOCOL_VERSION {
+            bail!("unsupported protocol version");
+        }
+        if !draining {
+            bail!("stop reply must report draining true");
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn serialize_health_reply(reply: &HealthReply) -> Result<Vec<u8>> {
     encode_frame(reply, MAX_HANDSHAKE_FRAME_BYTES)
 }
@@ -295,6 +343,22 @@ pub(super) fn serialize_health_reply(reply: &HealthReply) -> Result<Vec<u8>> {
 pub(super) fn parse_health_reply_frame(bytes: &[u8]) -> Result<HealthReply> {
     let payload = decode_frame(bytes, MAX_HANDSHAKE_FRAME_BYTES)?;
     serde_json::from_str(payload).context("invalid health reply JSON")
+}
+
+pub(super) fn serialize_first_frame(frame: &FirstFrame) -> Result<Vec<u8>> {
+    encode_frame(frame, MAX_HANDSHAKE_FRAME_BYTES)
+}
+
+pub(super) fn serialize_stop_reply(reply: &StopReply) -> Result<Vec<u8>> {
+    reply.validate()?;
+    encode_frame(reply, MAX_HANDSHAKE_FRAME_BYTES)
+}
+
+pub(super) fn parse_stop_reply_frame(bytes: &[u8]) -> Result<StopReply> {
+    let payload = decode_frame(bytes, MAX_HANDSHAKE_FRAME_BYTES)?;
+    let reply: StopReply = serde_json::from_str(payload).context("invalid stop reply JSON")?;
+    reply.validate()?;
+    Ok(reply)
 }
 
 /// Parses the first frame of a connection. Deliberately NOT a variant of
@@ -321,7 +385,7 @@ pub(super) fn parse_first_frame(bytes: &[u8]) -> Result<FirstFrame> {
                 bail!("connectionGeneration must be a positive canonical integer");
             }
         }
-        FirstFrame::Health { protocol_version } => {
+        FirstFrame::Health { protocol_version } | FirstFrame::Stop { protocol_version } => {
             if *protocol_version != PROTOCOL_VERSION {
                 bail!("unsupported protocol version");
             }
@@ -1652,6 +1716,46 @@ pub(super) fn validate_module_path(value: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn stop_first_frame_is_strict_and_versioned() {
+        let parsed = parse_first_frame(b"{\"protocolVersion\":2,\"type\":\"stop\"}\n").unwrap();
+        assert!(matches!(parsed, FirstFrame::Stop { protocol_version: 2 }));
+        assert!(parse_first_frame(b"{\"protocolVersion\":1,\"type\":\"stop\"}\n").is_err());
+        assert!(
+            parse_first_frame(
+                b"{\"extra\":true,\"protocolVersion\":2,\"type\":\"stop\"}\n"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn stop_replies_have_exact_strict_shapes() {
+        for reply in [
+            StopReply::StopAccepted {
+                protocol_version: PROTOCOL_VERSION,
+                service_epoch: WireU64::new(7),
+                draining: true,
+                active_requests: WireU64::new(3),
+            },
+            StopReply::AlreadyDraining {
+                protocol_version: PROTOCOL_VERSION,
+                service_epoch: WireU64::new(7),
+                draining: true,
+                active_requests: WireU64::new(3),
+            },
+        ] {
+            let frame = serialize_stop_reply(&reply).unwrap();
+            assert_eq!(parse_stop_reply_frame(&frame).unwrap(), reply);
+        }
+        assert!(
+            parse_stop_reply_frame(
+                b"{\"activeRequests\":\"0\",\"draining\":true,\"extra\":0,\"protocolVersion\":2,\"serviceEpoch\":\"7\",\"type\":\"stop_accepted\"}\n"
+            )
+            .is_err()
+        );
+    }
+
     /// A legitimately committed change set may carry up to the session's
     /// `MAX_INTENTS` (256) intents; the `read_operation` response validator
     /// must accept exactly that many and reject one more. This pins the
@@ -1923,4 +2027,3 @@ mod tests {
         serialize_response_frame(&response).expect("maximal modules page must fit the frame");
     }
 }
-

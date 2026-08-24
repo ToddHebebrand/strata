@@ -11,9 +11,9 @@ use sha2::{Digest, Sha256};
 
 use super::protocol::{
     LocalServiceResponse, MAX_HANDSHAKE_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, PROTOCOL_VERSION,
-    FirstFrame, HealthReply, OpenSession, OpenSessionTag, SessionReply, SessionRole, WireU64,
+    FirstFrame, HealthReply, OpenSession, OpenSessionTag, SessionReply, SessionRole, StopReply, WireU64,
     parse_first_frame, serialize_health_reply, serialize_response_frame,
-    serialize_session_reply,
+    serialize_session_reply, serialize_stop_reply,
 };
 use super::lifecycle::{self, CanonicalStateDir, EndpointClaim, OwnerLock, SocketRoot};
 use super::ownership::{Binding, OwnershipRegistry};
@@ -641,6 +641,7 @@ fn handle_connection(
                 // only for the probe. Critically, this never touches the
                 // journalled request path, so polling health generates no
                 // durable writes.
+                let drain_health = session.drain_controller().health();
                 let reply = HealthReply::HealthOk {
                     protocol_version: PROTOCOL_VERSION,
                     service_epoch: WireU64::new(service_epoch),
@@ -651,8 +652,8 @@ fn handle_connection(
                         .map(str::to_owned),
                     // Constants in D-3a with their FINAL semantics; D-3b makes
                     // them vary without changing the shape.
-                    draining: false,
-                    active_requests: WireU64::new(0),
+                    draining: drain_health.draining,
+                    active_requests: WireU64::new(drain_health.active_requests as u64),
                 };
                 if let Ok(frame) = serialize_health_reply(&reply) {
                     let _ = stream.write_all(&frame);
@@ -660,17 +661,56 @@ fn handle_connection(
                 }
                 return Ok(());
             }
+            Ok(FirstFrame::Stop { .. }) => {
+                let drain = session.drain_controller();
+                let (accepted, acknowledgement) = match drain.begin_stop() {
+                    Ok(acknowledgement) => (true, acknowledgement),
+                    Err(already) => (false, already.into_acknowledgement()),
+                };
+                let health = drain.health();
+                let reply = if accepted {
+                    StopReply::StopAccepted {
+                        protocol_version: PROTOCOL_VERSION,
+                        service_epoch: WireU64::new(service_epoch),
+                        draining: true,
+                        active_requests: WireU64::new(health.active_requests as u64),
+                    }
+                } else {
+                    StopReply::AlreadyDraining {
+                        protocol_version: PROTOCOL_VERSION,
+                        service_epoch: WireU64::new(service_epoch),
+                        draining: true,
+                        active_requests: WireU64::new(health.active_requests as u64),
+                    }
+                };
+                if let Ok(frame) = serialize_stop_reply(&reply) {
+                    let _ = stream.write_all(&frame);
+                    let _ = stream.flush();
+                }
+                drop(acknowledgement);
+                return Ok(());
+            }
             Ok(FirstFrame::OpenSession { .. }) if control => {
                 // Admitted into the CONTROL reserve, but asking for a session.
                 // Refuse rather than promote -- promoting would let a session
                 // launder its way past a full cap through the very slots that
                 // exist to keep shutdown and monitoring reachable.
-                return refuse_handshake(
-                    &mut stream,
-                    "server_busy",
-                    "daemon is at its session admission cap; retry with backoff",
-                    true,
-                );
+                let draining = session.drain_controller().health().draining;
+                return if draining {
+                    refuse_handshake(
+                        &mut stream,
+                        "service_draining",
+                        "daemon is draining and is not accepting new sessions",
+                        true,
+                    )
+                } else {
+                    refuse_handshake(
+                        &mut stream,
+                        "server_busy",
+                        "daemon is at its session admission cap; retry with backoff",
+                        true,
+                    )
+                };
             }
             Ok(FirstFrame::OpenSession {
                 protocol_version: _,
@@ -708,6 +748,15 @@ fn handle_connection(
             );
         }
     };
+
+    if session.drain_controller().health().draining {
+        return refuse_handshake(
+            &mut stream,
+            "service_draining",
+            "daemon is draining and is not accepting new sessions",
+            true,
+        );
+    }
 
     // Ownership is decided BEFORE the acceptance is written, so a refused
     // handshake never sees a `session_opened` it then has to walk back.

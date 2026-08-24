@@ -10,6 +10,8 @@ mod server;
 mod session;
 
 use std::ffi::OsString;
+use std::io::{Read, Write};
+use std::os::unix::fs::FileTypeExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -49,6 +51,7 @@ fn run() -> Result<()> {
         // `serve`, and renaming would break them all for no benefit.
         Some("serve") | Some("start") => serve(&remaining),
         Some("health") => health(&remaining),
+        Some("stop") => stop(&remaining),
         Some("validate-socket") => validate_socket(&remaining),
         Some("export-snapshot") => export_snapshot(&remaining),
         _ => bail!("unknown command; run with --help"),
@@ -94,6 +97,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
         // never operate on the shared directory — it holds live daemons'
         // sockets, and a test that removed or replaced it could destroy them.
         "--socket-root",
+        "--drain-grace-ms",
     ];
     #[cfg(feature = "coordination-test-api")]
     allowed.push("--test-failpoint");
@@ -112,6 +116,11 @@ fn serve(arguments: &[OsString]) -> Result<()> {
         None => lifecycle::SocketRoot::production()?,
     };
     let metrics_path = optional_path(&values, "--metrics");
+    let drain_grace_ms =
+        optional_canonical_u64(&values, "--drain-grace-ms", drain::DEFAULT_DRAIN_GRACE_MS)?;
+    if !(1..=300_000).contains(&drain_grace_ms) {
+        bail!("--drain-grace-ms must be in 1..=300000");
+    }
     // Resolved BEFORE corpus_root moves into NodeBridgeConfig::tsc_only
     // below. Produces both the ValidationSettings the session publishes as
     // its identity AND (further down) the bridge profile the worker actually
@@ -214,7 +223,7 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             validation,
             failpoint,
             metrics_path,
-            drain_grace: drain::DEFAULT_DRAIN_GRACE,
+            drain_grace: Duration::from_millis(drain_grace_ms),
             #[cfg(feature = "redb-spike-api")]
             publish_failpoint,
         },
@@ -273,6 +282,117 @@ fn health(arguments: &[OsString]) -> Result<()> {
         lifecycle::HealthOutcome::TimedOut => eprintln!("health probe timed out"),
     }
     std::process::exit(outcome.exit_code());
+}
+
+fn stop(arguments: &[OsString]) -> Result<()> {
+    const PROBE_DEADLINE: Duration = Duration::from_secs(5);
+
+    let values = parse_named(arguments)?;
+    reject_unknown(&values, &["--socket", "--token", "--socket-root", "--wait-ms"])?;
+    let wait_ms = optional_canonical_u64(&values, "--wait-ms", 0)?;
+    if wait_ms > 300_000 {
+        bail!("--wait-ms must be in 0..=300000");
+    }
+    let has_socket = values.contains_key("--socket");
+    let has_token = values.contains_key("--token");
+    if has_socket == has_token {
+        bail!("stop needs exactly one of --socket <path> or --token <token>");
+    }
+    let socket = if has_socket {
+        required_path(&values, "--socket")?
+    } else {
+        let token = required_text(&values, "--token")?;
+        let root = match optional_path(&values, "--socket-root") {
+            Some(path) => lifecycle::SocketRoot::open(&path)?,
+            None => lifecycle::SocketRoot::production()?,
+        };
+        match lifecycle::resolve_socket_for_token(&root, &server::token_hash(&token)) {
+            Some(path) => path,
+            None => {
+                eprintln!("no endpoint is recorded for that token");
+                std::process::exit(3);
+            }
+        }
+    };
+
+    match std::fs::symlink_metadata(&socket) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("endpoint absent");
+            std::process::exit(3);
+        }
+        Err(error) => {
+            eprintln!("endpoint unreachable: {error}");
+            std::process::exit(4);
+        }
+        Ok(metadata) if !metadata.file_type().is_socket() => {
+            eprintln!("endpoint unreachable: path is not a socket");
+            std::process::exit(4);
+        }
+        Ok(_) => {}
+    }
+
+    let mut stream = match lifecycle::connect_deadlined(&socket, PROBE_DEADLINE) {
+        Ok(stream) => stream,
+        Err(error) => {
+            let message = format!("{error:#}");
+            eprintln!("endpoint unreachable: {message}");
+            std::process::exit(if message.contains("timed out") { 6 } else { 4 });
+        }
+    };
+    let request = protocol::serialize_first_frame(&protocol::FirstFrame::Stop {
+        protocol_version: protocol::PROTOCOL_VERSION,
+    })?;
+    if let Err(error) = stream.write_all(&request) {
+        eprintln!("stop request failed: {error}");
+        std::process::exit(4);
+    }
+    let mut response = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => {
+                eprintln!("endpoint closed without a stop reply");
+                std::process::exit(4);
+            }
+            Ok(_) => {
+                response.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+                if response.len() > protocol::MAX_HANDSHAKE_FRAME_BYTES {
+                    eprintln!("stop reply exceeded its bound");
+                    std::process::exit(4);
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                eprintln!("stop request timed out");
+                std::process::exit(6);
+            }
+            Err(error) => {
+                eprintln!("stop request failed: {error}");
+                std::process::exit(4);
+            }
+        }
+    }
+    match protocol::parse_stop_reply_frame(&response) {
+        Ok(protocol::StopReply::StopAccepted { .. }) => {
+            println!("stop accepted");
+            std::process::exit(0);
+        }
+        Ok(protocol::StopReply::AlreadyDraining { .. }) => {
+            println!("already draining");
+            std::process::exit(5);
+        }
+        Err(error) => {
+            eprintln!("invalid stop reply: {error:#}");
+            std::process::exit(4);
+        }
+    }
 }
 
 fn validate_socket(arguments: &[OsString]) -> Result<()> {
@@ -379,12 +499,30 @@ fn required_text(
         .map_err(|_| anyhow::anyhow!("{name} must be valid UTF-8"))
 }
 
+fn optional_canonical_u64(
+    values: &std::collections::BTreeMap<String, OsString>,
+    name: &str,
+    default: u64,
+) -> Result<u64> {
+    let Some(raw) = values.get(name) else {
+        return Ok(default);
+    };
+    let text = raw.to_str().with_context(|| format!("{name} must be valid UTF-8"))?;
+    let value = text
+        .parse::<u64>()
+        .with_context(|| format!("{name} must be a canonical unsigned integer"))?;
+    if value.to_string() != text {
+        bail!("{name} must be a canonical unsigned integer");
+    }
+    Ok(value)
+}
+
 fn print_help() {
     // The test-authority flags (`--test-failpoint`, `--test-publish-failpoint`)
     // are intentionally sealed OUT of --help under every feature build — see
     // `local_service_sealing::default_build_service_has_no_test_authority_surface`.
     // They are parsed in `serve` but never advertised.
     println!(
-        "strata-kernel-service\n\nCommands:\n  serve --db PATH --snapshot PATH --bridge-worker PATH --source-root PATH --corpus-root PATH --socket-token TOKEN --audit PATH [--metrics PATH] [--persistent-bridge] [--validation-manifest PATH]\n  validate-socket --socket PATH\n  export-snapshot --db PATH --out PATH [--state-out PATH]"
+        "strata-kernel-service\n\nCommands:\n  serve --db PATH --snapshot PATH --bridge-worker PATH --source-root PATH --corpus-root PATH --socket-token TOKEN --audit PATH [--metrics PATH] [--persistent-bridge] [--validation-manifest PATH] [--drain-grace-ms 1..=300000]\n  health (--socket PATH | --token TOKEN [--socket-root ROOT])\n  stop (--socket PATH | --token TOKEN [--socket-root ROOT]) [--wait-ms 0..=300000]\n  validate-socket --socket PATH\n  export-snapshot --db PATH --out PATH [--state-out PATH]"
     );
 }

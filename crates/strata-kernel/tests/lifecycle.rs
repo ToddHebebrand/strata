@@ -202,6 +202,34 @@ fn health_probe(socket: &Path) -> Value {
     serde_json::from_slice(&reply[..reply.len() - 1]).unwrap()
 }
 
+fn open_observation_session(socket: &Path, actor: &str) -> UnixStream {
+    let mut stream = UnixStream::connect(socket).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let mut frame = serde_json::to_vec(&json!({
+        "protocolVersion": 2,
+        "type": "open_session",
+        "actor": actor,
+        "role": "observation",
+        "clientInstance": "lifecycle-test",
+        "connectionGeneration": "1",
+    }))
+    .unwrap();
+    frame.push(b'\n');
+    stream.write_all(&frame).unwrap();
+    let reply = read_frame(&mut stream).expect("no open_session reply");
+    let reply: Value = serde_json::from_slice(&reply[..reply.len() - 1]).unwrap();
+    assert_eq!(reply["type"], "session_opened", "{reply}");
+    stream
+}
+
+fn exchange(stream: &mut UnixStream, value: &Value) -> Value {
+    let mut frame = serde_json::to_vec(value).unwrap();
+    frame.push(b'\n');
+    stream.write_all(&frame).unwrap();
+    let reply = read_frame(stream).expect("no request reply");
+    serde_json::from_slice(&reply[..reply.len() - 1]).unwrap()
+}
+
 fn audit_len(state: &TempDir) -> u64 {
     std::fs::metadata(state.path().join("audit.jsonl"))
         .map(|meta| meta.len())
@@ -685,6 +713,123 @@ fn health_times_out_rather_than_hanging_on_a_stalled_listener() {
         "the probe took {:?}, which is not bounded",
         started.elapsed()
     );
+}
+
+#[test]
+fn stop_acknowledgement_is_in_band_and_repeated_stop_is_distinct() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let service = start_daemon(&state, "d3b-stop", &root);
+    let audit_before = audit_len(&state);
+    let journal_before = journal_len(&state);
+
+    let first = run_cli(&[
+        "stop",
+        "--socket",
+        service.socket_path.to_str().unwrap(),
+        "--wait-ms",
+        "0",
+    ]);
+    assert_eq!(first.status.code(), Some(0), "{}", String::from_utf8_lossy(&first.stderr));
+    assert_eq!(String::from_utf8_lossy(&first.stdout).trim(), "stop accepted");
+    assert_eq!(health_probe(&service.socket_path)["draining"], true);
+    assert_eq!(
+        run_cli(&["health", "--socket", service.socket_path.to_str().unwrap()])
+            .status
+            .code(),
+        Some(5)
+    );
+
+    let repeated = run_cli(&[
+        "stop",
+        "--socket",
+        service.socket_path.to_str().unwrap(),
+        "--wait-ms",
+        "0",
+    ]);
+    assert_eq!(repeated.status.code(), Some(5));
+    assert_eq!(String::from_utf8_lossy(&repeated.stdout).trim(), "already draining");
+    assert_eq!(audit_len(&state), audit_before);
+    assert_eq!(journal_len(&state), journal_before);
+}
+
+#[test]
+fn stop_cli_reports_absent_and_non_socket_endpoints() {
+    let dir = TestRoot::new();
+    let absent = dir.path().join("absent.sock");
+    assert_eq!(
+        run_cli(&["stop", "--socket", absent.to_str().unwrap(), "--wait-ms", "0"])
+            .status
+            .code(),
+        Some(3)
+    );
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let squat = dir.path().join("not-a-socket");
+    std::fs::write(&squat, b"regular file").unwrap();
+    assert_eq!(
+        run_cli(&["stop", "--socket", squat.to_str().unwrap(), "--wait-ms", "0"])
+            .status
+            .code(),
+        Some(4)
+    );
+}
+
+#[test]
+fn draining_request_is_forgotten_and_leaves_no_durable_trace() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let mut service = start_daemon(&state, "d3b-forget", &root);
+    let mut lane = open_observation_session(&service.socket_path, "client:drain");
+    assert_eq!(
+        run_cli(&[
+            "stop",
+            "--socket",
+            service.socket_path.to_str().unwrap(),
+            "--wait-ms",
+            "0",
+        ])
+        .status
+        .code(),
+        Some(0)
+    );
+    let audit_before = audit_len(&state);
+    let journal_before = journal_len(&state);
+    let mut new_lane = UnixStream::connect(&service.socket_path).unwrap();
+    let mut open = serde_json::to_vec(&json!({
+        "protocolVersion": 2,
+        "type": "open_session",
+        "actor": "client:new",
+        "role": "observation",
+        "clientInstance": "lifecycle-test-new",
+        "connectionGeneration": "1",
+    }))
+    .unwrap();
+    open.push(b'\n');
+    new_lane.write_all(&open).unwrap();
+    let rejection = read_frame(&mut new_lane).expect("no draining session rejection");
+    let rejection: Value = serde_json::from_slice(&rejection[..rejection.len() - 1]).unwrap();
+    assert_eq!(rejection["error"]["code"], "service_draining", "{rejection}");
+    assert_eq!(rejection["error"]["retryable"], true, "{rejection}");
+    let request = json!({
+        "protocolVersion": 2,
+        "requestId": "request:drain-retry",
+        "clientId": "client:drain",
+        "deadlineMs": "120000",
+        "action": {"type":"hello"},
+    });
+    let refused = exchange(&mut lane, &request);
+    assert_eq!(refused["error"]["code"], "service_draining", "{refused}");
+    assert_eq!(refused["error"]["retryable"], true, "{refused}");
+    assert_eq!(audit_len(&state), audit_before);
+    assert_eq!(journal_len(&state), journal_before);
+
+    kill_hard(&mut service);
+    let restarted = start_daemon(&state, "d3b-forget", &root);
+    let mut restarted_lane = open_observation_session(&restarted.socket_path, "client:drain");
+    let accepted = exchange(&mut restarted_lane, &request);
+    assert_eq!(accepted["ok"], true, "{accepted}");
 }
 
 /// `start` is an alias for `serve`, and BOTH dispatch routes accept help.

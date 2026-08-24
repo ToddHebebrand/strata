@@ -682,7 +682,10 @@ impl HealthOutcome {
 /// does not bound it — so the socket is created non-blocking and `poll`ed for
 /// writability. That distinction matters for a peer that accepts and then
 /// stalls, which is precisely the case a post-connect timeout would miss.
-fn connect_deadlined(path: &Path, deadline: Duration) -> Result<std::os::unix::net::UnixStream> {
+pub(super) fn connect_deadlined(
+    path: &Path,
+    deadline: Duration,
+) -> Result<std::os::unix::net::UnixStream> {
     use std::os::fd::FromRawFd;
 
     let raw = std::ffi::CString::new(path.as_os_str().as_bytes())
