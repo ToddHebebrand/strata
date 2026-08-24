@@ -149,6 +149,12 @@ pub(super) struct ServiceConfig {
     /// behavior with no sink and no worker metrics collection.
     pub metrics_path: Option<PathBuf>,
     pub drain_grace: Duration,
+    #[cfg(feature = "coordination-test-api")]
+    pub response_write_barrier: Option<PathBuf>,
+    #[cfg(feature = "coordination-test-api")]
+    pub stop_write_barrier: Option<PathBuf>,
+    #[cfg(feature = "coordination-test-api")]
+    pub block_after_pending: Option<Duration>,
     /// Publication-boundary crash failpoint (redb-spike-api only). When set to
     /// anything other than `None`, the advance path publishes via
     /// `execute_claimed_with_failpoint`; `None` is byte-for-byte the existing
@@ -166,6 +172,12 @@ pub(super) struct ServiceSession {
     delivered_events: Mutex<BTreeMap<String, u64>>,
     protocol: Mutex<LocalServiceProtocolContext>,
     drain: Arc<DrainController>,
+    #[cfg(feature = "coordination-test-api")]
+    response_write_barrier: Option<PathBuf>,
+    #[cfg(feature = "coordination-test-api")]
+    stop_write_barrier: Option<PathBuf>,
+    #[cfg(feature = "coordination-test-api")]
+    block_after_pending: Option<Duration>,
     /// Canonicalized once at `open`; consumed by `paths::project_module_path`
     /// in the `list_modules` read handler.
     canonical_corpus_root: PathBuf,
@@ -322,6 +334,12 @@ impl ServiceSession {
             delivered_events: Mutex::new(BTreeMap::new()),
             protocol: Mutex::new(LocalServiceProtocolContext::default()),
             drain,
+            #[cfg(feature = "coordination-test-api")]
+            response_write_barrier: config.response_write_barrier,
+            #[cfg(feature = "coordination-test-api")]
+            stop_write_barrier: config.stop_write_barrier,
+            #[cfg(feature = "coordination-test-api")]
+            block_after_pending: config.block_after_pending,
             canonical_corpus_root,
             validation: config.validation,
             failpoint: config.failpoint,
@@ -393,6 +411,32 @@ impl ServiceSession {
 
     pub(super) fn drain_controller(&self) -> Arc<DrainController> {
         Arc::clone(&self.drain)
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub(super) fn before_response_write(&self) -> Result<()> {
+        let Some(directory) = self.response_write_barrier.as_deref() else {
+            return Ok(());
+        };
+        wait_test_write_barrier(directory, "response")
+    }
+
+    #[cfg(not(feature = "coordination-test-api"))]
+    pub(super) fn before_response_write(&self) -> Result<()> {
+        Ok(())
+    }
+
+    #[cfg(feature = "coordination-test-api")]
+    pub(super) fn before_stop_response_write(&self) -> Result<()> {
+        let Some(directory) = self.stop_write_barrier.as_deref() else {
+            return Ok(());
+        };
+        wait_test_write_barrier(directory, "stop")
+    }
+
+    #[cfg(not(feature = "coordination-test-api"))]
+    pub(super) fn before_stop_response_write(&self) -> Result<()> {
+        Ok(())
     }
 
     /// `"tscOnly"` or `"behavioral"` — the session's validation regime, as
@@ -798,6 +842,10 @@ impl ServiceSession {
             .lock()
             .map_err(lock_error)?
             .append_pending(pending.clone())?;
+        #[cfg(feature = "coordination-test-api")]
+        if let Some(duration) = self.block_after_pending {
+            std::thread::sleep(duration);
+        }
         self.trip_failpoint(ServiceFailpoint::AfterPending);
         let effect = self
             .execute_pending(&pending, &request.request_id)
@@ -2013,6 +2061,20 @@ fn base64_encode(bytes: &[u8]) -> String {
         });
     }
     encoded
+}
+
+#[cfg(feature = "coordination-test-api")]
+fn wait_test_write_barrier(directory: &Path, label: &str) -> Result<()> {
+    std::fs::create_dir_all(directory)?;
+    std::fs::write(directory.join("entered"), b"entered\n")?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !directory.join("release").exists() {
+        if Instant::now() >= deadline {
+            bail!("test {label}-write barrier timed out");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

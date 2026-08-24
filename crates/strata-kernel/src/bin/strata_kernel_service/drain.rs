@@ -1,10 +1,16 @@
 use std::fmt;
 use std::io;
 use std::os::fd::RawFd;
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 pub(super) const DEFAULT_DRAIN_GRACE_MS: u64 = 30_000;
+
+static SIGNAL_REGISTRATION: Mutex<()> = Mutex::new(());
+static SIGNAL_WAKE_FD: AtomicI32 = AtomicI32::new(-1);
+static SIGNAL_PENDING: AtomicBool = AtomicBool::new(false);
+static SIGNAL_HANDLER_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct DrainHealth {
@@ -62,7 +68,7 @@ impl DrainController {
             inner.deadline = Some(now + self.grace);
         }
         inner.pending_stop_acks += 1;
-        let deadline = inner.deadline.expect("draining always has a deadline");
+        debug_assert!(inner.deadline.is_some());
         drop(inner);
         if first {
             self.wake.notify();
@@ -74,7 +80,6 @@ impl DrainController {
             Ok(acknowledgement)
         } else {
             Err(AlreadyDraining {
-                deadline,
                 acknowledgement,
             })
         }
@@ -119,6 +124,10 @@ impl DrainController {
         self.wake.read_fd
     }
 
+    pub(super) fn wake_write_fd(&self) -> RawFd {
+        self.wake.write_fd
+    }
+
     pub(super) fn drain_notifications(&self) -> io::Result<()> {
         self.wake.drain()
     }
@@ -156,6 +165,119 @@ impl DrainController {
     }
 }
 
+pub(super) struct SignalRegistration {
+    _ownership: MutexGuard<'static, ()>,
+    previous_sigterm: libc::sigaction,
+    previous_sigint: libc::sigaction,
+}
+
+impl SignalRegistration {
+    pub(super) fn install(wake_fd: RawFd) -> io::Result<Self> {
+        let ownership = SIGNAL_REGISTRATION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_mask = block_shutdown_signals()?;
+        let result = install_signal_actions(wake_fd);
+        restore_signal_mask(&previous_mask);
+        let (previous_sigterm, previous_sigint) = result?;
+        Ok(Self {
+            _ownership: ownership,
+            previous_sigterm,
+            previous_sigint,
+        })
+    }
+
+    pub(super) fn take_pending(&self) -> bool {
+        SIGNAL_PENDING.swap(false, Ordering::AcqRel)
+    }
+}
+
+impl Drop for SignalRegistration {
+    fn drop(&mut self) {
+        let previous_mask = block_shutdown_signals().ok();
+        // SAFETY: both values were returned by successful sigaction calls for
+        // these signals, and registration ownership is process-global.
+        unsafe {
+            libc::sigaction(libc::SIGTERM, &self.previous_sigterm, std::ptr::null_mut());
+            libc::sigaction(libc::SIGINT, &self.previous_sigint, std::ptr::null_mut());
+        }
+        SIGNAL_WAKE_FD.store(-1, Ordering::Release);
+        SIGNAL_PENDING.store(false, Ordering::Release);
+        while SIGNAL_HANDLER_ACTIVE.load(Ordering::Acquire) != 0 {
+            std::hint::spin_loop();
+        }
+        if let Some(previous_mask) = previous_mask {
+            restore_signal_mask(&previous_mask);
+        }
+    }
+}
+
+extern "C" fn shutdown_signal_handler(_signal: libc::c_int) {
+    SIGNAL_HANDLER_ACTIVE.fetch_add(1, Ordering::AcqRel);
+    SIGNAL_PENDING.store(true, Ordering::Release);
+    let fd = SIGNAL_WAKE_FD.load(Ordering::Acquire);
+    if fd >= 0 {
+        notify_fd(fd);
+    }
+    SIGNAL_HANDLER_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+}
+
+fn install_signal_actions(wake_fd: RawFd) -> io::Result<(libc::sigaction, libc::sigaction)> {
+    // SAFETY: zero is a valid starting representation for sigaction before all
+    // fields used by the kernel are initialized below.
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    action.sa_sigaction = shutdown_signal_handler as usize;
+    action.sa_flags = 0;
+    // SAFETY: sa_mask is initialized storage owned by action.
+    if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: zeroed sigaction values are output storage for sigaction.
+    let mut previous_sigterm: libc::sigaction = unsafe { std::mem::zeroed() };
+    let mut previous_sigint: libc::sigaction = unsafe { std::mem::zeroed() };
+    SIGNAL_WAKE_FD.store(wake_fd, Ordering::Release);
+    SIGNAL_PENDING.store(false, Ordering::Release);
+    // SAFETY: action is fully initialized and previous_sigterm is writable.
+    if unsafe { libc::sigaction(libc::SIGTERM, &action, &mut previous_sigterm) } != 0 {
+        SIGNAL_WAKE_FD.store(-1, Ordering::Release);
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: action is fully initialized and previous_sigint is writable.
+    if unsafe { libc::sigaction(libc::SIGINT, &action, &mut previous_sigint) } != 0 {
+        // SAFETY: previous_sigterm was populated by the successful call above.
+        unsafe {
+            libc::sigaction(libc::SIGTERM, &previous_sigterm, std::ptr::null_mut());
+        }
+        SIGNAL_WAKE_FD.store(-1, Ordering::Release);
+        return Err(io::Error::last_os_error());
+    }
+    Ok((previous_sigterm, previous_sigint))
+}
+
+fn block_shutdown_signals() -> io::Result<libc::sigset_t> {
+    // SAFETY: both values are immediately initialized through libc below.
+    let mut set: libc::sigset_t = unsafe { std::mem::zeroed() };
+    let mut previous: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: set is writable and then remains initialized for each call.
+    let result = unsafe {
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, &mut previous)
+    };
+    if result != 0 {
+        return Err(io::Error::from_raw_os_error(result));
+    }
+    Ok(previous)
+}
+
+fn restore_signal_mask(previous: &libc::sigset_t) {
+    // SAFETY: previous came from pthread_sigmask and remains valid for this call.
+    unsafe {
+        libc::pthread_sigmask(libc::SIG_SETMASK, previous, std::ptr::null_mut());
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ActiveRequest {
     controller: Arc<DrainController>,
@@ -179,15 +301,10 @@ impl Drop for StopAcknowledgement {
 }
 
 pub(super) struct AlreadyDraining {
-    deadline: Instant,
     acknowledgement: StopAcknowledgement,
 }
 
 impl AlreadyDraining {
-    pub(super) fn deadline(&self) -> Instant {
-        self.deadline
-    }
-
     pub(super) fn into_acknowledgement(self) -> StopAcknowledgement {
         self.acknowledgement
     }
@@ -197,7 +314,6 @@ impl fmt::Debug for AlreadyDraining {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("AlreadyDraining")
-            .field("deadline", &self.deadline)
             .finish_non_exhaustive()
     }
 }
@@ -354,7 +470,7 @@ mod tests {
         let deadline = drain.deadline().unwrap();
         let repeated = drain.begin_stop().unwrap_err();
 
-        assert_eq!(repeated.deadline(), deadline);
+        assert_eq!(drain.deadline(), Some(deadline));
         assert!(!drain.ready_to_exit());
         drop(first);
         assert!(
@@ -405,6 +521,49 @@ mod tests {
         super::set_errno(libc::ENOENT);
         drain.wake.notify();
         assert_eq!(super::errno(), libc::ENOENT);
+    }
+
+    #[test]
+    fn signal_registration_restores_handlers_before_the_wake_fd_can_be_reused() {
+        // SAFETY: these are output slots for sigaction queries.
+        let mut before_term: libc::sigaction = unsafe { std::mem::zeroed() };
+        let mut before_int: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: null action queries the current process-wide disposition.
+        unsafe {
+            libc::sigaction(libc::SIGTERM, std::ptr::null(), &mut before_term);
+            libc::sigaction(libc::SIGINT, std::ptr::null(), &mut before_int);
+        }
+        let drain = DrainController::new(Duration::from_secs(30)).unwrap();
+        let registration = super::SignalRegistration::install(drain.wake_write_fd()).unwrap();
+        assert_eq!(
+            super::SIGNAL_WAKE_FD.load(std::sync::atomic::Ordering::Acquire),
+            drain.wake_write_fd()
+        );
+        drop(registration);
+        assert_eq!(
+            super::SIGNAL_WAKE_FD.load(std::sync::atomic::Ordering::Acquire),
+            -1
+        );
+        // SAFETY: these are output slots for sigaction queries.
+        let mut after_term: libc::sigaction = unsafe { std::mem::zeroed() };
+        let mut after_int: libc::sigaction = unsafe { std::mem::zeroed() };
+        // SAFETY: null action queries the restored dispositions.
+        unsafe {
+            libc::sigaction(libc::SIGTERM, std::ptr::null(), &mut after_term);
+            libc::sigaction(libc::SIGINT, std::ptr::null(), &mut after_int);
+        }
+        assert_eq!(after_term.sa_sigaction, before_term.sa_sigaction);
+        assert_eq!(after_int.sa_sigaction, before_int.sa_sigaction);
+        let old_write_fd = drain.wake_write_fd();
+        drop(drain);
+        let replacement = super::WakePipe::new().unwrap();
+        if replacement.read_fd == old_write_fd || replacement.write_fd == old_write_fd {
+            assert_eq!(
+                super::SIGNAL_WAKE_FD.load(std::sync::atomic::Ordering::Acquire),
+                -1,
+                "a reused descriptor must not remain published"
+            );
+        }
     }
 
     fn fd_is_readable(fd: std::os::fd::RawFd) -> bool {

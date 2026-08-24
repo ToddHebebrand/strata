@@ -136,7 +136,11 @@ fn start_daemon(state: &TempDir, token: &str, root: &Path) -> Daemon {
 }
 
 fn try_start_daemon(state: &TempDir, token: &str, root: &Path) -> Result<Daemon, Refusal> {
-    let mut child = daemon_command(state.path(), token, root).spawn().unwrap();
+    spawn_daemon(daemon_command(state.path(), token, root))
+}
+
+fn spawn_daemon(mut command: Command) -> Result<Daemon, Refusal> {
+    let mut child = command.spawn().unwrap();
     let pid = child.id();
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
@@ -202,14 +206,25 @@ fn health_probe(socket: &Path) -> Value {
     serde_json::from_slice(&reply[..reply.len() - 1]).unwrap()
 }
 
+#[cfg(feature = "coordination-test-api")]
 fn open_observation_session(socket: &Path, actor: &str) -> UnixStream {
+    open_session(socket, actor, "observation")
+}
+
+#[cfg(feature = "coordination-test-api")]
+fn open_work_session(socket: &Path, actor: &str) -> UnixStream {
+    open_session(socket, actor, "work")
+}
+
+#[cfg(feature = "coordination-test-api")]
+fn open_session(socket: &Path, actor: &str, role: &str) -> UnixStream {
     let mut stream = UnixStream::connect(socket).unwrap();
     stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     let mut frame = serde_json::to_vec(&json!({
         "protocolVersion": 2,
         "type": "open_session",
         "actor": actor,
-        "role": "observation",
+        "role": role,
         "clientInstance": "lifecycle-test",
         "connectionGeneration": "1",
     }))
@@ -222,6 +237,7 @@ fn open_observation_session(socket: &Path, actor: &str) -> UnixStream {
     stream
 }
 
+#[cfg(feature = "coordination-test-api")]
 fn exchange(stream: &mut UnixStream, value: &Value) -> Value {
     let mut frame = serde_json::to_vec(value).unwrap();
     frame.push(b'\n');
@@ -523,11 +539,11 @@ fn saturate_admission(socket: &Path) -> Vec<UnixStream> {
 /// Health must stay reachable when sessions saturate admission, or monitoring
 /// goes blind exactly when it is most needed.
 #[test]
-fn health_stays_reachable_when_sessions_saturate_admission() {
+fn health_and_stop_stay_reachable_when_sessions_saturate_admission() {
     let dir = TestRoot::new();
     let root = dir.path().to_owned();
     let state = TempDir::new().unwrap();
-    let service = start_daemon(&state, "d3a-reserve", &root);
+    let mut service = start_daemon(&state, "d3a-reserve", &root);
 
     let _saturating = saturate_admission(&service.socket_path);
     assert_eq!(
@@ -535,6 +551,20 @@ fn health_stays_reachable_when_sessions_saturate_admission() {
         "health_ok",
         "health went blind exactly when it was needed"
     );
+    assert_eq!(
+        run_cli(&[
+            "stop",
+            "--socket",
+            service.socket_path.to_str().unwrap(),
+            "--wait-ms",
+            "30000",
+        ])
+        .status
+        .code(),
+        Some(0),
+        "stop was not reachable through the control reserve"
+    );
+    assert_eq!(service.child.wait().unwrap().code(), Some(0));
 }
 
 /// A reserve occupant that asks for a session is refused, never promoted --
@@ -716,11 +746,11 @@ fn health_times_out_rather_than_hanging_on_a_stalled_listener() {
 }
 
 #[test]
-fn stop_acknowledgement_is_in_band_and_repeated_stop_is_distinct() {
+fn waited_stop_acknowledges_then_reaps_an_idle_daemon() {
     let dir = TestRoot::new();
     let root = dir.path().to_owned();
     let state = TempDir::new().unwrap();
-    let service = start_daemon(&state, "d3b-stop", &root);
+    let mut service = start_daemon(&state, "d3b-stop", &root);
     let audit_before = audit_len(&state);
     let journal_before = journal_len(&state);
 
@@ -729,29 +759,63 @@ fn stop_acknowledgement_is_in_band_and_repeated_stop_is_distinct() {
         "--socket",
         service.socket_path.to_str().unwrap(),
         "--wait-ms",
-        "0",
+        "30000",
     ]);
     assert_eq!(first.status.code(), Some(0), "{}", String::from_utf8_lossy(&first.stderr));
     assert_eq!(String::from_utf8_lossy(&first.stdout).trim(), "stop accepted");
-    assert_eq!(health_probe(&service.socket_path)["draining"], true);
-    assert_eq!(
-        run_cli(&["health", "--socket", service.socket_path.to_str().unwrap()])
-            .status
-            .code(),
-        Some(5)
-    );
-
-    let repeated = run_cli(&[
-        "stop",
-        "--socket",
-        service.socket_path.to_str().unwrap(),
-        "--wait-ms",
-        "0",
-    ]);
-    assert_eq!(repeated.status.code(), Some(5));
-    assert_eq!(String::from_utf8_lossy(&repeated.stdout).trim(), "already draining");
+    assert_eq!(service.child.wait().unwrap().code(), Some(0));
+    assert!(!service.socket_path.exists());
     assert_eq!(audit_len(&state), audit_before);
     assert_eq!(journal_len(&state), journal_before);
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn stop_acknowledgement_keeps_the_daemon_alive_until_the_reply_is_flushed() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let barrier = state.path().join("stop-write-barrier");
+    let mut command = daemon_command(state.path(), "d3b-stop-flush", &root);
+    command.args([
+        "--test-stop-write-barrier",
+        barrier.to_str().unwrap(),
+        "--drain-grace-ms",
+        "10000",
+    ]);
+    let mut service = spawn_daemon(command).unwrap_or_else(|refusal| {
+        panic!("daemon refused to start: {}", refusal.stderr)
+    });
+
+    let socket_path = service.socket_path.clone();
+    let stopper = thread::spawn(move || {
+        Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
+            .args([
+                "stop",
+                "--socket",
+                socket_path.to_str().unwrap(),
+                "--wait-ms",
+                "0",
+            ])
+            .output()
+            .unwrap()
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !barrier.join("entered").exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(barrier.join("entered").exists(), "stop reply never reached write barrier");
+    assert!(
+        service.child.try_wait().unwrap().is_none(),
+        "daemon exited before its stop acknowledgement was written"
+    );
+
+    std::fs::write(barrier.join("release"), b"release\n").unwrap();
+    let stopped = stopper.join().unwrap();
+    assert_eq!(stopped.status.code(), Some(0), "{}", String::from_utf8_lossy(&stopped.stderr));
+    assert_eq!(String::from_utf8_lossy(&stopped.stdout).trim(), "stop accepted");
+    assert_eq!(service.child.wait().unwrap().code(), Some(0));
 }
 
 #[test]
@@ -776,24 +840,82 @@ fn stop_cli_reports_absent_and_non_socket_endpoints() {
 }
 
 #[test]
+fn sigterm_and_sigint_share_the_clean_idle_drain_path() {
+    for (index, signal) in [libc::SIGTERM, libc::SIGINT].into_iter().enumerate() {
+        let dir = TestRoot::new();
+        let root = dir.path().to_owned();
+        let state = TempDir::new().unwrap();
+        let mut service = start_daemon(&state, &format!("d3b-signal-{index}"), &root);
+        // SAFETY: service.pid names the live child created immediately above.
+        assert_eq!(unsafe { libc::kill(service.pid as libc::pid_t, signal) }, 0);
+        assert_eq!(service.child.wait().unwrap().code(), Some(0));
+        assert!(!service.socket_path.exists());
+    }
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
 fn draining_request_is_forgotten_and_leaves_no_durable_trace() {
     let dir = TestRoot::new();
     let root = dir.path().to_owned();
     let state = TempDir::new().unwrap();
-    let mut service = start_daemon(&state, "d3b-forget", &root);
-    let mut lane = open_observation_session(&service.socket_path, "client:drain");
+    let barrier = state.path().join("response-barrier");
+    let mut command = daemon_command(state.path(), "d3b-forget", &root);
+    command.args([
+        "--test-response-write-barrier",
+        barrier.to_str().unwrap(),
+        "--drain-grace-ms",
+        "10000",
+    ]);
+    let mut service = spawn_daemon(command).unwrap_or_else(|refusal| {
+        panic!("daemon refused to start: {}", refusal.stderr)
+    });
+    let mut held_lane = open_observation_session(&service.socket_path, "client:held");
+    let mut refused_lane = open_observation_session(&service.socket_path, "client:drain");
+    let held = thread::spawn(move || {
+        exchange(
+            &mut held_lane,
+            &json!({
+                "protocolVersion": 2,
+                "requestId": "request:held-through-flush",
+                "clientId": "client:held",
+                "deadlineMs": "120000",
+                "action": {"type":"hello"},
+            }),
+        )
+    });
+    let barrier_deadline = Instant::now() + Duration::from_secs(10);
+    while !barrier.join("entered").exists() && Instant::now() < barrier_deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(barrier.join("entered").exists(), "request never reached write barrier");
+    assert_eq!(health_probe(&service.socket_path)["activeRequests"], "1");
+
+    let first = run_cli(&[
+        "stop",
+        "--socket",
+        service.socket_path.to_str().unwrap(),
+        "--wait-ms",
+        "100",
+    ]);
     assert_eq!(
-        run_cli(&[
-            "stop",
-            "--socket",
-            service.socket_path.to_str().unwrap(),
-            "--wait-ms",
-            "0",
-        ])
-        .status
-        .code(),
-        Some(0)
+        first.status.code(),
+        Some(6),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
     );
+    let health = health_probe(&service.socket_path);
+    assert_eq!(health["draining"], true);
+    assert_eq!(health["activeRequests"], "1");
+    let repeated = run_cli(&[
+        "stop",
+        "--socket",
+        service.socket_path.to_str().unwrap(),
+        "--wait-ms",
+        "0",
+    ]);
+    assert_eq!(repeated.status.code(), Some(5));
+
     let audit_before = audit_len(&state);
     let journal_before = journal_len(&state);
     let mut new_lane = UnixStream::connect(&service.socket_path).unwrap();
@@ -819,17 +941,195 @@ fn draining_request_is_forgotten_and_leaves_no_durable_trace() {
         "deadlineMs": "120000",
         "action": {"type":"hello"},
     });
-    let refused = exchange(&mut lane, &request);
+    let refused = exchange(&mut refused_lane, &request);
     assert_eq!(refused["error"]["code"], "service_draining", "{refused}");
     assert_eq!(refused["error"]["retryable"], true, "{refused}");
     assert_eq!(audit_len(&state), audit_before);
     assert_eq!(journal_len(&state), journal_before);
 
-    kill_hard(&mut service);
+    let mut waiter = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
+        .args([
+            "stop",
+            "--socket",
+            service.socket_path.to_str().unwrap(),
+            "--wait-ms",
+            "30000",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut acknowledgement = String::new();
+    BufReader::new(waiter.stdout.take().unwrap())
+        .read_line(&mut acknowledgement)
+        .unwrap();
+    assert_eq!(acknowledgement.trim(), "already draining");
+    std::fs::write(barrier.join("release"), b"release\n").unwrap();
+    assert_eq!(held.join().unwrap()["ok"], true);
+    assert_eq!(waiter.wait().unwrap().code(), Some(0));
+    assert_eq!(service.child.wait().unwrap().code(), Some(0));
+
     let restarted = start_daemon(&state, "d3b-forget", &root);
     let mut restarted_lane = open_observation_session(&restarted.socket_path, "client:drain");
     let accepted = exchange(&mut restarted_lane, &request);
     assert_eq!(accepted["ok"], true, "{accepted}");
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn repeated_signal_keeps_first_deadline_and_forced_exit_reaps_persistent_worker() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let barrier = state.path().join("forced-response-barrier");
+    let mut command = daemon_command(state.path(), "d3b-forced-signal", &root);
+    command.args([
+        "--persistent-bridge",
+        "--test-response-write-barrier",
+        barrier.to_str().unwrap(),
+        "--drain-grace-ms",
+        "400",
+    ]);
+    let mut service = spawn_daemon(command).unwrap_or_else(|refusal| {
+        panic!("daemon refused to start: {}", refusal.stderr)
+    });
+    let worker_output = Command::new("pgrep")
+        .args(["-P", &service.pid.to_string()])
+        .output()
+        .unwrap();
+    assert!(worker_output.status.success(), "persistent worker was not running");
+    let worker_pid: u32 = String::from_utf8_lossy(&worker_output.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let worker_command = Command::new("ps")
+        .args(["-p", &worker_pid.to_string(), "-o", "command="])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&worker_command.stdout).contains("worker.js --persistent"),
+        "unexpected child process: {}",
+        String::from_utf8_lossy(&worker_command.stdout)
+    );
+
+    let mut lane = open_observation_session(&service.socket_path, "client:forced");
+    let held = thread::spawn(move || {
+        let mut frame = serde_json::to_vec(&json!({
+            "protocolVersion": 2,
+            "requestId": "request:forced-held",
+            "clientId": "client:forced",
+            "deadlineMs": "120000",
+            "action": {"type":"hello"},
+        }))
+        .unwrap();
+        frame.push(b'\n');
+        lane.write_all(&frame).unwrap();
+        read_frame(&mut lane)
+    });
+    let barrier_deadline = Instant::now() + Duration::from_secs(10);
+    while !barrier.join("entered").exists() && Instant::now() < barrier_deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(barrier.join("entered").exists());
+
+    let started = Instant::now();
+    // SAFETY: service.pid names the live daemon child.
+    assert_eq!(unsafe { libc::kill(service.pid as libc::pid_t, libc::SIGTERM) }, 0);
+    thread::sleep(Duration::from_millis(200));
+    // SAFETY: the held request keeps the daemon alive until the original grace.
+    assert_eq!(unsafe { libc::kill(service.pid as libc::pid_t, libc::SIGTERM) }, 0);
+    assert_eq!(service.child.wait().unwrap().code(), Some(3));
+    assert!(
+        started.elapsed() < Duration::from_millis(550),
+        "the second signal extended the first deadline: {:?}",
+        started.elapsed()
+    );
+    assert!(held.join().unwrap().is_none());
+
+    let worker_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        // SAFETY: signal 0 performs existence/permission checking only.
+        let alive = unsafe { libc::kill(worker_pid as libc::pid_t, 0) } == 0;
+        if !alive {
+            break;
+        }
+        assert!(Instant::now() < worker_deadline, "persistent worker survived parent exit");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn forced_stop_after_pending_recovers_once_and_preserves_draft_state() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let mut command = daemon_command(state.path(), "d3b-forced-pending", &root);
+    command.args([
+        "--persistent-bridge",
+        "--test-block-after-pending-ms",
+        "2000",
+        "--drain-grace-ms",
+        "200",
+    ]);
+    let mut service = spawn_daemon(command).unwrap_or_else(|refusal| {
+        panic!("daemon refused to start: {}", refusal.stderr)
+    });
+    let request = json!({
+        "protocolVersion": 2,
+        "requestId": "request:forced-pending",
+        "clientId": "client:recovery",
+        "deadlineMs": "120000",
+        "idempotencyKey": "idem:forced-pending",
+        "action": {"type":"begin_change_set","reasoning":"forced drain recovery"},
+    });
+    let mut lane = open_work_session(&service.socket_path, "client:recovery");
+    let request_for_thread = request.clone();
+    let blocked = thread::spawn(move || {
+        let mut frame = serde_json::to_vec(&request_for_thread).unwrap();
+        frame.push(b'\n');
+        lane.write_all(&frame).unwrap();
+        read_frame(&mut lane)
+    });
+    let active_deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if health_probe(&service.socket_path)["activeRequests"] == "1" {
+            break;
+        }
+        assert!(Instant::now() < active_deadline, "pending request never became active");
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        run_cli(&[
+            "stop",
+            "--socket",
+            service.socket_path.to_str().unwrap(),
+            "--wait-ms",
+            "0",
+        ])
+        .status
+        .code(),
+        Some(0)
+    );
+    assert_eq!(service.child.wait().unwrap().code(), Some(3));
+    assert!(blocked.join().unwrap().is_none());
+
+    let restarted = start_daemon(&state, "d3b-forced-pending", &root);
+    let mut replay_lane = open_work_session(&restarted.socket_path, "client:recovery");
+    let replay = exchange(&mut replay_lane, &request);
+    assert_eq!(replay["ok"], true, "{replay}");
+    assert_eq!(replay["result"]["state"], "draft", "{replay}");
+    let change_set_id = replay["result"]["changeSetId"].as_str().unwrap();
+    assert!(!change_set_id.is_empty());
+
+    let audit = std::fs::read_to_string(state.path().join("audit.jsonl")).unwrap();
+    let recovered = audit
+        .lines()
+        .filter(|line| line.contains("request_recovered"))
+        .count();
+    assert_eq!(recovered, 1, "{audit}");
+    assert!(!audit.contains("cancelled"), "shutdown fabricated cancellation: {audit}");
 }
 
 /// `start` is an alias for `serve`, and BOTH dispatch routes accept help.

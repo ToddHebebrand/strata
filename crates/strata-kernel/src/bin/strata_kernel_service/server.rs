@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use super::drain::{DrainController, SignalRegistration};
 use super::protocol::{
     LocalServiceResponse, MAX_HANDSHAKE_FRAME_BYTES, MAX_REQUEST_FRAME_BYTES, PROTOCOL_VERSION,
     FirstFrame, HealthReply, OpenSession, OpenSessionTag, SessionReply, SessionRole, StopReply, WireU64,
@@ -131,6 +132,9 @@ pub(super) fn serve_in_root(
     let (bound, listener) = lifecycle::BoundEndpoint::bind(&root, &token_hash, &nonce)?;
     let socket_path = bound.path().to_owned();
     validate_socket_path_in(&socket_path, root.path())?;
+    let drain = session.drain_controller();
+    let signals = SignalRegistration::install(drain.wake_write_fd())?;
+    listener.set_nonblocking(true)?;
     let ready = Readiness {
         protocol_version: PROTOCOL_VERSION,
         socket_path: socket_path.to_string_lossy().into_owned(),
@@ -149,32 +153,101 @@ pub(super) fn serve_in_root(
 
     let admission = Arc::new(Admission::default());
     let ownership = Arc::new(OwnershipRegistry::default());
-    for incoming in listener.incoming() {
-        match incoming {
-            Ok(stream) => {
-                // Capacity FIRST. An over-cap connection is refused without
-                // ever costing a handler thread.
-                let Some((permit, pool)) = admission.admit() else {
-                    refuse_over_cap(stream);
-                    continue;
-                };
-                let session = Arc::clone(&session);
-                let ownership = Arc::clone(&ownership);
-                thread::spawn(move || {
-                    let _ = handle_connection(
-                        stream,
-                        &session,
-                        service_epoch,
-                        permit,
-                        pool,
-                        ownership,
-                    );
-                });
+    loop {
+        if signals.take_pending() {
+            drain.start_from_signal();
+        }
+        if drain.ready_to_exit() {
+            return Ok(());
+        }
+        if drain.deadline().is_some_and(|deadline| Instant::now() >= deadline) {
+            let (active_requests, pending_stop_acks) = drain.remaining_active();
+            eprintln!(
+                "drain grace expired with {active_requests} active requests and \
+                 {pending_stop_acks} pending stop acknowledgements"
+            );
+            std::process::exit(3);
+        }
+
+        let mut descriptors = [
+            libc::pollfd {
+                fd: std::os::fd::AsRawFd::as_raw_fd(&listener),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: drain.wait_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // SAFETY: descriptors contains two initialized pollfd entries for live
+        // descriptors throughout this call.
+        let polled = unsafe {
+            libc::poll(
+                descriptors.as_mut_ptr(),
+                descriptors.len() as libc::nfds_t,
+                drain_poll_timeout(&drain),
+            )
+        };
+        if polled < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == ErrorKind::Interrupted {
+                continue;
             }
-            Err(error) => return Err(error).context("accept local service connection"),
+            return Err(error).context("poll local service listener");
+        }
+        if descriptors[1].revents & libc::POLLIN != 0 {
+            drain.drain_notifications()?;
+        }
+        if signals.take_pending() {
+            drain.start_from_signal();
+        }
+        if descriptors[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+            bail!("local service listener became unusable");
+        }
+        if descriptors[0].revents & libc::POLLIN == 0 {
+            continue;
+        }
+
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(false)?;
+                    // Capacity FIRST. An over-cap connection is refused without
+                    // ever costing a handler thread.
+                    let Some((permit, pool)) = admission.admit() else {
+                        refuse_over_cap(stream);
+                        continue;
+                    };
+                    let session = Arc::clone(&session);
+                    let ownership = Arc::clone(&ownership);
+                    thread::spawn(move || {
+                        let _ = handle_connection(
+                            stream,
+                            &session,
+                            service_epoch,
+                            permit,
+                            pool,
+                            ownership,
+                        );
+                    });
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error).context("accept local service connection"),
+            }
         }
     }
-    Ok(())
+}
+
+fn drain_poll_timeout(drain: &DrainController) -> libc::c_int {
+    let Some(deadline) = drain.deadline() else {
+        return -1;
+    };
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let millis = remaining.as_millis().max(1).min(libc::c_int::MAX as u128);
+    millis as libc::c_int
 }
 
 /// Runs the seed-green baseline and turns anything but a green verdict into a
@@ -684,6 +757,7 @@ fn handle_connection(
                     }
                 };
                 if let Ok(frame) = serialize_stop_reply(&reply) {
+                    session.before_stop_response_write()?;
                     let _ = stream.write_all(&frame);
                     let _ = stream.flush();
                 }
@@ -831,6 +905,9 @@ fn handle_connection(
         let handled = session.handle_frame(&request, &binding);
         let (response, active) = handled.finish();
         let frame = bounded_response_frame(&response)?;
+        if active.is_some() {
+            session.before_response_write()?;
+        }
         // A peer may disconnect after the durable effect and before receiving
         // the response; that is the retry contract's problem, not ours.
         let write_failed = stream.write_all(&frame).is_err() || stream.flush().is_err();

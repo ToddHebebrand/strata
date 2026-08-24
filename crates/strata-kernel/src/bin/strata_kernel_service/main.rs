@@ -100,7 +100,12 @@ fn serve(arguments: &[OsString]) -> Result<()> {
         "--drain-grace-ms",
     ];
     #[cfg(feature = "coordination-test-api")]
-    allowed.push("--test-failpoint");
+    {
+        allowed.push("--test-failpoint");
+        allowed.push("--test-response-write-barrier");
+        allowed.push("--test-stop-write-barrier");
+        allowed.push("--test-block-after-pending-ms");
+    }
     #[cfg(feature = "redb-spike-api")]
     allowed.push("--test-publish-failpoint");
     reject_unknown(&values, &allowed)?;
@@ -121,6 +126,15 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     if !(1..=300_000).contains(&drain_grace_ms) {
         bail!("--drain-grace-ms must be in 1..=300000");
     }
+    #[cfg(feature = "coordination-test-api")]
+    let block_after_pending = match values.get("--test-block-after-pending-ms") {
+        Some(_) => {
+            let value = optional_canonical_u64(&values, "--test-block-after-pending-ms", 0)?;
+            anyhow::ensure!(value <= 300_000, "--test-block-after-pending-ms is too large");
+            Some(Duration::from_millis(value))
+        }
+        None => None,
+    };
     // Resolved BEFORE corpus_root moves into NodeBridgeConfig::tsc_only
     // below. Produces both the ValidationSettings the session publishes as
     // its identity AND (further down) the bridge profile the worker actually
@@ -224,6 +238,12 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             failpoint,
             metrics_path,
             drain_grace: Duration::from_millis(drain_grace_ms),
+            #[cfg(feature = "coordination-test-api")]
+            response_write_barrier: optional_path(&values, "--test-response-write-barrier"),
+            #[cfg(feature = "coordination-test-api")]
+            stop_write_barrier: optional_path(&values, "--test-stop-write-barrier"),
+            #[cfg(feature = "coordination-test-api")]
+            block_after_pending,
             #[cfg(feature = "redb-spike-api")]
             publish_failpoint,
         },
@@ -287,6 +307,7 @@ fn health(arguments: &[OsString]) -> Result<()> {
 fn stop(arguments: &[OsString]) -> Result<()> {
     const PROBE_DEADLINE: Duration = Duration::from_secs(5);
 
+    let command_started = std::time::Instant::now();
     let values = parse_named(arguments)?;
     reject_unknown(&values, &["--socket", "--token", "--socket-root", "--wait-ms"])?;
     let wait_ms = optional_canonical_u64(&values, "--wait-ms", 0)?;
@@ -379,20 +400,40 @@ fn stop(arguments: &[OsString]) -> Result<()> {
             }
         }
     }
-    match protocol::parse_stop_reply_frame(&response) {
+    let acknowledgement_code = match protocol::parse_stop_reply_frame(&response) {
         Ok(protocol::StopReply::StopAccepted { .. }) => {
             println!("stop accepted");
-            std::process::exit(0);
+            0
         }
         Ok(protocol::StopReply::AlreadyDraining { .. }) => {
             println!("already draining");
-            std::process::exit(5);
+            5
         }
         Err(error) => {
             eprintln!("invalid stop reply: {error:#}");
             std::process::exit(4);
         }
+    };
+    if wait_ms == 0 {
+        std::process::exit(acknowledgement_code);
     }
+    let deadline = command_started + Duration::from_millis(wait_ms);
+    while std::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let probe_deadline = remaining.min(Duration::from_millis(100));
+        match lifecycle::probe_health(&socket, probe_deadline) {
+            lifecycle::HealthOutcome::Absent | lifecycle::HealthOutcome::Unreachable(_) => {
+                std::process::exit(0);
+            }
+            lifecycle::HealthOutcome::Healthy
+            | lifecycle::HealthOutcome::Draining
+            | lifecycle::HealthOutcome::TimedOut => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+    eprintln!("stop wait timed out");
+    std::process::exit(6);
 }
 
 fn validate_socket(arguments: &[OsString]) -> Result<()> {
