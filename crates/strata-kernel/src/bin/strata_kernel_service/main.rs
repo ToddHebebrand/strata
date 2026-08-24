@@ -1,4 +1,5 @@
 mod audit;
+mod drain;
 mod lifecycle;
 mod manifest;
 mod metrics;
