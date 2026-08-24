@@ -1,3 +1,5 @@
+#![allow(clippy::items_after_test_module)]
+
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -20,7 +22,6 @@ use super::lifecycle::{self, CanonicalStateDir, EndpointClaim, OwnerLock, Socket
 use super::ownership::{Binding, OwnershipRegistry};
 use super::session::{ServiceConfig, ServiceSession, SessionBinding};
 
-const SOCKET_DIRECTORY: &str = "/tmp/strata-lc";
 const MAX_SOCKET_PATH_BYTES: usize = 96;
 
 /// Maximum bounded diagnostic lines a refusing daemon prints to stderr. The
@@ -42,10 +43,6 @@ struct Readiness {
     validation_mode: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     validation_manifest_digest: Option<String>,
-}
-
-pub(super) fn serve(config: ServiceConfig, socket_token: &str) -> Result<()> {
-    serve_in_root(config, socket_token, SocketRoot::production()?)
 }
 
 pub(super) fn serve_in_root(

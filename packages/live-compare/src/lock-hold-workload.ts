@@ -99,6 +99,9 @@ export function summarizeNanoseconds(values: readonly number[]): DistributionSum
 }
 
 export function summarizeLockArtifact(artifact: LockSampleArtifact) {
+  if (artifact.dropped !== 0) {
+    throw new Error(`lock artifact dropped ${artifact.dropped} lock samples`);
+  }
   const names = new Map([
     [1, "session.protocol"],
     [2, "session.journal"],
@@ -140,6 +143,36 @@ function expectedResultType(action: Action): string {
   }
 }
 
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  return Object.keys(value).sort().join("\0") === [...expected].sort().join("\0");
+}
+
+function isCanonicalU64(value: unknown): value is string {
+  return typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value);
+}
+
+function validResult(result: Record<string, unknown>, action: Action): boolean {
+  switch (action.type) {
+    case "hello":
+      return hasExactKeys(result, ["type", "validationMode", "validationManifestDigest"])
+        && (result.validationMode === "tscOnly" || result.validationMode === "behavioral")
+        && (result.validationManifestDigest === null || typeof result.validationManifestDigest === "string");
+    case "list_modules":
+      return hasExactKeys(result, ["type", "graphGeneration", "modules", "hasMore"])
+        && isCanonicalU64(result.graphGeneration)
+        && Array.isArray(result.modules)
+        && typeof result.hasMore === "boolean";
+    case "find_declarations":
+      return hasExactKeys(result, ["type", "graphGeneration", "declarations", "hasMore"])
+        && isCanonicalU64(result.graphGeneration)
+        && Array.isArray(result.declarations)
+        && typeof result.hasMore === "boolean";
+    case "read_events":
+      return hasExactKeys(result, ["type", "events"])
+        && Array.isArray(result.events);
+  }
+}
+
 function readFrame(socket: Socket): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let buffer = Buffer.alloc(0);
@@ -173,13 +206,16 @@ async function connect(path: string): Promise<Socket> {
 
 function assertReply(frame: Buffer, protocolVersion: 1 | 2, requestId: string, action: Action): void {
   const reply = JSON.parse(frame.toString("utf8")) as Record<string, unknown>;
+  const result = reply.result as Record<string, unknown> | null;
   if (
+    !hasExactKeys(reply, ["protocolVersion", "requestId", "ok", "result"]) ||
     reply.protocolVersion !== protocolVersion ||
     reply.requestId !== requestId ||
     reply.ok !== true ||
-    typeof reply.result !== "object" ||
-    reply.result === null ||
-    (reply.result as Record<string, unknown>).type !== expectedResultType(action)
+    typeof result !== "object" ||
+    result === null ||
+    result.type !== expectedResultType(action) ||
+    !validResult(result, action)
   ) {
     throw new Error(
       `invalid ${protocolVersion === 1 ? "v1" : "v2"} workload reply for ${action.type}: ${JSON.stringify(reply)}`
@@ -232,8 +268,15 @@ export class ProtocolV2Adapter implements Adapter {
     })}\n`);
     const reply = JSON.parse((await readFrame(socket)).toString("utf8")) as Record<string, unknown>;
     if (
+      !hasExactKeys(reply, [
+        "protocolVersion", "type", "serviceEpoch", "validationMode",
+        "validationManifestDigest", "actor", "role"
+      ]) ||
       reply.protocolVersion !== 2 ||
       reply.type !== "session_opened" ||
+      !isCanonicalU64(reply.serviceEpoch) ||
+      (reply.validationMode !== "tscOnly" && reply.validationMode !== "behavioral") ||
+      (reply.validationManifestDigest !== null && typeof reply.validationManifestDigest !== "string") ||
       reply.actor !== this.actor ||
       reply.role !== "observation"
     ) {
@@ -283,7 +326,13 @@ export async function runLockHoldWorkload(options: {
     return { actor, adapter };
   });
   const runCycles = async (cycles: number, phase: "warm" | "record") => {
+    let arrived = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
     await Promise.all(adapters.map(async ({ actor, adapter }) => {
+      arrived += 1;
+      if (arrived === adapters.length) release();
+      await barrier;
       for (let cycle = 0; cycle < cycles; cycle += 1) {
         for (let actionIndex = 0; actionIndex < ACTIONS.length; actionIndex += 1) {
           await adapter.request(

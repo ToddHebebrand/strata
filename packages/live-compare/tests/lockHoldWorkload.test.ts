@@ -149,3 +149,14 @@ it("parses bounded samples and computes exact nearest-rank distributions", () =>
     maxNs: 100
   });
 });
+
+it("refuses to summarize an artifact that dropped lock samples", () => {
+  expect(() => summarizeLockArtifact({
+    version: 1,
+    capacity: 1,
+    claimed: 2,
+    dropped: 1,
+    noop: { iterations: 10, totalNs: 50, meanNs: 5 },
+    samples: []
+  })).toThrow("dropped 1 lock samples");
+});

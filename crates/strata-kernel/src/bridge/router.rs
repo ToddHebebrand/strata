@@ -237,7 +237,7 @@ impl PersistentBridgeRouter {
                 "generation": target.generation.to_string(),
                 "digest": target.digest.clone(),
             },
-            "intent": serde_json::to_value(&wire_intent(intent, graph.generation()))
+            "intent": serde_json::to_value(wire_intent(intent, graph.generation()))
                 .context("encode mirror intent")?,
         });
         // Request size before the host stamps its requestId (a ~20-byte

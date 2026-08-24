@@ -26,6 +26,7 @@
 //! that would survive if these ever became blocking.
 
 #![allow(dead_code)]
+#![allow(clippy::items_after_test_module)]
 
 use std::io;
 use std::os::fd::AsRawFd;

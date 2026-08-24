@@ -432,11 +432,12 @@ fn stop(arguments: &[OsString]) -> Result<()> {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         let probe_deadline = remaining.min(Duration::from_millis(100));
         match lifecycle::probe_health(&socket, probe_deadline) {
-            lifecycle::HealthOutcome::Absent | lifecycle::HealthOutcome::Unreachable(_) => {
+            lifecycle::HealthOutcome::Absent => {
                 std::process::exit(0);
             }
             lifecycle::HealthOutcome::Healthy
             | lifecycle::HealthOutcome::Draining
+            | lifecycle::HealthOutcome::Unreachable(_)
             | lifecycle::HealthOutcome::TimedOut => {
                 std::thread::sleep(Duration::from_millis(10));
             }

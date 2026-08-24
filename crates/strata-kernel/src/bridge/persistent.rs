@@ -536,7 +536,7 @@ impl PersistentWorkerHost {
     /// - `ahead` → forward-only (plan v2): clear the (evidently wrong)
     ///   attestation and error WITHOUT any hydrate attempt — the mirror must
     ///   not be rolled back for this request; the caller serves it one-shot.
-    /// Anything other than attest/refuse is a protocol violation and poisons.
+    ///   Anything other than attest/refuse is a protocol violation and poisons.
     fn sync_locked(
         &self,
         state: &mut HostState,

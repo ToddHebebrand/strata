@@ -6,8 +6,9 @@
 //! or a parallel test's.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Barrier};
@@ -96,8 +97,58 @@ struct Refusal {
 }
 
 fn snapshot(directory: &Path) -> PathBuf {
-    let value: Value =
+    let mut value: Value =
         serde_json::from_str(include_str!("fixtures/examples-medium.snapshot.json")).unwrap();
+    let nodes = value["nodes"].as_array().unwrap();
+    let mut retained = nodes
+        .iter()
+        .filter(|node| {
+            node["kind"] == "Module"
+                && node["payload"]
+                    .as_str()
+                    .is_some_and(|payload| payload.starts_with("/project/src/"))
+        })
+        .map(|node| node["id"].as_str().unwrap().to_owned())
+        .collect::<BTreeSet<_>>();
+    loop {
+        let before = retained.len();
+        for node in nodes {
+            if node["parentId"]
+                .as_str()
+                .is_some_and(|parent| retained.contains(parent))
+            {
+                retained.insert(node["id"].as_str().unwrap().to_owned());
+            }
+        }
+        if before == retained.len() {
+            break;
+        }
+    }
+    value["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|node| retained.contains(node["id"].as_str().unwrap()));
+    value["references"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|reference| {
+            retained.contains(reference["fromNodeId"].as_str().unwrap())
+                && retained.contains(reference["toNodeId"].as_str().unwrap())
+        });
+    let corpus = repo_root().join("examples/medium");
+    for module in value["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .filter(|node| node["kind"] == "Module")
+    {
+        if let Some(relative) = module["payload"]
+            .as_str()
+            .and_then(|payload| payload.strip_prefix("/project/"))
+        {
+            module["payload"] = json!(corpus.join(relative).to_string_lossy());
+        }
+    }
     let path = directory.join("snapshot.json");
     std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
     path
@@ -244,6 +295,38 @@ fn exchange(stream: &mut UnixStream, value: &Value) -> Value {
     stream.write_all(&frame).unwrap();
     let reply = read_frame(stream).expect("no request reply");
     serde_json::from_slice(&reply[..reply.len() - 1]).unwrap()
+}
+
+#[cfg(feature = "coordination-test-api")]
+fn mutation_frame(request_id: &str, client_id: &str, idempotency_key: &str, action: Value) -> Value {
+    json!({
+        "protocolVersion": 2,
+        "requestId": request_id,
+        "clientId": client_id,
+        "deadlineMs": "120000",
+        "idempotencyKey": idempotency_key,
+        "action": action,
+    })
+}
+
+#[cfg(feature = "coordination-test-api")]
+fn record_types(path: &Path, field: &str) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .map(|line| line[field]["type"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[cfg(feature = "coordination-test-api")]
+fn audit_kinds(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .map(|line| line["event"]["kind"].as_str().unwrap().to_owned())
+        .collect()
 }
 
 fn audit_len(state: &TempDir) -> u64 {
@@ -449,7 +532,7 @@ fn an_unrecorded_socket_matching_our_token_is_left_alone() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let planted = &root.join(format!("{hash}.beef1234.sock"));
-    let _listener = std::os::unix::net::UnixListener::bind(&planted).unwrap();
+    let _listener = std::os::unix::net::UnixListener::bind(planted).unwrap();
 
     let service = start_daemon(&state, "d3a-unrecorded", &root);
     assert_ne!(service.socket_path, planted.as_path());
@@ -470,7 +553,7 @@ fn reclamation_never_touches_another_token() {
     std::fs::create_dir_all(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
     let foreign = &root.join(format!("{}.deadbeef.sock", "b".repeat(64)));
-    let _listener = std::os::unix::net::UnixListener::bind(&foreign).unwrap();
+    let _listener = std::os::unix::net::UnixListener::bind(foreign).unwrap();
 
     let _service = start_daemon(&state, "d3a-other", &root);
     assert!(foreign.exists(), "reclamation deleted another token's socket");
@@ -840,6 +923,30 @@ fn stop_cli_reports_absent_and_non_socket_endpoints() {
 }
 
 #[test]
+fn stop_cli_rejects_a_socket_that_speaks_a_foreign_protocol() {
+    let dir = TestRoot::new();
+    std::fs::create_dir_all(dir.path()).unwrap();
+    let socket = dir.path().join("foreign.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    let foreign = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        BufReader::new(&mut stream).read_until(b'\n', &mut request).unwrap();
+        stream.write_all(b"{\"type\":\"not_strata\"}\n").unwrap();
+        stream.flush().unwrap();
+    });
+    let stopped = run_cli(&[
+        "stop",
+        "--socket",
+        socket.to_str().unwrap(),
+        "--wait-ms",
+        "0",
+    ]);
+    assert_eq!(stopped.status.code(), Some(4), "{}", String::from_utf8_lossy(&stopped.stderr));
+    foreign.join().unwrap();
+}
+
+#[test]
 fn sigterm_and_sigint_share_the_clean_idle_drain_path() {
     for (index, signal) in [libc::SIGTERM, libc::SIGINT].into_iter().enumerate() {
         let dir = TestRoot::new();
@@ -1065,6 +1172,68 @@ fn forced_stop_after_pending_recovers_once_and_preserves_draft_state() {
     let dir = TestRoot::new();
     let root = dir.path().to_owned();
     let state = TempDir::new().unwrap();
+    let mut setup = start_daemon(&state, "d3b-forced-pending", &root);
+    let mut setup_lane = open_work_session(&setup.socket_path, "client:recovery");
+    let begin = mutation_frame(
+        "request:forced:begin",
+        "client:recovery",
+        "idem:forced:begin",
+        json!({"type":"begin_change_set","reasoning":"forced drain recovery"}),
+    );
+    let begun = exchange(&mut setup_lane, &begin);
+    assert_eq!(begun["result"]["state"], "draft", "{begun}");
+    let change_set_id = begun["result"]["changeSetId"].as_str().unwrap().to_owned();
+    for (id, action) in [
+        (
+            "add",
+            json!({"type":"add_intent","changeSetId":change_set_id,"intent":{"type":"rename_symbol","declarationId":"fc98295bca9efc3e","newName":"Account"}}),
+        ),
+        (
+            "submit",
+            json!({"type":"submit_change_set","changeSetId":change_set_id}),
+        ),
+    ] {
+        let response = exchange(
+            &mut setup_lane,
+            &mutation_frame(
+                &format!("request:forced:{id}"),
+                "client:recovery",
+                &format!("idem:forced:{id}"),
+                action,
+            ),
+        );
+        assert_eq!(response["ok"], true, "{response}");
+    }
+    let published = exchange(
+        &mut setup_lane,
+        &mutation_frame(
+            "request:forced:setup-advance",
+            "client:recovery",
+            "idem:forced:setup-advance",
+            json!({"type":"advance_change_set","changeSetId":change_set_id}),
+        ),
+    );
+    assert_eq!(published["result"]["state"], "published", "{published}");
+    let canonical_operation_id = published["result"]["operationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    drop(setup_lane);
+    let stopped = run_cli(&[
+        "stop",
+        "--socket",
+        setup.socket_path.to_str().unwrap(),
+        "--wait-ms",
+        "30000",
+    ]);
+    assert_eq!(stopped.status.code(), Some(0), "{}", String::from_utf8_lossy(&stopped.stderr));
+    assert_eq!(setup.child.wait().unwrap().code(), Some(0));
+
+    let journal_path = state.path().join("kernel.redb.service-journal.jsonl");
+    let audit_path = state.path().join("audit.jsonl");
+    let before_journal = record_types(&journal_path, "record");
+    let before_audit = audit_kinds(&audit_path);
+
     let mut command = daemon_command(state.path(), "d3b-forced-pending", &root);
     command.args([
         "--persistent-bridge",
@@ -1076,14 +1245,12 @@ fn forced_stop_after_pending_recovers_once_and_preserves_draft_state() {
     let mut service = spawn_daemon(command).unwrap_or_else(|refusal| {
         panic!("daemon refused to start: {}", refusal.stderr)
     });
-    let request = json!({
-        "protocolVersion": 2,
-        "requestId": "request:forced-pending",
-        "clientId": "client:recovery",
-        "deadlineMs": "120000",
-        "idempotencyKey": "idem:forced-pending",
-        "action": {"type":"begin_change_set","reasoning":"forced drain recovery"},
-    });
+    let request = mutation_frame(
+        "request:forced:pending-begin",
+        "client:recovery",
+        "idem:forced:pending-begin",
+        json!({"type":"begin_change_set","reasoning":"recover a post-pending request"}),
+    );
     let mut lane = open_work_session(&service.socket_path, "client:recovery");
     let request_for_thread = request.clone();
     let blocked = thread::spawn(move || {
@@ -1100,36 +1267,163 @@ fn forced_stop_after_pending_recovers_once_and_preserves_draft_state() {
         assert!(Instant::now() < active_deadline, "pending request never became active");
         thread::sleep(Duration::from_millis(5));
     }
-    assert_eq!(
-        run_cli(&[
-            "stop",
-            "--socket",
-            service.socket_path.to_str().unwrap(),
-            "--wait-ms",
-            "0",
-        ])
-        .status
-        .code(),
-        Some(0)
-    );
+    let waited = run_cli(&[
+        "stop",
+        "--socket",
+        service.socket_path.to_str().unwrap(),
+        "--wait-ms",
+        "1000",
+    ]);
+    assert_eq!(waited.status.code(), Some(6), "{}", String::from_utf8_lossy(&waited.stderr));
     assert_eq!(service.child.wait().unwrap().code(), Some(3));
     assert!(blocked.join().unwrap().is_none());
+
+    let crashed_journal = record_types(&journal_path, "record");
+    assert_eq!(
+        crashed_journal.iter().filter(|kind| kind.as_str() == "pending").count(),
+        before_journal.iter().filter(|kind| kind.as_str() == "pending").count() + 1,
+        "{crashed_journal:?}"
+    );
+    assert_eq!(
+        crashed_journal.iter().filter(|kind| kind.as_str() == "effect_result").count(),
+        before_journal.iter().filter(|kind| kind.as_str() == "effect_result").count(),
+        "forced exit crossed the effect-result boundary"
+    );
 
     let restarted = start_daemon(&state, "d3b-forced-pending", &root);
     let mut replay_lane = open_work_session(&restarted.socket_path, "client:recovery");
     let replay = exchange(&mut replay_lane, &request);
     assert_eq!(replay["ok"], true, "{replay}");
     assert_eq!(replay["result"]["state"], "draft", "{replay}");
-    let change_set_id = replay["result"]["changeSetId"].as_str().unwrap();
-    assert!(!change_set_id.is_empty());
+    let mut observation_lane =
+        open_observation_session(&restarted.socket_path, "client:recovery-observer");
+    let operation = exchange(
+        &mut observation_lane,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:forced:read-operation",
+            "clientId": "client:recovery-observer",
+            "deadlineMs": "120000",
+            "action": {"type":"read_operation","operationId":canonical_operation_id},
+        }),
+    );
+    assert_eq!(operation["ok"], true, "{operation}");
+    assert_eq!(operation["result"]["operationId"], canonical_operation_id, "{operation}");
+    assert_eq!(operation["result"]["intents"].as_array().unwrap().len(), 1, "{operation}");
+    let events = exchange(
+        &mut observation_lane,
+        &json!({
+            "protocolVersion": 2,
+            "requestId": "request:forced:read-events",
+            "clientId": "client:recovery-observer",
+            "deadlineMs": "120000",
+            "action": {"type":"read_events","afterSequence":"0","limit":256},
+        }),
+    );
+    let operation_ids = events["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["operationId"].as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(operation_ids, vec![canonical_operation_id.as_str()], "{events}");
 
-    let audit = std::fs::read_to_string(state.path().join("audit.jsonl")).unwrap();
-    let recovered = audit
-        .lines()
-        .filter(|line| line.contains("request_recovered"))
-        .count();
-    assert_eq!(recovered, 1, "{audit}");
-    assert!(!audit.contains("cancelled"), "shutdown fabricated cancellation: {audit}");
+    let recovered_journal = record_types(&journal_path, "record");
+    assert_eq!(
+        recovered_journal.iter().filter(|kind| kind.as_str() == "effect_result").count(),
+        before_journal.iter().filter(|kind| kind.as_str() == "effect_result").count() + 1,
+        "{recovered_journal:?}"
+    );
+    assert_eq!(
+        recovered_journal.iter().filter(|kind| kind.as_str() == "completed").count(),
+        before_journal.iter().filter(|kind| kind.as_str() == "completed").count() + 1,
+        "{recovered_journal:?}"
+    );
+    let recovered_audit = audit_kinds(&audit_path);
+    assert_eq!(
+        recovered_audit.iter().filter(|kind| kind.as_str() == "request_recovered").count(),
+        before_audit.iter().filter(|kind| kind.as_str() == "request_recovered").count() + 1,
+        "{recovered_audit:?}"
+    );
+    assert!(!std::fs::read_to_string(&audit_path).unwrap().contains("cancelled"));
+}
+
+#[cfg(feature = "coordination-test-api")]
+#[test]
+fn queued_ticket_remains_queued_across_a_drain_and_restart() {
+    let dir = TestRoot::new();
+    let root = dir.path().to_owned();
+    let state = TempDir::new().unwrap();
+    let mut service = start_daemon(&state, "d3b-queued-restart", &root);
+
+    let mut changes = Vec::new();
+    for (actor, suffix, new_name) in [
+        ("client:queue-a", "a", "Account"),
+        ("client:queue-b", "b", "Customer"),
+    ] {
+        let mut lane = open_work_session(&service.socket_path, actor);
+        let begun = exchange(
+            &mut lane,
+            &mutation_frame(
+                &format!("request:queue:{suffix}:begin"),
+                actor,
+                &format!("idem:queue:{suffix}:begin"),
+                json!({"type":"begin_change_set","reasoning":format!("queue {suffix}")}),
+            ),
+        );
+        let change = begun["result"]["changeSetId"].as_str().unwrap().to_owned();
+        for (step, action) in [
+            (
+                "add",
+                json!({"type":"add_intent","changeSetId":change,"intent":{"type":"rename_symbol","declarationId":"fc98295bca9efc3e","newName":new_name}}),
+            ),
+            (
+                "submit",
+                json!({"type":"submit_change_set","changeSetId":change}),
+            ),
+        ] {
+            let response = exchange(
+                &mut lane,
+                &mutation_frame(
+                    &format!("request:queue:{suffix}:{step}"),
+                    actor,
+                    &format!("idem:queue:{suffix}:{step}"),
+                    action,
+                ),
+            );
+            assert_eq!(response["ok"], true, "{response}");
+            if suffix == "b" && step == "submit" {
+                assert_eq!(response["result"]["state"], "queued", "{response}");
+                assert_eq!(response["result"]["ticketState"], "queued", "{response}");
+            }
+        }
+        changes.push(change);
+    }
+
+    let stopped = run_cli(&[
+        "stop",
+        "--socket",
+        service.socket_path.to_str().unwrap(),
+        "--wait-ms",
+        "30000",
+    ]);
+    assert_eq!(stopped.status.code(), Some(0), "{}", String::from_utf8_lossy(&stopped.stderr));
+    assert_eq!(service.child.wait().unwrap().code(), Some(0));
+
+    let restarted = start_daemon(&state, "d3b-queued-restart", &root);
+    let mut lane = open_work_session(&restarted.socket_path, "client:queue-b");
+    let queued = exchange(
+        &mut lane,
+        &mutation_frame(
+            "request:queue:b:inspect-after-restart",
+            "client:queue-b",
+            "idem:queue:b:inspect-after-restart",
+            json!({"type":"advance_change_set","changeSetId":changes[1]}),
+        ),
+    );
+    assert_eq!(queued["ok"], true, "{queued}");
+    assert_eq!(queued["result"]["state"], "queued", "{queued}");
+    assert_eq!(queued["result"]["ticketState"], "queued", "{queued}");
 }
 
 /// `start` is an alias for `serve`, and BOTH dispatch routes accept help.
