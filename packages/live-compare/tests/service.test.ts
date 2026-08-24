@@ -3,7 +3,15 @@
 // `kernel.redb` on disk, and a second `startKernelService` pointed at that
 // directory must reach readiness over the *recovery* branch (no re-ingest,
 // no fresh seed) and keep serving the generation the first service produced.
-import { existsSync, mkdtempSync, readFileSync, rmSync, cpSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,6 +28,108 @@ import { advanceUntilTerminal, beginAndSubmit, credentialFreeEnv, ensureBuilt } 
 const corpusRoot = resolve(import.meta.dirname, "../../../examples/medium");
 const temporary: string[] = [];
 afterEach(() => temporary.splice(0).forEach((path) => rmSync(path, { recursive: true, force: true })));
+
+function fakeServiceBinary(
+  directory: string,
+  readiness: Record<string, unknown>,
+  stopExitCode = 0
+): { binary: string; stopLog: string } {
+  const binary = join(directory, "fake-strata-kernel-service");
+  const pidPath = join(directory, "fake-service.pid");
+  const stopLog = join(directory, "stop-argv.json");
+  writeFileSync(
+    binary,
+    `#!/usr/bin/env node
+const { appendFileSync, readFileSync, writeFileSync } = require("node:fs");
+if (process.argv[2] === "serve") {
+  writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));
+  console.log(${JSON.stringify(JSON.stringify(readiness))});
+  process.on("SIGTERM", () => process.exit(0));
+  setInterval(() => {}, 1000);
+} else if (process.argv[2] === "stop") {
+  appendFileSync(${JSON.stringify(stopLog)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+  if (${stopExitCode} === 0) {
+    process.kill(Number(readFileSync(${JSON.stringify(pidPath)}, "utf8")), "SIGTERM");
+  }
+  process.exit(${stopExitCode});
+}
+`,
+    "utf8"
+  );
+  chmodSync(binary, 0o755);
+  return { binary, stopLog };
+}
+
+const VALID_READINESS = {
+  protocolVersion: 2,
+  socketPath: "/tmp/fake-strata.sock",
+  serviceEpoch: "7",
+  recovered: false,
+  validationMode: "tscOnly"
+} as const;
+
+describe("kernel service readiness identity and cleanup", () => {
+  it("strictly retains readiness identity, normalizes the digest, and stops in band", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "strata-service-fake-"));
+    temporary.push(directory);
+    const fake = fakeServiceBinary(directory, VALID_READINESS);
+
+    const service = await startKernelService(corpusRoot, {
+      binaryPath: fake.binary,
+      directory
+    });
+    expect(service).toMatchObject({
+      socketPath: VALID_READINESS.socketPath,
+      serviceEpoch: "7",
+      recovered: false,
+      validationMode: "tscOnly",
+      validationManifestDigest: null
+    });
+
+    await service.stop({ preserveDirectory: true });
+    const stopArgs = JSON.parse(readFileSync(fake.stopLog, "utf8").trim());
+    expect(stopArgs).toEqual([
+      "stop",
+      "--socket",
+      VALID_READINESS.socketPath,
+      "--wait-ms",
+      "30000"
+    ]);
+  });
+
+  it.each([
+    ["missing required key", { ...VALID_READINESS, serviceEpoch: undefined }],
+    ["unknown key", { ...VALID_READINESS, redbPath: "/secret" }]
+  ])("rejects readiness with a %s", async (_label, readiness) => {
+    const directory = mkdtempSync(join(tmpdir(), "strata-service-invalid-ready-"));
+    temporary.push(directory);
+    const fake = fakeServiceBinary(directory, readiness);
+
+    await expect(
+      startKernelService(corpusRoot, { binaryPath: fake.binary, directory })
+    ).rejects.toThrow();
+  });
+
+  it("falls back to SIGTERM when in-band stop cannot reach the socket", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "strata-service-stop-fallback-"));
+    temporary.push(directory);
+    const fake = fakeServiceBinary(directory, VALID_READINESS, 3);
+    const service = await startKernelService(corpusRoot, {
+      binaryPath: fake.binary,
+      directory
+    });
+
+    await service.stop({ preserveDirectory: true });
+    expect(service.child.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(fake.stopLog, "utf8").trim())).toEqual([
+      "stop",
+      "--socket",
+      VALID_READINESS.socketPath,
+      "--wait-ms",
+      "30000"
+    ]);
+  });
+});
 
 describe("kernel service directory lifecycle", () => {
   it(

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import type { CoordinationClient } from "@strata-code/coordination-client";
+import { z } from "zod";
 import { createQualifiedKernelSnapshot, type QualifiedTaskManifest } from "./tasks.js";
 
 const packageRoot = resolve(__dirname, "..");
@@ -14,9 +15,60 @@ const repoRoot = resolve(packageRoot, "../..");
 export interface RunningKernelService {
   child: ChildProcessByStdio<null, Readable, Readable>;
   socketPath: string;
+  serviceEpoch: string;
+  recovered: boolean;
+  validationMode: "tscOnly" | "behavioral";
+  validationManifestDigest: string | null;
   directory: string;
   auditPath: string;
   stop(stopOptions?: { preserveDirectory?: boolean }): Promise<void>;
+}
+
+const canonicalU64 = z
+  .string()
+  .regex(/^(0|[1-9][0-9]*)$/)
+  .refine((value) => BigInt(value) <= 18_446_744_073_709_551_615n);
+
+const readinessSchema = z
+  .object({
+    protocolVersion: z.literal(2),
+    socketPath: z.string().min(1),
+    serviceEpoch: canonicalU64,
+    recovered: z.boolean(),
+    validationMode: z.enum(["tscOnly", "behavioral"]),
+    validationManifestDigest: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable()
+      .optional()
+      .transform((value) => value ?? null)
+  })
+  .strict();
+
+function waitForExit(child: ChildProcessByStdio<null, Readable, Readable>): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => child.once("exit", () => resolve()));
+}
+
+async function requestInBandStop(
+  binary: string,
+  socketPath: string
+): Promise<{ code: number | null; launchFailed: boolean }> {
+  const stopper = spawn(
+    binary,
+    ["stop", "--socket", socketPath, "--wait-ms", "30000"],
+    { cwd: repoRoot, stdio: "ignore" }
+  );
+  return await new Promise((resolveStop) => {
+    let settled = false;
+    const resolveOnce = (result: { code: number | null; launchFailed: boolean }) => {
+      if (settled) return;
+      settled = true;
+      resolveStop(result);
+    };
+    stopper.once("error", () => resolveOnce({ code: null, launchFailed: true }));
+    stopper.once("exit", (code) => resolveOnce({ code, launchFailed: false }));
+  });
 }
 
 /**
@@ -99,25 +151,45 @@ export async function startKernelService(
   ], { cwd: repoRoot, env: options?.env ?? process.env, stdio: ["ignore", "pipe", "pipe"] });
   const stderr: Buffer[] = [];
   child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
-  const line = await new Promise<string>((resolveLine, reject) => {
-    const reader = createInterface({ input: child.stdout });
-    const readinessTimeoutMs = readinessTimeoutMsFor(options);
-    const timer = setTimeout(
-      () => reject(new Error(`service readiness timed out after ${readinessTimeoutMs}ms`)),
-      readinessTimeoutMs
-    );
-    reader.once("line", (value) => { clearTimeout(timer); reader.close(); resolveLine(value); });
-    child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`service exited ${code}: ${Buffer.concat(stderr)}`)); });
-  });
-  const ready = JSON.parse(line) as { socketPath: string };
+  let ready: z.infer<typeof readinessSchema>;
+  try {
+    const line = await new Promise<string>((resolveLine, reject) => {
+      const reader = createInterface({ input: child.stdout });
+      const readinessTimeoutMs = readinessTimeoutMsFor(options);
+      const timer = setTimeout(
+        () => reject(new Error(`service readiness timed out after ${readinessTimeoutMs}ms`)),
+        readinessTimeoutMs
+      );
+      reader.once("line", (value) => { clearTimeout(timer); reader.close(); resolveLine(value); });
+      child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`service exited ${code}: ${Buffer.concat(stderr)}`)); });
+    });
+    ready = readinessSchema.parse(JSON.parse(line));
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    await waitForExit(child);
+    throw error;
+  }
   return {
     child,
     socketPath: ready.socketPath,
+    serviceEpoch: ready.serviceEpoch,
+    recovered: ready.recovered,
+    validationMode: ready.validationMode,
+    validationManifestDigest: ready.validationManifestDigest,
     directory,
     auditPath,
     async stop(stopOptions?: { preserveDirectory?: boolean }) {
-      if (child.exitCode === null) child.kill("SIGTERM");
-      await new Promise<void>((resolveStop) => child.once("exit", () => resolveStop()));
+      if (child.exitCode === null && child.signalCode === null) {
+        const stopped = await requestInBandStop(binary, ready.socketPath);
+        if (stopped.launchFailed || stopped.code === 3 || stopped.code === 4 || stopped.code === 6) {
+          child.kill("SIGTERM");
+        } else if (stopped.code !== 0 && stopped.code !== 5) {
+          // An undocumented CLI failure is also not an acknowledgement. Keep
+          // cleanup bounded and reap the process we own.
+          child.kill("SIGTERM");
+        }
+      }
+      await waitForExit(child);
       if (!stopOptions?.preserveDirectory) rmSync(directory, { recursive: true, force: true });
     }
   };
