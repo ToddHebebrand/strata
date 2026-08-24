@@ -4,11 +4,11 @@ Date: 2026-08-24
 
 ## Question and fixed workload
 
-Does wait or hold time on the three D-2 global locks become a material ten-client bottleneck? Each actor warmed 10 cycles, the sample counters were reset at a global idle barrier, then each recorded 50 cycles of `hello`, `list_modules(limit=64)`, `find_declarations(User, interface)`, and `read_events(afterSequence=0, limit=64)`. Arms used `examples/medium`, tsc-only validation, persistent bridge off, identical actor IDs, three repetitions, and N=1/N=10.
+Does wait or hold time on the three D-2 global locks become a material ten-client bottleneck? Each actor warmed 10 cycles, all actors were released from one explicit common barrier, the sample counters were reset at a global idle barrier, then all actors were again released together to record 50 cycles of `hello`, `list_modules(limit=64)`, `find_declarations(User, interface)`, and `read_events(afterSequence=0, limit=64)`. Arms used `examples/medium`, tsc-only validation, persistent bridge off, identical actor IDs, three repetitions, and N=1/N=10. Reply and handshake shapes were validated strictly; any dropped mmap sample invalidated a run.
 
 ## Result
 
-Yes, for `session.journal` and `session.audit`; no for `session.protocol`. At N=10, conservative (maximum across three repetitions) wait p99 was 67.708–79.308 ms for the journal and 80.675–217.495 ms for audit, while protocol wait p99 remained at or below 0.005 ms. The current D-3b arm showed the worst audit tail (217.495 ms p99) and journal tail (79.308 ms p99). This fixed workload therefore resolves the debt as a real serialization bottleneck; it does not establish a universal performance claim. D-3b records a follow-up and does not optimize it.
+Yes, for `session.journal` and `session.audit`; no for `session.protocol`. At N=10, conservative (maximum across three repetitions) wait p99 was 65.153–70.936 ms for the journal and 100.734–112.464 ms for audit, while protocol wait p99 remained at or below 0.003 ms. The corrected common-barrier rerun therefore preserves the decision: journal and audit serialization are real bottlenecks in this workload; protocol locking is negligible. This does not establish a universal performance claim. D-3b records a follow-up and does not optimize it.
 
 All 18 mmap artifacts had `dropped=0`. Recorded counts were exactly 400/200/200 (protocol/journal/audit) for N=1 and 4000/2000/2000 for N=10. Clock-wrapper overhead is retained per run in the JSON and is not subtracted from any distribution.
 
@@ -16,24 +16,24 @@ All 18 mmap artifacts had `dropped=0`. Recorded counts were exactly 400/200/200 
 
 | arm | N | lock | wait p95 | wait p99 | hold p95 | hold p99 |
 |---|---:|---|---:|---:|---:|---:|
-| pre-d2-v1 | 1 | session.protocol | 0.001 | 0.001 | 0.041 | 0.055 |
-| pre-d2-v1 | 1 | session.journal | 0.000 | 0.000 | 4.988 | 6.508 |
-| pre-d2-v1 | 1 | session.audit | 0.000 | 0.001 | 4.971 | 5.564 |
-| pre-d2-v1 | 10 | session.protocol | 0.001 | 0.001 | 0.039 | 0.050 |
-| pre-d2-v1 | 10 | session.journal | 63.825 | 67.708 | 9.931 | 12.326 |
-| pre-d2-v1 | 10 | session.audit | 64.261 | 80.675 | 9.946 | 12.395 |
-| post-d2-v2 | 1 | session.protocol | 0.001 | 0.001 | 0.040 | 0.056 |
-| post-d2-v2 | 1 | session.journal | 0.000 | 0.001 | 5.254 | 6.723 |
-| post-d2-v2 | 1 | session.audit | 0.000 | 0.000 | 4.950 | 5.524 |
-| post-d2-v2 | 10 | session.protocol | 0.001 | 0.001 | 0.034 | 0.050 |
-| post-d2-v2 | 10 | session.journal | 63.968 | 76.391 | 10.822 | 12.513 |
-| post-d2-v2 | 10 | session.audit | 67.981 | 73.342 | 10.754 | 13.147 |
-| d3b | 1 | session.protocol | 0.001 | 0.002 | 0.039 | 0.053 |
-| d3b | 1 | session.journal | 0.000 | 0.000 | 5.381 | 7.444 |
-| d3b | 1 | session.audit | 0.000 | 0.000 | 5.434 | 7.954 |
-| d3b | 10 | session.protocol | 0.001 | 0.005 | 0.061 | 0.119 |
-| d3b | 10 | session.journal | 62.903 | 79.308 | 22.237 | 44.758 |
-| d3b | 10 | session.audit | 147.077 | 217.494 | 24.029 | 45.884 |
+| pre-d2-v1 | 1 | session.protocol | 0.002 | 0.003 | 0.088 | 0.116 |
+| pre-d2-v1 | 1 | session.journal | 0.001 | 0.001 | 6.961 | 9.094 |
+| pre-d2-v1 | 1 | session.audit | 0.001 | 0.001 | 7.667 | 10.883 |
+| pre-d2-v1 | 10 | session.protocol | 0.002 | 0.003 | 0.086 | 0.120 |
+| pre-d2-v1 | 10 | session.journal | 56.681 | 65.153 | 11.610 | 15.432 |
+| pre-d2-v1 | 10 | session.audit | 82.126 | 111.068 | 11.984 | 15.860 |
+| post-d2-v2 | 1 | session.protocol | 0.001 | 0.002 | 0.051 | 0.064 |
+| post-d2-v2 | 1 | session.journal | 0.000 | 0.001 | 5.768 | 8.216 |
+| post-d2-v2 | 1 | session.audit | 0.001 | 0.001 | 5.738 | 9.645 |
+| post-d2-v2 | 10 | session.protocol | 0.001 | 0.002 | 0.070 | 0.113 |
+| post-d2-v2 | 10 | session.journal | 59.953 | 67.069 | 10.150 | 13.031 |
+| post-d2-v2 | 10 | session.audit | 73.411 | 112.464 | 10.493 | 14.171 |
+| d3b | 1 | session.protocol | 0.001 | 0.001 | 0.073 | 0.088 |
+| d3b | 1 | session.journal | 0.000 | 0.000 | 5.415 | 5.840 |
+| d3b | 1 | session.audit | 0.001 | 0.001 | 5.343 | 5.745 |
+| d3b | 10 | session.protocol | 0.001 | 0.002 | 0.076 | 0.128 |
+| d3b | 10 | session.journal | 64.064 | 70.936 | 10.057 | 11.686 |
+| d3b | 10 | session.audit | 73.791 | 100.734 | 10.130 | 13.642 |
 
 ## Raw per-run tails (milliseconds)
 
@@ -41,75 +41,76 @@ All 18 mmap artifacts had `dropped=0`. Recorded counts were exactly 400/200/200 
 
 | arm | N | rep | wait p95 | wait p99 | wait max | hold p95 | hold p99 | hold max |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| pre-d2-v1 | 1 | 1 | 0.001 | 0.001 | 0.001 | 0.033 | 0.036 | 0.058 |
-| pre-d2-v1 | 1 | 2 | 0.001 | 0.001 | 0.001 | 0.034 | 0.037 | 0.050 |
-| pre-d2-v1 | 1 | 3 | 0.001 | 0.001 | 0.003 | 0.041 | 0.055 | 0.073 |
-| pre-d2-v1 | 10 | 1 | 0.001 | 0.001 | 0.092 | 0.037 | 0.047 | 0.354 |
-| pre-d2-v1 | 10 | 2 | 0.001 | 0.001 | 0.133 | 0.039 | 0.050 | 0.240 |
-| pre-d2-v1 | 10 | 3 | 0.001 | 0.001 | 0.166 | 0.035 | 0.046 | 0.189 |
-| post-d2-v2 | 1 | 1 | 0.001 | 0.001 | 0.001 | 0.031 | 0.037 | 0.055 |
-| post-d2-v2 | 1 | 2 | 0.001 | 0.001 | 0.001 | 0.033 | 0.035 | 0.052 |
-| post-d2-v2 | 1 | 3 | 0.001 | 0.001 | 0.005 | 0.040 | 0.056 | 0.086 |
-| post-d2-v2 | 10 | 1 | 0.001 | 0.001 | 0.174 | 0.034 | 0.050 | 2.419 |
-| post-d2-v2 | 10 | 2 | 0.001 | 0.001 | 0.161 | 0.034 | 0.042 | 0.114 |
-| post-d2-v2 | 10 | 3 | 0.001 | 0.001 | 0.155 | 0.033 | 0.039 | 0.080 |
-| d3b | 1 | 1 | 0.001 | 0.001 | 0.010 | 0.039 | 0.045 | 0.058 |
-| d3b | 1 | 2 | 0.001 | 0.002 | 0.034 | 0.039 | 0.053 | 0.160 |
-| d3b | 1 | 3 | 0.001 | 0.001 | 0.002 | 0.034 | 0.037 | 0.046 |
-| d3b | 10 | 1 | 0.001 | 0.001 | 0.237 | 0.036 | 0.063 | 0.158 |
-| d3b | 10 | 2 | 0.001 | 0.001 | 0.159 | 0.047 | 0.080 | 0.291 |
-| d3b | 10 | 3 | 0.001 | 0.005 | 1.865 | 0.061 | 0.119 | 1.298 |
+| pre-d2-v1 | 1 | 1 | 0.002 | 0.003 | 0.009 | 0.087 | 0.112 | 0.131 |
+| pre-d2-v1 | 1 | 2 | 0.002 | 0.003 | 0.016 | 0.088 | 0.114 | 0.208 |
+| pre-d2-v1 | 1 | 3 | 0.002 | 0.002 | 0.003 | 0.088 | 0.116 | 0.363 |
+| pre-d2-v1 | 10 | 1 | 0.001 | 0.001 | 0.090 | 0.056 | 0.089 | 0.343 |
+| pre-d2-v1 | 10 | 2 | 0.001 | 0.002 | 0.224 | 0.065 | 0.105 | 0.344 |
+| pre-d2-v1 | 10 | 3 | 0.002 | 0.003 | 0.226 | 0.086 | 0.120 | 0.350 |
+| post-d2-v2 | 1 | 1 | 0.001 | 0.001 | 0.004 | 0.051 | 0.064 | 0.109 |
+| post-d2-v2 | 1 | 2 | 0.001 | 0.001 | 0.002 | 0.047 | 0.057 | 0.093 |
+| post-d2-v2 | 1 | 3 | 0.001 | 0.002 | 0.023 | 0.050 | 0.054 | 0.070 |
+| post-d2-v2 | 10 | 1 | 0.001 | 0.001 | 0.218 | 0.070 | 0.113 | 0.634 |
+| post-d2-v2 | 10 | 2 | 0.001 | 0.002 | 0.159 | 0.056 | 0.095 | 0.275 |
+| post-d2-v2 | 10 | 3 | 0.001 | 0.001 | 0.169 | 0.061 | 0.111 | 0.290 |
+| d3b | 1 | 1 | 0.001 | 0.001 | 0.002 | 0.065 | 0.088 | 0.298 |
+| d3b | 1 | 2 | 0.001 | 0.001 | 0.003 | 0.073 | 0.081 | 0.192 |
+| d3b | 1 | 3 | 0.001 | 0.001 | 0.002 | 0.062 | 0.079 | 0.140 |
+| d3b | 10 | 1 | 0.001 | 0.001 | 0.174 | 0.064 | 0.105 | 0.240 |
+| d3b | 10 | 2 | 0.001 | 0.002 | 0.549 | 0.076 | 0.128 | 2.171 |
+| d3b | 10 | 3 | 0.001 | 0.001 | 0.466 | 0.056 | 0.092 | 0.170 |
 
 ### session.journal
 
 | arm | N | rep | wait p95 | wait p99 | wait max | hold p95 | hold p99 | hold max |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| pre-d2-v1 | 1 | 1 | 0.000 | 0.000 | 0.000 | 4.875 | 4.970 | 6.739 |
-| pre-d2-v1 | 1 | 2 | 0.000 | 0.000 | 0.000 | 4.779 | 4.870 | 5.054 |
-| pre-d2-v1 | 1 | 3 | 0.000 | 0.000 | 0.001 | 4.988 | 6.508 | 8.007 |
-| pre-d2-v1 | 10 | 1 | 59.643 | 63.844 | 80.790 | 9.921 | 10.893 | 33.196 |
-| pre-d2-v1 | 10 | 2 | 63.825 | 67.708 | 75.951 | 9.931 | 12.326 | 26.897 |
-| pre-d2-v1 | 10 | 3 | 62.030 | 65.749 | 94.111 | 9.549 | 10.840 | 15.130 |
-| post-d2-v2 | 1 | 1 | 0.000 | 0.000 | 0.001 | 4.766 | 4.909 | 4.962 |
-| post-d2-v2 | 1 | 2 | 0.000 | 0.000 | 0.000 | 4.860 | 5.231 | 5.931 |
-| post-d2-v2 | 1 | 3 | 0.000 | 0.001 | 0.001 | 5.254 | 6.723 | 44.970 |
-| post-d2-v2 | 10 | 1 | 53.849 | 62.424 | 68.426 | 10.005 | 11.027 | 16.140 |
-| post-d2-v2 | 10 | 2 | 62.001 | 76.391 | 127.249 | 10.822 | 12.513 | 32.678 |
-| post-d2-v2 | 10 | 3 | 63.968 | 66.947 | 69.048 | 9.989 | 10.469 | 14.160 |
-| d3b | 1 | 1 | 0.000 | 0.000 | 0.000 | 5.303 | 7.444 | 11.711 |
-| d3b | 1 | 2 | 0.000 | 0.000 | 0.001 | 5.381 | 6.042 | 13.777 |
-| d3b | 1 | 3 | 0.000 | 0.000 | 0.000 | 4.978 | 5.854 | 8.928 |
-| d3b | 10 | 1 | 52.816 | 54.944 | 68.813 | 9.933 | 11.984 | 23.088 |
-| d3b | 10 | 2 | 62.014 | 65.941 | 69.986 | 9.306 | 10.307 | 20.345 |
-| d3b | 10 | 3 | 62.903 | 79.308 | 286.252 | 22.237 | 44.758 | 114.906 |
+| pre-d2-v1 | 1 | 1 | 0.001 | 0.001 | 0.001 | 6.961 | 8.784 | 10.590 |
+| pre-d2-v1 | 1 | 2 | 0.001 | 0.001 | 0.001 | 5.624 | 7.489 | 44.699 |
+| pre-d2-v1 | 1 | 3 | 0.001 | 0.001 | 0.001 | 6.916 | 9.094 | 27.007 |
+| pre-d2-v1 | 10 | 1 | 33.204 | 62.008 | 78.574 | 11.610 | 15.432 | 36.005 |
+| pre-d2-v1 | 10 | 2 | 44.630 | 57.539 | 75.413 | 10.972 | 13.188 | 19.754 |
+| pre-d2-v1 | 10 | 3 | 56.681 | 65.153 | 75.474 | 11.161 | 14.144 | 52.812 |
+| post-d2-v2 | 1 | 1 | 0.000 | 0.001 | 0.001 | 5.240 | 7.099 | 9.618 |
+| post-d2-v2 | 1 | 2 | 0.000 | 0.001 | 0.001 | 5.768 | 8.216 | 10.295 |
+| post-d2-v2 | 1 | 3 | 0.000 | 0.000 | 0.001 | 5.277 | 7.318 | 9.817 |
+| post-d2-v2 | 10 | 1 | 20.523 | 49.961 | 67.649 | 9.828 | 12.486 | 45.012 |
+| post-d2-v2 | 10 | 2 | 59.851 | 67.069 | 91.650 | 10.150 | 13.031 | 96.330 |
+| post-d2-v2 | 10 | 3 | 59.953 | 61.902 | 64.675 | 9.793 | 10.972 | 28.000 |
+| d3b | 1 | 1 | 0.000 | 0.000 | 0.001 | 5.415 | 5.599 | 5.982 |
+| d3b | 1 | 2 | 0.000 | 0.000 | 0.001 | 5.366 | 5.840 | 9.497 |
+| d3b | 1 | 3 | 0.000 | 0.000 | 0.001 | 5.069 | 5.356 | 6.778 |
+| d3b | 10 | 1 | 64.064 | 70.936 | 73.833 | 9.841 | 11.152 | 37.230 |
+| d3b | 10 | 2 | 46.701 | 55.843 | 73.099 | 10.057 | 11.686 | 39.077 |
+| d3b | 10 | 3 | 39.825 | 55.620 | 71.620 | 9.040 | 10.109 | 15.057 |
 
 ### session.audit
 
 | arm | N | rep | wait p95 | wait p99 | wait max | hold p95 | hold p99 | hold max |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| pre-d2-v1 | 1 | 1 | 0.000 | 0.000 | 0.000 | 4.733 | 4.878 | 5.827 |
-| pre-d2-v1 | 1 | 2 | 0.000 | 0.000 | 0.000 | 4.834 | 5.061 | 5.140 |
-| pre-d2-v1 | 1 | 3 | 0.000 | 0.001 | 0.001 | 4.971 | 5.564 | 9.083 |
-| pre-d2-v1 | 10 | 1 | 62.462 | 65.054 | 70.793 | 9.946 | 11.187 | 34.005 |
-| pre-d2-v1 | 10 | 2 | 64.261 | 80.675 | 90.113 | 9.938 | 12.395 | 26.791 |
-| pre-d2-v1 | 10 | 3 | 23.215 | 48.868 | 54.319 | 9.690 | 11.032 | 19.194 |
-| post-d2-v2 | 1 | 1 | 0.000 | 0.000 | 0.001 | 4.950 | 5.429 | 7.065 |
-| post-d2-v2 | 1 | 2 | 0.000 | 0.000 | 0.001 | 4.668 | 4.871 | 9.216 |
-| post-d2-v2 | 1 | 3 | 0.000 | 0.000 | 0.002 | 4.907 | 5.524 | 22.655 |
-| post-d2-v2 | 10 | 1 | 64.349 | 67.280 | 105.957 | 10.010 | 11.776 | 15.463 |
-| post-d2-v2 | 10 | 2 | 67.981 | 73.342 | 142.731 | 10.754 | 13.147 | 33.234 |
-| post-d2-v2 | 10 | 3 | 38.797 | 41.408 | 44.667 | 9.967 | 10.574 | 14.174 |
-| d3b | 1 | 1 | 0.000 | 0.000 | 0.000 | 5.434 | 7.954 | 27.853 |
-| d3b | 1 | 2 | 0.000 | 0.000 | 0.001 | 5.305 | 5.591 | 10.967 |
-| d3b | 1 | 3 | 0.000 | 0.000 | 0.000 | 4.847 | 5.370 | 5.524 |
-| d3b | 10 | 1 | 42.659 | 54.278 | 80.099 | 9.935 | 12.892 | 26.949 |
-| d3b | 10 | 2 | 65.796 | 69.315 | 134.197 | 9.457 | 11.015 | 22.340 |
-| d3b | 10 | 3 | 147.077 | 217.494 | 334.311 | 24.029 | 45.884 | 101.850 |
+| pre-d2-v1 | 1 | 1 | 0.001 | 0.001 | 0.001 | 7.667 | 8.729 | 9.486 |
+| pre-d2-v1 | 1 | 2 | 0.001 | 0.001 | 0.001 | 6.925 | 10.883 | 22.340 |
+| pre-d2-v1 | 1 | 3 | 0.001 | 0.001 | 0.001 | 6.857 | 9.646 | 24.369 |
+| pre-d2-v1 | 10 | 1 | 82.126 | 111.068 | 183.615 | 11.984 | 15.860 | 43.930 |
+| pre-d2-v1 | 10 | 2 | 73.010 | 82.391 | 142.617 | 11.482 | 14.082 | 17.897 |
+| pre-d2-v1 | 10 | 3 | 71.975 | 94.933 | 145.307 | 11.878 | 15.013 | 36.889 |
+| post-d2-v2 | 1 | 1 | 0.001 | 0.001 | 0.001 | 5.727 | 7.594 | 17.547 |
+| post-d2-v2 | 1 | 2 | 0.000 | 0.001 | 0.001 | 5.738 | 9.645 | 25.868 |
+| post-d2-v2 | 1 | 3 | 0.000 | 0.001 | 0.001 | 4.948 | 5.311 | 9.764 |
+| post-d2-v2 | 10 | 1 | 69.970 | 107.409 | 135.183 | 10.007 | 13.978 | 45.240 |
+| post-d2-v2 | 10 | 2 | 73.411 | 112.464 | 201.481 | 10.493 | 14.171 | 147.202 |
+| post-d2-v2 | 10 | 3 | 69.456 | 81.143 | 147.410 | 9.910 | 12.443 | 27.799 |
+| d3b | 1 | 1 | 0.001 | 0.001 | 0.013 | 5.343 | 5.745 | 25.096 |
+| d3b | 1 | 2 | 0.001 | 0.001 | 0.001 | 5.224 | 5.647 | 5.902 |
+| d3b | 1 | 3 | 0.001 | 0.001 | 0.001 | 5.288 | 5.721 | 6.799 |
+| d3b | 10 | 1 | 69.152 | 87.929 | 182.867 | 9.704 | 12.873 | 35.097 |
+| d3b | 10 | 2 | 73.791 | 99.569 | 151.860 | 10.130 | 13.642 | 31.636 |
+| d3b | 10 | 3 | 66.773 | 100.734 | 127.034 | 9.333 | 11.835 | 16.049 |
 
 ## Provenance and limitation
 
-- Source refs: `db15b38` (protocol v1), `0e07f60` (protocol v2), and `6ff5bf3` (D-3b instrumentation head).
+- Source refs: `db15b38` (protocol v1), `0e07f60` (protocol v2), and `51d80aa` (review-corrected D-3b head).
 - Sampler commit: `6ff5bf3`; byte-identical `lock_metrics.rs` SHA-256 on all arms: `d2906395ac076b0da5bcacd8a46273ef208c821360fb064c885b457e391be3af`.
 - Runtime: v26.7.0; rustc 1.89.0 (29483883e 2025-08-04); Apple M4 Pro; Darwin arm64.
 - The planned `cherry-pick -n` did not apply cleanly because D-3b added drain fields beside the instrumented fields after both historical refs. Work stopped, then only version-specific wiring conflicts in `main.rs`/`session.rs` were resolved; the sampler source remained byte-identical. This is a methodology limitation, disclosed rather than hidden.
+- This artifact supersedes the earlier same-day capture: independent review exposed the missing explicit actor-release barrier and non-failing dropped-sample path, so all 18 arms were rerun after both were corrected.
 - Raw summaries, no-op timing, dirty-state disclosure, and exact provenance are in [the JSON artifact](d3b-lock-hold-time.json).

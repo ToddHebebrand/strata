@@ -7,6 +7,61 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-08-24 — D-3b closed: drain is one state machine and forced exit tells the truth
+
+**Decision:** D-3b (drain, stop, typed-client lane hygiene, harness cleanup, and
+the owed lock-hold measurement) is CLOSED on `feat/d3b-drain-stop`. One
+process-global drain controller makes admission and transition one atomic
+decision, counts an admitted request through response flush, and counts a stop
+acknowledgement through its own flush. SIGTERM, SIGINT, and the strict v2
+in-band `stop` frame all wake one nonblocking `poll` loop through a self-pipe.
+Health and repeated stop remain reachable through D-3a's two control-reserve
+slots while new sessions and new requests receive `service_draining`.
+
+Graceful completion exits 0 and removes exactly the current incarnation
+socket. Grace expiry with outstanding request/ack guards exits 3 without
+pretending to clean up crash state. Correspondingly, `stop --wait-ms` now
+returns success only after actual endpoint disappearance: an orphaned but
+unreachable socket is not a clean stop and reaches the caller's exit-6
+deadline. The typed client treats `service_draining` as terminal for that one
+call, destroys the affected lane, and never hides the result behind replay;
+the next queued call establishes a new lane generation. Live-compare retains
+the exact launched binary and asks that binary to stop in band before bounded
+signal fallback.
+
+**Forced-recovery result:** a deterministic post-Pending barrier holds one
+request past a 200 ms grace, the daemon exits 3, and restart produces exactly
+one `effect_result`, one `completed` journal record, and one parsed
+`request_recovered` audit event. Replaying the byte-identical request returns
+the same draft; a literal canonical operation ID created before the forced
+boundary is still readable and occurs exactly once in events. A separate
+real-contention gate proves a durable ticket remains exactly `queued` across
+drain and restart. No shutdown path fabricates cancellation. The independent
+implementation review found no critical issue, found the waited-stop bug plus
+the missing exact recovery/foreign-socket/drop-count gates, and all four
+findings were closed; record:
+`docs/superpowers/specs/2026-08-24-item-d3b-implementation-review-codex.md`.
+
+**Verification:** default lifecycle 20/20; `coordination-test-api` lifecycle
+25/25 and recovery 9/9; coordination client 82/82; live-compare 260 passed / 2
+skipped across 41 files, including the process RSS guard; all three strict
+Clippy configurations (default, coordination test API, lock instrumentation)
+green; `pnpm -r build` green; the complete
+`pnpm kernel:full-key-free:test` chain green. `pnpm -r test` reproduces only
+the pre-existing worktree-path-dependent
+`verify/extractFunctionCommit.test.ts` failure (`commit().ok` false in the real
+corpus case; main checkout passes), already recorded as outside D-3b. The
+required `cargo fmt --all -- --check` is also not green because the branch
+inherits broad repository formatter drift (3,096 diff lines across baseline
+files); the measured `lock_metrics.rs` remains byte-identical to its recorded
+SHA rather than silently changing the evidence source.
+
+**Carried risks:** `request_bindings` remains unbounded,
+`change_set_locks` remains insert-only, and delivered-event ceilings remain
+in-memory. They are retention/long-session work, not shutdown truthfulness, and
+stay out of D-3b. The measured journal/audit serialization follow-up is recorded
+immediately below and likewise is not folded into this lifecycle slice.
+
 ## 2026-08-24 — D-2's global-lock debt resolves as a real journal/audit bottleneck
 
 **Decision:** record the measured serialization as an explicit follow-up; do
@@ -17,13 +72,19 @@ arm used `examples/medium`, tsc-only validation, persistent bridge off, 10
 warmup cycles followed by 50 recorded cycles per actor, N=1 and N=10, and three
 repetitions.
 
+The independent implementation review found that the first capture did not
+explicitly release every actor from one common barrier and that its summarizer
+did not itself invalidate a nonzero dropped-sample count. Both were corrected,
+reply/handshake validation was made exact-shape, and all 18 arms were rerun at
+review-corrected head `51d80aa`; the artifact supersedes the earlier same-day
+capture rather than adjusting its numbers.
+
 **Finding:** `session.protocol` is not the bottleneck (conservative N=10 wait
-p99 at or below 0.005 ms). The journal and audit locks are. Across the three
-revisions, conservative N=10 journal wait p99 was 67.708–79.308 ms and audit
-wait p99 was 80.675–217.495 ms. The D-3b arm had the largest tails: journal
-79.308 ms p99 and audit 217.495 ms p99. Every run had the exact expected sample
-counts and zero dropped samples. This is a result for the registered workload,
-not a universal performance claim. Raw per-run distributions and provenance:
+p99 at or below 0.003 ms). The journal and audit locks are. Across the three
+revisions, conservative N=10 journal wait p99 was 65.153–70.936 ms and audit
+wait p99 was 100.734–112.464 ms. Every run had the exact expected sample counts
+and zero dropped samples. This is a result for the registered workload, not a
+universal performance claim. Raw per-run distributions and provenance:
 `docs/spikes/d3b-lock-hold-time.{json,md}`.
 
 **Why this happens:** observation requests still append durable journal and

@@ -17,18 +17,19 @@
       1,
       10
     ],
-    "repetitions": 3
+    "repetitions": 3,
+    "commonActorReleaseBarrier": true
   },
   "provenance": {
-    "capturedAt": "2026-08-24T19:24:30.916Z",
+    "capturedAt": "2026-08-24T19:53:19.545Z",
     "node": "v26.7.0",
     "rustc": "rustc 1.89.0 (29483883e 2025-08-04)",
-    "os": "Darwin MacBook-Pro-3.local 25.6.0 Darwin Kernel Version 25.6.0: Sat Jul 11 15:27:27 PDT 2026; root:xnu-12377.161.13~4/RELEASE_ARM64_T6041 arm64",
+    "os": "Darwin Mac 25.6.0 Darwin Kernel Version 25.6.0: Sat Jul 11 15:27:27 PDT 2026; root:xnu-12377.161.13~4/RELEASE_ARM64_T6041 arm64",
     "cpu": "Apple M4 Pro",
     "samplerCommit": "6ff5bf3",
     "samplerSourceSha256": "d2906395ac076b0da5bcacd8a46273ef208c821360fb064c885b457e391be3af",
-    "adapterSource": "packages/live-compare/src/lock-hold-workload.ts",
-    "patchApplication": "cherry-pick -n of 6ff5bf3 required version-specific conflict resolution in main.rs/session.rs; lock_metrics.rs remained byte-identical across all three arms"
+    "adapterSource": "packages/live-compare/src/lock-hold-workload.ts at 51d80aa",
+    "patchApplication": "cherry-pick -n of 6ff5bf3 required version-specific conflict resolution in main.rs/session.rs; lock_metrics.rs remained byte-identical across all three arms; corrected harness releases all actors from one explicit per-phase barrier and rejects any dropped sample"
   },
   "runs": [
     {
@@ -42,145 +43,145 @@
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 156914,
-        "meanNs": 15.6914
+        "totalNs": 147588,
+        "meanNs": 14.7588
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 400,
-            "totalNs": 110961,
-            "meanNs": 277.4025,
-            "maxNs": 1209,
-            "p50Ns": 250,
-            "p95Ns": 500,
-            "p99Ns": 791
+            "totalNs": 347083,
+            "meanNs": 867.7075,
+            "maxNs": 9250,
+            "p50Ns": 792,
+            "p95Ns": 1792,
+            "p99Ns": 2584
           },
           "hold": {
             "count": 400,
-            "totalNs": 5698612,
-            "meanNs": 14246.53,
-            "maxNs": 58250,
-            "p50Ns": 9000,
-            "p95Ns": 33125,
-            "p99Ns": 36292
+            "totalNs": 11411982,
+            "meanNs": 28529.955,
+            "maxNs": 130875,
+            "p50Ns": 12250,
+            "p95Ns": 87375,
+            "p99Ns": 111542
           }
         },
         "session.journal": {
           "wait": {
             "count": 200,
-            "totalNs": 26256,
-            "meanNs": 131.28,
-            "maxNs": 458,
-            "p50Ns": 125,
-            "p95Ns": 250,
-            "p99Ns": 333
-          },
-          "hold": {
-            "count": 200,
-            "totalNs": 811087797,
-            "meanNs": 4055438.985,
-            "maxNs": 6738667,
-            "p50Ns": 3883208,
-            "p95Ns": 4875292,
-            "p99Ns": 4970250
-          }
-        },
-        "session.audit": {
-          "wait": {
-            "count": 200,
-            "totalNs": 22748,
-            "meanNs": 113.74,
-            "maxNs": 459,
-            "p50Ns": 84,
-            "p95Ns": 209,
-            "p99Ns": 333
-          },
-          "hold": {
-            "count": 200,
-            "totalNs": 819749029,
-            "meanNs": 4098745.145,
-            "maxNs": 5827500,
-            "p50Ns": 3951041,
-            "p95Ns": 4732708,
-            "p99Ns": 4877666
-          }
-        }
-      }
-    },
-    {
-      "ref": "db15b38",
-      "label": "pre-d2-v1",
-      "protocolVersion": 1,
-      "actors": 1,
-      "repetition": 2,
-      "sourceSha": "db15b38",
-      "dirty": true,
-      "dropped": 0,
-      "noop": {
-        "iterations": 10000,
-        "totalNs": 150956,
-        "meanNs": 15.0956
-      },
-      "locks": {
-        "session.protocol": {
-          "wait": {
-            "count": 400,
-            "totalNs": 119707,
-            "meanNs": 299.2675,
+            "totalNs": 58706,
+            "meanNs": 293.53,
             "maxNs": 958,
             "p50Ns": 250,
-            "p95Ns": 625,
-            "p99Ns": 875
-          },
-          "hold": {
-            "count": 400,
-            "totalNs": 5836413,
-            "meanNs": 14591.0325,
-            "maxNs": 50417,
-            "p50Ns": 4500,
-            "p95Ns": 34250,
-            "p99Ns": 37042
-          }
-        },
-        "session.journal": {
-          "wait": {
-            "count": 200,
-            "totalNs": 25916,
-            "meanNs": 129.58,
-            "maxNs": 417,
-            "p50Ns": 125,
-            "p95Ns": 250,
-            "p99Ns": 333
+            "p95Ns": 584,
+            "p99Ns": 833
           },
           "hold": {
             "count": 200,
-            "totalNs": 832266424,
-            "meanNs": 4161332.12,
-            "maxNs": 5054000,
-            "p50Ns": 3846208,
-            "p95Ns": 4779375,
-            "p99Ns": 4870250
+            "totalNs": 964081041,
+            "meanNs": 4820405.205,
+            "maxNs": 10589834,
+            "p50Ns": 4639458,
+            "p95Ns": 6961042,
+            "p99Ns": 8783750
           }
         },
         "session.audit": {
           "wait": {
             "count": 200,
-            "totalNs": 24618,
-            "meanNs": 123.09,
-            "maxNs": 334,
-            "p50Ns": 84,
-            "p95Ns": 250,
-            "p99Ns": 333
+            "totalNs": 60088,
+            "meanNs": 300.44,
+            "maxNs": 1167,
+            "p50Ns": 250,
+            "p95Ns": 709,
+            "p99Ns": 1000
           },
           "hold": {
             "count": 200,
-            "totalNs": 837798788,
-            "meanNs": 4188993.94,
-            "maxNs": 5140167,
-            "p50Ns": 4044042,
-            "p95Ns": 4833792,
-            "p99Ns": 5061292
+            "totalNs": 983708788,
+            "meanNs": 4918543.94,
+            "maxNs": 9485750,
+            "p50Ns": 4616792,
+            "p95Ns": 7667291,
+            "p99Ns": 8728625
+          }
+        }
+      }
+    },
+    {
+      "ref": "db15b38",
+      "label": "pre-d2-v1",
+      "protocolVersion": 1,
+      "actors": 1,
+      "repetition": 2,
+      "sourceSha": "db15b38",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 158504,
+        "meanNs": 15.8504
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 245243,
+            "meanNs": 613.1075,
+            "maxNs": 15541,
+            "p50Ns": 292,
+            "p95Ns": 1667,
+            "p99Ns": 2791
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 9743247,
+            "meanNs": 24358.1175,
+            "maxNs": 208125,
+            "p50Ns": 11833,
+            "p95Ns": 87709,
+            "p99Ns": 114125
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 51174,
+            "meanNs": 255.87,
+            "maxNs": 1084,
+            "p50Ns": 208,
+            "p95Ns": 667,
+            "p99Ns": 1000
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 931295202,
+            "meanNs": 4656476.01,
+            "maxNs": 44699208,
+            "p50Ns": 4483375,
+            "p95Ns": 5624208,
+            "p99Ns": 7488750
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 47379,
+            "meanNs": 236.895,
+            "maxNs": 1250,
+            "p50Ns": 125,
+            "p95Ns": 792,
+            "p99Ns": 1167
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 944055509,
+            "meanNs": 4720277.545,
+            "maxNs": 22339750,
+            "p50Ns": 4409042,
+            "p95Ns": 6925125,
+            "p99Ns": 10882875
           }
         }
       }
@@ -196,299 +197,299 @@
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 166753,
-        "meanNs": 16.6753
+        "totalNs": 144447,
+        "meanNs": 14.4447
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 400,
-            "totalNs": 218834,
-            "meanNs": 547.085,
+            "totalNs": 267004,
+            "meanNs": 667.51,
             "maxNs": 2584,
-            "p50Ns": 541,
-            "p95Ns": 1000,
-            "p99Ns": 1375
+            "p50Ns": 542,
+            "p95Ns": 1542,
+            "p99Ns": 2042
           },
           "hold": {
             "count": 400,
-            "totalNs": 7426803,
-            "meanNs": 18567.0075,
-            "maxNs": 73458,
-            "p50Ns": 6334,
-            "p95Ns": 41000,
-            "p99Ns": 55459
+            "totalNs": 10281622,
+            "meanNs": 25704.055,
+            "maxNs": 362750,
+            "p50Ns": 10291,
+            "p95Ns": 88458,
+            "p99Ns": 115667
           }
         },
         "session.journal": {
           "wait": {
             "count": 200,
-            "totalNs": 36880,
-            "meanNs": 184.4,
-            "maxNs": 708,
+            "totalNs": 46085,
+            "meanNs": 230.425,
+            "maxNs": 750,
+            "p50Ns": 208,
+            "p95Ns": 500,
+            "p99Ns": 625
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 1014960754,
+            "meanNs": 5074803.77,
+            "maxNs": 27006542,
+            "p50Ns": 4680250,
+            "p95Ns": 6916417,
+            "p99Ns": 9094084
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 50256,
+            "meanNs": 251.28,
+            "maxNs": 1375,
             "p50Ns": 167,
-            "p95Ns": 333,
-            "p99Ns": 459
-          },
-          "hold": {
-            "count": 200,
-            "totalNs": 873543084,
-            "meanNs": 4367715.42,
-            "maxNs": 8007291,
-            "p50Ns": 4530292,
-            "p95Ns": 4987792,
-            "p99Ns": 6507834
-          }
-        },
-        "session.audit": {
-          "wait": {
-            "count": 200,
-            "totalNs": 32368,
-            "meanNs": 161.84,
-            "maxNs": 666,
-            "p50Ns": 125,
-            "p95Ns": 375,
-            "p99Ns": 583
-          },
-          "hold": {
-            "count": 200,
-            "totalNs": 863553290,
-            "meanNs": 4317766.45,
-            "maxNs": 9083000,
-            "p50Ns": 4119625,
-            "p95Ns": 4970833,
-            "p99Ns": 5563667
-          }
-        }
-      }
-    },
-    {
-      "ref": "db15b38",
-      "label": "pre-d2-v1",
-      "protocolVersion": 1,
-      "actors": 10,
-      "repetition": 1,
-      "sourceSha": "db15b38",
-      "dirty": true,
-      "dropped": 0,
-      "noop": {
-        "iterations": 10000,
-        "totalNs": 142418,
-        "meanNs": 14.2418
-      },
-      "locks": {
-        "session.protocol": {
-          "wait": {
-            "count": 4000,
-            "totalNs": 2039154,
-            "meanNs": 509.7885,
-            "maxNs": 92416,
-            "p50Ns": 292,
-            "p95Ns": 792,
-            "p99Ns": 1166
-          },
-          "hold": {
-            "count": 4000,
-            "totalNs": 62230838,
-            "meanNs": 15557.7095,
-            "maxNs": 354500,
-            "p50Ns": 11250,
-            "p95Ns": 37042,
-            "p99Ns": 47042
-          }
-        },
-        "session.journal": {
-          "wait": {
-            "count": 2000,
-            "totalNs": 62670326179,
-            "meanNs": 31335163.0895,
-            "maxNs": 80789916,
-            "p50Ns": 29785000,
-            "p95Ns": 59642542,
-            "p99Ns": 63843750
-          },
-          "hold": {
-            "count": 2000,
-            "totalNs": 16574760272,
-            "meanNs": 8287380.136,
-            "maxNs": 33195708,
-            "p50Ns": 8024416,
-            "p95Ns": 9920542,
-            "p99Ns": 10893042
-          }
-        },
-        "session.audit": {
-          "wait": {
-            "count": 2000,
-            "totalNs": 68845756546,
-            "meanNs": 34422878.273,
-            "maxNs": 70793333,
-            "p50Ns": 36627458,
-            "p95Ns": 62461709,
-            "p99Ns": 65053791
-          },
-          "hold": {
-            "count": 2000,
-            "totalNs": 16600642694,
-            "meanNs": 8300321.347,
-            "maxNs": 34004750,
-            "p50Ns": 8041083,
-            "p95Ns": 9945792,
-            "p99Ns": 11186916
-          }
-        }
-      }
-    },
-    {
-      "ref": "db15b38",
-      "label": "pre-d2-v1",
-      "protocolVersion": 1,
-      "actors": 10,
-      "repetition": 2,
-      "sourceSha": "db15b38",
-      "dirty": true,
-      "dropped": 0,
-      "noop": {
-        "iterations": 10000,
-        "totalNs": 192169,
-        "meanNs": 19.2169
-      },
-      "locks": {
-        "session.protocol": {
-          "wait": {
-            "count": 4000,
-            "totalNs": 2320524,
-            "meanNs": 580.131,
-            "maxNs": 133459,
-            "p50Ns": 333,
-            "p95Ns": 875,
-            "p99Ns": 1209
-          },
-          "hold": {
-            "count": 4000,
-            "totalNs": 64501271,
-            "meanNs": 16125.31775,
-            "maxNs": 240250,
-            "p50Ns": 10667,
-            "p95Ns": 38917,
-            "p99Ns": 49625
-          }
-        },
-        "session.journal": {
-          "wait": {
-            "count": 2000,
-            "totalNs": 74837206727,
-            "meanNs": 37418603.3635,
-            "maxNs": 75951292,
-            "p50Ns": 44548083,
-            "p95Ns": 63825375,
-            "p99Ns": 67707791
-          },
-          "hold": {
-            "count": 2000,
-            "totalNs": 16696352685,
-            "meanNs": 8348176.3425,
-            "maxNs": 26896958,
-            "p50Ns": 8041292,
-            "p95Ns": 9930792,
-            "p99Ns": 12325708
-          }
-        },
-        "session.audit": {
-          "wait": {
-            "count": 2000,
-            "totalNs": 57639494710,
-            "meanNs": 28819747.355,
-            "maxNs": 90113208,
-            "p50Ns": 20691750,
-            "p95Ns": 64261042,
-            "p99Ns": 80675000
-          },
-          "hold": {
-            "count": 2000,
-            "totalNs": 16722055091,
-            "meanNs": 8361027.5455,
-            "maxNs": 26790833,
-            "p50Ns": 8058042,
-            "p95Ns": 9938333,
-            "p99Ns": 12394958
-          }
-        }
-      }
-    },
-    {
-      "ref": "db15b38",
-      "label": "pre-d2-v1",
-      "protocolVersion": 1,
-      "actors": 10,
-      "repetition": 3,
-      "sourceSha": "db15b38",
-      "dirty": true,
-      "dropped": 0,
-      "noop": {
-        "iterations": 10000,
-        "totalNs": 149752,
-        "meanNs": 14.9752
-      },
-      "locks": {
-        "session.protocol": {
-          "wait": {
-            "count": 4000,
-            "totalNs": 2144405,
-            "meanNs": 536.10125,
-            "maxNs": 165625,
-            "p50Ns": 292,
-            "p95Ns": 750,
+            "p95Ns": 791,
             "p99Ns": 959
           },
           "hold": {
+            "count": 200,
+            "totalNs": 1001407047,
+            "meanNs": 5007035.235,
+            "maxNs": 24368708,
+            "p50Ns": 4748833,
+            "p95Ns": 6857500,
+            "p99Ns": 9645959
+          }
+        }
+      }
+    },
+    {
+      "ref": "db15b38",
+      "label": "pre-d2-v1",
+      "protocolVersion": 1,
+      "actors": 10,
+      "repetition": 1,
+      "sourceSha": "db15b38",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 159792,
+        "meanNs": 15.9792
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
             "count": 4000,
-            "totalNs": 59436082,
-            "meanNs": 14859.0205,
-            "maxNs": 189042,
-            "p50Ns": 10083,
-            "p95Ns": 35125,
-            "p99Ns": 45958
+            "totalNs": 2332834,
+            "meanNs": 583.2085,
+            "maxNs": 89917,
+            "p50Ns": 250,
+            "p95Ns": 959,
+            "p99Ns": 1292
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 72464294,
+            "meanNs": 18116.0735,
+            "maxNs": 342792,
+            "p50Ns": 11542,
+            "p95Ns": 56417,
+            "p99Ns": 89000
           }
         },
         "session.journal": {
           "wait": {
             "count": 2000,
-            "totalNs": 100743244265,
-            "meanNs": 50371622.1325,
-            "maxNs": 94111083,
-            "p50Ns": 51988750,
-            "p95Ns": 62029959,
-            "p99Ns": 65748500
+            "totalNs": 21187587471,
+            "meanNs": 10593793.7355,
+            "maxNs": 78573917,
+            "p50Ns": 4228875,
+            "p95Ns": 33204084,
+            "p99Ns": 62008458
           },
           "hold": {
             "count": 2000,
-            "totalNs": 16540325151,
-            "meanNs": 8270162.5755,
-            "maxNs": 15129959,
-            "p50Ns": 8044625,
-            "p95Ns": 9548958,
-            "p99Ns": 10839708
+            "totalNs": 17601574279,
+            "meanNs": 8800787.1395,
+            "maxNs": 36005125,
+            "p50Ns": 8216917,
+            "p95Ns": 11609542,
+            "p99Ns": 15432083
           }
         },
         "session.audit": {
           "wait": {
             "count": 2000,
-            "totalNs": 30479223626,
-            "meanNs": 15239611.813,
-            "maxNs": 54318916,
-            "p50Ns": 12515958,
-            "p95Ns": 23214625,
-            "p99Ns": 48867959
+            "totalNs": 118521506016,
+            "meanNs": 59260753.008,
+            "maxNs": 183614667,
+            "p50Ns": 61408917,
+            "p95Ns": 82126208,
+            "p99Ns": 111067916
           },
           "hold": {
             "count": 2000,
-            "totalNs": 16573664214,
-            "meanNs": 8286832.107,
-            "maxNs": 19193875,
-            "p50Ns": 8023583,
-            "p95Ns": 9690333,
-            "p99Ns": 11031750
+            "totalNs": 17720339550,
+            "meanNs": 8860169.775,
+            "maxNs": 43929708,
+            "p50Ns": 8178333,
+            "p95Ns": 11983542,
+            "p99Ns": 15859958
+          }
+        }
+      }
+    },
+    {
+      "ref": "db15b38",
+      "label": "pre-d2-v1",
+      "protocolVersion": 1,
+      "actors": 10,
+      "repetition": 2,
+      "sourceSha": "db15b38",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 155492,
+        "meanNs": 15.5492
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 3309572,
+            "meanNs": 827.393,
+            "maxNs": 223708,
+            "p50Ns": 583,
+            "p95Ns": 1042,
+            "p99Ns": 1542
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 93951185,
+            "meanNs": 23487.79625,
+            "maxNs": 344167,
+            "p50Ns": 12417,
+            "p95Ns": 65250,
+            "p99Ns": 105125
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 20212015930,
+            "meanNs": 10106007.965,
+            "maxNs": 75412958,
+            "p50Ns": 4308125,
+            "p95Ns": 44630375,
+            "p99Ns": 57538666
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 17246938886,
+            "meanNs": 8623469.443,
+            "maxNs": 19754333,
+            "p50Ns": 8307166,
+            "p95Ns": 10971625,
+            "p99Ns": 13187834
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 116494368085,
+            "meanNs": 58247184.0425,
+            "maxNs": 142616542,
+            "p50Ns": 61039833,
+            "p95Ns": 73010333,
+            "p99Ns": 82391250
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 17411861106,
+            "meanNs": 8705930.553,
+            "maxNs": 17896958,
+            "p50Ns": 8364417,
+            "p95Ns": 11482167,
+            "p99Ns": 14082500
+          }
+        }
+      }
+    },
+    {
+      "ref": "db15b38",
+      "label": "pre-d2-v1",
+      "protocolVersion": 1,
+      "actors": 10,
+      "repetition": 3,
+      "sourceSha": "db15b38",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 155953,
+        "meanNs": 15.5953
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 3545988,
+            "meanNs": 886.497,
+            "maxNs": 225583,
+            "p50Ns": 542,
+            "p95Ns": 1541,
+            "p99Ns": 2625
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 101877087,
+            "meanNs": 25469.27175,
+            "maxNs": 349917,
+            "p50Ns": 12459,
+            "p95Ns": 85584,
+            "p99Ns": 119667
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 29022995315,
+            "meanNs": 14511497.6575,
+            "maxNs": 75473791,
+            "p50Ns": 4088958,
+            "p95Ns": 56680875,
+            "p99Ns": 65153250
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 17372052000,
+            "meanNs": 8686026,
+            "maxNs": 52811875,
+            "p50Ns": 8410083,
+            "p95Ns": 11160958,
+            "p99Ns": 14143625
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 108713858265,
+            "meanNs": 54356929.1325,
+            "maxNs": 145306625,
+            "p50Ns": 61182083,
+            "p95Ns": 71975167,
+            "p99Ns": 94933042
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 17523921728,
+            "meanNs": 8761960.864,
+            "maxNs": 36889459,
+            "p50Ns": 8462958,
+            "p95Ns": 11877875,
+            "p99Ns": 15013208
           }
         }
       }
@@ -504,222 +505,222 @@
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 143914,
-        "meanNs": 14.3914
+        "totalNs": 161580,
+        "meanNs": 16.158
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 400,
-            "totalNs": 119789,
-            "meanNs": 299.4725,
-            "maxNs": 1084,
+            "totalNs": 241667,
+            "meanNs": 604.1675,
+            "maxNs": 3750,
+            "p50Ns": 625,
+            "p95Ns": 1042,
+            "p99Ns": 1416
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 8166155,
+            "meanNs": 20415.3875,
+            "maxNs": 108708,
+            "p50Ns": 7875,
+            "p95Ns": 51208,
+            "p99Ns": 63875
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 52496,
+            "meanNs": 262.48,
+            "maxNs": 583,
             "p50Ns": 250,
-            "p95Ns": 625,
-            "p99Ns": 834
-          },
-          "hold": {
-            "count": 400,
-            "totalNs": 5321329,
-            "meanNs": 13303.3225,
-            "maxNs": 54959,
-            "p50Ns": 4208,
-            "p95Ns": 31208,
-            "p99Ns": 36833
-          }
-        },
-        "session.journal": {
-          "wait": {
-            "count": 200,
-            "totalNs": 30166,
-            "meanNs": 150.83,
-            "maxNs": 708,
-            "p50Ns": 125,
-            "p95Ns": 250,
-            "p99Ns": 417
-          },
-          "hold": {
-            "count": 200,
-            "totalNs": 813627082,
-            "meanNs": 4068135.41,
-            "maxNs": 4961667,
-            "p50Ns": 3848375,
-            "p95Ns": 4766458,
-            "p99Ns": 4908917
-          }
-        },
-        "session.audit": {
-          "wait": {
-            "count": 200,
-            "totalNs": 21496,
-            "meanNs": 107.48,
-            "maxNs": 500,
-            "p50Ns": 84,
-            "p95Ns": 208,
-            "p99Ns": 291
-          },
-          "hold": {
-            "count": 200,
-            "totalNs": 855980456,
-            "meanNs": 4279902.28,
-            "maxNs": 7065084,
-            "p50Ns": 4134250,
-            "p95Ns": 4950334,
-            "p99Ns": 5428875
-          }
-        }
-      }
-    },
-    {
-      "ref": "0e07f60",
-      "label": "post-d2-v2",
-      "protocolVersion": 2,
-      "actors": 1,
-      "repetition": 2,
-      "sourceSha": "0e07f60",
-      "dirty": true,
-      "dropped": 0,
-      "noop": {
-        "iterations": 10000,
-        "totalNs": 167958,
-        "meanNs": 16.7958
-      },
-      "locks": {
-        "session.protocol": {
-          "wait": {
-            "count": 400,
-            "totalNs": 138463,
-            "meanNs": 346.1575,
-            "maxNs": 1417,
-            "p50Ns": 292,
-            "p95Ns": 750,
-            "p99Ns": 875
-          },
-          "hold": {
-            "count": 400,
-            "totalNs": 5717632,
-            "meanNs": 14294.08,
-            "maxNs": 51667,
-            "p50Ns": 5625,
-            "p95Ns": 33125,
-            "p99Ns": 35375
-          }
-        },
-        "session.journal": {
-          "wait": {
-            "count": 200,
-            "totalNs": 33339,
-            "meanNs": 166.695,
-            "maxNs": 459,
-            "p50Ns": 166,
-            "p95Ns": 292,
-            "p99Ns": 417
-          },
-          "hold": {
-            "count": 200,
-            "totalNs": 823817372,
-            "meanNs": 4119086.86,
-            "maxNs": 5930750,
-            "p50Ns": 3991417,
-            "p95Ns": 4859875,
-            "p99Ns": 5230583
-          }
-        },
-        "session.audit": {
-          "wait": {
-            "count": 200,
-            "totalNs": 26801,
-            "meanNs": 134.005,
-            "maxNs": 500,
-            "p50Ns": 125,
-            "p95Ns": 292,
-            "p99Ns": 458
-          },
-          "hold": {
-            "count": 200,
-            "totalNs": 821236267,
-            "meanNs": 4106181.335,
-            "maxNs": 9216500,
-            "p50Ns": 3940250,
-            "p95Ns": 4667625,
-            "p99Ns": 4870834
-          }
-        }
-      }
-    },
-    {
-      "ref": "0e07f60",
-      "label": "post-d2-v2",
-      "protocolVersion": 2,
-      "actors": 1,
-      "repetition": 3,
-      "sourceSha": "0e07f60",
-      "dirty": true,
-      "dropped": 0,
-      "noop": {
-        "iterations": 10000,
-        "totalNs": 151788,
-        "meanNs": 15.1788
-      },
-      "locks": {
-        "session.protocol": {
-          "wait": {
-            "count": 400,
-            "totalNs": 218875,
-            "meanNs": 547.1875,
-            "maxNs": 5500,
-            "p50Ns": 459,
-            "p95Ns": 1000,
-            "p99Ns": 1292
-          },
-          "hold": {
-            "count": 400,
-            "totalNs": 7001589,
-            "meanNs": 17503.9725,
-            "maxNs": 86250,
-            "p50Ns": 15542,
-            "p95Ns": 40292,
-            "p99Ns": 56208
-          }
-        },
-        "session.journal": {
-          "wait": {
-            "count": 200,
-            "totalNs": 40049,
-            "meanNs": 200.245,
-            "maxNs": 1292,
-            "p50Ns": 167,
-            "p95Ns": 375,
+            "p95Ns": 458,
             "p99Ns": 542
           },
           "hold": {
             "count": 200,
-            "totalNs": 895485619,
-            "meanNs": 4477428.095,
-            "maxNs": 44969750,
-            "p50Ns": 4080459,
-            "p95Ns": 5254291,
-            "p99Ns": 6723166
+            "totalNs": 882438419,
+            "meanNs": 4412192.095,
+            "maxNs": 9617583,
+            "p50Ns": 4297166,
+            "p95Ns": 5240375,
+            "p99Ns": 7098666
           }
         },
         "session.audit": {
           "wait": {
             "count": 200,
-            "totalNs": 34330,
-            "meanNs": 171.65,
-            "maxNs": 2125,
+            "totalNs": 52334,
+            "meanNs": 261.67,
+            "maxNs": 708,
+            "p50Ns": 209,
+            "p95Ns": 542,
+            "p99Ns": 625
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 902807965,
+            "meanNs": 4514039.825,
+            "maxNs": 17547000,
+            "p50Ns": 4370500,
+            "p95Ns": 5727166,
+            "p99Ns": 7594167
+          }
+        }
+      }
+    },
+    {
+      "ref": "0e07f60",
+      "label": "post-d2-v2",
+      "protocolVersion": 2,
+      "actors": 1,
+      "repetition": 2,
+      "sourceSha": "0e07f60",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 148295,
+        "meanNs": 14.8295
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 151862,
+            "meanNs": 379.655,
+            "maxNs": 1750,
+            "p50Ns": 292,
+            "p95Ns": 875,
+            "p99Ns": 1042
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 6094835,
+            "meanNs": 15237.0875,
+            "maxNs": 93250,
+            "p50Ns": 5000,
+            "p95Ns": 47083,
+            "p99Ns": 57458
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 34701,
+            "meanNs": 173.505,
+            "maxNs": 542,
+            "p50Ns": 166,
+            "p95Ns": 333,
+            "p99Ns": 500
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 867875834,
+            "meanNs": 4339379.17,
+            "maxNs": 10294542,
+            "p50Ns": 4191209,
+            "p95Ns": 5768291,
+            "p99Ns": 8215625
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 32834,
+            "meanNs": 164.17,
+            "maxNs": 584,
+            "p50Ns": 125,
+            "p95Ns": 458,
+            "p99Ns": 500
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 920779174,
+            "meanNs": 4603895.87,
+            "maxNs": 25868333,
+            "p50Ns": 4313916,
+            "p95Ns": 5737708,
+            "p99Ns": 9644958
+          }
+        }
+      }
+    },
+    {
+      "ref": "0e07f60",
+      "label": "post-d2-v2",
+      "protocolVersion": 2,
+      "actors": 1,
+      "repetition": 3,
+      "sourceSha": "0e07f60",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 160954,
+        "meanNs": 16.0954
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 166405,
+            "meanNs": 416.0125,
+            "maxNs": 23000,
+            "p50Ns": 167,
+            "p95Ns": 1083,
+            "p99Ns": 1625
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 5469322,
+            "meanNs": 13673.305,
+            "maxNs": 70041,
+            "p50Ns": 4292,
+            "p95Ns": 49500,
+            "p99Ns": 54292
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 32322,
+            "meanNs": 161.61,
+            "maxNs": 500,
             "p50Ns": 125,
             "p95Ns": 375,
             "p99Ns": 458
           },
           "hold": {
             "count": 200,
-            "totalNs": 867055381,
-            "meanNs": 4335276.905,
-            "maxNs": 22654875,
-            "p50Ns": 4291209,
-            "p95Ns": 4906500,
-            "p99Ns": 5523875
+            "totalNs": 867399616,
+            "meanNs": 4336998.08,
+            "maxNs": 9817000,
+            "p50Ns": 4176292,
+            "p95Ns": 5277250,
+            "p99Ns": 7317916
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 30248,
+            "meanNs": 151.24,
+            "maxNs": 667,
+            "p50Ns": 84,
+            "p95Ns": 458,
+            "p99Ns": 625
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 843629959,
+            "meanNs": 4218149.795,
+            "maxNs": 9763542,
+            "p50Ns": 4110125,
+            "p95Ns": 4947625,
+            "p99Ns": 5310584
           }
         }
       }
@@ -735,68 +736,68 @@
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 155780,
-        "meanNs": 15.578
+        "totalNs": 152328,
+        "meanNs": 15.2328
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 4000,
-            "totalNs": 1902311,
-            "meanNs": 475.57775,
-            "maxNs": 174208,
-            "p50Ns": 250,
-            "p95Ns": 709,
-            "p99Ns": 1125
+            "totalNs": 3033979,
+            "meanNs": 758.49475,
+            "maxNs": 218250,
+            "p50Ns": 458,
+            "p95Ns": 916,
+            "p99Ns": 1417
           },
           "hold": {
             "count": 4000,
-            "totalNs": 57276224,
-            "meanNs": 14319.056,
-            "maxNs": 2419125,
-            "p50Ns": 11625,
-            "p95Ns": 33667,
-            "p99Ns": 50041
+            "totalNs": 83917622,
+            "meanNs": 20979.4055,
+            "maxNs": 633917,
+            "p50Ns": 9375,
+            "p95Ns": 69791,
+            "p99Ns": 112709
           }
         },
         "session.journal": {
           "wait": {
             "count": 2000,
-            "totalNs": 56071700724,
-            "meanNs": 28035850.362,
-            "maxNs": 68426458,
-            "p50Ns": 35423875,
-            "p95Ns": 53848625,
-            "p99Ns": 62424084
+            "totalNs": 12149689107,
+            "meanNs": 6074844.5535,
+            "maxNs": 67649250,
+            "p50Ns": 3860375,
+            "p95Ns": 20523083,
+            "p99Ns": 49961375
           },
           "hold": {
             "count": 2000,
-            "totalNs": 16806590154,
-            "meanNs": 8403295.077,
-            "maxNs": 16140416,
-            "p50Ns": 8115083,
-            "p95Ns": 10005292,
-            "p99Ns": 11027041
+            "totalNs": 16527544867,
+            "meanNs": 8263772.4335,
+            "maxNs": 45011666,
+            "p50Ns": 8011917,
+            "p95Ns": 9827792,
+            "p99Ns": 12486334
           }
         },
         "session.audit": {
           "wait": {
             "count": 2000,
-            "totalNs": 77492200334,
-            "meanNs": 38746100.167,
-            "maxNs": 105957459,
-            "p50Ns": 30828666,
-            "p95Ns": 64348666,
-            "p99Ns": 67280417
+            "totalNs": 118499341097,
+            "meanNs": 59249670.5485,
+            "maxNs": 135183333,
+            "p50Ns": 60092792,
+            "p95Ns": 69970208,
+            "p99Ns": 107408666
           },
           "hold": {
             "count": 2000,
-            "totalNs": 16851509185,
-            "meanNs": 8425754.5925,
-            "maxNs": 15463500,
-            "p50Ns": 8069584,
-            "p95Ns": 10010125,
-            "p99Ns": 11776000
+            "totalNs": 16648702518,
+            "meanNs": 8324351.259,
+            "maxNs": 45240417,
+            "p50Ns": 8012666,
+            "p95Ns": 10007459,
+            "p99Ns": 13978041
           }
         }
       }
@@ -812,68 +813,68 @@
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 154343,
-        "meanNs": 15.4343
+        "totalNs": 154081,
+        "meanNs": 15.4081
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 4000,
-            "totalNs": 2294981,
-            "meanNs": 573.74525,
-            "maxNs": 160584,
-            "p50Ns": 292,
-            "p95Ns": 875,
-            "p99Ns": 1250
+            "totalNs": 3236578,
+            "meanNs": 809.1445,
+            "maxNs": 159375,
+            "p50Ns": 459,
+            "p95Ns": 1083,
+            "p99Ns": 1625
           },
           "hold": {
             "count": 4000,
-            "totalNs": 54611218,
-            "meanNs": 13652.8045,
-            "maxNs": 113833,
-            "p50Ns": 9792,
-            "p95Ns": 34250,
-            "p99Ns": 42209
+            "totalNs": 79511114,
+            "meanNs": 19877.7785,
+            "maxNs": 275459,
+            "p50Ns": 11792,
+            "p95Ns": 56084,
+            "p99Ns": 95209
           }
         },
         "session.journal": {
           "wait": {
             "count": 2000,
-            "totalNs": 71063582656,
-            "meanNs": 35531791.328,
-            "maxNs": 127249000,
-            "p50Ns": 38011417,
-            "p95Ns": 62001167,
-            "p99Ns": 76391459
+            "totalNs": 21044645910,
+            "meanNs": 10522322.955,
+            "maxNs": 91650041,
+            "p50Ns": 3974916,
+            "p95Ns": 59850625,
+            "p99Ns": 67069250
           },
           "hold": {
             "count": 2000,
-            "totalNs": 17620259827,
-            "meanNs": 8810129.9135,
-            "maxNs": 32678500,
-            "p50Ns": 8413584,
-            "p95Ns": 10822250,
-            "p99Ns": 12513375
+            "totalNs": 17224290437,
+            "meanNs": 8612145.2185,
+            "maxNs": 96329916,
+            "p50Ns": 8121583,
+            "p95Ns": 10150041,
+            "p99Ns": 13031417
           }
         },
         "session.audit": {
           "wait": {
             "count": 2000,
-            "totalNs": 69195830363,
-            "meanNs": 34597915.1815,
-            "maxNs": 142730583,
-            "p50Ns": 27899416,
-            "p95Ns": 67980667,
-            "p99Ns": 73341750
+            "totalNs": 116169559897,
+            "meanNs": 58084779.9485,
+            "maxNs": 201481166,
+            "p50Ns": 62007250,
+            "p95Ns": 73411417,
+            "p99Ns": 112464250
           },
           "hold": {
             "count": 2000,
-            "totalNs": 17680181021,
-            "meanNs": 8840090.5105,
-            "maxNs": 33233542,
-            "p50Ns": 8439042,
-            "p95Ns": 10754416,
-            "p99Ns": 13147292
+            "totalNs": 17373255478,
+            "meanNs": 8686627.739,
+            "maxNs": 147202375,
+            "p50Ns": 8190375,
+            "p95Ns": 10493250,
+            "p99Ns": 14170875
           }
         }
       }
@@ -889,530 +890,530 @@
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 141749,
-        "meanNs": 14.1749
+        "totalNs": 159413,
+        "meanNs": 15.9413
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 4000,
-            "totalNs": 2048336,
-            "meanNs": 512.084,
-            "maxNs": 155250,
-            "p50Ns": 250,
-            "p95Ns": 750,
-            "p99Ns": 1083
+            "totalNs": 2743465,
+            "meanNs": 685.86625,
+            "maxNs": 169000,
+            "p50Ns": 333,
+            "p95Ns": 875,
+            "p99Ns": 1417
           },
           "hold": {
             "count": 4000,
-            "totalNs": 52016421,
-            "meanNs": 13004.10525,
-            "maxNs": 79833,
-            "p50Ns": 8000,
-            "p95Ns": 32917,
-            "p99Ns": 38583
+            "totalNs": 73868571,
+            "meanNs": 18467.14275,
+            "maxNs": 290375,
+            "p50Ns": 9167,
+            "p95Ns": 61375,
+            "p99Ns": 111042
           }
         },
         "session.journal": {
           "wait": {
             "count": 2000,
-            "totalNs": 73983939692,
-            "meanNs": 36991969.846,
-            "maxNs": 69047542,
-            "p50Ns": 28929667,
-            "p95Ns": 63968000,
-            "p99Ns": 66947459
+            "totalNs": 30824237478,
+            "meanNs": 15412118.739,
+            "maxNs": 64674750,
+            "p50Ns": 4132542,
+            "p95Ns": 59953417,
+            "p99Ns": 61901625
           },
           "hold": {
             "count": 2000,
-            "totalNs": 16568505638,
-            "meanNs": 8284252.819,
-            "maxNs": 14160375,
-            "p50Ns": 8027000,
-            "p95Ns": 9988542,
-            "p99Ns": 10468625
+            "totalNs": 16761917188,
+            "meanNs": 8380958.594,
+            "maxNs": 28000250,
+            "p50Ns": 8096250,
+            "p95Ns": 9793208,
+            "p99Ns": 10971625
           }
         },
         "session.audit": {
           "wait": {
             "count": 2000,
-            "totalNs": 57561832613,
-            "meanNs": 28780916.3065,
-            "maxNs": 44666875,
-            "p50Ns": 35850584,
-            "p95Ns": 38796958,
-            "p99Ns": 41407959
+            "totalNs": 102047468624,
+            "meanNs": 51023734.312,
+            "maxNs": 147409667,
+            "p50Ns": 60889916,
+            "p95Ns": 69455791,
+            "p99Ns": 81143125
           },
           "hold": {
             "count": 2000,
-            "totalNs": 16589712504,
-            "meanNs": 8294856.252,
-            "maxNs": 14173959,
-            "p50Ns": 8022833,
-            "p95Ns": 9966666,
-            "p99Ns": 10574167
+            "totalNs": 16842010879,
+            "meanNs": 8421005.4395,
+            "maxNs": 27799125,
+            "p50Ns": 8091417,
+            "p95Ns": 9910209,
+            "p99Ns": 12442708
           }
         }
       }
     },
     {
-      "ref": "6ff5bf3",
+      "ref": "51d80aa",
       "label": "d3b",
       "protocolVersion": 2,
       "actors": 1,
       "repetition": 1,
-      "sourceSha": "6ff5bf3",
-      "dirty": true,
+      "sourceSha": "51d80aa",
+      "dirty": false,
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 169000,
-        "meanNs": 16.9
+        "totalNs": 148288,
+        "meanNs": 14.8288
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 400,
-            "totalNs": 213630,
-            "meanNs": 534.075,
-            "maxNs": 9917,
-            "p50Ns": 458,
-            "p95Ns": 1000,
-            "p99Ns": 1209
+            "totalNs": 191847,
+            "meanNs": 479.6175,
+            "maxNs": 1583,
+            "p50Ns": 500,
+            "p95Ns": 875,
+            "p99Ns": 1166
           },
           "hold": {
             "count": 400,
-            "totalNs": 7034584,
-            "meanNs": 17586.46,
-            "maxNs": 57792,
-            "p50Ns": 8084,
-            "p95Ns": 39250,
-            "p99Ns": 44791
+            "totalNs": 9111086,
+            "meanNs": 22777.715,
+            "maxNs": 297583,
+            "p50Ns": 9333,
+            "p95Ns": 65041,
+            "p99Ns": 87584
           }
         },
         "session.journal": {
           "wait": {
             "count": 200,
-            "totalNs": 26954,
-            "meanNs": 134.77,
-            "maxNs": 292,
-            "p50Ns": 125,
-            "p95Ns": 250,
-            "p99Ns": 292
+            "totalNs": 40115,
+            "meanNs": 200.575,
+            "maxNs": 500,
+            "p50Ns": 208,
+            "p95Ns": 375,
+            "p99Ns": 458
           },
           "hold": {
             "count": 200,
-            "totalNs": 898944243,
-            "meanNs": 4494721.215,
-            "maxNs": 11711042,
-            "p50Ns": 4513750,
-            "p95Ns": 5302833,
-            "p99Ns": 7444500
+            "totalNs": 933947418,
+            "meanNs": 4669737.09,
+            "maxNs": 5982208,
+            "p50Ns": 4746959,
+            "p95Ns": 5414750,
+            "p99Ns": 5599250
           }
         },
         "session.audit": {
           "wait": {
             "count": 200,
-            "totalNs": 30127,
-            "meanNs": 150.635,
-            "maxNs": 417,
-            "p50Ns": 125,
-            "p95Ns": 333,
-            "p99Ns": 416
+            "totalNs": 59867,
+            "meanNs": 299.335,
+            "maxNs": 13084,
+            "p50Ns": 208,
+            "p95Ns": 500,
+            "p99Ns": 667
           },
           "hold": {
             "count": 200,
-            "totalNs": 925490130,
-            "meanNs": 4627450.65,
-            "maxNs": 27852750,
-            "p50Ns": 4464041,
-            "p95Ns": 5434459,
-            "p99Ns": 7953542
+            "totalNs": 953575264,
+            "meanNs": 4767876.32,
+            "maxNs": 25096292,
+            "p50Ns": 4749250,
+            "p95Ns": 5343292,
+            "p99Ns": 5745417
           }
         }
       }
     },
     {
-      "ref": "6ff5bf3",
+      "ref": "51d80aa",
       "label": "d3b",
       "protocolVersion": 2,
       "actors": 1,
       "repetition": 2,
-      "sourceSha": "6ff5bf3",
-      "dirty": true,
+      "sourceSha": "51d80aa",
+      "dirty": false,
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 154916,
-        "meanNs": 15.4916
+        "totalNs": 157836,
+        "meanNs": 15.7836
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 400,
-            "totalNs": 233073,
-            "meanNs": 582.6825,
-            "maxNs": 34375,
-            "p50Ns": 417,
-            "p95Ns": 1083,
-            "p99Ns": 1541
+            "totalNs": 178620,
+            "meanNs": 446.55,
+            "maxNs": 2667,
+            "p50Ns": 458,
+            "p95Ns": 917,
+            "p99Ns": 1125
           },
           "hold": {
             "count": 400,
-            "totalNs": 7289413,
-            "meanNs": 18223.5325,
-            "maxNs": 160291,
-            "p50Ns": 15375,
-            "p95Ns": 38916,
-            "p99Ns": 52792
+            "totalNs": 8703545,
+            "meanNs": 21758.8625,
+            "maxNs": 192334,
+            "p50Ns": 8667,
+            "p95Ns": 72875,
+            "p99Ns": 81250
           }
         },
         "session.journal": {
           "wait": {
             "count": 200,
-            "totalNs": 29743,
-            "meanNs": 148.715,
-            "maxNs": 583,
-            "p50Ns": 125,
-            "p95Ns": 291,
-            "p99Ns": 334
+            "totalNs": 39712,
+            "meanNs": 198.56,
+            "maxNs": 708,
+            "p50Ns": 208,
+            "p95Ns": 375,
+            "p99Ns": 459
           },
           "hold": {
             "count": 200,
-            "totalNs": 908875544,
-            "meanNs": 4544377.72,
-            "maxNs": 13776625,
-            "p50Ns": 4637833,
-            "p95Ns": 5380708,
-            "p99Ns": 6042000
+            "totalNs": 930800497,
+            "meanNs": 4654002.485,
+            "maxNs": 9497417,
+            "p50Ns": 4688458,
+            "p95Ns": 5365584,
+            "p99Ns": 5839584
           }
         },
         "session.audit": {
           "wait": {
             "count": 200,
-            "totalNs": 29218,
-            "meanNs": 146.09,
-            "maxNs": 500,
-            "p50Ns": 125,
-            "p95Ns": 333,
+            "totalNs": 46908,
+            "meanNs": 234.54,
+            "maxNs": 791,
+            "p50Ns": 208,
+            "p95Ns": 542,
+            "p99Ns": 667
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 918585416,
+            "meanNs": 4592927.08,
+            "maxNs": 5902209,
+            "p50Ns": 4614083,
+            "p95Ns": 5223792,
+            "p99Ns": 5646917
+          }
+        }
+      }
+    },
+    {
+      "ref": "51d80aa",
+      "label": "d3b",
+      "protocolVersion": 2,
+      "actors": 1,
+      "repetition": 3,
+      "sourceSha": "51d80aa",
+      "dirty": false,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 175679,
+        "meanNs": 17.5679
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 171690,
+            "meanNs": 429.225,
+            "maxNs": 1583,
+            "p50Ns": 458,
+            "p95Ns": 792,
+            "p99Ns": 1042
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 8124679,
+            "meanNs": 20311.6975,
+            "maxNs": 139792,
+            "p50Ns": 5500,
+            "p95Ns": 62292,
+            "p99Ns": 79250
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 37634,
+            "meanNs": 188.17,
+            "maxNs": 542,
+            "p50Ns": 208,
+            "p95Ns": 375,
             "p99Ns": 417
           },
           "hold": {
             "count": 200,
-            "totalNs": 906752126,
-            "meanNs": 4533760.63,
-            "maxNs": 10966666,
-            "p50Ns": 4514750,
-            "p95Ns": 5305042,
-            "p99Ns": 5590583
-          }
-        }
-      }
-    },
-    {
-      "ref": "6ff5bf3",
-      "label": "d3b",
-      "protocolVersion": 2,
-      "actors": 1,
-      "repetition": 3,
-      "sourceSha": "6ff5bf3",
-      "dirty": true,
-      "dropped": 0,
-      "noop": {
-        "iterations": 10000,
-        "totalNs": 144510,
-        "meanNs": 14.451
-      },
-      "locks": {
-        "session.protocol": {
-          "wait": {
-            "count": 400,
-            "totalNs": 130341,
-            "meanNs": 325.8525,
-            "maxNs": 1833,
-            "p50Ns": 291,
-            "p95Ns": 708,
-            "p99Ns": 1125
-          },
-          "hold": {
-            "count": 400,
-            "totalNs": 5801226,
-            "meanNs": 14503.065,
-            "maxNs": 45875,
-            "p50Ns": 4333,
-            "p95Ns": 33916,
-            "p99Ns": 37209
-          }
-        },
-        "session.journal": {
-          "wait": {
-            "count": 200,
-            "totalNs": 25621,
-            "meanNs": 128.105,
-            "maxNs": 459,
-            "p50Ns": 125,
-            "p95Ns": 250,
-            "p99Ns": 292
-          },
-          "hold": {
-            "count": 200,
-            "totalNs": 829854164,
-            "meanNs": 4149270.82,
-            "maxNs": 8927667,
-            "p50Ns": 3979875,
-            "p95Ns": 4978000,
-            "p99Ns": 5854125
+            "totalNs": 905055053,
+            "meanNs": 4525275.265,
+            "maxNs": 6777916,
+            "p50Ns": 4623833,
+            "p95Ns": 5069500,
+            "p99Ns": 5356083
           }
         },
         "session.audit": {
           "wait": {
             "count": 200,
-            "totalNs": 25505,
-            "meanNs": 127.525,
-            "maxNs": 458,
-            "p50Ns": 125,
-            "p95Ns": 250,
-            "p99Ns": 375
+            "totalNs": 45334,
+            "meanNs": 226.67,
+            "maxNs": 750,
+            "p50Ns": 208,
+            "p95Ns": 500,
+            "p99Ns": 666
           },
           "hold": {
             "count": 200,
-            "totalNs": 835120040,
-            "meanNs": 4175600.2,
-            "maxNs": 5523875,
-            "p50Ns": 3983875,
-            "p95Ns": 4847458,
-            "p99Ns": 5370291
+            "totalNs": 910891307,
+            "meanNs": 4554456.535,
+            "maxNs": 6799209,
+            "p50Ns": 4524083,
+            "p95Ns": 5287750,
+            "p99Ns": 5721334
           }
         }
       }
     },
     {
-      "ref": "6ff5bf3",
+      "ref": "51d80aa",
       "label": "d3b",
       "protocolVersion": 2,
       "actors": 10,
       "repetition": 1,
-      "sourceSha": "6ff5bf3",
-      "dirty": true,
+      "sourceSha": "51d80aa",
+      "dirty": false,
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 159883,
-        "meanNs": 15.9883
+        "totalNs": 155917,
+        "meanNs": 15.5917
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 4000,
-            "totalNs": 2420780,
-            "meanNs": 605.195,
-            "maxNs": 237000,
-            "p50Ns": 292,
-            "p95Ns": 834,
-            "p99Ns": 1333
+            "totalNs": 2379458,
+            "meanNs": 594.8645,
+            "maxNs": 173958,
+            "p50Ns": 250,
+            "p95Ns": 958,
+            "p99Ns": 1375
           },
           "hold": {
             "count": 4000,
-            "totalNs": 60885680,
-            "meanNs": 15221.42,
-            "maxNs": 158167,
-            "p50Ns": 10375,
-            "p95Ns": 36000,
-            "p99Ns": 62542
+            "totalNs": 70216267,
+            "meanNs": 17554.06675,
+            "maxNs": 240042,
+            "p50Ns": 9500,
+            "p95Ns": 63917,
+            "p99Ns": 104958
           }
         },
         "session.journal": {
           "wait": {
             "count": 2000,
-            "totalNs": 72019309804,
-            "meanNs": 36009654.902,
-            "maxNs": 68813042,
-            "p50Ns": 28942041,
-            "p95Ns": 52816000,
-            "p99Ns": 54943708
+            "totalNs": 58008740571,
+            "meanNs": 29004370.2855,
+            "maxNs": 73833292,
+            "p50Ns": 5657250,
+            "p95Ns": 64064333,
+            "p99Ns": 70936041
           },
           "hold": {
             "count": 2000,
-            "totalNs": 16511399794,
-            "meanNs": 8255699.897,
-            "maxNs": 23088125,
-            "p50Ns": 8005834,
-            "p95Ns": 9932792,
-            "p99Ns": 11983583
+            "totalNs": 16791919887,
+            "meanNs": 8395959.9435,
+            "maxNs": 37230292,
+            "p50Ns": 8067375,
+            "p95Ns": 9840917,
+            "p99Ns": 11152250
           }
         },
         "session.audit": {
           "wait": {
             "count": 2000,
-            "totalNs": 59009802082,
-            "meanNs": 29504901.041,
-            "maxNs": 80099167,
-            "p50Ns": 35637334,
-            "p95Ns": 42659084,
-            "p99Ns": 54277709
+            "totalNs": 75068900339,
+            "meanNs": 37534450.1695,
+            "maxNs": 182867209,
+            "p50Ns": 53402583,
+            "p95Ns": 69151625,
+            "p99Ns": 87929083
           },
           "hold": {
             "count": 2000,
-            "totalNs": 16531683310,
-            "meanNs": 8265841.655,
-            "maxNs": 26949292,
-            "p50Ns": 8007125,
-            "p95Ns": 9934875,
-            "p99Ns": 12892125
+            "totalNs": 16883911984,
+            "meanNs": 8441955.992,
+            "maxNs": 35097333,
+            "p50Ns": 8194791,
+            "p95Ns": 9703625,
+            "p99Ns": 12872542
           }
         }
       }
     },
     {
-      "ref": "6ff5bf3",
+      "ref": "51d80aa",
       "label": "d3b",
       "protocolVersion": 2,
       "actors": 10,
       "repetition": 2,
-      "sourceSha": "6ff5bf3",
-      "dirty": true,
+      "sourceSha": "51d80aa",
+      "dirty": false,
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 153180,
-        "meanNs": 15.318
+        "totalNs": 183007,
+        "meanNs": 18.3007
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 4000,
-            "totalNs": 2084188,
-            "meanNs": 521.047,
-            "maxNs": 159291,
-            "p50Ns": 208,
-            "p95Ns": 834,
-            "p99Ns": 1250
+            "totalNs": 3293897,
+            "meanNs": 823.47425,
+            "maxNs": 549042,
+            "p50Ns": 333,
+            "p95Ns": 1209,
+            "p99Ns": 1833
           },
           "hold": {
             "count": 4000,
-            "totalNs": 57152638,
-            "meanNs": 14288.1595,
-            "maxNs": 290625,
-            "p50Ns": 8083,
-            "p95Ns": 46666,
-            "p99Ns": 80000
+            "totalNs": 89079183,
+            "meanNs": 22269.79575,
+            "maxNs": 2170666,
+            "p50Ns": 10000,
+            "p95Ns": 76250,
+            "p99Ns": 128167
           }
         },
         "session.journal": {
           "wait": {
             "count": 2000,
-            "totalNs": 53599576249,
-            "meanNs": 26799788.1245,
-            "maxNs": 69986250,
-            "p50Ns": 12429250,
-            "p95Ns": 62014000,
-            "p99Ns": 65940875
+            "totalNs": 17773680853,
+            "meanNs": 8886840.4265,
+            "maxNs": 73099125,
+            "p50Ns": 3998833,
+            "p95Ns": 46701459,
+            "p99Ns": 55843000
           },
           "hold": {
             "count": 2000,
-            "totalNs": 16515874732,
-            "meanNs": 8257937.366,
-            "maxNs": 20344708,
-            "p50Ns": 8025125,
-            "p95Ns": 9305833,
-            "p99Ns": 10306541
+            "totalNs": 16989097864,
+            "meanNs": 8494548.932,
+            "maxNs": 39077209,
+            "p50Ns": 8245084,
+            "p95Ns": 10057250,
+            "p99Ns": 11685583
           }
         },
         "session.audit": {
           "wait": {
             "count": 2000,
-            "totalNs": 77720618476,
-            "meanNs": 38860309.238,
-            "maxNs": 134197250,
-            "p50Ns": 53048833,
-            "p95Ns": 65796125,
-            "p99Ns": 69314792
+            "totalNs": 117595290575,
+            "meanNs": 58797645.2875,
+            "maxNs": 151859583,
+            "p50Ns": 61113292,
+            "p95Ns": 73791250,
+            "p99Ns": 99569166
           },
           "hold": {
             "count": 2000,
-            "totalNs": 16581121331,
-            "meanNs": 8290560.6655,
-            "maxNs": 22340292,
-            "p50Ns": 8037042,
-            "p95Ns": 9456667,
-            "p99Ns": 11015125
+            "totalNs": 17173730233,
+            "meanNs": 8586865.1165,
+            "maxNs": 31635875,
+            "p50Ns": 8172500,
+            "p95Ns": 10129875,
+            "p99Ns": 13641792
           }
         }
       }
     },
     {
-      "ref": "6ff5bf3",
+      "ref": "51d80aa",
       "label": "d3b",
       "protocolVersion": 2,
       "actors": 10,
       "repetition": 3,
-      "sourceSha": "6ff5bf3",
-      "dirty": true,
+      "sourceSha": "51d80aa",
+      "dirty": false,
       "dropped": 0,
       "noop": {
         "iterations": 10000,
-        "totalNs": 149631,
-        "meanNs": 14.9631
+        "totalNs": 155538,
+        "meanNs": 15.5538
       },
       "locks": {
         "session.protocol": {
           "wait": {
             "count": 4000,
-            "totalNs": 5909488,
-            "meanNs": 1477.372,
-            "maxNs": 1865000,
-            "p50Ns": 500,
-            "p95Ns": 1250,
-            "p99Ns": 4750
+            "totalNs": 3318561,
+            "meanNs": 829.64025,
+            "maxNs": 465667,
+            "p50Ns": 333,
+            "p95Ns": 708,
+            "p99Ns": 958
           },
           "hold": {
             "count": 4000,
-            "totalNs": 89359107,
-            "meanNs": 22339.77675,
-            "maxNs": 1297625,
-            "p50Ns": 18125,
-            "p95Ns": 61125,
-            "p99Ns": 119041
+            "totalNs": 75153635,
+            "meanNs": 18788.40875,
+            "maxNs": 170417,
+            "p50Ns": 9000,
+            "p95Ns": 55792,
+            "p99Ns": 92417
           }
         },
         "session.journal": {
           "wait": {
             "count": 2000,
-            "totalNs": 38775376181,
-            "meanNs": 19387688.0905,
-            "maxNs": 286252250,
-            "p50Ns": 4821750,
-            "p95Ns": 62902875,
-            "p99Ns": 79307625
+            "totalNs": 23804468672,
+            "meanNs": 11902234.336,
+            "maxNs": 71619792,
+            "p50Ns": 4398375,
+            "p95Ns": 39825500,
+            "p99Ns": 55619708
           },
           "hold": {
             "count": 2000,
-            "totalNs": 21517937671,
-            "meanNs": 10758968.8355,
-            "maxNs": 114906208,
-            "p50Ns": 8622958,
-            "p95Ns": 22237209,
-            "p99Ns": 44758083
+            "totalNs": 16186623301,
+            "meanNs": 8093311.6505,
+            "maxNs": 15056625,
+            "p50Ns": 7996875,
+            "p95Ns": 9039916,
+            "p99Ns": 10109459
           }
         },
         "session.audit": {
           "wait": {
             "count": 2000,
-            "totalNs": 137650338133,
-            "meanNs": 68825169.0665,
-            "maxNs": 334311167,
-            "p50Ns": 64798959,
-            "p95Ns": 147076708,
-            "p99Ns": 217494500
+            "totalNs": 103754573705,
+            "meanNs": 51877286.8525,
+            "maxNs": 127034292,
+            "p50Ns": 55884125,
+            "p95Ns": 66773000,
+            "p99Ns": 100733583
           },
           "hold": {
             "count": 2000,
-            "totalNs": 22171606845,
-            "meanNs": 11085803.4225,
-            "maxNs": 101850250,
-            "p50Ns": 8699458,
-            "p95Ns": 24029292,
-            "p99Ns": 45883791
+            "totalNs": 16258260173,
+            "meanNs": 8129130.0865,
+            "maxNs": 16049125,
+            "p50Ns": 7996667,
+            "p95Ns": 9333292,
+            "p99Ns": 11835000
           }
         }
       }
