@@ -27,6 +27,7 @@ fn default_build_service_has_no_test_authority_surface() {
         "claim-token",
         "fence",
         "test-hook",
+        "lock-samples",
     ] {
         assert!(
             !help.contains(forbidden),
@@ -49,6 +50,17 @@ fn default_build_service_has_no_test_authority_surface() {
         String::from_utf8_lossy(&rejected.stderr).contains("unknown option"),
         "{}",
         String::from_utf8_lossy(&rejected.stderr)
+    );
+
+    let lock_samples = Command::new(env!("CARGO_BIN_EXE_strata-kernel-service"))
+        .args(["serve", "--lock-samples", "/tmp/strata-lock-samples.bin"])
+        .output()
+        .unwrap();
+    assert!(!lock_samples.status.success());
+    assert!(
+        String::from_utf8_lossy(&lock_samples.stderr).contains("unknown option"),
+        "{}",
+        String::from_utf8_lossy(&lock_samples.stderr)
     );
 }
 

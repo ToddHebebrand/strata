@@ -1,0 +1,1421 @@
+{
+  "schemaVersion": 1,
+  "question": "Do session.protocol, session.journal, or session.audit lock wait/hold tails become a material ten-client bottleneck in the fixed read-only workload?",
+  "workload": {
+    "corpus": "examples/medium",
+    "validationMode": "tscOnly",
+    "persistentBridge": false,
+    "warmupCyclesPerActor": 10,
+    "recordedCyclesPerActor": 50,
+    "actions": [
+      "hello",
+      "list_modules(limit=64)",
+      "find_declarations(User,interface)",
+      "read_events(afterSequence=0,limit=64)"
+    ],
+    "actorCounts": [
+      1,
+      10
+    ],
+    "repetitions": 3
+  },
+  "provenance": {
+    "capturedAt": "2026-08-24T19:24:30.916Z",
+    "node": "v26.7.0",
+    "rustc": "rustc 1.89.0 (29483883e 2025-08-04)",
+    "os": "Darwin MacBook-Pro-3.local 25.6.0 Darwin Kernel Version 25.6.0: Sat Jul 11 15:27:27 PDT 2026; root:xnu-12377.161.13~4/RELEASE_ARM64_T6041 arm64",
+    "cpu": "Apple M4 Pro",
+    "samplerCommit": "6ff5bf3",
+    "samplerSourceSha256": "d2906395ac076b0da5bcacd8a46273ef208c821360fb064c885b457e391be3af",
+    "adapterSource": "packages/live-compare/src/lock-hold-workload.ts",
+    "patchApplication": "cherry-pick -n of 6ff5bf3 required version-specific conflict resolution in main.rs/session.rs; lock_metrics.rs remained byte-identical across all three arms"
+  },
+  "runs": [
+    {
+      "ref": "db15b38",
+      "label": "pre-d2-v1",
+      "protocolVersion": 1,
+      "actors": 1,
+      "repetition": 1,
+      "sourceSha": "db15b38",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 156914,
+        "meanNs": 15.6914
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 110961,
+            "meanNs": 277.4025,
+            "maxNs": 1209,
+            "p50Ns": 250,
+            "p95Ns": 500,
+            "p99Ns": 791
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 5698612,
+            "meanNs": 14246.53,
+            "maxNs": 58250,
+            "p50Ns": 9000,
+            "p95Ns": 33125,
+            "p99Ns": 36292
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 26256,
+            "meanNs": 131.28,
+            "maxNs": 458,
+            "p50Ns": 125,
+            "p95Ns": 250,
+            "p99Ns": 333
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 811087797,
+            "meanNs": 4055438.985,
+            "maxNs": 6738667,
+            "p50Ns": 3883208,
+            "p95Ns": 4875292,
+            "p99Ns": 4970250
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 22748,
+            "meanNs": 113.74,
+            "maxNs": 459,
+            "p50Ns": 84,
+            "p95Ns": 209,
+            "p99Ns": 333
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 819749029,
+            "meanNs": 4098745.145,
+            "maxNs": 5827500,
+            "p50Ns": 3951041,
+            "p95Ns": 4732708,
+            "p99Ns": 4877666
+          }
+        }
+      }
+    },
+    {
+      "ref": "db15b38",
+      "label": "pre-d2-v1",
+      "protocolVersion": 1,
+      "actors": 1,
+      "repetition": 2,
+      "sourceSha": "db15b38",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 150956,
+        "meanNs": 15.0956
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 119707,
+            "meanNs": 299.2675,
+            "maxNs": 958,
+            "p50Ns": 250,
+            "p95Ns": 625,
+            "p99Ns": 875
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 5836413,
+            "meanNs": 14591.0325,
+            "maxNs": 50417,
+            "p50Ns": 4500,
+            "p95Ns": 34250,
+            "p99Ns": 37042
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 25916,
+            "meanNs": 129.58,
+            "maxNs": 417,
+            "p50Ns": 125,
+            "p95Ns": 250,
+            "p99Ns": 333
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 832266424,
+            "meanNs": 4161332.12,
+            "maxNs": 5054000,
+            "p50Ns": 3846208,
+            "p95Ns": 4779375,
+            "p99Ns": 4870250
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 24618,
+            "meanNs": 123.09,
+            "maxNs": 334,
+            "p50Ns": 84,
+            "p95Ns": 250,
+            "p99Ns": 333
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 837798788,
+            "meanNs": 4188993.94,
+            "maxNs": 5140167,
+            "p50Ns": 4044042,
+            "p95Ns": 4833792,
+            "p99Ns": 5061292
+          }
+        }
+      }
+    },
+    {
+      "ref": "db15b38",
+      "label": "pre-d2-v1",
+      "protocolVersion": 1,
+      "actors": 1,
+      "repetition": 3,
+      "sourceSha": "db15b38",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 166753,
+        "meanNs": 16.6753
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 218834,
+            "meanNs": 547.085,
+            "maxNs": 2584,
+            "p50Ns": 541,
+            "p95Ns": 1000,
+            "p99Ns": 1375
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 7426803,
+            "meanNs": 18567.0075,
+            "maxNs": 73458,
+            "p50Ns": 6334,
+            "p95Ns": 41000,
+            "p99Ns": 55459
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 36880,
+            "meanNs": 184.4,
+            "maxNs": 708,
+            "p50Ns": 167,
+            "p95Ns": 333,
+            "p99Ns": 459
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 873543084,
+            "meanNs": 4367715.42,
+            "maxNs": 8007291,
+            "p50Ns": 4530292,
+            "p95Ns": 4987792,
+            "p99Ns": 6507834
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 32368,
+            "meanNs": 161.84,
+            "maxNs": 666,
+            "p50Ns": 125,
+            "p95Ns": 375,
+            "p99Ns": 583
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 863553290,
+            "meanNs": 4317766.45,
+            "maxNs": 9083000,
+            "p50Ns": 4119625,
+            "p95Ns": 4970833,
+            "p99Ns": 5563667
+          }
+        }
+      }
+    },
+    {
+      "ref": "db15b38",
+      "label": "pre-d2-v1",
+      "protocolVersion": 1,
+      "actors": 10,
+      "repetition": 1,
+      "sourceSha": "db15b38",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 142418,
+        "meanNs": 14.2418
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 2039154,
+            "meanNs": 509.7885,
+            "maxNs": 92416,
+            "p50Ns": 292,
+            "p95Ns": 792,
+            "p99Ns": 1166
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 62230838,
+            "meanNs": 15557.7095,
+            "maxNs": 354500,
+            "p50Ns": 11250,
+            "p95Ns": 37042,
+            "p99Ns": 47042
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 62670326179,
+            "meanNs": 31335163.0895,
+            "maxNs": 80789916,
+            "p50Ns": 29785000,
+            "p95Ns": 59642542,
+            "p99Ns": 63843750
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16574760272,
+            "meanNs": 8287380.136,
+            "maxNs": 33195708,
+            "p50Ns": 8024416,
+            "p95Ns": 9920542,
+            "p99Ns": 10893042
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 68845756546,
+            "meanNs": 34422878.273,
+            "maxNs": 70793333,
+            "p50Ns": 36627458,
+            "p95Ns": 62461709,
+            "p99Ns": 65053791
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16600642694,
+            "meanNs": 8300321.347,
+            "maxNs": 34004750,
+            "p50Ns": 8041083,
+            "p95Ns": 9945792,
+            "p99Ns": 11186916
+          }
+        }
+      }
+    },
+    {
+      "ref": "db15b38",
+      "label": "pre-d2-v1",
+      "protocolVersion": 1,
+      "actors": 10,
+      "repetition": 2,
+      "sourceSha": "db15b38",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 192169,
+        "meanNs": 19.2169
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 2320524,
+            "meanNs": 580.131,
+            "maxNs": 133459,
+            "p50Ns": 333,
+            "p95Ns": 875,
+            "p99Ns": 1209
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 64501271,
+            "meanNs": 16125.31775,
+            "maxNs": 240250,
+            "p50Ns": 10667,
+            "p95Ns": 38917,
+            "p99Ns": 49625
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 74837206727,
+            "meanNs": 37418603.3635,
+            "maxNs": 75951292,
+            "p50Ns": 44548083,
+            "p95Ns": 63825375,
+            "p99Ns": 67707791
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16696352685,
+            "meanNs": 8348176.3425,
+            "maxNs": 26896958,
+            "p50Ns": 8041292,
+            "p95Ns": 9930792,
+            "p99Ns": 12325708
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 57639494710,
+            "meanNs": 28819747.355,
+            "maxNs": 90113208,
+            "p50Ns": 20691750,
+            "p95Ns": 64261042,
+            "p99Ns": 80675000
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16722055091,
+            "meanNs": 8361027.5455,
+            "maxNs": 26790833,
+            "p50Ns": 8058042,
+            "p95Ns": 9938333,
+            "p99Ns": 12394958
+          }
+        }
+      }
+    },
+    {
+      "ref": "db15b38",
+      "label": "pre-d2-v1",
+      "protocolVersion": 1,
+      "actors": 10,
+      "repetition": 3,
+      "sourceSha": "db15b38",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 149752,
+        "meanNs": 14.9752
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 2144405,
+            "meanNs": 536.10125,
+            "maxNs": 165625,
+            "p50Ns": 292,
+            "p95Ns": 750,
+            "p99Ns": 959
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 59436082,
+            "meanNs": 14859.0205,
+            "maxNs": 189042,
+            "p50Ns": 10083,
+            "p95Ns": 35125,
+            "p99Ns": 45958
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 100743244265,
+            "meanNs": 50371622.1325,
+            "maxNs": 94111083,
+            "p50Ns": 51988750,
+            "p95Ns": 62029959,
+            "p99Ns": 65748500
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16540325151,
+            "meanNs": 8270162.5755,
+            "maxNs": 15129959,
+            "p50Ns": 8044625,
+            "p95Ns": 9548958,
+            "p99Ns": 10839708
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 30479223626,
+            "meanNs": 15239611.813,
+            "maxNs": 54318916,
+            "p50Ns": 12515958,
+            "p95Ns": 23214625,
+            "p99Ns": 48867959
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16573664214,
+            "meanNs": 8286832.107,
+            "maxNs": 19193875,
+            "p50Ns": 8023583,
+            "p95Ns": 9690333,
+            "p99Ns": 11031750
+          }
+        }
+      }
+    },
+    {
+      "ref": "0e07f60",
+      "label": "post-d2-v2",
+      "protocolVersion": 2,
+      "actors": 1,
+      "repetition": 1,
+      "sourceSha": "0e07f60",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 143914,
+        "meanNs": 14.3914
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 119789,
+            "meanNs": 299.4725,
+            "maxNs": 1084,
+            "p50Ns": 250,
+            "p95Ns": 625,
+            "p99Ns": 834
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 5321329,
+            "meanNs": 13303.3225,
+            "maxNs": 54959,
+            "p50Ns": 4208,
+            "p95Ns": 31208,
+            "p99Ns": 36833
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 30166,
+            "meanNs": 150.83,
+            "maxNs": 708,
+            "p50Ns": 125,
+            "p95Ns": 250,
+            "p99Ns": 417
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 813627082,
+            "meanNs": 4068135.41,
+            "maxNs": 4961667,
+            "p50Ns": 3848375,
+            "p95Ns": 4766458,
+            "p99Ns": 4908917
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 21496,
+            "meanNs": 107.48,
+            "maxNs": 500,
+            "p50Ns": 84,
+            "p95Ns": 208,
+            "p99Ns": 291
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 855980456,
+            "meanNs": 4279902.28,
+            "maxNs": 7065084,
+            "p50Ns": 4134250,
+            "p95Ns": 4950334,
+            "p99Ns": 5428875
+          }
+        }
+      }
+    },
+    {
+      "ref": "0e07f60",
+      "label": "post-d2-v2",
+      "protocolVersion": 2,
+      "actors": 1,
+      "repetition": 2,
+      "sourceSha": "0e07f60",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 167958,
+        "meanNs": 16.7958
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 138463,
+            "meanNs": 346.1575,
+            "maxNs": 1417,
+            "p50Ns": 292,
+            "p95Ns": 750,
+            "p99Ns": 875
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 5717632,
+            "meanNs": 14294.08,
+            "maxNs": 51667,
+            "p50Ns": 5625,
+            "p95Ns": 33125,
+            "p99Ns": 35375
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 33339,
+            "meanNs": 166.695,
+            "maxNs": 459,
+            "p50Ns": 166,
+            "p95Ns": 292,
+            "p99Ns": 417
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 823817372,
+            "meanNs": 4119086.86,
+            "maxNs": 5930750,
+            "p50Ns": 3991417,
+            "p95Ns": 4859875,
+            "p99Ns": 5230583
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 26801,
+            "meanNs": 134.005,
+            "maxNs": 500,
+            "p50Ns": 125,
+            "p95Ns": 292,
+            "p99Ns": 458
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 821236267,
+            "meanNs": 4106181.335,
+            "maxNs": 9216500,
+            "p50Ns": 3940250,
+            "p95Ns": 4667625,
+            "p99Ns": 4870834
+          }
+        }
+      }
+    },
+    {
+      "ref": "0e07f60",
+      "label": "post-d2-v2",
+      "protocolVersion": 2,
+      "actors": 1,
+      "repetition": 3,
+      "sourceSha": "0e07f60",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 151788,
+        "meanNs": 15.1788
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 218875,
+            "meanNs": 547.1875,
+            "maxNs": 5500,
+            "p50Ns": 459,
+            "p95Ns": 1000,
+            "p99Ns": 1292
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 7001589,
+            "meanNs": 17503.9725,
+            "maxNs": 86250,
+            "p50Ns": 15542,
+            "p95Ns": 40292,
+            "p99Ns": 56208
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 40049,
+            "meanNs": 200.245,
+            "maxNs": 1292,
+            "p50Ns": 167,
+            "p95Ns": 375,
+            "p99Ns": 542
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 895485619,
+            "meanNs": 4477428.095,
+            "maxNs": 44969750,
+            "p50Ns": 4080459,
+            "p95Ns": 5254291,
+            "p99Ns": 6723166
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 34330,
+            "meanNs": 171.65,
+            "maxNs": 2125,
+            "p50Ns": 125,
+            "p95Ns": 375,
+            "p99Ns": 458
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 867055381,
+            "meanNs": 4335276.905,
+            "maxNs": 22654875,
+            "p50Ns": 4291209,
+            "p95Ns": 4906500,
+            "p99Ns": 5523875
+          }
+        }
+      }
+    },
+    {
+      "ref": "0e07f60",
+      "label": "post-d2-v2",
+      "protocolVersion": 2,
+      "actors": 10,
+      "repetition": 1,
+      "sourceSha": "0e07f60",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 155780,
+        "meanNs": 15.578
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 1902311,
+            "meanNs": 475.57775,
+            "maxNs": 174208,
+            "p50Ns": 250,
+            "p95Ns": 709,
+            "p99Ns": 1125
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 57276224,
+            "meanNs": 14319.056,
+            "maxNs": 2419125,
+            "p50Ns": 11625,
+            "p95Ns": 33667,
+            "p99Ns": 50041
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 56071700724,
+            "meanNs": 28035850.362,
+            "maxNs": 68426458,
+            "p50Ns": 35423875,
+            "p95Ns": 53848625,
+            "p99Ns": 62424084
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16806590154,
+            "meanNs": 8403295.077,
+            "maxNs": 16140416,
+            "p50Ns": 8115083,
+            "p95Ns": 10005292,
+            "p99Ns": 11027041
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 77492200334,
+            "meanNs": 38746100.167,
+            "maxNs": 105957459,
+            "p50Ns": 30828666,
+            "p95Ns": 64348666,
+            "p99Ns": 67280417
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16851509185,
+            "meanNs": 8425754.5925,
+            "maxNs": 15463500,
+            "p50Ns": 8069584,
+            "p95Ns": 10010125,
+            "p99Ns": 11776000
+          }
+        }
+      }
+    },
+    {
+      "ref": "0e07f60",
+      "label": "post-d2-v2",
+      "protocolVersion": 2,
+      "actors": 10,
+      "repetition": 2,
+      "sourceSha": "0e07f60",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 154343,
+        "meanNs": 15.4343
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 2294981,
+            "meanNs": 573.74525,
+            "maxNs": 160584,
+            "p50Ns": 292,
+            "p95Ns": 875,
+            "p99Ns": 1250
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 54611218,
+            "meanNs": 13652.8045,
+            "maxNs": 113833,
+            "p50Ns": 9792,
+            "p95Ns": 34250,
+            "p99Ns": 42209
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 71063582656,
+            "meanNs": 35531791.328,
+            "maxNs": 127249000,
+            "p50Ns": 38011417,
+            "p95Ns": 62001167,
+            "p99Ns": 76391459
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 17620259827,
+            "meanNs": 8810129.9135,
+            "maxNs": 32678500,
+            "p50Ns": 8413584,
+            "p95Ns": 10822250,
+            "p99Ns": 12513375
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 69195830363,
+            "meanNs": 34597915.1815,
+            "maxNs": 142730583,
+            "p50Ns": 27899416,
+            "p95Ns": 67980667,
+            "p99Ns": 73341750
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 17680181021,
+            "meanNs": 8840090.5105,
+            "maxNs": 33233542,
+            "p50Ns": 8439042,
+            "p95Ns": 10754416,
+            "p99Ns": 13147292
+          }
+        }
+      }
+    },
+    {
+      "ref": "0e07f60",
+      "label": "post-d2-v2",
+      "protocolVersion": 2,
+      "actors": 10,
+      "repetition": 3,
+      "sourceSha": "0e07f60",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 141749,
+        "meanNs": 14.1749
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 2048336,
+            "meanNs": 512.084,
+            "maxNs": 155250,
+            "p50Ns": 250,
+            "p95Ns": 750,
+            "p99Ns": 1083
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 52016421,
+            "meanNs": 13004.10525,
+            "maxNs": 79833,
+            "p50Ns": 8000,
+            "p95Ns": 32917,
+            "p99Ns": 38583
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 73983939692,
+            "meanNs": 36991969.846,
+            "maxNs": 69047542,
+            "p50Ns": 28929667,
+            "p95Ns": 63968000,
+            "p99Ns": 66947459
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16568505638,
+            "meanNs": 8284252.819,
+            "maxNs": 14160375,
+            "p50Ns": 8027000,
+            "p95Ns": 9988542,
+            "p99Ns": 10468625
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 57561832613,
+            "meanNs": 28780916.3065,
+            "maxNs": 44666875,
+            "p50Ns": 35850584,
+            "p95Ns": 38796958,
+            "p99Ns": 41407959
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16589712504,
+            "meanNs": 8294856.252,
+            "maxNs": 14173959,
+            "p50Ns": 8022833,
+            "p95Ns": 9966666,
+            "p99Ns": 10574167
+          }
+        }
+      }
+    },
+    {
+      "ref": "6ff5bf3",
+      "label": "d3b",
+      "protocolVersion": 2,
+      "actors": 1,
+      "repetition": 1,
+      "sourceSha": "6ff5bf3",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 169000,
+        "meanNs": 16.9
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 213630,
+            "meanNs": 534.075,
+            "maxNs": 9917,
+            "p50Ns": 458,
+            "p95Ns": 1000,
+            "p99Ns": 1209
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 7034584,
+            "meanNs": 17586.46,
+            "maxNs": 57792,
+            "p50Ns": 8084,
+            "p95Ns": 39250,
+            "p99Ns": 44791
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 26954,
+            "meanNs": 134.77,
+            "maxNs": 292,
+            "p50Ns": 125,
+            "p95Ns": 250,
+            "p99Ns": 292
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 898944243,
+            "meanNs": 4494721.215,
+            "maxNs": 11711042,
+            "p50Ns": 4513750,
+            "p95Ns": 5302833,
+            "p99Ns": 7444500
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 30127,
+            "meanNs": 150.635,
+            "maxNs": 417,
+            "p50Ns": 125,
+            "p95Ns": 333,
+            "p99Ns": 416
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 925490130,
+            "meanNs": 4627450.65,
+            "maxNs": 27852750,
+            "p50Ns": 4464041,
+            "p95Ns": 5434459,
+            "p99Ns": 7953542
+          }
+        }
+      }
+    },
+    {
+      "ref": "6ff5bf3",
+      "label": "d3b",
+      "protocolVersion": 2,
+      "actors": 1,
+      "repetition": 2,
+      "sourceSha": "6ff5bf3",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 154916,
+        "meanNs": 15.4916
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 233073,
+            "meanNs": 582.6825,
+            "maxNs": 34375,
+            "p50Ns": 417,
+            "p95Ns": 1083,
+            "p99Ns": 1541
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 7289413,
+            "meanNs": 18223.5325,
+            "maxNs": 160291,
+            "p50Ns": 15375,
+            "p95Ns": 38916,
+            "p99Ns": 52792
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 29743,
+            "meanNs": 148.715,
+            "maxNs": 583,
+            "p50Ns": 125,
+            "p95Ns": 291,
+            "p99Ns": 334
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 908875544,
+            "meanNs": 4544377.72,
+            "maxNs": 13776625,
+            "p50Ns": 4637833,
+            "p95Ns": 5380708,
+            "p99Ns": 6042000
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 29218,
+            "meanNs": 146.09,
+            "maxNs": 500,
+            "p50Ns": 125,
+            "p95Ns": 333,
+            "p99Ns": 417
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 906752126,
+            "meanNs": 4533760.63,
+            "maxNs": 10966666,
+            "p50Ns": 4514750,
+            "p95Ns": 5305042,
+            "p99Ns": 5590583
+          }
+        }
+      }
+    },
+    {
+      "ref": "6ff5bf3",
+      "label": "d3b",
+      "protocolVersion": 2,
+      "actors": 1,
+      "repetition": 3,
+      "sourceSha": "6ff5bf3",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 144510,
+        "meanNs": 14.451
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 400,
+            "totalNs": 130341,
+            "meanNs": 325.8525,
+            "maxNs": 1833,
+            "p50Ns": 291,
+            "p95Ns": 708,
+            "p99Ns": 1125
+          },
+          "hold": {
+            "count": 400,
+            "totalNs": 5801226,
+            "meanNs": 14503.065,
+            "maxNs": 45875,
+            "p50Ns": 4333,
+            "p95Ns": 33916,
+            "p99Ns": 37209
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 200,
+            "totalNs": 25621,
+            "meanNs": 128.105,
+            "maxNs": 459,
+            "p50Ns": 125,
+            "p95Ns": 250,
+            "p99Ns": 292
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 829854164,
+            "meanNs": 4149270.82,
+            "maxNs": 8927667,
+            "p50Ns": 3979875,
+            "p95Ns": 4978000,
+            "p99Ns": 5854125
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 200,
+            "totalNs": 25505,
+            "meanNs": 127.525,
+            "maxNs": 458,
+            "p50Ns": 125,
+            "p95Ns": 250,
+            "p99Ns": 375
+          },
+          "hold": {
+            "count": 200,
+            "totalNs": 835120040,
+            "meanNs": 4175600.2,
+            "maxNs": 5523875,
+            "p50Ns": 3983875,
+            "p95Ns": 4847458,
+            "p99Ns": 5370291
+          }
+        }
+      }
+    },
+    {
+      "ref": "6ff5bf3",
+      "label": "d3b",
+      "protocolVersion": 2,
+      "actors": 10,
+      "repetition": 1,
+      "sourceSha": "6ff5bf3",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 159883,
+        "meanNs": 15.9883
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 2420780,
+            "meanNs": 605.195,
+            "maxNs": 237000,
+            "p50Ns": 292,
+            "p95Ns": 834,
+            "p99Ns": 1333
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 60885680,
+            "meanNs": 15221.42,
+            "maxNs": 158167,
+            "p50Ns": 10375,
+            "p95Ns": 36000,
+            "p99Ns": 62542
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 72019309804,
+            "meanNs": 36009654.902,
+            "maxNs": 68813042,
+            "p50Ns": 28942041,
+            "p95Ns": 52816000,
+            "p99Ns": 54943708
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16511399794,
+            "meanNs": 8255699.897,
+            "maxNs": 23088125,
+            "p50Ns": 8005834,
+            "p95Ns": 9932792,
+            "p99Ns": 11983583
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 59009802082,
+            "meanNs": 29504901.041,
+            "maxNs": 80099167,
+            "p50Ns": 35637334,
+            "p95Ns": 42659084,
+            "p99Ns": 54277709
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16531683310,
+            "meanNs": 8265841.655,
+            "maxNs": 26949292,
+            "p50Ns": 8007125,
+            "p95Ns": 9934875,
+            "p99Ns": 12892125
+          }
+        }
+      }
+    },
+    {
+      "ref": "6ff5bf3",
+      "label": "d3b",
+      "protocolVersion": 2,
+      "actors": 10,
+      "repetition": 2,
+      "sourceSha": "6ff5bf3",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 153180,
+        "meanNs": 15.318
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 2084188,
+            "meanNs": 521.047,
+            "maxNs": 159291,
+            "p50Ns": 208,
+            "p95Ns": 834,
+            "p99Ns": 1250
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 57152638,
+            "meanNs": 14288.1595,
+            "maxNs": 290625,
+            "p50Ns": 8083,
+            "p95Ns": 46666,
+            "p99Ns": 80000
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 53599576249,
+            "meanNs": 26799788.1245,
+            "maxNs": 69986250,
+            "p50Ns": 12429250,
+            "p95Ns": 62014000,
+            "p99Ns": 65940875
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16515874732,
+            "meanNs": 8257937.366,
+            "maxNs": 20344708,
+            "p50Ns": 8025125,
+            "p95Ns": 9305833,
+            "p99Ns": 10306541
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 77720618476,
+            "meanNs": 38860309.238,
+            "maxNs": 134197250,
+            "p50Ns": 53048833,
+            "p95Ns": 65796125,
+            "p99Ns": 69314792
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 16581121331,
+            "meanNs": 8290560.6655,
+            "maxNs": 22340292,
+            "p50Ns": 8037042,
+            "p95Ns": 9456667,
+            "p99Ns": 11015125
+          }
+        }
+      }
+    },
+    {
+      "ref": "6ff5bf3",
+      "label": "d3b",
+      "protocolVersion": 2,
+      "actors": 10,
+      "repetition": 3,
+      "sourceSha": "6ff5bf3",
+      "dirty": true,
+      "dropped": 0,
+      "noop": {
+        "iterations": 10000,
+        "totalNs": 149631,
+        "meanNs": 14.9631
+      },
+      "locks": {
+        "session.protocol": {
+          "wait": {
+            "count": 4000,
+            "totalNs": 5909488,
+            "meanNs": 1477.372,
+            "maxNs": 1865000,
+            "p50Ns": 500,
+            "p95Ns": 1250,
+            "p99Ns": 4750
+          },
+          "hold": {
+            "count": 4000,
+            "totalNs": 89359107,
+            "meanNs": 22339.77675,
+            "maxNs": 1297625,
+            "p50Ns": 18125,
+            "p95Ns": 61125,
+            "p99Ns": 119041
+          }
+        },
+        "session.journal": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 38775376181,
+            "meanNs": 19387688.0905,
+            "maxNs": 286252250,
+            "p50Ns": 4821750,
+            "p95Ns": 62902875,
+            "p99Ns": 79307625
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 21517937671,
+            "meanNs": 10758968.8355,
+            "maxNs": 114906208,
+            "p50Ns": 8622958,
+            "p95Ns": 22237209,
+            "p99Ns": 44758083
+          }
+        },
+        "session.audit": {
+          "wait": {
+            "count": 2000,
+            "totalNs": 137650338133,
+            "meanNs": 68825169.0665,
+            "maxNs": 334311167,
+            "p50Ns": 64798959,
+            "p95Ns": 147076708,
+            "p99Ns": 217494500
+          },
+          "hold": {
+            "count": 2000,
+            "totalNs": 22171606845,
+            "meanNs": 11085803.4225,
+            "maxNs": 101850250,
+            "p50Ns": 8699458,
+            "p95Ns": 24029292,
+            "p99Ns": 45883791
+          }
+        }
+      }
+    }
+  ]
+}

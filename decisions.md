@@ -7,6 +7,45 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-08-24 — D-2's global-lock debt resolves as a real journal/audit bottleneck
+
+**Decision:** record the measured serialization as an explicit follow-up; do
+not optimize it inside D-3b. The fixed, key-free read workload measured only
+`session.protocol`, `session.journal`, and `session.audit` at `db15b38`
+(protocol v1), `0e07f60` (protocol v2), and the D-3b instrumentation head. Each
+arm used `examples/medium`, tsc-only validation, persistent bridge off, 10
+warmup cycles followed by 50 recorded cycles per actor, N=1 and N=10, and three
+repetitions.
+
+**Finding:** `session.protocol` is not the bottleneck (conservative N=10 wait
+p99 at or below 0.005 ms). The journal and audit locks are. Across the three
+revisions, conservative N=10 journal wait p99 was 67.708–79.308 ms and audit
+wait p99 was 80.675–217.495 ms. The D-3b arm had the largest tails: journal
+79.308 ms p99 and audit 217.495 ms p99. Every run had the exact expected sample
+counts and zero dropped samples. This is a result for the registered workload,
+not a universal performance claim. Raw per-run distributions and provenance:
+`docs/spikes/d3b-lock-hold-time.{json,md}`.
+
+**Why this happens:** observation requests still append durable journal and
+audit records while holding process-global mutexes; the lock therefore carries
+the synchronous persistence time and queues otherwise independent actors.
+The follow-up should test a design that removes filesystem durability from the
+global critical section (for example, a single ordered durability writer or a
+batched append protocol) without weakening request identity, audit ordering, or
+crash recovery. D-3b is lifecycle work, so it records rather than folds in that
+different-class change.
+
+**Methodology divergence, disclosed:** the pre-registered `cherry-pick -n` of
+sampler commit `6ff5bf3` conflicted in `main.rs` and `session.rs`, because D-3b
+inserted drain fields next to the instrumented fields after both historical
+refs. Work stopped at that gate; only the version-specific wiring conflicts
+were then resolved. The sampler implementation itself is byte-identical on all
+three arms (SHA-256
+`d2906395ac076b0da5bcacd8a46273ef208c821360fb064c885b457e391be3af`),
+and one unchanged external runner plus tested v1/v2 raw-wire adapters drove all
+arms. This is weaker than a conflict-free cherry-pick and is retained as an
+artifact limitation rather than silently described as exact patch application.
+
 ## 2026-08-21 — D-3a closed: staleness stops being a decision the daemon has to make
 
 **Decision:** D-3a (ownership + health) is CLOSED on
