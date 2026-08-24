@@ -1,6 +1,8 @@
 mod audit;
 mod drain;
 mod lifecycle;
+#[cfg(feature = "lock-instrumentation")]
+mod lock_metrics;
 mod manifest;
 mod metrics;
 mod ownership;
@@ -108,6 +110,8 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     }
     #[cfg(feature = "redb-spike-api")]
     allowed.push("--test-publish-failpoint");
+    #[cfg(feature = "lock-instrumentation")]
+    allowed.push("--lock-samples");
     reject_unknown(&values, &allowed)?;
     let db_path = required_path(&values, "--db")?;
     let snapshot_path = required_path(&values, "--snapshot")?;
@@ -126,6 +130,10 @@ fn serve(arguments: &[OsString]) -> Result<()> {
     if !(1..=300_000).contains(&drain_grace_ms) {
         bail!("--drain-grace-ms must be in 1..=300000");
     }
+    #[cfg(feature = "lock-instrumentation")]
+    let lock_sampler = optional_path(&values, "--lock-samples")
+        .map(|path| lock_metrics::LockSampler::create(&path))
+        .transpose()?;
     #[cfg(feature = "coordination-test-api")]
     let block_after_pending = match values.get("--test-block-after-pending-ms") {
         Some(_) => {
@@ -238,6 +246,8 @@ fn serve(arguments: &[OsString]) -> Result<()> {
             failpoint,
             metrics_path,
             drain_grace: Duration::from_millis(drain_grace_ms),
+            #[cfg(feature = "lock-instrumentation")]
+            lock_sampler,
             #[cfg(feature = "coordination-test-api")]
             response_write_barrier: optional_path(&values, "--test-response-write-barrier"),
             #[cfg(feature = "coordination-test-api")]

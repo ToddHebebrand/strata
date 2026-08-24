@@ -19,6 +19,8 @@ use super::audit::{
     action_body_hash, client_hash, request_identity,
 };
 use super::drain::{ActiveRequest, DrainController};
+#[cfg(feature = "lock-instrumentation")]
+use super::lock_metrics::{LOCK_AUDIT, LOCK_JOURNAL, LOCK_PROTOCOL, LockSampler, TimedMutex};
 use super::paths::project_module_path;
 use super::protocol::{
     CancelledState, ChangeSetState, DeclarationSummary, Diagnostic, FixtureSummary, InspectedNode,
@@ -40,6 +42,11 @@ const MAX_RELATIONSHIPS: usize = 256;
 const MIN_LOCAL_MUTATION_MS: u64 = 10;
 const MIN_BRIDGE_ANALYSIS_MS: u64 = 30_100;
 const MIN_BRIDGE_PUBLICATION_MS: u64 = 60_100;
+
+#[cfg(feature = "lock-instrumentation")]
+type MeasuredMutex<T> = TimedMutex<T>;
+#[cfg(not(feature = "lock-instrumentation"))]
+type MeasuredMutex<T> = Mutex<T>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ServiceFailpoint {
@@ -149,6 +156,8 @@ pub(super) struct ServiceConfig {
     /// behavior with no sink and no worker metrics collection.
     pub metrics_path: Option<PathBuf>,
     pub drain_grace: Duration,
+    #[cfg(feature = "lock-instrumentation")]
+    pub lock_sampler: Option<LockSampler>,
     #[cfg(feature = "coordination-test-api")]
     pub response_write_barrier: Option<PathBuf>,
     #[cfg(feature = "coordination-test-api")]
@@ -165,12 +174,12 @@ pub(super) struct ServiceConfig {
 
 pub(super) struct ServiceSession {
     kernel: Arc<Kernel>,
-    journal: Mutex<RequestJournal>,
-    audit: Mutex<ServiceAudit>,
+    journal: MeasuredMutex<RequestJournal>,
+    audit: MeasuredMutex<ServiceAudit>,
     next_tick: AtomicU64,
     change_set_locks: Mutex<BTreeMap<String, Arc<Mutex<()>>>>,
     delivered_events: Mutex<BTreeMap<String, u64>>,
-    protocol: Mutex<LocalServiceProtocolContext>,
+    protocol: MeasuredMutex<LocalServiceProtocolContext>,
     drain: Arc<DrainController>,
     #[cfg(feature = "coordination-test-api")]
     response_write_barrier: Option<PathBuf>,
@@ -327,12 +336,41 @@ impl ServiceSession {
             .context("service logical tick overflow")?;
         let session = Arc::new(Self {
             kernel: Arc::new(kernel),
-            journal: Mutex::new(journal),
-            audit: Mutex::new(ServiceAudit::open(&config.audit_path)?),
+            journal: {
+                #[cfg(feature = "lock-instrumentation")]
+                {
+                    TimedMutex::new(journal, LOCK_JOURNAL, config.lock_sampler.clone())
+                }
+                #[cfg(not(feature = "lock-instrumentation"))]
+                {
+                    Mutex::new(journal)
+                }
+            },
+            audit: {
+                let audit = ServiceAudit::open(&config.audit_path)?;
+                #[cfg(feature = "lock-instrumentation")]
+                {
+                    TimedMutex::new(audit, LOCK_AUDIT, config.lock_sampler.clone())
+                }
+                #[cfg(not(feature = "lock-instrumentation"))]
+                {
+                    Mutex::new(audit)
+                }
+            },
             next_tick: AtomicU64::new(next_tick),
             change_set_locks: Mutex::new(BTreeMap::new()),
             delivered_events: Mutex::new(BTreeMap::new()),
-            protocol: Mutex::new(LocalServiceProtocolContext::default()),
+            protocol: {
+                let protocol = LocalServiceProtocolContext::default();
+                #[cfg(feature = "lock-instrumentation")]
+                {
+                    TimedMutex::new(protocol, LOCK_PROTOCOL, config.lock_sampler.clone())
+                }
+                #[cfg(not(feature = "lock-instrumentation"))]
+                {
+                    Mutex::new(protocol)
+                }
+            },
             drain,
             #[cfg(feature = "coordination-test-api")]
             response_write_barrier: config.response_write_barrier,
