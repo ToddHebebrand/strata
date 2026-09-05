@@ -150,7 +150,10 @@ Diagnose this before claiming a fully green kernel prerequisite for C/E;
 see the [restart verification](spikes/2026-09-05-restart-verification.md).
 The [follow-up diagnosis](spikes/2026-09-05-memory-diagnosis.md) reproduces the
 RSS plateau with unchanged-corpus validation alone. No production fix or gate
-rewrite was made; a separate measurement-contract decision is pending.
+rewrite was made during diagnosis. The operator subsequently approved the
+[reviewed v2 memory design](superpowers/specs/2026-09-05-memory-gate-v2-design.md):
+fixed startup allowance, bounded worker growth, and sampled combined capacity.
+Implementation and fresh qualification are next; the current gate is still red.
 
 ## What not to do
 

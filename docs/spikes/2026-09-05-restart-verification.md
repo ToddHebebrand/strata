@@ -55,6 +55,10 @@ Longer natural-GC and unchanged-corpus controls support collectable allocation
 growth rather than an identified accumulating worker graph. The existing guard
 still fails; redesign approval is pending, not inferred from that diagnosis.
 
+Subsequent operator approval and independent design review produced the
+[v2 contract](../superpowers/specs/2026-09-05-memory-gate-v2-design.md).
+It has not yet been implemented or run; this restart's test outcomes stand.
+
 ## Design handoff
 
 The [Item E scenario](../superpowers/specs/2026-09-05-item-e-scratch-to-release-design.md)

@@ -7,6 +7,44 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-09-05 — Operator approves prospective memory-gate redesign
+
+**Context:** after the bounded RSS diagnosis below, the operator approved a
+separately reviewed redesign distinguishing startup growth from sustained
+retention. The [v2 design](docs/superpowers/specs/2026-09-05-memory-gate-v2-design.md)
+is independently reviewed; implementation and fresh qualification are pending.
+
+**Decision:** define a NEW finite sampled-RSS contract: 32 real warmup
+publications, then four fixed 32-publication blocks; every later worker-RSS
+block maximum must stay within 1.15 times the first measured block maximum.
+All observed combined daemon+worker samples, including startup, remain within
+the existing 1400 MiB capacity envelope. The number 32 borrows the existing
+run-length scale, not a previously validated warmup duration. This is a
+post-diagnosis policy choice, not a reinterpretation of the old experiment.
+
+**Alternatives rejected:** an adaptive warmup, selecting favorable windows,
+raising the ratio, forced GC in production, or a second forced-GC acceptance
+gate. They either optimize toward the known trace or ask a different runtime
+question. V2 explicitly permits small growth inside its allowance and claims
+neither leak freedom nor long-session/ten-agent safety.
+
+**Independent review:** read-only `gpt-6-astra`, `xhigh`, approved with
+incorporated clarifications: default debug profile; strict failed-sampler
+handling; worker dependency-output provenance; single inherited operation
+deadlines; bounded interruptible run/cleanup; actual readiness/hello policy
+checks; final correctness checks outside the RSS sampling interval.
+
+**Historical/implementation boundary:** v1 constants, evaluator, July artifacts,
+and performance-exit assembly stay unchanged. The legacy live check remains
+explicitly runnable with its original verdict. Only after reviewed v2
+implementation and fresh qualification may automatic CI switch to the new
+versioned memory contract. No v2 run, runtime modification, green-kernel claim,
+or live model spend occurred in this design step.
+
+**Design-doc impact:** none to architecture; this is a versioned research
+acceptance change. It supersedes the earlier pending-redesign-approval status,
+not the earlier failed measurements.
+
 ## 2026-09-05 — RSS diagnosis does not authorize a gate rewrite
 
 **Context:** restart verification reproduced the persistent-worker N=12 RSS

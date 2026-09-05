@@ -97,6 +97,11 @@ not completed by this diagnosis.
 
 ## Reproduction and evidence
 
+Subsequent decision: the operator approved the separately reviewed
+[v2 design](../superpowers/specs/2026-09-05-memory-gate-v2-design.md).
+Implementation and fresh qualification remain pending; the diagnosis and v1
+failures above are unchanged.
+
 The [evidence directory](2026-09-05-memory-diagnosis/) contains the exact
 executed scripts and complete raw traces. The scripts intentionally retain
 the original absolute checkout and temporary-directory paths as provenance;
