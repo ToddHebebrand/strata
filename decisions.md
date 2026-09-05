@@ -7,6 +7,30 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-09-05 — Item E design draft scopes the creation prerequisite
+
+The restart preserves the SQLite product/kernel research split and does not
+reopen performance gates. The [scenario draft](docs/superpowers/specs/2026-09-05-item-e-scratch-to-release-design.md)
+proposes Task Ledger, ten implementation workers, and a baseline-only Git
+integrator whose additional resources are disclosed. This is a reviewed design
+direction, not implementation approval or authorization for live spending.
+
+Two existing constraints change the literal scratch-to-release formulation:
+the acceptance runner rejects zero modules, and manifest startup requires a
+green seed. Start with tooling plus one empty module and zero application
+implementation. Keep an immutable partial-contract publication oracle distinct
+from an unconditional final release oracle. A mutable completion switch or
+the initially red release suite cannot serve as the publication gate.
+
+Creation/import/body-only scenario operations preserve public names and export
+visibility, so present-capability obligations cannot be deactivated. This must
+be enforced by kernel admission and containment, not prompt instructions.
+Independent read-only expert review supported that boundary and identified
+positional reference reconstruction and same-generation intent analysis as
+additional C prerequisites: changing the ID allocator alone is insufficient.
+Exact API fixtures, baseline scheduling, identity semantics, and deterministic
+qualification remain required before implementation/live gates can close.
+
 ## 2026-08-24 — D-3b closed: drain is one state machine and forced exit tells the truth
 
 **Decision:** D-3b (drain, stop, typed-client lane hygiene, harness cleanup, and

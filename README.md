@@ -97,7 +97,7 @@ Or work from source — for a hands-on walkthrough that takes you from clone to 
 ```bash
 pnpm install
 pnpm -r build
-pnpm -r test                                          # ~470 passing, key-gated tests skipped
+pnpm -r test                                          # workspace tests; live tests are key-gated
 ```
 
 Round-trip a single TypeScript file through the substrate (no key, no network):
@@ -175,15 +175,17 @@ A keyed micro-experiment: run the same T05-style task twice on the same corpus, 
 ANTHROPIC_API_KEY=... pnpm --filter @strata-code/bench dogfood:l1 -- examples/medium
 ```
 
-Honest read: N=1. Plan acceptance is `index-on tokens ≤ 80% of index-off tokens` on this single run.
+Honest read: N=1. Acceptance is `index-on cost USD ≤ 80% of index-off cost USD`; the recorded comparison passed at 62.8%. This is one paired observation, not a general savings claim (decisions.md, 2026-05-27).
 
 ## Status
 
-Research-grade substrate, **actively iterating toward usability** (CLAUDE.md priority since 2026-05-26). TypeScript only. The end-to-end pipeline is stable: ingest → store → 17 structural tools → in-process tsc + behavioral gate → render. T03 (rename) is a clean substrate win on the bench; other tasks are mixed or losses, documented honestly in `docs/RESULTS.md`. The three-layer codebase index (L1/L2/L3) is implemented and tested but the design-level token-saving claim is unvalidated until the operator runs the L1.4 dogfood (above).
+Research-grade, TypeScript-only substrate. The published SQLite product supports 20 tools, arbitrary prompts, persistent sessions, and the exploration CLI. L1 and L3 have small paired dogfood results; the larger-corpus L2 comparison remains open. The measured single-agent advantage is bulk propagation; broader task results and limitations are in `docs/RESULTS.md`.
+
+The Rust/redb coordination proof completed its deterministic acceptance and N=3 directional comparison in July 2026. Iteration 6 has since added structural discovery, manifest-controlled behavioral validation, a private typed client package, protocol-v2 sessions, daemon ownership, health, drain, and stop. These research components are not included in the npm product. Behavioral validation requires a manifest; the no-manifest daemon default remains tsc-only. Session attribution assumes cooperating processes under one OS user.
 
 Live roadmap: [`docs/product-roadmap.md`](docs/product-roadmap.md).
 
-The current release is not production-grade, multi-language, or multi-client. Multi-agent code coordination is now the approved next research iteration (`docs/superpowers/specs/2026-07-13-multi-agent-coordination-kernel-design.md`); multi-language support, FUSE, Git integration, task orchestration, and multi-host consensus remain out of scope.
+The next research milestone is a roughly ten-agent scratch-to-release scenario, which must define the required creation operations and stable logical-ID work before implementation. Concurrent structural insertion/deletion/move remains gated on those IDs. SQLite stays supported; the persistent bridge remains opt-in following a formally inconclusive performance exit gate. The release is not production-grade; multi-language support, FUSE, Git integration, task orchestration inside Strata, and multi-host consensus remain out of scope.
 
 ## License
 
