@@ -148,6 +148,9 @@ Hard boundaries carried: no task orchestration inside Strata; deterministic gate
 RSS guard fails both in the workspace run and in the isolated kernel chain.
 Diagnose this before claiming a fully green kernel prerequisite for C/E;
 see the [restart verification](spikes/2026-09-05-restart-verification.md).
+The [follow-up diagnosis](spikes/2026-09-05-memory-diagnosis.md) reproduces the
+RSS plateau with unchanged-corpus validation alone. No production fix or gate
+rewrite was made; a separate measurement-contract decision is pending.
 
 ## What not to do
 

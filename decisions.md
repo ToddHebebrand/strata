@@ -7,6 +7,33 @@ Log an entry whenever:
 - A spec-level question from § "Open design questions" gets resolved.
 - A non-obvious trade-off is made that a future reader would otherwise have to re-derive.
 
+## 2026-09-05 — RSS diagnosis does not authorize a gate rewrite
+
+**Context:** restart verification reproduced the persistent-worker N=12 RSS
+guard failure in isolation. Before changing code or measurement, a 48-publication
+diagnostic and a 24-iteration unchanged-corpus validation control tested whether
+the observed growth required retained coordination state.
+
+**Finding:** worker RSS plateaus near 500 MB after the initial rise; natural
+major-GC observations repeatedly reach roughly 36 MB live heap. A final,
+diagnostic-only collection reduces worker RSS to 143 MB. Type-checking an
+unchanged corpus without a daemon or mutation history reproduces the pattern
+(517 MB RSS, falling to 140 MB after collection). This supports collectable
+validation allocation/process-capacity growth, not an identified accumulating
+worker graph. It does not establish unlimited-session safety; daemon retention
+debts remain. Full scripts/raw traces and caveats:
+[memory diagnosis](docs/spikes/2026-09-05-memory-diagnosis.md).
+
+**Decision:** preserve the failed registered bound and runtime behavior. The
+read-only independent expert review agrees that no production fix is justified
+by this evidence yet. Do not insert forced GC, manufacture baseline allocations,
+raise the threshold, or select favorable windows. A new startup/retention/capacity
+measurement contract requires its own review and explicit operator approval.
+The full-kernel prerequisite remains red; E qualification is still pending.
+
+**Design-doc impact:** none. This records why a failing check is not silently
+converted into a pass or treated as a proved memory leak.
+
 ## 2026-09-05 — Item E design draft scopes the creation prerequisite
 
 The restart preserves the SQLite product/kernel research split and does not

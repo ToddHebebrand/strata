@@ -50,6 +50,11 @@ Next diagnostic task: explain persistent-worker RSS growth under the pinned
 twelve-mutation protocol, preserving the existing acceptance and opt-in default.
 Any fix or changed measurement contract needs its own evidence and review.
 
+Follow-up completed: [memory diagnosis](2026-09-05-memory-diagnosis.md).
+Longer natural-GC and unchanged-corpus controls support collectable allocation
+growth rather than an identified accumulating worker graph. The existing guard
+still fails; redesign approval is pending, not inferred from that diagnosis.
+
 ## Design handoff
 
 The [Item E scenario](../superpowers/specs/2026-09-05-item-e-scratch-to-release-design.md)
